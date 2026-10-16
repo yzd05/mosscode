@@ -100,9 +100,28 @@ def _retry_delay(exc, attempt: int, base: float) -> float:
     return min(base * 2 ** attempt, 60.0) * (1 + random.random() * 0.25)
 
 
+OVERFLOW_PATTERNS = ("prompt is too long", "context_length_exceeded", "maximum context length", "context length",
+                     "context window", "too many tokens", "input is too long", "exceeds the context",
+                     "reduce the length", "input too long")
+
+
+def _context_overflow(exc) -> bool:
+    """Services word this differently; match the shared phrases, never echo the raw text."""
+    status = getattr(exc, "status_code", None)
+    if status not in {None, 400, 413, 422}:
+        return False
+    body = getattr(exc, "body", None)
+    text = (str(exc) + " " + (json.dumps(body, ensure_ascii=False, default=str) if body is not None else "")).lower()
+    return any(pattern in text for pattern in OVERFLOW_PATTERNS)
+
+
 def _safe_error(exc) -> ProviderError:
     if isinstance(exc, ProviderError):
         return exc
+    if isinstance(exc, (anthropic.APIError, openai.APIError)) and _context_overflow(exc):
+        status = getattr(exc, "status_code", None)
+        suffix = f"（HTTP {status}）" if status else ""
+        return ProviderError(f"请求超出模型的上下文窗口{suffix}。", code="context_overflow")
     if isinstance(exc, (anthropic.APIStatusError, openai.APIStatusError)):
         status = exc.status_code
         if status in {401, 403}:

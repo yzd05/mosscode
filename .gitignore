@@ -19,4 +19,4 @@ mcp.yaml
 .claude/skills/code-spec
 
 # Third-party course material kept for reference, not part of the project
-reference/
+/reference/

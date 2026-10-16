@@ -5,6 +5,7 @@ from copy import deepcopy
 from time import monotonic
 
 from ..messages import Message, ResponseBoundary, ToolProgress, ToolResult
+from ..tool_budget import bound_message
 from .base import ExecutionCancelled, ToolRegistry
 
 
@@ -84,3 +85,4 @@ async def execute_batch(message: Message, registry: ToolRegistry, history: list[
             if result is None:
                 results[index] = ToolResult(calls[index].id, calls[index].name, "本轮已停止；此调用未执行。", True, "not_executed")
         save()
+        history[position] = bound_message(history[position], registry.session)

@@ -1,4 +1,4 @@
-# 完善阶段 1–6 验收指南
+# 完善阶段 1–6 与上下文管理验收指南
 
 分三层验收，从快到慢：
 
@@ -6,7 +6,7 @@
 2. **离线检查**（约 5 分钟，不需要 API）：用不可达的 Provider 启动真实 CLI 和界面，检查重试、配置、MCP 启动、命令和按键。
 3. **真实模型用例**（约 30–40 分钟，消耗少量 Token）：在专用的验收项目里，用你配置的模型走完各阶段的主要场景。
 
-每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md`。
+每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md` 和 `docs/specs/chapter-08-context/spec.md`。
 
 ## 准备
 
@@ -59,7 +59,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`543 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
+- **pytest**：`587 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -78,7 +78,8 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 4 交互 | `tests\test_interaction_stage4.py` | 22 passed |
 | 界面修复（宽度重绘、按键、/clear） | `tests\test_scrollback.py tests\test_windows_input.py` | 17 passed |
 | 5 MCP | `tests\test_mcp_stage5.py` | 15 passed |
-| 6 提示与文档 | `tests\test_prompts_stage6.py tests\test_docs.py` | 12 passed |
+| 6 提示与文档 | `tests\test_prompts_stage6.py tests\test_docs.py` | 13 passed |
+| 8 上下文管理 | `tests\test_context_stage8.py` | 43 passed |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 
@@ -153,7 +154,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | M10 replace_all | “把 src/util.py 里所有 old_name 改名为 double。” | 一次 edit_file，`replace_all: true`。审批预览中有 3 处修改，结果摘要为替换 3 处 |
 | M11 CRLF | “用一次 edit_file 把 crlf.txt 的第二、三行改成‘乙’和‘丙’。” | 编辑成功。之后执行 `[IO.File]::ReadAllText("$pwd\crlf.txt").Contains("`r`n")`，输出 True，且文件中没有单独的 LF |
 | M12 shell | “运行 echo $((1+2))。” | 工具名显示为 `Bash`（检测到 Git Bash 时）。需要审批，结果为 3 |
-| M13 长输出 | “运行 seq 1 20000，告诉我输出的第一行、最后一行，以及中间是否有省略说明。” | 第一行 1、最后一行 20000，中间有省略字节数的说明（保留头 8 KiB、尾 22 KiB） |
+| M13 长输出 | “运行 seq 1 20000，告诉我输出的第一行、最后一行，以及中间是否有省略说明。” | 输出约 10 万字符，超过存盘阈值：工具行注明“完整结果已存盘：…\tool-results\….txt”，模型看到的是开头 2,000 字符、末尾 1,000 字符和“中间省略 N 字符”的预览。回答第一行 1、最后一行 20000 |
 | M14 .gitignore | “用 grep 搜索 NEEDLE，列出匹配的文件。” | 只有 `src/app.py` 和 `keep.log`，没有 `build/output.txt` 和 `debug.log` |
 | M15 显式目录 | “用 grep 在 build 目录中搜索 NEEDLE。” | 找到 `build/output.txt` |
 
@@ -210,11 +211,39 @@ M40 的命令：
 .\.venv\Scripts\python.exe -c "from pathlib import Path; from mosscode.prompts import build_system_prompt; from mosscode.tools import create_default_registry; d = create_default_registry(Path('.'), load_permissions=False).definitions(); print(len(build_system_prompt(d)), sum(len(x.description) for x in d))"
 ```
 
+### 阶段 8：上下文管理
+
+先确认 `config.yaml` 中默认 Provider 是否配置了 `context_window`（DeepSeek V4.1 Flash 为 `1000000`）。未配置时，启动区显示“deepseek 未配置 context_window，按 128K 估算上下文。”，这是预期提示。
+
+自动压缩需要很小的窗口才能在几轮内触发。复制一份配置，只给验收用：
+
+```powershell
+Copy-Item "$moss\config.yaml" "$moss\.test-artifacts\acceptance\context-config.yaml"
+```
+
+在副本的默认 Provider 下加一行 `context_window: 50000`（输出预留 2 万、安全余量 1.3 万，自动阈值约 1.7 万 Token；小于 49,000 会被判为配置错误）。M42–M48 都用这份配置启动：
+
+```powershell
+& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\.test-artifacts\acceptance\context-config.yaml"
+```
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M42 上下文比例 | 问“验收暗号是什么？不要使用工具。” | 回答完成后状态栏出现“上下文 约 N%”。达到自动阈值的 80% 时变为琥珀色 |
+| M43 读取存盘文件 | “运行 seq 1 20000，然后用 read_file 读取存盘文件的第 10000 行附近（offset 9995，limit 10）。” | 工具行显示“完整结果已存盘：路径”。读取存盘文件不弹审批（默认档位和计划模式都一样），结果包含 10000 |
+| M44 自动压缩 | 新会话（`/clear`）：“请记住：以后所有回答都以‘收到’开头。”然后：“用 read_file 分页读完 long.txt 全部 3000 行，再依次读取 src/app.py、src/util.py、notes.txt，每读一个用一句话说明。” | 读取几轮后，对话中出现“✓ 已压缩上下文 · N 条消息 → 摘要 · 约 X Token · 用时 …”，显示在下一段回复之前；任务不中断，继续读完。状态栏比例明显下降 |
+| M45 原话保留 | 压缩后问“我最开始给你的要求原话是什么？” | 模型能复述“以后所有回答都以‘收到’开头”（原话由程序附在摘要后，不经模型改写），回答也仍以“收到”开头 |
+| M46 压缩后先读后改 | “把 notes.txt 第一行改成‘标题二’。” | 模型先 read_file 再编辑；直接编辑的话第一次调用失败（not_read），重读后成功 |
+| M47 手动压缩 | 输入 `/compact 只保留与 notes.txt 相关的内容`；再执行一次 `/compact`，在“压缩上下文中”计时期间按 Esc | 第一次：状态栏显示“压缩上下文中 · Ns · Esc 取消”，完成后显示“✓ 已压缩上下文…”。第二次按 Esc 后显示“已取消压缩，对话历史未改变。”。刚压缩完紧接着再压缩时，可能先提示“没有可压缩的内容”，这也是预期行为 |
+| M48 无界面输出 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\.test-artifacts\acceptance\context-config.yaml" -p "用 read_file 依次读取 long.txt、src/app.py、notes.txt 并分别总结" --output-format stream-json` | 出现 `{"type": "compact", "subtype": "started"…}` 和 `"finished"` 事件；最后的 `result` 中 `compactions` 至少为 1 |
+| M49 会话目录 | `Get-ChildItem ~\.mosscode\sessions` 并查看最新目录 | 目录名形如 `20261016-153000-a1b2`，其中有 `.mosscode-session`、`tool-results\` 和 `compact-1.md`；记录文件包含被压缩的完整消息。超过 30 天的会话目录会在启动时删除 |
+
 ## 已知限制
 
 - **ripgrep**：本机没有安装 ripgrep，搜索走 Python 实现。rg 路径只按文档实现，没有在本机运行过。
 - **缓存命中**：取决于服务。非 Anthropic 官方端点默认不发送缓存标记（见 `prompt_cache`）。
 - **只能人工判断的行为**：模型是否并行调用、回复是否简洁，没有严格的通过标准。
+- **Token 估算**：上下文比例是估算值（中文按 1 字 1 Token 偏保守），与服务的计费数字会有差异；压缩时机以估算为准，超限时由自救兜底。
 
 ## 记录结果
 

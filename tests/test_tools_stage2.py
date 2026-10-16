@@ -177,8 +177,9 @@ async def test_command_keeps_head_and_tail(tmp_path):
     reg = registry(tmp_path)
     script = "import sys; sys.stdout.write('HEAD' + 'x' * 100000 + 'TAIL')"
     result = await reg.execute(call("execute_command", command=python_command(script), timeout=30))
+    # Without a session directory, layer 1 (chapter 8) keeps a head-and-tail preview.
     assert not result.is_error and result.details["truncated"]
-    assert result.output.startswith("HEAD") and result.output.rstrip().endswith("TAIL")
+    assert "\nHEAD" in result.output and result.output.rstrip().endswith("TAIL")
     assert "中间省略" in result.output and len(result.output.encode("utf-8")) < 40000
 
 

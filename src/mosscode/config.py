@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .context import ContextBudget
 from .prompts import DEFAULT_SYSTEM_PROMPT, stable_prompt
 
 
@@ -51,6 +52,11 @@ class ProviderConfig:
     max_tokens_field: str = "max_tokens"
     include_encrypted_reasoning: bool = True
     prompt_cache: bool | None = None
+    context_window: int | None = None
+    compact_threshold: int | None = None
+
+    def budget(self) -> ContextBudget:
+        return ContextBudget.for_provider(self.context_window, self.max_output_tokens, self.compact_threshold)
 
     def credential(self) -> str:
         _validate_env_name(self.api_key_env)
@@ -72,6 +78,7 @@ class Settings:
     max_iterations: int = 200
     source: Path | None = None
     shell: str = "auto"
+    auto_compact: bool = True
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -154,7 +161,14 @@ def _provider(raw: Any) -> ProviderConfig:
         if "effort" in thinking and (thinking["type"] != "adaptive" or not isinstance(thinking["effort"], str)):
             raise ConfigError("effort 需用于 adaptive 模式并为字符串。")
     data["thinking"] = thinking
-    return ProviderConfig(**data)
+    for key in ("context_window", "compact_threshold"):
+        if data.get(key) is not None:
+            data[key] = _positive_int(data[key], key)
+    config = ProviderConfig(**data)
+    problem = config.budget().problem()
+    if problem:
+        raise ConfigError(f"Provider {config.name}：{problem}")
+    return config
 
 
 def config_candidates(cwd: Path | None = None, home: Path | None = None) -> tuple[Path, ...]:
@@ -182,7 +196,7 @@ def load_settings(path: str | Path) -> Settings:
         raise ConfigError("配置文件需为有效的 UTF-8 YAML。") from None
     if not isinstance(raw, dict) or not isinstance(raw.get("providers"), list) or not raw["providers"]:
         raise ConfigError("配置需包含非空 providers 列表。")
-    if set(raw) - {"providers", "default_provider", "system_prompt", "max_iterations", "shell"}:
+    if set(raw) - {"providers", "default_provider", "system_prompt", "max_iterations", "shell", "auto_compact"}:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
     if len({p.name for p in providers}) != len(providers):
@@ -197,6 +211,9 @@ def load_settings(path: str | Path) -> Settings:
     shell = raw.get("shell", Settings.shell)
     if not isinstance(shell, str) or not shell.strip():
         raise ConfigError("shell 需为 auto、bash、powershell 或 shell 可执行文件路径。")
-    settings = Settings(providers, default, stable_prompt(system), iterations, Path(path), shell.strip())
+    auto_compact = raw.get("auto_compact", True)
+    if type(auto_compact) is not bool:
+        raise ConfigError("auto_compact 必须是布尔值。")
+    settings = Settings(providers, default, stable_prompt(system), iterations, Path(path), shell.strip(), auto_compact)
     settings.select()
     return settings

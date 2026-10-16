@@ -1,0 +1,69 @@
+# 工具权限
+
+四个权限档位、规则文件与命令风险分级。规格见 [四档权限说明](../specs/permission-modes/spec.md)。
+
+## 档位
+
+默认档位为 `default`。四档在没有匹配规则时按下表判断；除下文的只读命令外，命令统一作为有副作用操作，即使用 Bash/PowerShell 写文件，也不能获得 acceptEdits 的文件工具自动授权。
+
+| 模式 | 只读工具与只读命令 | 专用文件写入/编辑 | 其他命令 |
+| --- | --- | --- | --- |
+| default | Allow | Ask | Ask |
+| acceptEdits | Allow | Allow | Ask |
+| plan | Allow | 不可用（plan_blocked） | 不可用（plan_blocked） |
+| bypassPermissions | Allow | Allow | Allow |
+
+**只读命令**无需审批，计划模式中也可执行：`git status/diff/log/show/blame/rev-parse/ls-files/describe/shortlog`、只带列表参数的 `git branch`/`git remote`，以及 `ls`、`pwd`、`cat`、`head`、`tail`、`wc`、`stat`、`tree`、`which`、`grep`、`rg`、`find` 和 PowerShell 的 `Get-ChildItem`、`Get-Content`、`Select-String` 等。必须是单条简单命令（不含管道、串联、重定向、变量和命令替换），路径参数限于项目内（拒绝绝对路径、`~` 和 `..`），并排除有副作用或执行外部程序的选项（`git -c`、`--output`、`--ext-diff`、`tail -f`、`rg --pre`/`-z`、`find -delete/-exec` 等）。生效的 deny 规则仍优先。白名单之外的命令即使只是读取也按档位审批。
+
+## 审批
+
+Ask 在输入区下方申请授权。↑ / ↓ 选择、Enter 确认；Esc 拒绝当前调用并让模型调整，Ctrl+C 取消整个任务。点击选项不会执行授权。审批面板保留已有对话，背景沿用终端，选项使用蓝色高亮。写入和编辑的审批面板显示 unified diff 预览（新增行绿色、删除行红色，超过 16 行截断）；新建文件显示前 16 行内容，原文无法匹配时回退为原文/替换文本。空闲时按 Shift+Tab 依次切换 default → acceptEdits → plan → default（bypassPermissions 时回到 default），运行中不切换。旧档位 strict、permissive 已移除：配置文件或 `--permission-mode` 使用它们会报错并提示改用 default 或 bypassPermissions。
+
+普通授权有三个允许选项：本次允许，只执行当前调用；本会话允许，当前工具对同一目标可继续执行，退出失效；永久允许，保存到当前项目的 `.mosscode/permissions.local.yaml`，重启有效。文件授权只匹配具体文件与工具；命令授权精确匹配命令，并绑定项目相对工作目录。不会自动保存为 `Write(**)` 或 `Bash(*)`。另有两个按操作出现的选项：写入/编辑审批提供“本会话自动接受编辑”，切换为 acceptEdits 档位，之后的编辑不再询问，命令仍需确认；命令能推导出前缀时提供“永久允许以 X 开头的命令”，保存为 `Bash(X:*)` 前缀规则。前缀取开头最多三个普通单词（如 `pytest`、`npm run test`、`python -m pytest`），遇到选项、路径或特殊字符即停止；脚本解释器（`python x.py`、`node app.js`）、包装命令（`sudo`、`env`、`bash -c`、`xargs`）、单独的 `git`/`npm` 和高风险命令不提供前缀选项。
+
+## 规则文件
+
+权限配置独立于 `config.yaml`，可参考 [permissions.example.yaml](../../permissions.example.yaml)。从低到高加载：
+
+| 层级 | 文件或位置 |
+| --- | --- |
+| 用户级 | `~/.mosscode/permissions.yaml`，所有项目的默认规则 |
+| 项目级 | `<项目>/.mosscode/permissions.yaml`，可共享的项目规则 |
+| 本地级 | `<项目>/.mosscode/permissions.local.yaml`，当前项目本机规则 |
+| 会话级 | 内存中的临时授权，退出失效 |
+
+规则按最高匹配层判断，同层同时命中时 deny 优先。更高层规则可覆盖更低层，任何模式都尊重最终生效的 deny；明确 allow 可以免去表格中的默认 Ask。配置 mode 按本地 > 项目 > 用户覆盖；启动参数 --permission-mode default/acceptEdits/plan/bypassPermissions 优先于文件，/permissions 切换仅影响本会话。配置格式错误阻止启动。
+
+```yaml
+mode: default
+allow:
+  - Read(src/**)
+  - Bash(pytest:*)
+deny:
+  - Write(.git/**)
+  - Edit(.git/**)
+  - Bash(git push:*)
+```
+
+可用别名为 `Read`、`Write`、`Edit`、`Bash`/`Shell`、`Glob`、`Grep`，也接受实际工具名。文件规则匹配解析后的项目相对路径；`Glob`/`Grep` 规则匹配搜索范围的路径。`*` 匹配单个路径段，`**` 可跨目录；Windows 文件匹配忽略大小写。读取类规则（`Read`/`Glob`/`Grep`）可以写绝对路径以放行项目外的读取，例如 `Read(C:/Users/me/notes/**)`；相对路径规则只匹配项目内，`Read(**)` 不会放行项目外。写入和编辑规则必须是项目相对路径。`Bash` 是规则别名，实际运行配置的 shell。命令规则默认匹配完整原始命令；含串联、管道、重定向、变量或命令替换等复杂语法的命令不能凭 `Bash(git *)` 这类 glob 自动授权。以 `:*` 结尾的规则是按单词的前缀规则：allow 形式 `Bash(pytest:*)` 匹配 `pytest` 和 `pytest tests -q`，不匹配 `pytestx`，也不放行任何复杂语法命令；deny 形式 `Bash(git push:*)` 会检查复合命令的每一段，`git status && git push` 同样被拒绝。
+
+自动保存的规则使用对象形式保留精确匹配和命令目录，例如：
+
+```yaml
+allow:
+  - rule: execute_command(git status)
+    exact: true
+    cwd: src
+```
+
+## 危险命令
+
+程序内置命令特征分两级。**灾难级**——删除文件系统根目录或用户主目录、`--no-preserve-root`、格式化和分区、写块设备、fork 炸弹、关机重启——一律以 `dangerous_command` 拒绝，不可被配置、档位或用户确认解除。**高风险级**——递归强制删除（`rm -rf`、`Remove-Item -Recurse -Force`、`rmdir /s`、`del /s`）、`git reset --hard`、`git clean -f`、`git push --force`、`Invoke-Expression`/`iex`、PowerShell 编码命令——在任何档位都要求每次确认：会话规则、永久规则和 bypassPermissions 都不会自动放行，显式 deny 规则仍然生效；审批面板说明风险原因，只提供“本次允许”和“拒绝”；无界面模式返回 approval_required。正则仅覆盖已知特征，不保证识别全部混淆或间接执行，也可能误报。
+
+## 路径限制
+
+专用文件工具限制在启动时捕获的项目根目录内；解析符号链接和 Windows 目录 junction，再按路径组成部分检查包含关系。新文件父目录和搜索遍历同样检查，不能通过 `..`、相邻同前缀目录或链接访问项目外。模型不能通过专用写入/编辑工具改自己的权限文件。
+
+**这是应用层路径限制，不是系统级沙箱。** 命令工作目录受检查，子进程仍拥有当前用户的系统权限，用户确认及正则无法约束其所有实际文件访问；确认命令前应根据其具体内容判断。其他进程并发更换链接的所有竞争情况也不在保证范围内。尚未加入网络限制、资源配额或审计日志。
+
+权限拒绝、需确认、保存失败等通过结构化工具结果回写，Agent Loop 可继续调整，仍受轮数上限约束。--prompt 无界面模式不会挂起等待审批；Ask 返回 approval_required。计划行为与权限中的 plan 使用同一状态，避免相互矛盾；硬检查、高风险命令确认和计划模式的只读限制不能通过已保存授权解除。新规格见 [四档权限说明](../specs/permission-modes/spec.md)。

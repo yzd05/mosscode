@@ -47,6 +47,9 @@ class FileState:
     def _key(path: Path) -> str:
         return os.path.normcase(str(path))
 
+    def clear(self) -> None:
+        self._seen.clear()
+
     def record(self, path: Path, stamp: tuple[int, int] | None = None) -> None:
         self._seen[self._key(path)] = stamp if stamp is not None else self.stamp(path)
 

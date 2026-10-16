@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from .agent import DEFAULT_MAX_ITERATIONS, AgentLoop, Provider
+from .context import ContextBudget
 from .messages import Completed, ProviderError, RunStopped
 from .prompts import git_snapshot, instructions_section, load_instructions
 from .tools.base import ToolRegistry
@@ -14,7 +15,9 @@ from .tools.base import ToolRegistry
 class Conversation:
     def __init__(self, provider: Provider, system: str = "", registry: ToolRegistry | None = None,
                  *, max_iterations: int = DEFAULT_MAX_ITERATIONS, unknown_limit: int = 3,
-                 mcp_manager=None, context_root: Path | None = None, instructions_home: Path | None = None):
+                 mcp_manager=None, context_root: Path | None = None, instructions_home: Path | None = None,
+                 budget: ContextBudget | None = None, session=None, auto_compact: bool = True,
+                 notices: tuple[str, ...] = ()):
         self.provider, self.system, self.registry = provider, system, registry
         self.mcp_manager = mcp_manager
         # Project files and git are product-level context; None keeps the core hermetic.
@@ -22,8 +25,16 @@ class Conversation:
         self._context_loaded = False
         self._mcp_background = False
         self._start_lock = asyncio.Lock()
+        self._notices = list(notices)  # Reported once, by the first start().
         self._agent = AgentLoop(provider, system, registry, max_iterations=max_iterations, unknown_limit=unknown_limit)
         self.system = self._agent.system
+        if budget is not None:
+            self._agent.budget = budget
+        self._agent.auto_compact = auto_compact
+        # Stored tool results and compaction records; without it large results are only cut to a preview.
+        self._agent.session = session
+        if registry is not None and session is not None:
+            registry.use_session(session)
 
     @property
     def history(self):
@@ -40,6 +51,34 @@ class Conversation:
     @property
     def total_usage(self):
         return self._agent.total_usage
+
+    @property
+    def budget(self) -> ContextBudget:
+        return self._agent.budget
+
+    @property
+    def compactions(self) -> int:
+        return self._agent.compactions
+
+    @property
+    def auto_compact_paused(self) -> bool:
+        return self._agent.auto_paused
+
+    def context_estimate(self) -> int | None:
+        """Approximate size of the next request; None until the first usage report."""
+        if self._agent.meter.anchor is None and not self._agent.history:
+            return None
+        return self._agent.estimate()
+
+    def context_ratio(self) -> float | None:
+        estimate = self.context_estimate()
+        return None if estimate is None else estimate / self.budget.effective
+
+    async def compact(self, instructions: str = ""):
+        """Manual /compact while idle; events report progress and the outcome."""
+        async with aclosing(self._agent.compact(instructions)) as stream:
+            async for event in stream:
+                yield event
 
     def set_mode(self, mode: str):
         self._agent.set_mode(mode)
@@ -66,9 +105,9 @@ class Conversation:
             self._context_loaded = True
             return tuple(await self._load_context())
 
-    async def set_provider(self, provider: Provider):
+    async def set_provider(self, provider: Provider, budget: ContextBudget | None = None):
         old = self.provider
-        self._agent.set_provider(provider)
+        self._agent.set_provider(provider, budget)
         self.provider = provider
         if old is not provider:
             await old.close()
@@ -104,7 +143,7 @@ class Conversation:
         registers its tools when ready and reports through on_mcp(status). Once that
         has happened, later calls (every reply) no longer wait for MCP either.
         """
-        notices = []
+        notices, self._notices = self._notices, []
         async with self._start_lock:
             if self.context_root is not None and not self._context_loaded:
                 self._context_loaded = True

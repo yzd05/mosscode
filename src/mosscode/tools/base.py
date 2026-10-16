@@ -103,8 +103,22 @@ class ToolRegistry:
             self.register(tool)
         first = next(iter(self._tools.values()), None)
         self.permissions = permissions or PermissionPolicy(first.root if first else Path.cwd())
+        # Set by the application; without it oversized results are cut to a preview, not stored.
+        self.session = None
         if any(tool.root != self.permissions.root for tool in self._tools.values()):
             raise ValueError("工具与权限策略必须使用同一个项目根目录。")
+
+    def use_session(self, session) -> None:
+        """Store oversized results in this run's directory and let read_file open them without approval."""
+        self.session = session
+        self.permissions.session_dir = session.directory if session is not None else None
+
+    def forget_reads(self) -> None:
+        """After compaction the model no longer holds file contents: edits need a fresh read."""
+        for tool in self._tools.values():
+            state = getattr(tool, "state", None)
+            if state is not None and hasattr(state, "clear"):
+                state.clear()
 
     def register(self, tool: Tool) -> None:
         if hasattr(self, "permissions") and tool.root != self.permissions.root:
@@ -128,13 +142,19 @@ class ToolRegistry:
         tool = self.get(name)
         return tool is not None and tool.read_only
 
+    def _bound(self, call: ToolCall, output: str, details: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        from ..tool_budget import EXEMPT, bound_result
+        if call.name in EXEMPT:
+            return bounded_output(output, details)
+        return bound_result(call.name, call.id, output, details, self.session)
+
     async def _invoke(self, call: ToolCall, tool: Tool, params: Params) -> ToolResult:
         try:
             output, details = await tool.execute(params)
-            output, details = bounded_output(output, details)
+            output, details = self._bound(call, output, details)
             return ToolResult(call.id, call.name, output, details=details)
         except ToolFailure as exc:
-            output, details = bounded_output(str(exc), exc.details)
+            output, details = self._bound(call, str(exc), exc.details)
             return ToolResult(call.id, call.name, output, True, exc.code, details)
         except FileNotFoundError:
             return ToolResult(call.id, call.name, "文件或目录不存在。", True, "not_found")

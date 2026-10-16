@@ -283,7 +283,7 @@ async def test_slash_hints_filter_show_chinese_descriptions_and_complete_mode_ar
         await pilot.press("/")
         await pilot.pause()
         hints = app.query_one("#command-hints", OptionList)
-        assert hints.display and hints.option_count == 7
+        assert hints.display and hints.option_count == 8
         rendered = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         assert "查看命令和快捷键" in rendered
         assert "退出 MossCode" in rendered
@@ -415,7 +415,7 @@ async def test_escape_dismissal_does_not_hide_retyped_slash_and_selected_row_is_
             assert not hints.display
             await pilot.press("backspace", "/")
             await pilot.pause()
-            assert field.value == "/" and hints.display and hints.option_count == 7
+            assert field.value == "/" and hints.display and hints.option_count == 8
 
         def assert_row_color(command, selected):
             row = next(strip for strip in app.screen._compositor.render_strips() if command in strip.text)

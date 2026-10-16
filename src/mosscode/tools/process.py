@@ -14,7 +14,7 @@ from .shell import Shell, resolve_shell
 
 OUTPUT_LIMIT = 32768
 # Command output keeps both ends: failure summaries are usually at the end.
-COMMAND_HEAD, COMMAND_TAIL = 8 * 1024, 22 * 1024
+COMMAND_HEAD, COMMAND_TAIL = 1024 * 1024, 1024 * 1024  # Memory guard; layer 1 stores large output.
 
 
 async def terminate_tree(process: asyncio.subprocess.Process) -> None:

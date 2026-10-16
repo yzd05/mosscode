@@ -21,12 +21,14 @@ from textual.widgets.markdown import MarkdownFence
 
 from .appearance import (COMMAND_HIGHLIGHT_COLOR, HELP_TEXT, TERMINAL_CSS, USER_MESSAGE_BACKGROUND, USER_MESSAGE_COLOR,
                          TOOL_SUCCESS_COLOR, PARAMETER_COLOR, OPERATION_COLOR, ERROR_COLOR,
-                         command_matches, moss_themes, startup_banner)
+                         command_matches, compact_notice, moss_themes, startup_banner)
 from .config import ConfigError, ProviderConfig, Settings
 from .conversation import Conversation
 from .tools import shell_label
-from .messages import (Completed, Delta, Message, ProviderError, ResponseBoundary, ToolProgress,
-                       ToolResult, IterationProgress, Retrying, UsageUpdate, UsageTotals, RunStopped, UserInput)
+from .messages import (CompactFailed, CompactFinished, CompactStarted, Completed, Delta, Message, ProviderError,
+                       ResponseBoundary, ToolProgress, ToolResult, IterationProgress, Retrying, UsageUpdate, UsageTotals,
+                       RunStopped, UserInput)
+from .tool_budget import persisted_note
 from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
 from .usage import cache_summary
 from .permissions import EDIT_TOOLS, ApprovalRequest, CHOICES, MODE_LABELS, MODES, safe_display
@@ -559,6 +561,9 @@ class ToolEntry(Static):
                 text.append("\n    " + line[:160])
             if len(lines) > 3 or any(len(line) > 160 for line in lines[:3]) or result.details.get("truncated"):
                 text.append("\n    （仅显示结果摘要）")
+        stored = persisted_note(result)
+        if stored:
+            text.append("\n    " + stored, style=PARAMETER_COLOR)
         self.transcript = text
         self.update(text)
 
@@ -647,6 +652,8 @@ class MossCodeApp(TerminalApp[None]):
         self._redraw_timer = None
         self._approval_request: ApprovalRequest | None = None
         self._startup_task = None
+        self._compacting: float | None = None  # Start time while a compaction runs.
+        self._context_share: tuple[int, bool] | None = None  # (percent of the effective window, near threshold)
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="chat"):
@@ -767,7 +774,7 @@ class MossCodeApp(TerminalApp[None]):
             # Its current size may predate the new preview; reserve what it may grow to.
             reserved += limit
         hints = self.query_one("#command-hints")
-        hint_limit = min(7, max(1, self.size.height - reserved - 2))
+        hint_limit = min(8, max(1, self.size.height - reserved - 2))
         if hints.styles.max_height is None or hints.styles.max_height.value != hint_limit:
             hints.styles.max_height = hint_limit
         # Reserve hints before layout: their old size may still be zero on show.
@@ -845,6 +852,9 @@ class MossCodeApp(TerminalApp[None]):
                 if missing == self._usage.requests:
                     return "—"
                 return ("≥" if missing else "") + str(value)
+            if self._context_share is not None:
+                percent, near = self._context_share
+                text.append(f" · 上下文 约 {percent}%", style=OPERATION_COLOR if near else None)
             text.append(f" · Token 入 {tokens(self._usage.input_tokens, self._usage.missing_input)} / 出 {tokens(self._usage.output_tokens, self._usage.missing_output)}")
             text.append(" · " + cache_summary(self._usage))
         status = self.query("#status")
@@ -853,7 +863,19 @@ class MossCodeApp(TerminalApp[None]):
         status.first(Static).update(text)
         self.call_later(self._fit_chat)
 
+    def _refresh_context(self) -> None:
+        """Cached: the ticker repaints every 0.2s, the estimate changes only with the history."""
+        estimate = self.conversation.context_estimate() if self._usage.requests else None
+        if estimate is None:
+            self._context_share = None
+            return
+        budget = self.conversation.budget
+        self._context_share = (round(100 * estimate / budget.effective), estimate >= 0.8 * budget.auto_threshold)
+
     def _tick(self) -> None:
+        if self._generating and self._compacting is not None:
+            self._status(f"压缩上下文中 · {monotonic() - self._compacting:.1f}s · Esc 取消")
+            return
         if self._generating and self._active_reply is not None:
             if self._approval_request is not None:
                 self._status("等待授权 · Esc 拒绝本次 · Ctrl+C 取消任务")
@@ -1004,13 +1026,51 @@ class MossCodeApp(TerminalApp[None]):
         await self._commit_ready_transcript()
         self._reply_task = asyncio.create_task(self._respond(prompt, reply))
 
-    async def _local_note(self, text: str) -> None:
+    @staticmethod
+    def _note(text: str, style: str | None = None) -> Static:
+        note = Static(Text(text, style=style or ""), classes="local-note")
+        note.transcript = Text(text, style=style or "")
+        return note
+
+    async def _local_note(self, text: str, style: str | None = None) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        note = Static(Text(text), classes="local-note")
-        note.transcript = Text(text)
-        await chat.mount(note)
+        await chat.mount(self._note(text, style))
         chat.anchor()
         await self._commit_ready_transcript()
+
+    @staticmethod
+    def _compact_style(event) -> str | None:
+        return OPERATION_COLOR if isinstance(event, CompactFailed) and event.code != "nothing" else None
+
+    async def _start_compact(self, instructions: str) -> None:
+        self.started = self._compacting = monotonic()
+        self._generating = True
+        self._tick()
+        self._reply_task = asyncio.create_task(self._run_compact(instructions))
+
+    async def _run_compact(self, instructions: str) -> None:
+        try:
+            async with aclosing(self.conversation.compact(instructions)) as stream:
+                async for event in stream:
+                    if isinstance(event, (CompactFinished, CompactFailed)):
+                        self._compacting = None
+                        await self._local_note(compact_notice(event), self._compact_style(event))
+        except asyncio.CancelledError:
+            if not self._closing:
+                await self._local_note("└ 已取消压缩，对话历史未改变。")
+        except ProviderError as exc:
+            await self._local_note(f"! {exc}", OPERATION_COLOR)
+        finally:
+            self._generating = False
+            self._compacting = None
+            if not self._closing:
+                field = self.query_one("#prompt", PromptArea)
+                queued = self.conversation.take_queued()
+                if queued:
+                    field.value = "\n\n".join((*queued, field.value) if field.value.strip() else queued)
+                self._refresh_queue()
+                self._refresh_context()
+                self._status("")
 
     async def _clear_screen(self) -> None:
         """Like Claude Code's /clear: wipe the screen and scrollback, then start again from the banner."""
@@ -1043,11 +1103,14 @@ class MossCodeApp(TerminalApp[None]):
         elif command == "/clear" and not argument:
             notices = await self.conversation.clear()
             self._usage = self.conversation.total_usage
+            self._refresh_context()
             self._status("")
             await self._clear_screen()
             await self._local_note("└ 已开始新会话：屏幕、模型上下文和 Token 统计已清空，权限档位与会话授权保留。")
             for notice in notices:
                 await self._local_note("└ " + notice)
+        elif command == "/compact":
+            await self._start_compact(argument)
         elif command == "/model":
             providers = self.settings.providers if self.settings else ()
             if argument:
@@ -1119,13 +1182,16 @@ class MossCodeApp(TerminalApp[None]):
             return
         try:
             provider = self.provider_factory(config)
-            await self.conversation.set_provider(provider)
+            await self.conversation.set_provider(provider, config.budget())
         except (ProviderError, ConfigError) as exc:
             await self._local_note(f"切换失败：{exc}")
             return
         self.provider_name, self.model = config.name, config.model
+        self._refresh_context()
         self._status("")
         await self._local_note(f"└ 已切换到 {config.name}（{config.protocol} / {config.model}）；对话历史保留。")
+        if config.context_window is None:
+            await self._local_note(f"└ {config.name} 未配置 context_window，按 128K 估算上下文。")
 
     def _close_model_panel(self) -> None:
         self.query_one("#model-panel").display = False
@@ -1199,7 +1265,18 @@ class MossCodeApp(TerminalApp[None]):
                         self._tick()
                     elif isinstance(event, UsageUpdate):
                         self._usage = event.total
+                        self._refresh_context()
                         self._tick()
+                    elif isinstance(event, CompactStarted):
+                        self._compacting = monotonic()
+                        self._tick()
+                    elif isinstance(event, (CompactFinished, CompactFailed)):
+                        self._compacting = None
+                        note = self._note(compact_notice(event), self._compact_style(event))
+                        # Before a reply that has not started yet, so the note reads in time order.
+                        await (chat.mount(note) if continuation else chat.mount(note, before=reply))
+                        chat.anchor()
+                        self._refresh_context()
                     elif isinstance(event, RunStopped):
                         completed = event.reason == "completed"
                         for result in event.results:
@@ -1281,8 +1358,10 @@ class MossCodeApp(TerminalApp[None]):
             self._status("失败 · 未完成正文未保存，已执行工具结果保留")
         finally:
             self._generating = False
+            self._compacting = None
             self._retry_notice = ""
             self._active_reply = None
+            self._refresh_context()
             if not self._closing:
                 self._hide_approval()
                 await self._commit_ready_transcript()

@@ -7,8 +7,10 @@ import sys
 
 from .config import ConfigError, find_config, load_settings
 from .conversation import Conversation
-from .messages import (Completed, Delta, Message, ProviderError, Retrying, ToolProgress, ResponseBoundary, RunStopped,
-                       UsageUpdate)
+from .appearance import compact_notice
+from .messages import (CompactFailed, CompactFinished, CompactStarted, Completed, Delta, Message, ProviderError, Retrying,
+                       ToolProgress, ResponseBoundary, RunStopped, UsageUpdate)
+from .session import Session, prune_sessions
 from .usage import request_usage_text
 from .tools import create_default_registry
 from .tools.shell import ShellNotFound
@@ -51,6 +53,17 @@ def _usage_dict(usage) -> dict | None:
 
 def _emit(data: dict) -> None:
     print(json.dumps(data, ensure_ascii=False), flush=True)
+
+
+def _compact_event(event) -> dict:
+    if isinstance(event, CompactStarted):
+        return {"type": "compact", "subtype": "started", "manual": event.manual}
+    if isinstance(event, CompactFinished):
+        return {"type": "compact", "subtype": "finished", "removed": event.removed,
+                "summary_tokens": event.summary_tokens, "duration_ms": round(event.elapsed * 1000),
+                "record": event.record}
+    return {"type": "compact", "subtype": "failed", "reason": event.reason, "consecutive": event.consecutive,
+            "paused": event.paused}
 
 
 async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False,
@@ -99,6 +112,8 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
                     elif isinstance(event, Retrying):
                         _emit({"type": "retry", "attempt": event.attempt, "max_attempts": event.max_attempts,
                                "delay": event.delay, "reason": event.reason})
+                    elif isinstance(event, (CompactStarted, CompactFinished, CompactFailed)):
+                        _emit(_compact_event(event))
         except ProviderError as exc:
             error = str(exc)
         registry = conversation.registry
@@ -112,6 +127,7 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
             "usage": {"input_tokens": total.input_tokens, "output_tokens": total.output_tokens,
                       "cached_input_tokens": total.cached_input_tokens, "cache_write_tokens": total.cache_write_tokens,
                       "requests": total.requests},
+            "compactions": conversation.compactions,
             "model": model, "permission_mode": registry.permissions.mode if registry else None,
         }
         _emit(result)
@@ -141,6 +157,10 @@ async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: b
                           file=sys.stderr, flush=True)
                 elif isinstance(event, UsageUpdate) and show_usage:
                     print(request_usage_text(event.usage, event.iteration), file=sys.stderr, flush=True)
+                elif isinstance(event, CompactStarted):
+                    print("正在压缩上下文…", file=sys.stderr, flush=True)
+                elif isinstance(event, (CompactFinished, CompactFailed)):
+                    print(compact_notice(event), file=sys.stderr, flush=True)
         print()
     finally:
         await conversation.close()
@@ -176,8 +196,13 @@ def main() -> None:
         registry = create_default_registry(permission_mode=args.permission_mode, shell=settings.shell)
         mcp_settings = load_mcp_settings(Path.cwd())
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
+        prune_sessions()
+        budget = config.budget()
+        notices = () if budget.configured else (f"{config.name} 未配置 context_window，按 128K 估算上下文。",)
         conversation = Conversation(create_provider(config), settings.system_prompt, registry, mcp_manager=manager,
-                                    max_iterations=settings.max_iterations, context_root=Path.cwd())
+                                    max_iterations=settings.max_iterations, context_root=Path.cwd(),
+                                    budget=budget, session=Session.create(lazy=True),
+                                    auto_compact=settings.auto_compact, notices=notices)
         if args.prompt is not None:
             if args.output_format != "text" and hasattr(sys.stdout, "reconfigure"):
                 # Machine-readable output is always UTF-8, whatever the console code page.

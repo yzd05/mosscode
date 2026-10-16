@@ -232,6 +232,7 @@ class PermissionPolicy:
             self.set_mode(mode)
         self.session: list[Rule] = []
         self.interactive = False
+        self.session_dir: Path | None = None
         self.requests: asyncio.Queue[ApprovalRequest] = asyncio.Queue()
         self.pending: dict[str, asyncio.Future] = {}
         self._choices: dict[str, tuple[str, ...]] = {}
@@ -309,6 +310,9 @@ class PermissionPolicy:
             return Decision("ask", reason=f"高风险命令（{operation.risk}）需要每次确认。")
         if matched:
             return Decision("allow")
+        if (operation.outside and operation.tool == "read_file" and self.session_dir is not None
+                and inside(self.session_dir, Path(operation.target))):
+            return Decision("allow")  # Stored tool results and compaction records of this run.
         if operation.outside:
             if self.mode == "bypassPermissions":
                 return Decision("allow")

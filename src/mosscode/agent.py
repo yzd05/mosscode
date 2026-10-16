@@ -3,12 +3,17 @@
 import asyncio
 from contextlib import aclosing
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
+import json
 from pathlib import Path
+import time
 from typing import AsyncIterator, Protocol, Sequence
 
-from .messages import (Completed, Message, ContentBlock, ProviderError, StreamEvent, ResponseBoundary, ToolDefinition,
-                       ToolProgress, ToolResult, IterationProgress, UsageTotals, UsageUpdate, RunStopped, UserInput)
+from .compaction import CompactionError, compact_history
+from .context import ContextBudget, ContextMeter
+from .messages import (Completed, CompactFailed, CompactFinished, CompactStarted, Message, ContentBlock, ProviderError,
+                       StreamEvent, ResponseBoundary, ToolDefinition, ToolProgress, ToolResult, IterationProgress,
+                       UsageTotals, UsageUpdate, RunStopped, UserInput)
 from .tools import shell_label
 from .tools.base import ToolRegistry
 from .tools.execution import execute_batch
@@ -36,6 +41,7 @@ class ResponseCollector:
 
 
 DEFAULT_MAX_ITERATIONS = 200
+BREAKER = 3  # Consecutive automatic compaction failures before automatic compaction pauses.
 
 
 class AgentLoop:
@@ -55,6 +61,14 @@ class AgentLoop:
         self.total_usage = UsageTotals()
         # Steering: text queued while running, merged before the next model request.
         self.pending: list[str] = []
+        # Context management: thresholds of the current provider, set by the application.
+        self.budget = ContextBudget.for_provider(None, 0)
+        self.session = None
+        self.auto_compact = True
+        self.meter = ContextMeter()
+        self.compact_failures = 0
+        self.compactions = 0
+        self._reannounce = False
 
     @property
     def mode(self):
@@ -83,23 +97,86 @@ class AgentLoop:
         self.total_usage = UsageTotals()
         # A fresh context has not seen the mode rules yet.
         self._announced = "normal"
+        self.meter.invalidate()
+        self.compact_failures = 0
 
-    def set_provider(self, provider: Provider):
+    def set_provider(self, provider: Provider, budget: ContextBudget | None = None):
         if self.busy:
             raise ProviderError("当前任务正在运行，不能切换模型。")
         self.provider = provider
+        if budget is not None:
+            self.budget = budget
+        # Another model reports usage differently; start from a full estimate and a fresh breaker.
+        self.meter.invalidate()
+        self.compact_failures = 0
         # Signed/opaque blocks are valid only for the model that produced them.
         self.history = [replace(m, protocol=None, native=()) for m in self.history]
 
+    def _definitions(self):
+        return self.registry.definitions(plan=self.mode == "plan") if self.registry else ()
+
+    def _prompt(self, definitions):
+        return build_system_prompt(definitions, override=self.system, instructions=self.instructions)
+
     def _model(self, messages, iteration, env):
-        reminder = mode_reminder(self.mode, self._announced) if iteration == 1 else None
-        self._announced = self.mode
-        definitions = self.registry.definitions(plan=self.mode == "plan") if self.registry else ()
-        prompt = PromptRequest(build_system_prompt(definitions, override=self.system, instructions=self.instructions),
-                               (env,) + ((reminder,) if reminder else ()))
+        reminder = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
+        self._announced, self._reannounce = self.mode, False
+        definitions = self._definitions()
+        prompt = PromptRequest(self._prompt(definitions), (env,) + ((reminder,) if reminder else ()))
         if self.registry is None:
             return self.provider.stream(messages, prompt)
         return self.provider.stream(messages, prompt, definitions)
+
+    def _fixed_text(self) -> str:
+        """System prompt and tool definitions, for a full estimate when no usage anchors it."""
+        definitions = self._definitions()
+        schemas = json.dumps([asdict(d) for d in definitions], ensure_ascii=False)
+        return self._prompt(definitions) + schemas
+
+    def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
+        return self.meter.estimate(list(self.history) + list(extra), env_text, self._fixed_text)
+
+    async def _compact(self, instructions: str = "", *, manual: bool = False):
+        """One compaction attempt; events report the outcome, the history changes only on success."""
+        yield CompactStarted(manual)
+        started = time.monotonic()
+        try:
+            done = await compact_history(self.provider, self.history, self.budget, session=self.session,
+                                         instructions=instructions)
+        except CompactionError as exc:
+            if not manual:
+                self.compact_failures += 1
+            yield CompactFailed(str(exc), self.compact_failures, self.auto_paused, exc.code, manual)
+            return
+        self.history = done.history
+        if self.registry is not None:
+            self.registry.forget_reads()
+        # The mode rules may have been summarized away; the next request repeats them (as after /clear).
+        self._announced, self._reannounce = "normal", True
+        self.meter.invalidate()
+        self.compact_failures = 0
+        self.compactions += 1
+        yield CompactFinished(done.removed, done.summary_tokens, time.monotonic() - started,
+                              str(done.record) if done.record else None)
+
+    async def compact(self, instructions: str = ""):
+        """Manual /compact: idle only, regardless of the threshold; resets the breaker on success."""
+        if self.busy:
+            raise ProviderError("当前任务正在运行，不能压缩上下文。")
+        self.busy = True
+        try:
+            async with aclosing(self._compact(instructions, manual=True)) as events:
+                async for event in events:
+                    yield event
+        finally:
+            self.busy = False
+
+    @property
+    def auto_paused(self) -> bool:
+        return self.compact_failures >= BREAKER
+
+    def _may_compact(self) -> bool:
+        return self.auto_compact and not self.auto_paused
 
     def _usage(self, usage):
         total = self.total_usage
@@ -137,11 +214,32 @@ class AgentLoop:
                     texts, self.pending = tuple(self.pending), []
                     self.history.append(Message("user", (ContentBlock("text", "\n\n".join(texts)),)))
                     yield UserInput(texts)
-                request = deepcopy(self.history) + ([] if committed else [user])
-                collector = ResponseCollector()
-                async with aclosing(collector.collect(self._model(request, iteration, env))) as events:
-                    async for event in events:
-                        yield event
+                fresh = [] if committed else [user]
+                if self._may_compact() and self.estimate(fresh, env.text) >= self.budget.auto_threshold:
+                    async with aclosing(self._compact()) as events:
+                        async for event in events:
+                            yield event
+                rescued = False
+                while True:
+                    request = deepcopy(self.history) + fresh
+                    collector = ResponseCollector()
+                    try:
+                        async with aclosing(collector.collect(self._model(request, iteration, env))) as events:
+                            async for event in events:
+                                yield event
+                    except ProviderError as exc:
+                        # C13: over the window despite the estimate. Compact once, retry once, never loop.
+                        if exc.code != "context_overflow" or rescued or not self._may_compact():
+                            raise
+                        rescued, compacted = True, False
+                        async with aclosing(self._compact()) as events:
+                            async for event in events:
+                                compacted = compacted or isinstance(event, CompactFinished)
+                                yield event
+                        if not compacted:
+                            raise exc
+                        continue
+                    break
                 final = collector.response
                 if final is None or final.message.role != "assistant":
                     raise ProviderError("服务返回了不合法的回复。")
@@ -156,6 +254,7 @@ class AgentLoop:
                     committed = True
                 self.history.append(deepcopy(final.message))
                 self._usage(final.usage)
+                self.meter.record(final.usage, len(self.history))
                 truncated = final.stop_reason == "max_tokens"
                 if not calls:
                     yield UsageUpdate(iteration, final.usage, self.total_usage)

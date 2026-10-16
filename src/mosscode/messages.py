@@ -19,6 +19,8 @@ class Message:
     native: tuple[dict[str, Any], ...] = field(default=(), repr=False)
     tool_calls: tuple["ToolCall", ...] = ()
     tool_results: tuple["ToolResult", ...] = ()
+    # Written by the program, not typed by the user: "compact" marks a compaction boundary.
+    synthetic: str | None = None
 
     @property
     def text(self) -> str:
@@ -144,11 +146,38 @@ class Retrying:
     reason: str
 
 
+@dataclass(frozen=True)
+class CompactStarted:
+    manual: bool
+
+
+@dataclass(frozen=True)
+class CompactFinished:
+    removed: int
+    summary_tokens: int
+    elapsed: float
+    record: str | None = None
+
+
+@dataclass(frozen=True)
+class CompactFailed:
+    reason: str
+    consecutive: int  # Consecutive automatic failures; 3 pauses automatic compaction.
+    paused: bool = False
+    code: Literal["failed", "nothing"] = "failed"
+    manual: bool = False
+
+
 from .permissions import ApprovalRequest
 
 StreamEvent = (Delta | Completed | ToolProgress | ResponseBoundary | IterationProgress | UsageUpdate | RunStopped
-               | ApprovalRequest | Retrying | UserInput)
+               | ApprovalRequest | Retrying | UserInput | CompactStarted | CompactFinished | CompactFailed)
 
 
 class ProviderError(RuntimeError):
     """A safe user-facing error; never includes raw SDK responses or credentials."""
+
+    def __init__(self, *args, code: str | None = None):
+        super().__init__(*args)
+        # Machine-readable kind, e.g. "context_overflow"; the message stays the user-facing text.
+        self.code = code

@@ -11,6 +11,8 @@ default_provider: claude
 # execute_command 使用的 shell：auto（默认；Windows 优先 Git Bash，找不到时用 PowerShell）、bash、powershell，
 # 或 bash.exe 的完整路径。明确指定但找不到时启动报错；不支持 System32 下的 WSL bash。
 # shell: auto
+# 接近上下文窗口时自动压缩较早的对话（默认 true）；关闭后仍可用 /compact。
+# auto_compact: true
 
 providers:
   - name: claude
@@ -18,6 +20,8 @@ providers:
     model: replace-with-your-claude-model
     api_key_env: ANTHROPIC_API_KEY  # 填环境变量名称；直接填密钥请改用 api_key。
     max_output_tokens: 32000  # 单次回复的输出上限；达到上限会提示截断，不当作完成。
+    # 模型的上下文窗口（Token），以服务文档为准；未配置时按 128K 估算并在启动时提示。
+    context_window: 200000
     # 请求开始输出前遇到限流、过载、5xx 或断连时自动重试的次数（默认 4，0 表示关闭）。
     # max_retries: 4
     # 默认官方 SDK 地址启用稳定提示缓存边界；兼容服务支持时可明确打开。
@@ -34,6 +38,7 @@ providers:
     model: replace-with-your-openai-model
     api_key_env: OPENAI_API_KEY
     max_output_tokens: 32000
+    # context_window: 填写所用模型的上下文窗口
     # store=false 的多轮请求保留服务返回的不透明推理数据。
     # 兼容端点若不接受 include，可关闭；没有加密数据时只回传正文。
     include_encrypted_reasoning: true
@@ -49,3 +54,15 @@ providers:
     stream_usage: false
     # 支持较新 token 参数的服务可以改为 max_completion_tokens：
     max_tokens_field: max_tokens
+
+  - name: deepseek
+    protocol: openai-chat-completions
+    model: replace-with-deepseek-model
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    max_output_tokens: 16384
+    stream_usage: true
+    # DeepSeek V4.1 Flash：上下文 1M、最大输出 384K（以官方文档为准）。
+    context_window: 1000000
+    # 大窗口时每次请求都可能接近百万 Token；需要控制成本和延迟时可以提前压缩：
+    # compact_threshold: 200000

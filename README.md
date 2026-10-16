@@ -31,6 +31,7 @@ providers:
     model: replace-with-service-model
     api_key_env: ANTHROPIC_API_KEY    # 环境变量名；也可以用 api_key 直接填写
     max_output_tokens: 32000          # 单次回复的输出上限，默认 16384
+    context_window: 200000            # 模型的上下文窗口；未配置时按 128K 估算
     # base_url: https://your-gateway.example/v1
 ```
 
@@ -44,6 +45,7 @@ providers:
 | `max_iterations` | 200 | 单个任务最多的模型请求次数 |
 | `shell` | `auto` | Windows 优先 Git Bash，找不到时用 PowerShell；可设 `bash`、`powershell` 或 bash.exe 路径 |
 | `system_prompt` | 默认提示 | 填写后完整替换默认系统提示 |
+| `auto_compact` | `true` | 接近上下文窗口时自动压缩较早的对话，见 [上下文管理](docs/reference/context.md) |
 
 ### 权限、MCP 与项目指令
 
@@ -77,6 +79,7 @@ providers:
 |------|------|
 | `/help` | 显示本地命令与快捷键 |
 | `/clear` | 开始新会话：清空屏幕与终端滚动历史、模型上下文和 Token 统计；权限档位、会话授权和 MCP 连接保留，AGENTS.md 重新加载 |
+| `/compact [说明]` | 压缩上下文：较早的对话换成摘要，近期消息和用户原话保留；说明用于指定摘要侧重点 |
 | `/model` | 在输入框下方列出配置的提供商（当前项带 ✓），↑ / ↓ 选择、Enter 切换、Esc 收起 |
 | `/model 名称` | 直接切换到指定提供商；对话历史保留 |
 | `/plan` | 只读调查与规划，模型提交计划经批准后执行 |
@@ -120,6 +123,7 @@ providers:
 cli.py ──► tui.py（Textual 界面）或 -p（无界面）
              └──► conversation.py（启动上下文与 MCP、对外接口）
                     └──► agent.py（Agent Loop）
+                           ├──► compaction.py、context.py（上下文估算与压缩）
                            ├──► providers.py（三种协议、重试、缓存标记）
                            ├──► prompts.py（系统提示、环境补充、模式提醒）
                            └──► tools/（注册、校验、授权、执行）
@@ -131,7 +135,8 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 | 模块 | 职责 |
 | --- | --- |
-| `agent.py` | Agent Loop：请求、工具执行、排队消息、停止条件、计划模式 |
+| `agent.py` | Agent Loop：请求、工具执行、排队消息、停止条件、计划模式、压缩时机 |
+| `context.py`、`compaction.py`、`tool_budget.py`、`session.py` | 上下文估算与阈值、摘要压缩、大结果存盘、会话目录 |
 | `providers.py` | Anthropic Messages、OpenAI Responses、Chat Completions 适配，首事件前重试，缓存断点 |
 | `prompts.py` | 七个固定模块、工具清单、`<environment>` 与 `<system-reminder>` 补充、AGENTS.md、git 快照 |
 | `tools/` | `files.py`、`search.py`、`process.py`、`plan.py` 等工具；`execution.py` 分批并发；`base.py` 注册与执行边界 |
@@ -144,10 +149,10 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md) |
+| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md) |
 | 设计评审 | [对照 Claude Code 与 Pi 的完善建议](docs/research/claude-code-pi-gap-review.md) |
 | 各阶段规格与验证 | `docs/specs/`：`chapter-*` 为各章，`refinement-*` 为完善阶段 1–6，每个目录含 `spec.md` 与 `validation.md` |
-| 人工验收 | [完善阶段 1–6 验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |
+| 人工验收 | [完善阶段 1–6 与上下文管理验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |
 
 ### 开发与测试
 

@@ -250,7 +250,7 @@ async def test_without_context_root_nothing_is_loaded(tmp_path):
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 def test_git_snapshot_repo_and_non_repo(tmp_path, monkeypatch):
-    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))  # Git still searches the ceiling itself.
     plain = tmp_path / "plain"
     plain.mkdir()
     assert git_snapshot(plain) == {"is_repo": False}
@@ -272,7 +272,7 @@ def test_git_failure_does_not_interrupt(tmp_path, monkeypatch):
 
 
 async def test_git_fact_reaches_environment(tmp_path, monkeypatch):
-    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))  # Git still searches the ceiling itself.
     provider = SequenceProvider(response("好"))
     conv = Conversation(provider, context_root=tmp_path, instructions_home=tmp_path / "home")
     await conv.ask("任务")

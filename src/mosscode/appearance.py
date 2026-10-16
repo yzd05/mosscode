@@ -25,6 +25,7 @@ USER_MESSAGE_COLOR = "#f2f2f2"
 COMMAND_HINTS = (
     ("/help", "查看命令和快捷键"),
     ("/clear", "开始新会话：清空模型上下文和 Token 统计"),
+    ("/compact", "压缩上下文：较早的对话换成摘要，近期消息保留"),
     ("/model", "切换提供商与模型，对话历史保留"),
     ("/plan", "只读调查和规划，提交计划经批准后执行"),
     ("/permissions", "查看或切换工具权限档位"),
@@ -134,9 +135,25 @@ def startup_banner(
     return banner
 
 
+def compact_notice(event) -> str:
+    """One line for a finished or failed compaction, shared by the TUI and headless text output."""
+    if hasattr(event, "removed"):
+        return (f"✓ 已压缩上下文 · {event.removed} 条消息 → 摘要 · 约 {event.summary_tokens} Token"
+                f" · 用时 {event.elapsed:.1f}s")
+    if event.code == "nothing":
+        return "└ " + event.reason
+    if event.manual:
+        return "! 压缩上下文失败：" + event.reason
+    notice = f"! 自动压缩上下文失败（连续 {event.consecutive} 次）：{event.reason}"
+    if event.paused:
+        notice += "\n  自动压缩已暂停，可以 /compact 手动重试或 /clear"
+    return notice
+
+
 HELP_TEXT = """命令
 /help                 显示命令与按键
 /clear                开始新会话：清空模型上下文和 Token 统计，权限与会话授权保留
+/compact [说明]       压缩上下文：较早的对话换成摘要，近期消息保留；说明用于指定摘要侧重点
 /model [名称]         切换提供商与模型，对话历史保留；不带名称时打开选择面板
 /plan [任务]          只读调查和规划；模型提交计划，批准后执行
 /permissions [档位]   default/acceptEdits/plan/bypassPermissions 切换权限
