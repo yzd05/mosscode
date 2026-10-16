@@ -1,0 +1,188 @@
+<svg class="rich-terminal" viewBox="0 0 1238 830.8" xmlns="http://www.w3.org/2000/svg">
+    <!-- Generated with Rich https://www.textualize.io -->
+    <style>
+
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Regular"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Regular.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Regular.woff") format("woff");
+        font-style: normal;
+        font-weight: 400;
+    }
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Bold"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Bold.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Bold.woff") format("woff");
+        font-style: bold;
+        font-weight: 700;
+    }
+
+    .terminal-3790469242-matrix {
+        font-family: Fira Code, monospace;
+        font-size: 20px;
+        line-height: 24.4px;
+        font-variant-east-asian: full-width;
+    }
+
+    .terminal-3790469242-title {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: arial;
+    }
+
+    .terminal-3790469242-r1 { fill: #c5c8c6 }
+.terminal-3790469242-r2 { fill: #8bd5a6 }
+.terminal-3790469242-r3 { fill: #c5c8c6;font-weight: bold }
+.terminal-3790469242-r4 { fill: #e3b95f }
+.terminal-3790469242-r5 { fill: #e3b95f;font-weight: bold }
+.terminal-3790469242-r6 { fill: #6fa8ff }
+.terminal-3790469242-r7 { fill: #3673ff;font-weight: bold }
+.terminal-3790469242-r8 { fill: #8bd5a6;font-weight: bold }
+    </style>
+
+    <defs>
+    <clipPath id="terminal-3790469242-clip-terminal">
+      <rect x="0" y="0" width="1219.0" height="779.8" />
+    </clipPath>
+    <clipPath id="terminal-3790469242-line-0">
+    <rect x="0" y="1.5" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-1">
+    <rect x="0" y="25.9" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-2">
+    <rect x="0" y="50.3" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-3">
+    <rect x="0" y="74.7" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-4">
+    <rect x="0" y="99.1" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-5">
+    <rect x="0" y="123.5" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-6">
+    <rect x="0" y="147.9" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-7">
+    <rect x="0" y="172.3" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-8">
+    <rect x="0" y="196.7" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-9">
+    <rect x="0" y="221.1" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-10">
+    <rect x="0" y="245.5" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-11">
+    <rect x="0" y="269.9" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-12">
+    <rect x="0" y="294.3" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-13">
+    <rect x="0" y="318.7" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-14">
+    <rect x="0" y="343.1" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-15">
+    <rect x="0" y="367.5" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-16">
+    <rect x="0" y="391.9" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-17">
+    <rect x="0" y="416.3" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-18">
+    <rect x="0" y="440.7" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-19">
+    <rect x="0" y="465.1" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-20">
+    <rect x="0" y="489.5" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-21">
+    <rect x="0" y="513.9" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-22">
+    <rect x="0" y="538.3" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-23">
+    <rect x="0" y="562.7" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-24">
+    <rect x="0" y="587.1" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-25">
+    <rect x="0" y="611.5" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-26">
+    <rect x="0" y="635.9" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-27">
+    <rect x="0" y="660.3" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-28">
+    <rect x="0" y="684.7" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-29">
+    <rect x="0" y="709.1" width="1220" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3790469242-line-30">
+    <rect x="0" y="733.5" width="1220" height="24.65"/>
+            </clipPath>
+    </defs>
+
+    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1236" height="828.8" rx="8"/><text class="terminal-3790469242-title" fill="#c5c8c6" text-anchor="middle" x="618" y="27">MossCode&#160;·&#160;模拟对话预览</text>
+            <g transform="translate(26,22)">
+            <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+            <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+            <circle cx="44" cy="0" r="7" fill="#28c840"/>
+            </g>
+        
+    <g transform="translate(9, 41)" clip-path="url(#terminal-3790469242-clip-terminal)">
+    
+    <g class="terminal-3790469242-matrix">
+    <text class="terminal-3790469242-r1" x="1220" y="20" textLength="12.2" clip-path="url(#terminal-3790469242-line-0)">
+</text><text class="terminal-3790469242-r2" x="24.4" y="44.4" textLength="146.4" clip-path="url(#terminal-3790469242-line-1)">&#160;&#160;&#160;&#160;&#160;▀▀&#160;&#160;&#160;&#160;&#160;</text><text class="terminal-3790469242-r3" x="195.2" y="44.4" textLength="97.6" clip-path="url(#terminal-3790469242-line-1)">MossCode</text><text class="terminal-3790469242-r1" x="292.8" y="44.4" textLength="902.8" clip-path="url(#terminal-3790469242-line-1)">&#160;v0.1.0&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</text><text class="terminal-3790469242-r1" x="1220" y="44.4" textLength="12.2" clip-path="url(#terminal-3790469242-line-1)">
+</text><text class="terminal-3790469242-r2" x="24.4" y="68.8" textLength="146.4" clip-path="url(#terminal-3790469242-line-2)">▄█▀▀▀▀▀▀▀▀█▄</text><text class="terminal-3790469242-r1" x="195.2" y="68.8" textLength="1000.4" clip-path="url(#terminal-3790469242-line-2)">Demo&#160;Provider&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</text><text class="terminal-3790469242-r1" x="1220" y="68.8" textLength="12.2" clip-path="url(#terminal-3790469242-line-2)">
+</text><text class="terminal-3790469242-r2" x="24.4" y="93.2" textLength="146.4" clip-path="url(#terminal-3790469242-line-3)">██&#160;&#160;●&#160;&#160;●&#160;&#160;██</text><text class="terminal-3790469242-r1" x="195.2" y="93.2" textLength="1000.4" clip-path="url(#terminal-3790469242-line-3)">F:\code-storage\PyCharm\MossCode&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</text><text class="terminal-3790469242-r1" x="1220" y="93.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-3)">
+</text><text class="terminal-3790469242-r2" x="24.4" y="117.6" textLength="146.4" clip-path="url(#terminal-3790469242-line-4)">▀█▄▄▄▄▄▄▄▄█▀</text><text class="terminal-3790469242-r1" x="1220" y="117.6" textLength="12.2" clip-path="url(#terminal-3790469242-line-4)">
+</text><text class="terminal-3790469242-r1" x="1220" y="142" textLength="12.2" clip-path="url(#terminal-3790469242-line-5)">
+</text><text class="terminal-3790469242-r3" x="24.4" y="166.4" textLength="12.2" clip-path="url(#terminal-3790469242-line-6)">❯</text><text class="terminal-3790469242-r1" x="48.8" y="166.4" textLength="329.4" clip-path="url(#terminal-3790469242-line-6)">创建&#160;hello.txt，写入&#160;Hello&#160;World</text><text class="terminal-3790469242-r1" x="1220" y="166.4" textLength="12.2" clip-path="url(#terminal-3790469242-line-6)">
+</text><text class="terminal-3790469242-r1" x="1220" y="190.8" textLength="12.2" clip-path="url(#terminal-3790469242-line-7)">
+</text><text class="terminal-3790469242-r4" x="24.4" y="215.2" textLength="24.4" clip-path="url(#terminal-3790469242-line-8)">●&#160;</text><text class="terminal-3790469242-r5" x="48.8" y="215.2" textLength="61" clip-path="url(#terminal-3790469242-line-8)">Write</text><text class="terminal-3790469242-r1" x="109.8" y="215.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-8)">(</text><text class="terminal-3790469242-r6" x="122" y="215.2" textLength="109.8" clip-path="url(#terminal-3790469242-line-8)">hello.txt</text><text class="terminal-3790469242-r1" x="231.8" y="215.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-8)">)</text><text class="terminal-3790469242-r1" x="1220" y="215.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-8)">
+</text><text class="terminal-3790469242-r4" x="24.4" y="239.6" textLength="134.2" clip-path="url(#terminal-3790469242-line-9)">&#160;&#160;└&#160;等待用户确认…</text><text class="terminal-3790469242-r1" x="1220" y="239.6" textLength="12.2" clip-path="url(#terminal-3790469242-line-9)">
+</text><text class="terminal-3790469242-r1" x="1220" y="264" textLength="12.2" clip-path="url(#terminal-3790469242-line-10)">
+</text><text class="terminal-3790469242-r1" x="1220" y="288.4" textLength="12.2" clip-path="url(#terminal-3790469242-line-11)">
+</text><text class="terminal-3790469242-r1" x="24.4" y="312.8" textLength="1171.2" clip-path="url(#terminal-3790469242-line-12)">────────────────────────────────────────────────────────────────────────────────────────────────</text><text class="terminal-3790469242-r1" x="1220" y="312.8" textLength="12.2" clip-path="url(#terminal-3790469242-line-12)">
+</text><text class="terminal-3790469242-r1" x="36.6" y="337.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-13)">❯</text><text class="terminal-3790469242-r1" x="61" y="337.2" textLength="158.6" clip-path="url(#terminal-3790469242-line-13)">输入消息，或&#160;/&#160;查看命令</text><text class="terminal-3790469242-r1" x="1220" y="337.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-13)">
+</text><text class="terminal-3790469242-r1" x="24.4" y="361.6" textLength="1171.2" clip-path="url(#terminal-3790469242-line-14)">────────────────────────────────────────────────────────────────────────────────────────────────</text><text class="terminal-3790469242-r1" x="1220" y="361.6" textLength="12.2" clip-path="url(#terminal-3790469242-line-14)">
+</text><text class="terminal-3790469242-r1" x="24.4" y="386" textLength="1171.2" clip-path="url(#terminal-3790469242-line-15)">────────────────────────────────────────────────────────────────────────────────────────────────</text><text class="terminal-3790469242-r1" x="1220" y="386" textLength="12.2" clip-path="url(#terminal-3790469242-line-15)">
+</text><text class="terminal-3790469242-r5" x="36.6" y="410.4" textLength="134.2" clip-path="url(#terminal-3790469242-line-16)">需要授权&#160;·&#160;写入文件</text><text class="terminal-3790469242-r1" x="1220" y="410.4" textLength="12.2" clip-path="url(#terminal-3790469242-line-16)">
+</text><text class="terminal-3790469242-r6" x="36.6" y="434.8" textLength="109.8" clip-path="url(#terminal-3790469242-line-17)">hello.txt</text><text class="terminal-3790469242-r1" x="1220" y="434.8" textLength="12.2" clip-path="url(#terminal-3790469242-line-17)">
+</text><text class="terminal-3790469242-r1" x="36.6" y="459.2" textLength="158.6" clip-path="url(#terminal-3790469242-line-18)">此操作没有明确的放行规则。</text><text class="terminal-3790469242-r1" x="1220" y="459.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-18)">
+</text><text class="terminal-3790469242-r1" x="36.6" y="483.6" textLength="183" clip-path="url(#terminal-3790469242-line-19)">写入&#160;12&#160;个字符，内容预览：</text><text class="terminal-3790469242-r1" x="1220" y="483.6" textLength="12.2" clip-path="url(#terminal-3790469242-line-19)">
+</text><text class="terminal-3790469242-r1" x="36.6" y="508" textLength="134.2" clip-path="url(#terminal-3790469242-line-20)">Hello&#160;World</text><text class="terminal-3790469242-r1" x="1220" y="508" textLength="12.2" clip-path="url(#terminal-3790469242-line-20)">
+</text><text class="terminal-3790469242-r1" x="1220" y="532.4" textLength="12.2" clip-path="url(#terminal-3790469242-line-21)">
+</text><text class="terminal-3790469242-r7" x="36.6" y="556.8" textLength="170.8" clip-path="url(#terminal-3790469242-line-22)">本次允许&#160;·&#160;仅执行当前调用</text><text class="terminal-3790469242-r1" x="1220" y="556.8" textLength="12.2" clip-path="url(#terminal-3790469242-line-22)">
+</text><text class="terminal-3790469242-r1" x="36.6" y="581.2" textLength="244" clip-path="url(#terminal-3790469242-line-23)">本会话允许&#160;·&#160;同工具与目标，退出后失效</text><text class="terminal-3790469242-r1" x="1220" y="581.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-23)">
+</text><text class="terminal-3790469242-r1" x="36.6" y="605.6" textLength="207.4" clip-path="url(#terminal-3790469242-line-24)">永久允许&#160;·&#160;保存到本项目本地配置</text><text class="terminal-3790469242-r1" x="1220" y="605.6" textLength="12.2" clip-path="url(#terminal-3790469242-line-24)">
+</text><text class="terminal-3790469242-r1" x="36.6" y="630" textLength="146.4" clip-path="url(#terminal-3790469242-line-25)">拒绝&#160;·&#160;让模型调整策略</text><text class="terminal-3790469242-r1" x="1220" y="630" textLength="12.2" clip-path="url(#terminal-3790469242-line-25)">
+</text><text class="terminal-3790469242-r1" x="36.6" y="654.4" textLength="536.8" clip-path="url(#terminal-3790469242-line-26)">↑&#160;/&#160;↓&#160;选择&#160;·&#160;Enter&#160;确认&#160;·&#160;Esc&#160;拒绝本次&#160;·&#160;Ctrl+C&#160;取消任务</text><text class="terminal-3790469242-r1" x="1220" y="654.4" textLength="12.2" clip-path="url(#terminal-3790469242-line-26)">
+</text><text class="terminal-3790469242-r8" x="24.4" y="678.8" textLength="48.8" clip-path="url(#terminal-3790469242-line-27)">自动模式</text><text class="terminal-3790469242-r1" x="122" y="678.8" textLength="134.2" clip-path="url(#terminal-3790469242-line-27)">&#160;·&#160;权限：默认&#160;·&#160;</text><text class="terminal-3790469242-r4" x="317.2" y="678.8" textLength="48.8" clip-path="url(#terminal-3790469242-line-27)">等待授权</text><text class="terminal-3790469242-r1" x="414.8" y="678.8" textLength="597.8" clip-path="url(#terminal-3790469242-line-27)">&#160;·&#160;Esc&#160;拒绝本次&#160;·&#160;Ctrl+C&#160;取消任务&#160;·&#160;Token&#160;入&#160;—&#160;/&#160;出&#160;—&#160;·&#160;缓存读</text><text class="terminal-3790469242-r1" x="1220" y="678.8" textLength="12.2" clip-path="url(#terminal-3790469242-line-27)">
+</text><text class="terminal-3790469242-r1" x="24.4" y="703.2" textLength="36.6" clip-path="url(#terminal-3790469242-line-28)">未提供</text><text class="terminal-3790469242-r1" x="1220" y="703.2" textLength="12.2" clip-path="url(#terminal-3790469242-line-28)">
+</text><text class="terminal-3790469242-r1" x="1220" y="727.6" textLength="12.2" clip-path="url(#terminal-3790469242-line-29)">
+</text><text class="terminal-3790469242-r1" x="1220" y="752" textLength="12.2" clip-path="url(#terminal-3790469242-line-30)">
+</text>
+    </g>
+    </g>
+</svg>

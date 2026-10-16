@@ -1,0 +1,51 @@
+# 复制到 .mosscode/config.yaml（项目）或 ~/.mosscode/config.yaml（用户），填写服务实际接受的 model 和环境变量名。
+# 查找顺序：./.mosscode/config.yaml → ./config.yaml → ~/.mosscode/config.yaml，第一个存在的生效；--config 可直接指定。
+# 省略 base_url 时使用该协议官方 SDK 的默认地址。
+# 设置默认项后直接进入对话；删除或注释这一行，多配置启动时会显示选择列表。
+default_provider: claude
+# 默认使用内置七模块提示。system_prompt 可完整替换稳定提示，不是补充指令。
+# system_prompt: |-
+#   你的完整系统提示
+# 单次任务最多请求模型的次数（默认 200）；达到上限后可继续输入推进。
+# max_iterations: 200
+# execute_command 使用的 shell：auto（默认；Windows 优先 Git Bash，找不到时用 PowerShell）、bash、powershell，
+# 或 bash.exe 的完整路径。明确指定但找不到时启动报错；不支持 System32 下的 WSL bash。
+# shell: auto
+
+providers:
+  - name: claude
+    protocol: anthropic-messages
+    model: replace-with-your-claude-model
+    api_key_env: ANTHROPIC_API_KEY  # 填环境变量名称；直接填密钥请改用 api_key。
+    max_output_tokens: 32000  # 单次回复的输出上限；达到上限会提示截断，不当作完成。
+    # 请求开始输出前遇到限流、过载、5xx 或断连时自动重试的次数（默认 4，0 表示关闭）。
+    # max_retries: 4
+    # 默认官方 SDK 地址启用稳定提示缓存边界；兼容服务支持时可明确打开。
+    # prompt_cache: true
+    # 中转若兼容 Messages，也使用同一个适配器：
+    # base_url: https://your-gateway.example
+    # 不支持缓存标记的中转可设 prompt_cache: false（不关闭服务自动缓存）。
+    # auth_type: bearer  # 中转若要求 Authorization: Bearer
+    # thinking: {type: adaptive, effort: high}
+    # 老模型/服务手动预算：thinking: {type: enabled, budget_tokens: 2048}
+
+  - name: openai
+    protocol: openai-responses
+    model: replace-with-your-openai-model
+    api_key_env: OPENAI_API_KEY
+    max_output_tokens: 32000
+    # store=false 的多轮请求保留服务返回的不透明推理数据。
+    # 兼容端点若不接受 include，可关闭；没有加密数据时只回传正文。
+    include_encrypted_reasoning: true
+    # base_url: https://your-gateway.example/v1
+
+  - name: compatible
+    protocol: openai-chat-completions
+    model: replace-with-service-model
+    base_url: https://your-gateway.example/v1
+    api_key_env: COMPATIBLE_API_KEY
+    max_output_tokens: 8192
+    # 请求用量是可选的，有些兼容端点不接受 stream_options：
+    stream_usage: false
+    # 支持较新 token 参数的服务可以改为 max_completion_tokens：
+    max_tokens_field: max_tokens

@@ -1,0 +1,4 @@
+interface:
+  display_name: "规格驱动开发"
+  short_description: "按任务复杂度组织需求、设计与验收，保留自主实施与证据交付"
+  default_prompt: "使用 $code-spec，根据任务规模明确需求与验收，形成必要的设计和任务，再完成已授权的实现。"

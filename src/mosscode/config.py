@@ -1,0 +1,202 @@
+"""Endpoint configuration is independent of the service's vendor name."""
+
+from dataclasses import dataclass, field
+import math
+import os
+from pathlib import Path
+import re
+from typing import Any
+from urllib.parse import urlsplit
+
+import yaml
+
+from .prompts import DEFAULT_SYSTEM_PROMPT, stable_prompt
+
+
+class ConfigError(ValueError):
+    pass
+
+
+ALIASES = {
+    "anthropic": "anthropic-messages",
+    "openai": "openai-responses",
+    "openai-compat": "openai-chat-completions",
+}
+PROTOCOLS = set(ALIASES.values())
+
+
+def _validate_env_name(value: str | None) -> None:
+    if value is not None and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is None:
+        raise ConfigError(
+            "api_key_env 请填写环境变量名称（例如 DEEPSEEK_API_KEY），不能填写密钥；"
+            "直接填写密钥请使用 api_key。"
+        )
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    name: str
+    protocol: str
+    model: str
+    base_url: str | None = None
+    api_key_env: str | None = field(default=None, repr=False)
+    api_key: str | None = field(default=None, repr=False)
+    auth_type: str = "api_key"
+    headers: dict[str, str] = field(default_factory=dict, repr=False)
+    thinking: dict[str, Any] | None = None
+    max_output_tokens: int = 16384
+    timeout: float = 60.0
+    max_retries: int = 4
+    stream_usage: bool = False
+    max_tokens_field: str = "max_tokens"
+    include_encrypted_reasoning: bool = True
+    prompt_cache: bool | None = None
+
+    def credential(self) -> str:
+        _validate_env_name(self.api_key_env)
+        value = os.environ.get(self.api_key_env, "") if self.api_key_env else self.api_key
+        if not value:
+            hint = (
+                f"请设置环境变量 {self.api_key_env}（api_key_env 只填写变量名；直接填写密钥请使用 api_key）"
+                if self.api_key_env else "请配置 api_key_env（环境变量名）或 api_key（密钥）"
+            )
+            raise ConfigError(f"{self.name}：{hint}。")
+        return value
+
+
+@dataclass(frozen=True)
+class Settings:
+    providers: tuple[ProviderConfig, ...]
+    default_provider: str | None = None
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    max_iterations: int = 200
+    source: Path | None = None
+    shell: str = "auto"
+
+    def select(self, name: str | None = None) -> ProviderConfig:
+        selected = name or self.default_provider or self.providers[0].name
+        for provider in self.providers:
+            if provider.name == selected:
+                return provider
+        raise ConfigError(f"未知 Provider：{selected}。")
+
+
+def _positive_int(value: Any, label: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise ConfigError(f"{label} 必须是正整数。")
+    return value
+
+
+def _provider(raw: Any) -> ProviderConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("providers 的每一项必须是配置对象。")
+    allowed = set(ProviderConfig.__dataclass_fields__)
+    if set(raw) - allowed:
+        raise ConfigError("Provider 包含未知字段，请对照 config.example.yaml。")
+    for key in ("name", "protocol", "model"):
+        if not isinstance(raw.get(key), str) or not raw[key].strip():
+            raise ConfigError(f"Provider 的 {key} 必须是非空字符串。")
+    data = dict(raw)
+    data["protocol"] = ALIASES.get(data["protocol"], data["protocol"])
+    if data["protocol"] not in PROTOCOLS:
+        raise ConfigError("protocol 必须是 anthropic-messages、openai-responses 或 openai-chat-completions。")
+    url = data.get("base_url")
+    if url is not None:
+        if not isinstance(url, str):
+            raise ConfigError("base_url 必须是 HTTP(S) URL。")
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+            raise ConfigError("base_url 必须是没有嵌入凭据的 HTTP(S) URL。")
+    for key in ("api_key", "api_key_env"):
+        if key in data and (not isinstance(data[key], str) or not data[key].strip()):
+            raise ConfigError(f"{key} 必须是非空字符串。")
+    if data.get("api_key") and data.get("api_key_env"):
+        raise ConfigError("api_key 和 api_key_env 只选择一种。")
+    _validate_env_name(data.get("api_key_env"))
+    headers = data.get("headers", {})
+    if not isinstance(headers, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()):
+        raise ConfigError("headers 必须是字符串键值对象。")
+    data["max_output_tokens"] = _positive_int(data.get("max_output_tokens", ProviderConfig.max_output_tokens), "max_output_tokens")
+    retries = data.get("max_retries", ProviderConfig.max_retries)
+    if type(retries) is not int or retries < 0:
+        raise ConfigError("max_retries 必须是非负整数。")
+    timeout = data.get("timeout", 60.0)
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ConfigError("timeout 必须是有限的正数秒数。")
+    if data.get("auth_type", "api_key") not in {"api_key", "bearer"}:
+        raise ConfigError("auth_type 必须是 api_key 或 bearer。")
+    if type(data.get("stream_usage", False)) is not bool:
+        raise ConfigError("stream_usage 必须是布尔值。")
+    if type(data.get("include_encrypted_reasoning", True)) is not bool:
+        raise ConfigError("include_encrypted_reasoning 必须是布尔值。")
+    if data.get("prompt_cache") is not None and type(data["prompt_cache"]) is not bool:
+        raise ConfigError("prompt_cache 必须是布尔值或 null。")
+    if data.get("max_tokens_field", "max_tokens") not in {"max_tokens", "max_completion_tokens"}:
+        raise ConfigError("max_tokens_field 必须是 max_tokens 或 max_completion_tokens。")
+    thinking = data.get("thinking")
+    if thinking is True:
+        thinking = {"type": "adaptive"}
+    elif thinking is False:
+        thinking = {"type": "disabled"}
+    if thinking is not None:
+        if data["protocol"] != "anthropic-messages":
+            raise ConfigError("本章 thinking 配置用于 Anthropic Messages。")
+        if not isinstance(thinking, dict) or thinking.get("type") not in {"adaptive", "enabled", "disabled"}:
+            raise ConfigError("thinking.type 必须是 adaptive、enabled 或 disabled。")
+        if set(thinking) - {"type", "budget_tokens", "effort"}:
+            raise ConfigError("thinking 包含未知字段。")
+        if thinking["type"] == "enabled":
+            budget = _positive_int(thinking.get("budget_tokens"), "thinking.budget_tokens")
+            if not 1024 <= budget < data["max_output_tokens"]:
+                raise ConfigError("手动思考预算需至少 1024 且小于 max_output_tokens。")
+        elif "budget_tokens" in thinking:
+            raise ConfigError("budget_tokens 仅用于手动 enabled 模式。")
+        if "effort" in thinking and (thinking["type"] != "adaptive" or not isinstance(thinking["effort"], str)):
+            raise ConfigError("effort 需用于 adaptive 模式并为字符串。")
+    data["thinking"] = thinking
+    return ProviderConfig(**data)
+
+
+def config_candidates(cwd: Path | None = None, home: Path | None = None) -> tuple[Path, ...]:
+    cwd = Path.cwd() if cwd is None else cwd
+    home = Path.home() if home is None else home
+    return cwd / ".mosscode" / "config.yaml", cwd / "config.yaml", home / ".mosscode" / "config.yaml"
+
+
+def find_config(cwd: Path | None = None, home: Path | None = None) -> Path:
+    """Project file, legacy working-directory file, then the user file; the first one wins."""
+    candidates = config_candidates(cwd, home)
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise ConfigError("找不到配置文件，已查找：" + "、".join(str(p) for p in candidates)
+                      + "。可复制 config.example.yaml 到其中一个位置，或用 --config 指定。")
+
+
+def load_settings(path: str | Path) -> Settings:
+    try:
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except OSError:
+        raise ConfigError("无法读取配置文件，请检查 --config 路径。") from None
+    except (yaml.YAMLError, UnicodeError):
+        raise ConfigError("配置文件需为有效的 UTF-8 YAML。") from None
+    if not isinstance(raw, dict) or not isinstance(raw.get("providers"), list) or not raw["providers"]:
+        raise ConfigError("配置需包含非空 providers 列表。")
+    if set(raw) - {"providers", "default_provider", "system_prompt", "max_iterations", "shell"}:
+        raise ConfigError("配置顶层包含未知字段。")
+    providers = tuple(_provider(item) for item in raw["providers"])
+    if len({p.name for p in providers}) != len(providers):
+        raise ConfigError("Provider name 不能重复。")
+    default = raw.get("default_provider")
+    system = raw.get("system_prompt", Settings.__dataclass_fields__["system_prompt"].default)
+    if default is not None and (not isinstance(default, str) or not default.strip()):
+        raise ConfigError("default_provider 需为非空配置名称；不设置时多配置启动会显示选择列表。")
+    if not isinstance(system, str):
+        raise ConfigError("system_prompt 必须是字符串。")
+    iterations = _positive_int(raw.get("max_iterations", Settings.max_iterations), "max_iterations")
+    shell = raw.get("shell", Settings.shell)
+    if not isinstance(shell, str) or not shell.strip():
+        raise ConfigError("shell 需为 auto、bash、powershell 或 shell 可执行文件路径。")
+    settings = Settings(providers, default, stable_prompt(system), iterations, Path(path), shell.strip())
+    settings.select()
+    return settings

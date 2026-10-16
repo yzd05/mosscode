@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# Test runs and the acceptance sandbox (scripts/acceptance_setup.py)
+.test-artifacts/
+
+# Local configuration: provider keys, machine-specific MCP servers and grants
+config.yaml
+mcp.yaml
+.mosscode/mcp.yaml
+.mosscode/permissions.local.yaml
+.env
+
+# Claude Code local state; the code-spec skill link points at skills/code-spec by absolute path
+.claude/settings.local.json
+.claude/skills/code-spec
+
+# Third-party course material kept for reference, not part of the project
+reference/

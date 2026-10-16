@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mosscode"
+version = "0.1.0"
+description = "A streaming terminal coding agent with a bounded ReAct loop and read-only planning."
+requires-python = ">=3.12"
+dependencies = ["anthropic>=1.12,<2", "openai>=3.26,<4", "textual>=8.2,<9", "PyYAML>=6.0,<7", "pydantic>=2.13,<3", "mcp>=1.30,<1.31", "jsonschema>=4.23,<5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=1", "httpx2>=2,<3"]
+
+[project.scripts]
+mosscode = "mosscode.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

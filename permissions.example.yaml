@@ -1,0 +1,21 @@
+# 示例文件：按需复制到 .mosscode/permissions.yaml 或 permissions.local.yaml。
+# 不会自动加载本示例；只使用上述规定路径的权限文件。
+mode: default
+# 可选：acceptEdits（文件编辑自动通过，命令确认）、plan（只读调查，批准计划后执行）、
+# bypassPermissions（跳过默认审批，仍遵守硬检查和生效的 deny）。
+# 高风险命令（rm -rf、git reset --hard、git push --force 等）在任何档位都每次确认，allow 规则不能放行。
+# git status/diff/log、ls、cat、grep 等只读命令（参数限于项目内）无需规则即可执行。
+allow:
+  - Read(src/**)
+  - Bash(npm run build)
+  # 以 :* 结尾为按单词的前缀规则：匹配 pytest、pytest tests -q，不匹配 pytestx 或复合命令。
+  - Bash(pytest:*)
+  # 读取类规则可用绝对路径放行项目外的读取；写入/编辑规则只能是项目相对路径。
+  # - Read(C:/Users/me/notes/**)
+deny:
+  - Write(.git/**)
+  - Edit(.git/**)
+  # deny 前缀规则检查复合命令的每一段：git status && git push 也被拒绝。
+  - Bash(git push:*)
+# 永久授权由界面保存为 exact 对象；命令还会绑定 cwd。“永久允许以 X 开头的命令”保存为 Bash(X:*)。
+# 本地文件建议不要提交到共享仓库。
