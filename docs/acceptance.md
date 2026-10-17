@@ -234,7 +234,7 @@ Copy-Item "$moss\config.yaml" "$moss\.test-artifacts\acceptance\context-config.y
 | M44 自动压缩 | 新会话（`/clear`）：“请记住：以后所有回答都以‘收到’开头。”然后：“用 read_file 分页读完 long.txt 全部 3000 行，再依次读取 src/app.py、src/util.py、notes.txt，每读一个用一句话说明。” | 读取几轮后，对话中先出现“✻ 上下文接近上限，正在压缩 · Ns”并持续计时，完成后这一行变为“✓ 已压缩上下文 · N 条消息 → 摘要 · 约 X Token · 用时 …”，显示在下一段回复之前；任务不中断，继续读完。状态栏比例明显下降 |
 | M45 原话保留 | 压缩后问“我最开始给你的要求原话是什么？” | 模型能复述“以后所有回答都以‘收到’开头”（原话由程序附在摘要后，不经模型改写），回答也仍以“收到”开头 |
 | M46 压缩后先读后改 | “把 notes.txt 第一行改成‘标题二’。” | 模型先 read_file 再编辑；直接编辑的话第一次调用失败（not_read），重读后成功。这一轮如果又触发自动压缩，对话中会显示进度行，不会长时间没有反应；不应出现“没有可压缩的内容” |
-| M47 手动压缩 | 输入 `/compact 只保留与 notes.txt 相关的内容`；再执行一次 `/compact`，在“压缩上下文中”计时期间按 Esc | 第一次：对话中显示“✻ 正在压缩上下文 · Ns”，状态栏显示“压缩上下文中 · Ns · Esc 取消”，完成后这一行变为“✓ 已压缩上下文…”（刚自动压缩过也会执行，只保留最后一条回复）。第二次按 Esc 后这一行变为“已取消压缩，对话历史未改变。”。连续执行两次都不按 Esc 时，第二次提示“没有可压缩的内容” |
+| M47 手动压缩 | ① 输入 `/compact 只保留与 notes.txt 相关的内容`；② 紧接着再输入 `/compact`；③ 问一句“notes.txt 第一行现在是什么？”，回答后输入 `/compact`，在计时期间按 Esc | ①对话中显示“✻ 正在压缩上下文 · Ns”，状态栏显示“压缩上下文中 · Ns · Esc 取消”，完成后这一行变为“✓ 已压缩上下文…”（刚自动压缩过也会执行，只保留最后一条回复）。②此时历史只剩摘要和最后一条回复，提示“没有可压缩的内容：对话中只有最近一轮。”。③新的一问一答使摘要之后又有了可压缩的内容；按 Esc 后进度行变为“已取消压缩，对话历史未改变。” |
 | M48 无界面输出 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\.test-artifacts\acceptance\context-config.yaml" -p "用 read_file 依次读取 long.txt、src/app.py、notes.txt 并分别总结" --output-format stream-json` | 出现 `{"type": "compact", "subtype": "started"…}` 和 `"finished"` 事件；最后的 `result` 中 `compactions` 至少为 1 |
 | M49 会话目录 | `Get-ChildItem ~\.mosscode\sessions` 并查看最新目录 | 目录名形如 `20261016-153000-a1b2`，其中有 `.mosscode-session`、`tool-results\` 和 `compact-1.md`；记录文件包含被压缩的完整消息。超过 30 天的会话目录会在启动时删除 |
 

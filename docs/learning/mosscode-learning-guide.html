@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="MossCode 实现学习指南：Agent Loop、模型协议、工具、权限、MCP、终端界面、完善阶段 1–6，以及第八章上下文管理的具体实现。">
+<title>MossCode 实现学习指南</title>
+<style>
+:root{--paper:#f7f8f5;--white:#fff;--ink:#192b35;--muted:#53656e;--line:#dce3df;--green:#20634f;--soft:#edf3ec;--blue:#2459ab;--soft-blue:#edf2fa;--amber:#865218;--soft-amber:#fbf3e7;--red:#aa3340;--code:#14232b;--mono:Consolas,"SFMono-Regular",monospace;--sans:"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:20px}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.85 var(--sans)}a{color:var(--blue);text-underline-offset:4px}
+button,input,select{font:inherit}button{cursor:pointer}:focus-visible{outline:3px solid var(--blue);outline-offset:3px}::selection{background:#d2e9de}
+.layout{max-width:1480px;margin:auto;display:grid;grid-template-columns:250px minmax(0,1fr)}
+.sidebar{position:sticky;top:0;height:100vh;padding:34px 22px 24px 28px;border-right:1px solid var(--line);overflow:auto}
+.brand{font-weight:750;font-size:21px;letter-spacing:-.5px;color:var(--green)}.brand small{display:block;font-size:12px;color:var(--muted);font-weight:500;letter-spacing:0}
+.side-label{margin:26px 0 8px;font-size:11px;letter-spacing:2px;font-weight:700;color:var(--green)}
+.nav{display:grid;gap:2px}.nav a{text-decoration:none;color:var(--muted);font-size:14px;padding:5px 10px;border-left:2px solid transparent;line-height:1.6}.nav a:hover,.nav a.active{color:var(--green);border-left-color:var(--green);background:#e8f0e9}.nav a.key{font-weight:700;color:var(--ink)}
+main{padding:44px 60px 80px;min-width:0;max-width:1180px}
+.hero{padding:26px 0 30px;border-bottom:1px solid var(--line)}.eyebrow{font-size:12px;letter-spacing:2px;font-weight:700;color:var(--green)}
+h1{font-size:clamp(32px,4vw,52px);line-height:1.2;letter-spacing:-1.5px;margin:12px 0 20px}h1 span{display:block;color:var(--green)}
+.lead{font-size:18px;max-width:820px;margin:0 0 20px}.meta{display:flex;gap:22px;flex-wrap:wrap;font-size:13px;color:var(--muted)}.meta b{color:var(--ink)}
+section{padding:46px 0 8px;border-bottom:1px solid var(--line)}section:last-of-type{border-bottom:0}
+.head{display:flex;gap:16px;align-items:baseline;margin-bottom:12px}.no{font:12px var(--mono);color:var(--green);flex:none}
+h2{font-size:28px;line-height:1.4;letter-spacing:-.6px;margin:0}h3{font-size:20px;margin:30px 0 10px}h4{font-size:16px;margin:18px 0 6px}p{margin:10px 0}.sub{color:var(--muted);margin:2px 0 14px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}.grid.three{grid-template-columns:repeat(3,1fr)}
+.card{background:var(--white);border:1px solid var(--line);border-radius:8px;padding:18px 20px}.card h4{margin-top:0}.card p:last-child{margin-bottom:0}.card .tag{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--green)}
+.callout{padding:14px 20px;border-left:3px solid var(--green);background:var(--soft);margin:18px 0;border-radius:0 6px 6px 0}.callout p{margin:4px 0}.callout.amber{background:var(--soft-amber);border-color:var(--amber)}.callout.blue{background:var(--soft-blue);border-color:var(--blue)}.callout b.t{display:block;margin-bottom:2px}
+.table-wrap{overflow:auto;margin:14px 0;border:1px solid var(--line);border-radius:7px;background:var(--white)}table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.7}th,td{text-align:left;vertical-align:top;padding:10px 14px;border-bottom:1px solid var(--line)}th{background:#eef2ed;font-size:12px;white-space:nowrap}tr:last-child td{border-bottom:0}td:first-child{font-weight:650;white-space:nowrap}
+code{font:.88em var(--mono);background:#e7eeeb;color:#25483e;padding:1px 5px;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);color:#dfe9e4;border-radius:8px;padding:16px 18px;overflow:auto;font:13px/1.65 var(--mono);margin:12px 0}pre code{background:none;color:inherit;padding:0;font-size:inherit}
+.c{color:#86a596}.k{color:#8dd6b0}.s{color:#f0c987}.f{color:#9cc4ff}
+.file{font:12px var(--mono);color:var(--muted);margin:16px 0 -6px}.file a{color:var(--muted)}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0}.flow .step{background:var(--white);border:1px solid var(--line);border-radius:6px;padding:7px 12px;font-size:14px}.flow .step b{color:var(--green)}.flow .arrow{color:var(--muted)}
+ol.steps{padding-left:22px}ol.steps li{margin:6px 0}
+.layers{display:grid;gap:8px;margin:16px 0}.layer{display:grid;grid-template-columns:180px 1fr;gap:14px;align-items:center;background:var(--white);border:1px solid var(--line);border-radius:7px;padding:10px 14px}.layer b{color:var(--green);font:13px var(--mono)}.layer span{font-size:14px}
+.timeline{border-left:2px solid var(--line);margin:16px 0 16px 8px;padding-left:22px}.tl{position:relative;margin:0 0 18px}.tl:before{content:"";position:absolute;left:-29px;top:8px;width:12px;height:12px;border-radius:50%;background:var(--green);border:2px solid var(--paper)}.tl h4{margin:0}.tl .when{font-size:12px;color:var(--muted)}.tl ul{margin:4px 0;padding-left:20px}.tl li{margin:2px 0}
+.tool{background:var(--white);border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin:16px 0}.tool h4{margin:0 0 8px}.row{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin:8px 0}.row label{display:grid;font-size:12px;color:var(--muted);gap:3px}.row input,.row select{border:1px solid var(--line);border-radius:5px;padding:5px 8px;width:150px;min-width:0;background:var(--white);color:var(--ink)}.row select{width:auto;max-width:100%}.btn{border:1px solid var(--line);border-radius:5px;padding:5px 12px;background:var(--white);color:var(--ink);font-size:13px}.btn:hover{border-color:var(--green);color:var(--green)}
+.out{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.out div{background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:8px 10px}.out small{display:block;font-size:12px;color:var(--muted)}.out b{font:600 17px var(--mono)}.err{color:var(--red);font-weight:650;margin-top:8px}
+.msgs{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}.msg{border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.5;min-width:92px;background:var(--white)}.msg b{display:block;font:600 12px var(--mono)}.msg.kept{background:var(--soft);border-color:var(--green)}.msg.gone{background:#f3f3f1;color:var(--muted);text-decoration:line-through;text-decoration-color:#b9c3bf}.msg.bnd{border-style:dashed}
+.log{font:12.5px/1.7 var(--mono);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:10px 12px;white-space:pre-wrap;margin-top:8px}
+details{background:var(--white);border:1px solid var(--line);border-radius:7px;padding:10px 16px;margin:8px 0}summary{cursor:pointer;font-weight:650}details[open] summary{margin-bottom:6px}
+.pill{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:4px;padding:0 7px;background:var(--white);margin-right:4px}
+@media (max-width:1000px){.layout{grid-template-columns:1fr}.sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}main{padding:26px 20px 60px}.grid,.grid.three,.out{grid-template-columns:1fr}.layer{grid-template-columns:1fr}}
+@media print{.sidebar{display:none}.layout{display:block}main{padding:0}pre{white-space:pre-wrap}}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">MossCode<small>实现学习指南</small></div>
+  <div class="side-label">全局</div>
+  <nav class="nav">
+    <a href="#map">1 全局地图</a>
+    <a href="#model">2 数据模型与事件流</a>
+    <a href="#loop">3 Agent Loop</a>
+  </nav>
+  <div class="side-label">各子系统</div>
+  <nav class="nav">
+    <a href="#providers">4 模型协议层</a>
+    <a href="#prompts">5 系统提示与缓存</a>
+    <a href="#tools">6 工具系统</a>
+    <a href="#permissions">7 权限与计划模式</a>
+    <a href="#mcp">8 MCP 外部工具</a>
+    <a href="#tui">9 终端界面</a>
+  </nav>
+  <div class="side-label">演进</div>
+  <nav class="nav">
+    <a href="#history">10 升级历程</a>
+    <a href="#context" class="key">11 上下文管理</a>
+    <a href="#ctx-budget">　11.2 阈值计算</a>
+    <a href="#ctx-l1">　11.4 第一层：存盘</a>
+    <a href="#ctx-l2">　11.5 第二层：压缩</a>
+    <a href="#ctx-when">　11.6 时机与熔断</a>
+    <a href="#ctx-lessons">　11.8 验收中的修复</a>
+  </nav>
+  <div class="side-label">巩固</div>
+  <nav class="nav">
+    <a href="#tests">12 测试方法</a>
+    <a href="#route">13 源码阅读路线</a>
+    <a href="#quiz">14 自测题</a>
+  </nav>
+</aside>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">MOSSCODE · LEARNING GUIDE</div>
+  <h1>从一次请求，<span>到上下文压缩</span></h1>
+  <p class="lead">MossCode 是一个参考 Claude Code 与 Pi 的轻量终端编程 Agent。本页按“数据怎么流动”的顺序讲解每个子系统的具体实现，引用的代码均为当前源码的节选（标注“简化”的去掉了与主题无关的分支）。最后一大节专门讲第八章的两层上下文管理，以及人工验收中发现并修复的问题。</p>
+  <div class="meta">
+    <span>分支 <b>context-management</b></span>
+    <span>测试 <b>591 passed · 1 skipped</b></span>
+    <span>协议 <b>3 种</b></span>
+    <span>本地工具 <b>6 个</b> + MCP</span>
+    <span>Python <b>3.12</b> · Textual</span>
+  </div>
+</header>
+
+<!-- 1 -->
+<section id="map">
+  <div class="head"><span class="no">01</span><h2>全局地图</h2></div>
+  <p class="sub">先记住分层：界面只消费事件，Agent Loop 只做决策，工具层只负责执行和边界检查。</p>
+  <div class="layers">
+    <div class="layer"><b>cli.py</b><span>命令行入口：加载配置、选择 Provider、清理过期会话目录；进入 TUI，或以 <code>-p</code> 运行一个任务（text / json / stream-json 输出）。</span></div>
+    <div class="layer"><b>tui.py</b><span>Textual 界面（内联模式）：输入、排队、审批面板、状态栏、工具行、压缩进度；把完成的内容写入终端原生滚动历史。</span></div>
+    <div class="layer"><b>conversation.py</b><span>对外接口：启动时加载 AGENTS.md、git 快照和 MCP；提供 <code>reply()</code>、<code>ask()</code>、<code>compact()</code>、<code>clear()</code>、<code>set_provider()</code>。TUI 与 <code>-p</code> 共用。</span></div>
+    <div class="layer"><b>agent.py</b><span>Agent Loop：组装请求、流式收集、执行工具、排队消息并入、停止条件、压缩时机与超限自救。</span></div>
+    <div class="layer"><b>providers.py</b><span>三种协议适配（Anthropic Messages / OpenAI Responses / Chat Completions）、首事件前重试、缓存断点、用量归一。</span></div>
+    <div class="layer"><b>prompts.py</b><span>七个固定模块的稳定提示、工具清单、<code>&lt;environment&gt;</code> 与 <code>&lt;system-reminder&gt;</code> 补充、项目指令。</span></div>
+    <div class="layer"><b>tools/</b><span>注册表与执行边界（<code>base.py</code>）、分批并发（<code>execution.py</code>）、文件 / 搜索 / 命令 / 计划工具。</span></div>
+    <div class="layer"><b>permissions.py · security.py</b><span>四档权限、分层规则、审批请求、只读命令白名单、危险命令分级、项目路径检查。</span></div>
+    <div class="layer"><b>context · compaction · tool_budget · session</b><span>第八章：上下文估算与阈值、摘要压缩、大结果存盘、会话目录。</span></div>
+  </div>
+
+  <h3>一次任务的完整路径</h3>
+  <div class="flow">
+    <span class="step">TUI 输入 <b>Enter</b></span><span class="arrow">→</span>
+    <span class="step"><b>Conversation.reply</b>(prompt)</span><span class="arrow">→</span>
+    <span class="step"><b>AgentLoop.run</b>：每轮估算 → 可能压缩</span><span class="arrow">→</span>
+    <span class="step"><b>provider.stream</b>：Delta… Completed</span><span class="arrow">→</span>
+    <span class="step">有工具调用？<b>execute_batch</b></span><span class="arrow">→</span>
+    <span class="step"><b>registry.execute</b>：校验 → 授权 → 执行 → 存盘判断</span><span class="arrow">→</span>
+    <span class="step">结果写回历史，<b>下一轮</b></span>
+  </div>
+  <p>循环直到模型的完整回复不再请求工具，或遇到停止条件（取消、达到轮数上限、连续未知工具、输出截断、错误）。每一步都向上产出事件（<code>StreamEvent</code>），界面据此绘制；Agent Loop 本身不 import 任何界面代码。</p>
+</section>
+
+<!-- 2 -->
+<section id="model">
+  <div class="head"><span class="no">02</span><h2>数据模型与事件流</h2></div>
+  <p class="sub">所有模块之间只传递 <code>messages.py</code> 中的不可变 dataclass。</p>
+  <div class="table-wrap"><table>
+    <tr><th>类型</th><th>关键字段</th><th>要点</th></tr>
+    <tr><td>Message</td><td><code>role</code>（user / assistant / tool）、<code>content</code>、<code>tool_calls</code>、<code>tool_results</code>、<code>protocol</code>、<code>native</code>、<code>synthetic</code></td><td>通用格式，三种协议各自转换。<code>native</code> 保存只对原模型有效的数据（thinking 签名、加密推理），切换模型时清除。<code>synthetic="compact"</code> 标记压缩产生的边界消息。</td></tr>
+    <tr><td>ToolCall</td><td><code>id</code>、<code>name</code>、<code>arguments</code>（JSON 字符串）</td><td>参数保持原始字符串，执行时才解析，便于报告 <code>invalid_json</code>。</td></tr>
+    <tr><td>ToolResult</td><td><code>output</code>、<code>is_error</code>、<code>code</code>、<code>details</code></td><td><code>output</code> 发给模型（失败时 <code>model_text()</code> 为“错误 [code]：…”）；<code>details</code>（diff、耗时、退出码、存盘路径）只留在本地给界面和测试。</td></tr>
+    <tr><td>Usage</td><td><code>input_tokens</code>、<code>output_tokens</code>、缓存读写</td><td>服务没给的字段是 <code>None</code>，不伪造为 0；界面显示“—”或“≥”。</td></tr>
+  </table></div>
+
+  <h3>事件：运行时与界面之间的契约</h3>
+  <div class="table-wrap"><table>
+    <tr><th>事件</th><th>何时产生</th><th>界面用途</th></tr>
+    <tr><td>IterationProgress</td><td>每轮开始</td><td>状态栏“N/200 轮”</td></tr>
+    <tr><td>Delta(kind, text)</td><td>流式片段（正文或 thinking）</td><td>实时显示，思考计时</td></tr>
+    <tr><td>Retrying</td><td>首事件前的临时故障重试</td><td>状态栏显示原因和等待秒数</td></tr>
+    <tr><td>ResponseBoundary</td><td>含工具调用的完整回复已记录</td><td>封存本段回复，开始工具行</td></tr>
+    <tr><td>ToolProgress</td><td>工具 parsing / running / finished</td><td>工具行、diff、存盘提示</td></tr>
+    <tr><td>ApprovalRequest</td><td>需要用户确认</td><td>输入区下方的审批面板</td></tr>
+    <tr><td>UserInput</td><td>排队消息在迭代边界并入</td><td>在对话中逐条显示</td></tr>
+    <tr><td>UsageUpdate</td><td>每次回复完成</td><td>Token 累计、上下文比例</td></tr>
+    <tr><td>CompactStarted / Finished / Failed</td><td>压缩开始、成功、失败</td><td>进度行原地变为结果；stream-json 的 compact 事件</td></tr>
+    <tr><td>Completed</td><td>最终文本回复</td><td>渲染 Markdown</td></tr>
+    <tr><td>RunStopped(reason)</td><td>任务结束</td><td>completed / max_iterations / max_tokens / unknown_tools / cancelled / error</td></tr>
+  </table></div>
+  <div class="callout blue"><b class="t">为什么用事件流而不是回调？</b><p><code>AgentLoop.run()</code> 是一个异步生成器。TUI 和 <code>-p</code> 都只是 <code>async for event in conversation.reply(...)</code>，各自决定怎么显示；测试可以直接收集事件列表断言顺序。取消也自然：界面取消任务，生成器在当前 <code>await</code> 处收到 <code>CancelledError</code>，<code>finally</code> 负责清理。</p></div>
+</section>
+
+<!-- 3 -->
+<section id="loop">
+  <div class="head"><span class="no">03</span><h2>Agent Loop</h2></div>
+  <p class="sub"><a href="../../src/mosscode/agent.py">src/mosscode/agent.py</a> 的 <code>AgentLoop.run()</code> 是整个项目的核心，约 120 行。</p>
+  <div class="file">agent.py · run()（简化）</div>
+<pre><code><span class="k">for</span> iteration <span class="k">in</span> range(1, self.max_iterations + 1):        <span class="c"># 默认 200</span>
+    env = environment(root, permission_mode=..., git=self.git, shell=...)   <span class="c"># 每轮重建：批准计划会改变档位</span>
+    <span class="k">yield</span> IterationProgress(iteration, ...)
+    <span class="k">if</span> committed <span class="k">and</span> self.pending:                     <span class="c"># 运行中排队的消息，在迭代边界并入</span>
+        self.history.append(Message(<span class="s">"user"</span>, ...)); <span class="k">yield</span> UserInput(texts)
+    fresh = [] <span class="k">if</span> committed <span class="k">else</span> [user]                 <span class="c"># 用户消息尚未进入历史</span>
+    <span class="k">if</span> self._may_compact() <span class="k">and</span> self.estimate(fresh, env.text) &gt;= self.budget.auto_threshold:
+        <span class="k">async for</span> event <span class="k">in</span> self._compact(): <span class="k">yield</span> event   <span class="c"># 第八章：自动压缩</span>
+    <span class="k">while True</span>:                                         <span class="c"># 超限自救最多重试一次</span>
+        <span class="k">try</span>:
+            <span class="k">async for</span> event <span class="k">in</span> collector.collect(self._model(history + fresh, ...)): <span class="k">yield</span> event
+        <span class="k">except</span> ProviderError <span class="k">as</span> exc:
+            <span class="k">if</span> exc.code != <span class="s">"context_overflow"</span> <span class="k">or</span> rescued: <span class="k">raise</span>
+            ...压缩成功则 <span class="k">continue</span>，否则 <span class="k">raise</span> exc
+        <span class="k">break</span>
+    final = collector.response                          <span class="c"># 完整回复才进入历史</span>
+    <span class="k">if not</span> committed: self.history.append(user); committed = True
+    self.history.append(final.message)
+    self.meter.record(final.usage, len(self.history))   <span class="c"># 上下文估算的锚点</span>
+    <span class="k">if not</span> calls: <span class="k">yield</span> final; <span class="k">yield</span> RunStopped(<span class="s">"completed"</span>); <span class="k">return</span>
+    <span class="k">if</span> truncated: 每个调用配一条 output_truncated 结果，<span class="k">continue</span>   <span class="c"># 参数可能被截断，不执行</span>
+    <span class="k">async for</span> event <span class="k">in</span> execute_batch(final.message, self.registry, self.history): <span class="k">yield</span> event
+    连续 3 轮只请求未知工具 → RunStopped(<span class="s">"unknown_tools"</span>)
+<span class="k">yield</span> RunStopped(<span class="s">"max_iterations"</span>, ...)</code></pre>
+
+  <h3>几个容易忽略的设计点</h3>
+  <div class="grid">
+    <div class="card"><h4>用户消息“晚提交”</h4><p>第一次请求时用户消息放在 <code>fresh</code> 里临时拼接，收到完整回复后才写入历史（<code>committed</code>）。如果第一次请求就失败或被取消，历史里不会留下一条没有回答的用户消息。</p></div>
+    <div class="card"><h4>工具结果“先占位”</h4><p><code>execute_batch</code> 先追加一条空的 tool 消息，每完成一个调用就 <code>save()</code> 一次。取消时 <code>finally</code> 给未执行的调用补上 <code>not_executed</code>，保证每个调用都有结果，协议不会因为调用和结果不成对而拒绝请求。</p></div>
+    <div class="card"><h4>输出截断的两种处理</h4><p>纯文本被截断：保留正文，以 <code>max_tokens</code> 停止，提示“继续”。工具调用被截断：JSON 参数可能不完整，一律不执行，以 <code>output_truncated</code> 回传，让模型拆小后重试。</p></div>
+    <div class="card"><h4>排队消息（steering）</h4><p>运行中按 Enter 的内容进入 <code>pending</code>，在下一次请求前合并为一条 user 消息。若模型已经给出最终回复，排队内容在任务结束后作为下一个任务发送。</p></div>
+  </div>
+</section>
+
+<!-- 4 -->
+<section id="providers">
+  <div class="head"><span class="no">04</span><h2>模型协议层</h2></div>
+  <p class="sub"><a href="../../src/mosscode/providers.py">providers.py</a>：一个基类负责重试，三个子类负责协议转换。</p>
+  <div class="table-wrap"><table>
+    <tr><th>protocol</th><th>工具结果怎么发</th><th>系统提示与补充</th><th>输出上限的停止原因</th></tr>
+    <tr><td>anthropic-messages</td><td>user 消息中的 <code>tool_result</code> 块，失败时 <code>is_error</code></td><td>稳定 system 块 + 环境块；模式提醒附在最后一条 user 消息末尾</td><td><code>max_tokens</code></td></tr>
+    <tr><td>openai-responses</td><td><code>function_call_output</code> 项；<code>store=false</code>，回传加密推理</td><td>instructions + developer 消息</td><td><code>incomplete: max_output_tokens</code></td></tr>
+    <tr><td>openai-chat-completions</td><td><code>role: tool</code> 消息</td><td>system 消息</td><td><code>length</code></td></tr>
+  </table></div>
+  <p>三者都被归一为同一个 <code>Completed(message, stop_reason, usage)</code>，<code>stop_reason == "max_tokens"</code> 表示截断。Agent Loop 完全不知道底层是哪种协议。</p>
+
+  <div class="file">providers.py · SDKProvider.stream()</div>
+<pre><code><span class="k">async def</span> <span class="f">stream</span>(self, messages, system, tools=(), *, allow_tools=True):
+    attempt = 0
+    <span class="k">while True</span>:
+        produced = False
+        <span class="k">try</span>:
+            <span class="k">async with</span> aclosing(self._stream(...)) <span class="k">as</span> events:
+                <span class="k">async for</span> event <span class="k">in</span> events:
+                    produced = True
+                    <span class="k">yield</span> event
+            <span class="k">return</span>
+        <span class="k">except</span> Exception <span class="k">as</span> exc:
+            <span class="c"># Only a request that produced nothing is safe to repeat: no text
+            # was shown and no tool call can have been executed.</span>
+            retry = None <span class="k">if</span> produced <span class="k">or</span> attempt &gt;= self.config.max_retries <span class="k">else</span> _retry_reason(exc)
+            <span class="k">if</span> retry <span class="k">is</span> None: <span class="k">raise</span> _safe_error(exc) <span class="k">from</span> None
+            delay = _retry_delay(exc, attempt, self.retry_base_delay)
+        attempt += 1
+        <span class="k">yield</span> Retrying(attempt, self.config.max_retries, delay, retry)
+        <span class="k">await</span> asyncio.sleep(delay)</code></pre>
+  <div class="grid">
+    <div class="card"><h4>只在首事件前重试</h4><p>429、529、5xx、超时、断连按 1、2、4、8 秒加抖动退避（遵守 <code>retry-after</code>，最长 60 秒），默认 4 次。已经产生事件后断流不重试：正文可能已显示，重放会重复。SDK 自身重试设为 0，避免叠加。</p></div>
+    <div class="card"><h4>安全的错误信息</h4><p><code>_safe_error</code> 把 SDK 异常转成中文 <code>ProviderError</code>，不回显凭据和请求体。HTTP 400/413 且提到 prompt is too long 等特征时标记 <code>code="context_overflow"</code>，供第八章自救使用。</p></div>
+    <div class="card"><h4>用量归一</h4><p><a href="../../src/mosscode/usage.py">usage.py</a>：Anthropic 的总输入 = 普通输入 + 缓存读 + 缓存写；其他协议直接给总数。DeepSeek 的 <code>prompt_cache_hit_tokens</code> 也能识别。</p></div>
+    <div class="card"><h4>切换模型</h4><p><code>/model</code> 后 <code>set_provider()</code> 去掉历史中的 <code>native</code> 和 <code>protocol</code>，各协议从通用字段重建工具调用；Anthropic 还会合并相邻同角色消息。因此可以在三种协议之间来回切换。</p></div>
+  </div>
+</section>
+
+<!-- 5 -->
+<section id="prompts">
+  <div class="head"><span class="no">05</span><h2>系统提示与缓存</h2></div>
+  <p class="sub"><a href="../../src/mosscode/prompts.py">prompts.py</a>：把“每次都一样的”和“每次不同的”严格分开，才能命中 Prompt Cache。</p>
+  <div class="layers">
+    <div class="layer"><b>稳定前缀（缓存）</b><span>七个模块：identity 身份 · constraints 系统约束 · mode 任务模式 · execution 动作执行 · tools 工具使用 · tone 语气 · output 文本输出；加“当前可用工具”清单；末尾追加 AGENTS.md（用户级 → 根目录 → 当前目录）。</span></div>
+    <div class="layer"><b>工具定义（缓存）</b><span>每个工具的 description 末尾追加 <code>prompt_guidelines</code>。用法规则只出现在这里，不在系统提示中重复（完善阶段 6）。</span></div>
+    <div class="layer"><b>历史（缓存断点）</b><span>Anthropic 在最后一个历史块上打断点，多轮工具循环复用已发送的前缀。</span></div>
+    <div class="layer"><b>本次补充（不缓存）</b><span><code>&lt;environment&gt;</code>：日期、系统、shell、工作目录、权限档位、启动时的 git 快照。<code>&lt;system-reminder&gt;</code>：只在模式变化后的第一次请求出现（进入或退出计划模式、压缩后）。</span></div>
+  </div>
+  <div class="callout"><b class="t">为什么第八章要“冻结”存盘决定？</b><p>缓存要求前缀逐字节一致。如果某个工具结果先完整发送、后来又被替换成预览，之后所有请求的前缀都会变，缓存全部失效。所以大结果在<strong>写入历史之前</strong>就决定是否存盘，之后不再改写（<code>details["budgeted"]</code>）。压缩是唯一会改写前缀的操作，它发生得很少。</p></div>
+</section>
+
+<!-- 6 -->
+<section id="tools">
+  <div class="head"><span class="no">06</span><h2>工具系统</h2></div>
+  <p class="sub"><a href="../../src/mosscode/tools/base.py">tools/base.py</a> 的 <code>ToolRegistry.execute()</code> 是唯一的执行入口，所有检查都在这里按固定顺序发生。</p>
+  <ol class="steps">
+    <li><b>查找工具</b>：不存在返回 <code>unknown_tool</code>（Agent Loop 统计连续未知工具的轮数）。</li>
+    <li><b>解析 JSON</b>：失败返回 <code>invalid_json</code>；拒绝 <code>NaN</code> 等非标准常量。</li>
+    <li><b>Pydantic 校验</b>：失败时逐条列出字段问题（<code>invalid_arguments</code>），模型能据此修正。</li>
+    <li><b>授权</b>：<code>permissions.authorize()</code>，可能挂起等待用户审批（见第 7 节）。</li>
+    <li><b>执行并限时</b>：<code>asyncio.wait_for(shield(task))</code>；超时或取消时等待任务真正结束，命令会清理整个进程树。</li>
+    <li><b>大小判断</b>：<code>_bound()</code> 调用第八章的 <code>bound_result</code>，过大的结果存盘、只留预览。</li>
+    <li><b>异常归类</b>：<code>FileNotFoundError</code> → <code>not_found</code>、<code>UnicodeError</code> → <code>encoding_error</code> 等，模型收到的始终是中文说明，不是堆栈。</li>
+  </ol>
+
+  <div class="table-wrap"><table>
+    <tr><th>工具</th><th>只读</th><th>要点</th></tr>
+    <tr><td>read_file</td><td>是</td><td>“右对齐行号 + Tab + 原文”，默认 2000 行，超长行截断，翻页提示下一个 offset。第八章存盘的豁免对象。</td></tr>
+    <tr><td>write_file</td><td>否</td><td>创建或覆盖；覆盖已有文件须先读。</td></tr>
+    <tr><td>edit_file</td><td>否</td><td>精确替换，默认要求唯一匹配，<code>replace_all</code> 替换全部；CRLF 文件可用 LF 原文匹配。成功只回传摘要，diff 留在 details。</td></tr>
+    <tr><td>execute_command</td><td>否*</td><td>Git Bash / PowerShell / bash；默认超时 120 秒、最大 600 秒；输出在 2 MiB 处保留头尾。*白名单中的只读命令免审批。</td></tr>
+    <tr><td>glob</td><td>是</td><td>遵守 .gitignore，按修改时间倒序，最多 200 项。</td></tr>
+    <tr><td>grep</td><td>是</td><td>优先 ripgrep，没有时用独立 Python 进程；三种输出模式。</td></tr>
+  </table></div>
+
+  <h3>先读后改：FileState</h3>
+  <div class="file"><a href="../../src/mosscode/tools/files.py">tools/files.py</a> · FileState.check()</div>
+<pre><code><span class="k">def</span> <span class="f">check</span>(self, path):
+    seen = self._seen.get(self._key(path))         <span class="c"># 读取或自身写入时记录的 (mtime_ns, size)</span>
+    <span class="k">if</span> seen <span class="k">is</span> None:
+        <span class="k">raise</span> ToolFailure(<span class="s">"not_read"</span>, <span class="s">"修改已有文件前需要先用 read_file 读取它；文件未修改。"</span>)
+    <span class="k">if</span> self.stamp(path) != seen:
+        <span class="k">raise</span> ToolFailure(<span class="s">"stale_read"</span>, <span class="s">"文件在上次读取后被修改…请重新读取后再修改。文件未修改。"</span>)</code></pre>
+  <p>这条规则由程序强制，不靠提示词。第八章压缩后会调用 <code>registry.forget_reads()</code> 清空记录：摘要里只有概述，模型手里没有文件原文，必须重新读取才能修改（人工验收 M46 验证的就是这一点）。</p>
+
+  <h3>相邻只读调用并发</h3>
+  <div class="file"><a href="../../src/mosscode/tools/execution.py">tools/execution.py</a> · partition_calls()</div>
+<pre><code><span class="k">def</span> <span class="f">partition_calls</span>(calls, registry, concurrency=4):
+    batch = []
+    <span class="k">for</span> index, call <span class="k">in</span> enumerate(calls):
+        <span class="k">if</span> registry.is_read_only(call.name):
+            batch.append(index)
+            <span class="k">if</span> len(batch) == concurrency: <span class="k">yield</span> batch; batch = []
+        <span class="k">else</span>:                                    <span class="c"># 有副作用的调用是屏障：单独一批</span>
+            <span class="k">if</span> batch: <span class="k">yield</span> batch; batch = []
+            <span class="k">yield</span> [index]
+    <span class="k">if</span> batch: <span class="k">yield</span> batch</code></pre>
+  <p>例如 <code>[read, read, edit, grep]</code> 分成 <code>[0,1]</code>、<code>[2]</code>、<code>[3]</code>：写入之后的读取不会被提前。界面可以先显示较快的结果，但写回历史的顺序始终是模型给出的原始顺序。系统提示（阶段 6）明确鼓励模型把互不依赖的只读调用放在同一次回复中。</p>
+</section>
+
+<!-- 7 -->
+<section id="permissions">
+  <div class="head"><span class="no">07</span><h2>权限与计划模式</h2></div>
+  <p class="sub"><a href="../../src/mosscode/permissions.py">permissions.py</a> 与 <a href="../../src/mosscode/security.py">security.py</a>。先过硬检查，再按优先级决定 allow / ask / deny。</p>
+  <div class="file">permissions.py · PermissionPolicy.decide()</div>
+<pre><code><span class="k">def</span> <span class="f">decide</span>(self, operation, *, read_only):
+    matched = 最高一层中命中的规则                       <span class="c"># 会话 &gt; 本地 &gt; 项目 &gt; 用户</span>
+    <span class="k">if</span> any(rule.action == <span class="s">"deny"</span> <span class="k">for</span> rule <span class="k">in</span> matched): <span class="k">return</span> deny   <span class="c"># 任何档位都生效</span>
+    <span class="k">if</span> operation.risk: <span class="k">return</span> ask                       <span class="c"># 高风险命令：每次确认，bypass 也不放行</span>
+    <span class="k">if</span> matched: <span class="k">return</span> allow
+    <span class="k">if</span> 读取的是本会话目录（存盘结果、压缩记录）: <span class="k">return</span> allow   <span class="c"># 第八章新增</span>
+    <span class="k">if</span> operation.outside: <span class="k">return</span> allow <span class="k">if</span> bypass <span class="k">else</span> ask     <span class="c"># 项目外读取</span>
+    <span class="k">if</span> bypass <span class="k">or</span> 只读工具 <span class="k">or</span> 只读命令: <span class="k">return</span> allow
+    <span class="k">if</span> acceptEdits <span class="k">and</span> 写入/编辑: <span class="k">return</span> allow
+    <span class="k">return</span> ask</code></pre>
+  <div class="grid">
+    <div class="card"><h4>硬检查（在 decide 之前）</h4><p><code>operation()</code> 解析路径：写入和编辑限于项目根目录（解析符号链接和 junction 后按路径段比较）；灾难级命令（删根目录、格式化、fork 炸弹、关机）抛出 <code>SecurityError</code>，任何授权都解除不了；计划模式中非只读工具返回 <code>plan_blocked</code>。</p></div>
+    <div class="card"><h4>只读命令</h4><p><code>read_only_command()</code>：单条简单命令（无管道、串联、重定向、变量、命令替换），在白名单中（git status/diff/log、ls、cat、rg…），不含危险选项，路径参数都在项目内。满足就免审批，计划模式也能运行。</p></div>
+    <div class="card"><h4>审批与规则</h4><p>本次 / 本会话 / 永久（写入 <code>.mosscode/permissions.local.yaml</code>）。命令可选“永久允许以 X 开头”，保存为 <code>Bash(X:*)</code> 前缀规则。deny 前缀规则检查复合命令的每一段。无界面模式不等待，返回 <code>approval_required</code>。</p></div>
+    <div class="card"><h4>计划模式</h4><p>只提供只读工具、只读命令和 <code>exit_plan_mode</code>。模型提交 Markdown 计划后，用户选择“批准并执行 / 批准并自动接受编辑 / 继续规划”。批准后同一任务的下一轮就能使用全部工具。</p></div>
+  </div>
+  <div class="callout amber"><b class="t">边界要说清楚</b><p>路径检查是应用层限制，不是系统沙箱：用户批准的命令以当前用户权限运行，正则也无法识别所有混淆写法。MCP Server 也不受本地路径检查约束。</p></div>
+</section>
+
+<!-- 8 -->
+<section id="mcp">
+  <div class="head"><span class="no">08</span><h2>MCP 外部工具</h2></div>
+  <p class="sub"><a href="../../src/mosscode/mcp_config.py">mcp_config.py</a>（配置）与 <a href="../../src/mosscode/mcp_client.py">mcp_client.py</a>（连接、发现、适配）。</p>
+  <div class="grid three">
+    <div class="card"><h4>配置</h4><p>用户级 <code>~/.mosscode/mcp.yaml</code> &lt; <code>.mcp.json</code>（需 <code>import_mcp_json: true</code>）&lt; 项目级 <code>mcp.yaml</code>，同名整项覆盖。env / headers 支持 <code>${VAR:-默认值}</code>。</p></div>
+    <div class="card"><h4>后台连接</h4><p>输入框立即可用；各 Server 并行连接、握手、分页发现，就绪后一次性注册工具，下一次模型请求即可使用。失败只给分类原因，不回显 env 或 URL。</p></div>
+    <div class="card"><h4>适配与权限</h4><p>工具名 <code>mcp__server__tool</code>；保留原始 JSON Schema 校验参数。默认视为有副作用；开启 <code>trust_read_only_hint</code> 后，带 readOnlyHint 的工具按只读处理（免审批、可并发、计划模式可用）。</p></div>
+  </div>
+</section>
+
+<!-- 9 -->
+<section id="tui">
+  <div class="head"><span class="no">09</span><h2>终端界面</h2></div>
+  <p class="sub"><a href="../../src/mosscode/tui.py">tui.py</a> 是最大的文件（约 1,500 行），核心难点是“内联模式 + 原生滚动历史”。</p>
+  <div class="grid">
+    <div class="card"><h4>完成的内容交给终端</h4><p>界面以内联方式画在命令行下方。<code>_commit_ready_transcript()</code> 从对话区顶部依次检查组件：用户消息、完成的回复、结束的工具行、本地提示都是“就绪”的，写入终端原生滚动历史后从实时界面移除；遇到第一个未完成的组件（正在生成的回复、执行中的工具、压缩进度行）就停止，保证顺序。</p></div>
+    <div class="card"><h4>宽度变化重绘</h4><p>终端改变宽度会重新折行旧内容，实时界面的行数随之失效。宽度稳定约 0.2 秒后清屏并按新宽度重新输出全部记录（与 Pi 相同）。</p></div>
+    <div class="card"><h4>Windows 的 Shift+Enter</h4><p>开启 VT 输入后 Enter 记录不带修饰键。<a href="../../src/mosscode/windows_inline.py">windows_inline.py</a> 用自己的输入线程读取记录和键盘 Shift 状态，转成 kitty 协议的 <code>\x1b[13;2u</code> 交给 Textual。</p></div>
+    <div class="card"><h4>状态栏</h4><p>权限档位标记 · 模型 · 运行阶段/轮次/耗时 · 排队数 · “上下文 约 N%”（达到自动阈值 80% 变琥珀色）· Token 累计 · 缓存读写。压缩期间显示“压缩上下文中 · Ns · Esc 取消”。</p></div>
+  </div>
+  <div class="callout amber"><b class="t">实现中踩过的坑：不要覆盖框架的私有名字</b><p>第八章最初在 App 上加了属性 <code>self._context</code> 保存上下文比例，结果所有 TUI 测试挂起。原因是 Textual 的 <code>App._context</code> 本身是一个上下文管理器方法，被属性覆盖后事件循环卡死。改名为 <code>_context_share</code> 解决。排查方法：对比基线版本的 tui.py，再在 Textual 源码中搜索同名标识符。</p></div>
+</section>
+
+<!-- 10 -->
+<section id="history">
+  <div class="head"><span class="no">10</span><h2>升级历程</h2></div>
+  <p class="sub">各章规格在 <code>docs/specs/chapter-*</code>，完善阶段在 <code>docs/specs/refinement-*</code>，每个目录都有 spec.md 和 validation.md。</p>
+  <div class="timeline">
+    <div class="tl"><h4>第 2–7 章：基础功能</h4><div class="when">基线提交 2cac922 之前</div>
+      <ul>
+        <li><b>第 2 章 流式对话</b>：Provider 抽象、TUI 流式显示、thinking 展示。</li>
+        <li><b>第 3 章 工具</b>：读、写、改、命令、glob、grep；注册表与参数校验。</li>
+        <li><b>第 4 章 Agent Loop</b>：多轮工具循环、事件流、停止条件、取消语义。</li>
+        <li><b>第 5 章 提示词</b>：模块化系统提示、环境补充、缓存断点、AGENTS.md。</li>
+        <li><b>第 6 章 权限</b>：四档权限、分层规则、审批、路径检查。</li>
+        <li><b>第 7 章 MCP</b>：stdio / HTTP Server、工具发现与适配。</li>
+      </ul></div>
+    <div class="tl"><h4>完善阶段 1：模型侧正确性与成本</h4>
+      <ul>
+        <li>工具结果改为纯文本（不再包 JSON），details 不发给模型。</li>
+        <li>Anthropic 在最后一个历史块加缓存断点；模式提醒改为只在模式变化时发送的 <code>&lt;system-reminder&gt;</code>。</li>
+        <li>输出截断归一为 <code>max_tokens</code>；工具调用被截断时不执行。默认输出上限 4096 → 16384。</li>
+        <li>首事件前的临时故障重试；轮数上限 25 → 200；可在任意目录启动并加载项目指令。</li>
+      </ul></div>
+    <div class="tl"><h4>完善阶段 2：工具契约</h4>
+      <ul>
+        <li>read_file 新格式与 2000 行；项目外读取改为询问；edit_file 的 <code>replace_all</code> 和 CRLF 处理。</li>
+        <li>先读后改（<code>not_read</code> / <code>stale_read</code>）；修改只回传摘要，diff 留在 details。</li>
+        <li>命令超时 120 / 600 秒、头尾保留；Windows 优先 Git Bash；搜索遵守 .gitignore，grep 三种输出模式。</li>
+      </ul></div>
+    <div class="tl"><h4>完善阶段 3 / 3b：计划模式与权限体验</h4>
+      <ul>
+        <li>计划模式真正只读，新增 <code>exit_plan_mode</code> 审阅计划；危险命令分为灾难级（硬拒绝）与高风险级（每次确认）。</li>
+        <li>只读命令免审批；<code>Bash(pytest:*)</code> 前缀规则；“本会话自动接受编辑”；Shift+Tab 切换档位；审批显示彩色 diff；删除 strict 档位。</li>
+      </ul></div>
+    <div class="tl"><h4>完善阶段 4：交互</h4>
+      <ul>
+        <li>多行输入、输入历史、运行中排队（steering）、工具行 diff、状态栏档位标记。</li>
+        <li><code>/clear</code>、<code>/model</code>（跨协议切换保留历史）；<code>-p</code> 的 json / stream-json 输出。</li>
+      </ul></div>
+    <div class="tl"><h4>完善阶段 5：MCP</h4>
+      <ul><li>后台连接不阻塞启动、<code>/mcp</code> 状态、Server 级规则、信任只读提示、读取 .mcp.json、按 Server 配置超时。</li></ul></div>
+    <div class="tl"><h4>完善阶段 6：提示词精简与 README 重组</h4>
+      <ul><li>鼓励并行只读调用、要求简洁回复；工具用法规则只在工具描述中出现一次，系统提示缩短 30% 以上；README 重组为安装 → 配置 → 使用 → 架构，细节移入 <code>docs/reference/</code>。</li></ul></div>
+    <div class="tl"><h4>第 8 章：上下文管理</h4><div class="when">提交 fed7f9e（实现）与 6012b3b（验收后的体验修复）</div>
+      <ul><li>两层设计：大结果存盘 + 摘要压缩；<code>/compact</code>；状态栏上下文比例。详见下一节。</li></ul></div>
+  </div>
+</section>
+
+<!-- 11 -->
+<section id="context">
+  <div class="head"><span class="no">11</span><h2>上下文管理（第八章）</h2></div>
+  <p class="sub">规格 <a href="../specs/chapter-08-context/spec.md">chapter-08-context/spec.md</a>，行为说明 <a href="../reference/context.md">reference/context.md</a>。</p>
+
+  <h3 id="ctx-why">11.1 要解决的问题</h3>
+  <p>每次请求都包含完整历史。长任务里，读文件、跑测试产生的大段输出会让历史持续增长，最终超出模型的上下文窗口，服务直接返回 400。第八章之前 MossCode 没有任何应对，只能 <code>/clear</code> 重来。</p>
+  <div class="grid">
+    <div class="card"><span class="tag">第一层 · 预防</span><h4>大结果存盘</h4><p>单个工具结果太大时，完整内容写到会话目录，历史中只放开头和结尾的预览。模型需要细节时用 read_file 分页读取存盘文件。成本为零，不调用模型。</p></div>
+    <div class="card"><span class="tag">第二层 · 兜底</span><h4>摘要压缩</h4><p>估算接近阈值时，用一次不带工具的模型请求把较早的消息压缩成结构化摘要，近期消息保留原文，用户原话由程序原样附上。</p></div>
+  </div>
+
+  <h3 id="ctx-budget">11.2 配置与阈值</h3>
+  <p>程序不维护“模型 → 窗口”对照表，窗口由每个 Provider 的 <code>context_window</code> 配置（未配置按 128K 并提示一次）。阈值全部由配置算出：</p>
+  <div class="file"><a href="../../src/mosscode/context.py">context.py</a> · ContextBudget</div>
+<pre><code>SUMMARY_RESERVE = 20_000   <span class="c"># 给结构化摘要留的输出空间</span>
+AUTO_MARGIN = 13_000       <span class="c"># 吸收两次检查之间一轮的增长和估算误差</span>
+MANUAL_MARGIN = 3_000
+MIN_THRESHOLD = 16_000
+
+effective        = window - max(max_output_tokens, SUMMARY_RESERVE)   <span class="c"># 输入 + 最大输出须放进窗口</span>
+window_threshold = effective - AUTO_MARGIN
+auto_threshold   = min(window_threshold, compact_threshold) <span class="k">if</span> compact_threshold <span class="k">else</span> window_threshold
+manual_limit     = effective - MANUAL_MARGIN                         <span class="c"># 摘要请求本身的输入上限</span></code></pre>
+
+  <div class="tool" id="calc">
+    <h4>阈值计算器</h4>
+    <div class="row">
+      <label>预设<select id="preset">
+        <option value="50000,4096,">验收配置 · 50,000 / 4,096</option>
+        <option value="1000000,16384," selected>DeepSeek 1M / 16,384</option>
+        <option value="1000000,16384,200000">DeepSeek 1M + compact_threshold 200,000</option>
+        <option value="200000,32000,">Claude 示例 · 200,000 / 32,000</option>
+        <option value="128000,16384,">未配置 · 按 128K 估算</option>
+        <option value="40000,4096,">40,000（配置错误示例）</option>
+      </select></label>
+      <label>context_window<input id="cw" type="number" min="1" step="1000"></label>
+      <label>max_output_tokens<input id="mo" type="number" min="1" step="1024"></label>
+      <label>compact_threshold（可空）<input id="ct" type="number" min="0" step="1000" placeholder="不设置"></label>
+    </div>
+    <div class="out" id="calc-out"></div>
+    <div class="err" id="calc-err"></div>
+  </div>
+  <p>验收时用 <code>context_window: 50000</code> 而不是 40000：40000 算出的自动阈值是 40000 − 20000 − 13000 = 7000，小于 16000 的下限，启动时报配置错误。</p>
+
+  <h3 id="ctx-estimate">11.3 估算：不用分词器</h3>
+  <div class="file">context.py · estimate_text() 与 ContextMeter.estimate()</div>
+<pre><code><span class="k">def</span> <span class="f">estimate_text</span>(text):
+    <span class="s">"""ASCII at 4 characters per token, every other character (CJK etc.) as one token: errs high."""</span>
+    ascii_count = len(text.encode(<span class="s">"ascii"</span>, <span class="s">"ignore"</span>))
+    <span class="k">return</span> math.ceil(ascii_count / 4) + len(text) - ascii_count     <span class="c"># 每条消息另加 4</span>
+
+<span class="k">def</span> <span class="f">estimate</span>(self, history, extra=<span class="s">""</span>, fixed=...):
+    <span class="k">if</span> self.anchor <span class="k">is not</span> None <span class="k">and</span> self.anchor_length &lt;= len(history):
+        <span class="c"># 锚点 = 上次服务返回的 input + output；只估算之后新增的消息</span>
+        <span class="k">return</span> self.anchor + estimate_messages(history[self.anchor_length:]) + estimate_text(extra)
+    <span class="c"># No usable anchor: count the whole request, including system prompt and tool definitions.</span>
+    <span class="k">return</span> estimate_text(fixed()) + estimate_messages(history) + estimate_text(extra)</code></pre>
+  <p>有锚点时，大部分数字来自服务的真实计数，只有增量是估算，误差小；刚压缩完、<code>/clear</code>、切换模型、或服务不返回输入用量（Chat 协议未开 <code>stream_usage</code>）时，没有锚点，就全量估算系统提示、工具定义和历史。中文按 1 字 1 Token 偏保守，宁可早压缩也不要撞墙。</p>
+  <div class="callout amber"><b class="t">两套口径并存</b><p>“是否触发”用锚点（真实计数），“切在哪里”用字符估算（<code>split_point</code> 只能估算单条消息）。真实分词器对数字等内容可能比估算多很多，所以会出现“总量已超阈值，但按估算近期消息覆盖了全部历史”的情况。验收中正是这个现象导致了“没有可压缩的内容”的误报，见 11.8。</p></div>
+
+  <h3 id="ctx-l1">11.4 第一层：大结果存盘</h3>
+  <div class="file"><a href="../../src/mosscode/tool_budget.py">tool_budget.py</a>（简化）</div>
+<pre><code>RESULT_TOKENS = 12_500       <span class="c"># 单个结果上限，约 5 万个 ASCII 字符</span>
+MESSAGE_TOKENS = 50_000      <span class="c"># 同一批并行调用的合计上限</span>
+HEAD, TAIL = 2_000, 1_000
+EXEMPT = frozenset({<span class="s">"read_file"</span>})   <span class="c"># 已分页、读的又是磁盘文件；存盘会在副本上循环</span>
+
+<span class="k">def</span> <span class="f">bound_result</span>(name, call_id, text, details, session):      <span class="c"># 单个结果：在 registry._bound 中调用</span>
+    <span class="k">if</span> name <span class="k">in</span> EXEMPT <span class="k">or</span> estimate_text(text) &lt;= RESULT_TOKENS: <span class="k">return</span> text, details
+    <span class="k">return</span> store(text, details, session, call_id)       <span class="c"># 写 tool-results/&lt;id&gt;.txt，返回预览</span>
+
+<span class="k">def</span> <span class="f">bound_message</span>(message, session):                 <span class="c"># 一批结果：在 execute_batch 的 finally 中调用</span>
+    超过 50,000 时，在尚未存盘的结果中从大到小依次存盘，直到合计不超限</code></pre>
+  <div class="grid">
+    <div class="card"><h4>预览长什么样</h4><p>“输出过大（约 N Token，M 字符），完整内容已保存到：路径。需要完整内容时用 read_file 读取这个文件（可用 offset 和 limit 分页）。”然后是前 2,000 字符、省略字节数、后 1,000 字符。测试失败摘要通常在末尾，所以保留尾部。</p></div>
+    <div class="card"><h4>会话目录</h4><p><a href="../../src/mosscode/session.py">session.py</a>：<code>~/.mosscode/sessions/&lt;时间&gt;-&lt;4 位随机&gt;/</code>，第一次写入时才创建（<code>lazy=True</code>），含标记文件 <code>.mosscode-session</code>。启动时只删除 30 天前且带标记的目录。<code>persist_result</code> 用 <code>"x"</code> 模式写，同一调用 ID 只写一次。</p></div>
+    <div class="card"><h4>读取不需要审批</h4><p>存盘文件在项目外。<code>registry.use_session()</code> 把会话目录告诉权限策略，<code>decide()</code> 对该目录内的 read_file 直接放行，包括计划模式。否则模型每次查看存盘内容都要弹审批。</p></div>
+    <div class="card"><h4>决定只做一次</h4><p><code>store()</code> 在 details 中写入 <code>budgeted=True</code>；<code>bound_message</code> 跳过已标记的结果。结果一旦进入历史就不再改写，保证缓存前缀不变（测试 AC1 验证了相邻两次请求的前缀逐项相同）。</p></div>
+  </div>
+  <p>同一章还把命令输出的内部上限从“每个流保留 8 KiB 头 + 22 KiB 尾”改为 1 MiB 头 + 1 MiB 尾：截断改由第一层统一负责，那个上限只用来防止内存失控。</p>
+
+  <h3 id="ctx-l2">11.5 第二层：摘要压缩</h3>
+  <div class="flow">
+    <span class="step">估算 ≥ 自动阈值</span><span class="arrow">→</span>
+    <span class="step"><b>cut_point</b>：切在哪里</span><span class="arrow">→</span>
+    <span class="step"><b>summary_request</b>：不带工具的请求</span><span class="arrow">→</span>
+    <span class="step"><b>parse_summary</b>：取 &lt;summary&gt;</span><span class="arrow">→</span>
+    <span class="step"><b>boundary</b>：边界消息 + 原话</span><span class="arrow">→</span>
+    <span class="step"><b>write_record</b>：compact-n.md</span><span class="arrow">→</span>
+    <span class="step">重置状态</span>
+  </div>
+  <p><a href="../../src/mosscode/compaction.py">compaction.py</a> 对 Agent 是纯函数：输入历史，返回新历史或抛出 <code>CompactionError</code>，从不修改传入的列表。失败时历史保持原样。</p>
+
+  <h4>① 保留哪些消息：split_point 与 cut_point</h4>
+  <div class="file">compaction.py</div>
+<pre><code>KEEP_TOKENS, KEEP_MESSAGES, KEEP_SHARE = 10_000, 5, 0.4
+
+<span class="k">def</span> <span class="f">_group_start</span>(history, index):
+    <span class="c"># Never start on tool results: keep the assistant call that produced them.</span>
+    <span class="k">while</span> index &gt; 0 <span class="k">and</span> history[index].role == <span class="s">"tool"</span>: index -= 1
+    <span class="k">return</span> index
+
+<span class="k">def</span> <span class="f">split_point</span>(history, threshold):
+    start = _group_start(history, len(history) - 1)        <span class="c"># 至少保留最后一组</span>
+    tokens = estimate_messages(history[start:])
+    cap = int(threshold * KEEP_SHARE)                      <span class="c"># 保留部分不超过阈值的 40%</span>
+    <span class="k">while</span> start &gt; 0 <span class="k">and</span> (tokens &lt; KEEP_TOKENS <span class="k">or</span> len(history) - start &lt; KEEP_MESSAGES):
+        earlier = _group_start(history, start - 1)
+        extra = estimate_messages(history[earlier:start])
+        <span class="k">if</span> tokens + extra &gt; cap: <span class="k">break</span>
+        start, tokens = earlier, tokens + extra
+    <span class="k">return</span> 0 <span class="k">if</span> _only_boundary(history[:start]) <span class="k">else</span> start   <span class="c"># 只剩上次的摘要：没有可压缩的</span>
+
+<span class="k">def</span> <span class="f">cut_point</span>(history, threshold, *, manual=False):
+    <span class="s">"""split_point; a manual /compact on a short history keeps only the last group instead."""</span>
+    cut = split_point(history, threshold)
+    <span class="k">if</span> cut <span class="k">or not</span> manual <span class="k">or not</span> history: <span class="k">return</span> cut
+    start = _group_start(history, len(history) - 1)
+    <span class="k">return</span> 0 <span class="k">if</span> _only_boundary(history[:start]) <span class="k">else</span> start</code></pre>
+
+  <div class="tool" id="sim">
+    <h4>模拟器：保留哪些消息</h4>
+    <p style="margin:0 0 6px;font-size:14px;color:var(--muted)">按上面的算法逐步计算。数字是每条消息的估算 Token，绿色保留原文，灰色被压缩。</p>
+    <div class="row">
+      <label>场景<select id="scenario">
+        <option value="m44">M44：分页读 long.txt</option>
+        <option value="chat">普通多轮对话（10 问 10 答，每条约 2K）</option>
+        <option value="after">刚压缩完的短历史</option>
+        <option value="big">最后一组就很大（一次输出 5 万 Token 的命令）</option>
+      </select></label>
+      <label>自动阈值<input id="th" type="number" min="16000" step="1000"></label>
+      <label style="flex-direction:row;display:flex;align-items:center;gap:6px;color:var(--ink)"><input id="manual" type="checkbox" style="width:auto">手动 /compact</label>
+    </div>
+    <div class="msgs" id="sim-msgs"></div>
+    <div class="log" id="sim-log"></div>
+  </div>
+
+  <h4>② 摘要请求</h4>
+  <ul>
+    <li><b>不带工具</b>：<code>provider.stream(..., tools=(), allow_tools=False)</code>，提示的开头和结尾都写明禁止调用工具。</li>
+    <li><b>序列化为纯文本</b>：被压缩的消息渲染成 <code>[用户]</code>、<code>[助手]</code>、<code>[工具调用] 名称 参数</code>、<code>[工具结果 · 名称]</code>，作为一条 user 消息发送。这样任何协议都不会遇到“工具调用和结果不成对”的问题。</li>
+    <li><b>先草稿后摘要</b>：要求先在 <code>&lt;analysis&gt;</code> 中按时间梳理，再在 <code>&lt;summary&gt;</code> 中按 9 部分写：主要请求和意图、关键技术概念、文件和代码段、错误和修复、问题解决过程、用户的偏好与约束、待办任务、当前工作（最详细）、下一步。程序只取 summary。</li>
+    <li><b>手动说明</b>：<code>/compact 只保留与 notes.txt 相关的内容</code> 的说明附加在提示中。</li>
+  </ul>
+  <div class="file">compaction.py · compact_history() 中的缩减循环（简化）</div>
+<pre><code><span class="k">for</span> step <span class="k">in</span> range(SHRINK_STEPS + 1):                 <span class="c"># 最多缩减 3 次</span>
+    prompt = summary_request(transcript(removed[dropped:], shrink=shrink, dropped=dropped), instructions)
+    <span class="k">if</span> estimate(prompt) &lt;= budget.manual_limit:
+        <span class="k">try</span>: response = <span class="k">await</span> _ask(provider, prompt)
+        <span class="k">except</span> ProviderError <span class="k">as</span> exc:
+            <span class="k">if</span> exc.code != <span class="s">"context_overflow"</span>: <span class="k">raise</span> CompactionError(...)   <span class="c"># 超限才继续缩减</span>
+    <span class="k">if</span> response: <span class="k">break</span>
+    <span class="k">if not</span> shrink: shrink = True; <span class="k">continue</span>               <span class="c"># 第 1 步：每个工具结果缩短到 2,000 字符</span>
+    dropped += max(1, ceil(remaining * 0.2))             <span class="c"># 之后：丢掉最早 20% 的消息</span></code></pre>
+  <p><b>失败判定</b>（<code>parse_summary</code>）：服务报错、回复包含工具调用、因输出上限截断、没有 <code>&lt;summary&gt;</code> 或内容为空。任何一种都抛出 <code>CompactionError</code>，历史不变。</p>
+
+  <h4>③ 边界消息与用户原话</h4>
+<pre><code>[边界消息 · role=user · synthetic="compact"]
+（上下文已压缩：较早的对话由下面的摘要代替，之后的消息保留原文。）
+摘要：1. 主要请求和意图 … 9. 下一步
+用户原话（按时间顺序，由程序原样附上）：
+▸ 请记住：以后所有回答都以‘收到’开头。
+▸ 用 read_file 分页读完 long.txt 全部 3000 行 …
+压缩前的完整记录：~/.mosscode/sessions/…/compact-1.md
+需要具体代码、报错或输出时用 read_file 读取记录文件；文件可能已变化，修改前必须重新读取，不要依据摘要补写代码。
+[近期原文 …]</code></pre>
+  <div class="grid">
+    <div class="card"><h4>原话不交给模型改写</h4><p>摘要可能遗漏或改写用户的要求。<code>collect_quotes</code> 收集被压缩部分的用户输入，原样附上，预算 8,000 Token。<code>fit_quotes</code> 从新到旧装入：放得下就完整保留，放不下就只留前 200 字符加“原文见记录文件”。人工验收 M45 就是检查压缩后模型还能复述最早那句“以‘收到’开头”。</p></div>
+    <div class="card"><h4>多次压缩时原话继续带入</h4><p>每条原话是边界消息中一个以 <code>"\n\n▸ "</code> 开头的独立内容块。下一次压缩时，<code>carried_quotes()</code> 从旧边界消息中取回这些块，和新的用户输入一起重新排预算，所以第一句要求不会在第二次压缩时丢失。</p></div>
+  </div>
+
+  <h4>④ 压缩成功后的状态</h4>
+  <div class="file">agent.py · AgentLoop._compact()</div>
+<pre><code><span class="k">async def</span> <span class="f">_compact</span>(self, instructions=<span class="s">""</span>, *, manual=False):
+    <span class="k">if not</span> cut_point(self.history, self.budget.auto_threshold, manual=manual):
+        <span class="c"># Nothing older than the kept tail: automatic attempts skip silently and never trip the breaker.</span>
+        <span class="k">if</span> manual: <span class="k">yield</span> CompactFailed(NOTHING, ..., <span class="s">"nothing"</span>, True)
+        <span class="k">return</span>
+    <span class="k">yield</span> CompactStarted(manual)
+    <span class="k">try</span>:
+        done = <span class="k">await</span> compact_history(self.provider, self.history, self.budget, session=self.session,
+                                     instructions=instructions, manual=manual)
+    <span class="k">except</span> CompactionError <span class="k">as</span> exc:
+        <span class="k">if not</span> manual <span class="k">and</span> exc.code != <span class="s">"nothing"</span>: self.compact_failures += 1
+        <span class="k">yield</span> CompactFailed(...); <span class="k">return</span>
+    self.history = done.history
+    self.registry.forget_reads()                          <span class="c"># 先读后改：所有文件都要重新读取</span>
+    self._announced, self._reannounce = <span class="s">"normal"</span>, True  <span class="c"># 模式提醒可能被摘要掉了，下一次请求重发</span>
+    self.meter.invalidate()                               <span class="c"># 锚点失效，改为全量估算</span>
+    self.compact_failures = 0; self.compactions += 1
+    <span class="k">yield</span> CompactFinished(done.removed, done.summary_tokens, elapsed, record)</code></pre>
+
+  <h3 id="ctx-when">11.6 压缩时机与熔断</h3>
+  <div class="table-wrap"><table>
+    <tr><th>入口</th><th>触发</th><th>保留规则</th><th>失败计入熔断</th></tr>
+    <tr><td>自动</td><td>每次请求模型前（含任务中的每一轮），估算 ≥ 自动阈值</td><td>split_point；没有可压缩的就静默跳过</td><td>是</td></tr>
+    <tr><td>超限自救</td><td>服务返回 <code>context_overflow</code>：压缩一次，重试一次原请求；仍超限就报错停止</td><td>同自动</td><td>是</td></tr>
+    <tr><td>手动 /compact</td><td>空闲时，不看阈值；Esc 取消，历史不变</td><td>cut_point(manual=True)：短历史只保留最后一组</td><td>否；成功后清零并恢复自动压缩</td></tr>
+  </table></div>
+  <p><b>熔断</b>：自动压缩连续失败 3 次（<code>BREAKER = 3</code>）后暂停，提示“自动压缩已暂停，可以 /compact 手动重试或 /clear”。手动压缩成功、<code>/clear</code> 或切换模型后恢复。这样可以避免每一轮都发出一个注定失败的摘要请求。<code>auto_compact: false</code> 则完全关闭自动压缩和自救，只保留手动。</p>
+
+  <h3 id="ctx-ui">11.7 界面与无界面输出</h3>
+  <div class="grid">
+    <div class="card"><h4>进度行原地变为结果</h4><p>收到 <code>CompactStarted</code> 时挂载一个 <code>CompactRow</code>（自动：“✻ 上下文接近上限，正在压缩 · Ns”；手动：“✻ 正在压缩上下文 · Ns”），每 0.2 秒由 <code>_tick</code> 刷新计时。完成、失败或取消时调用 <code>finish()</code>，同一行变成“✓ 已压缩上下文 · N 条消息 → 摘要 · 约 X Token · 用时”。行未完成前 <code>transcript</code> 为 None，滚动历史的提交在这里停住，保证顺序。</p></div>
+    <div class="card"><h4>显示位置</h4><p>本轮回复尚未开始时，进度行插在回复之前（<code>mount(row, before=reply)</code>），读起来是“先压缩、后回答”；任务中途压缩时追加在工具行之后。</p></div>
+    <div class="card"><h4>状态栏比例</h4><p>“上下文 约 N%” = 估算值 ÷ 有效窗口，收到第一次用量后显示，达到自动阈值的 80% 时变琥珀色。<code>_refresh_context()</code> 只在历史变化时重算并缓存。</p></div>
+    <div class="card"><h4>-p 无界面</h4><p>text 格式把进度和结果写到 stderr；stream-json 输出 <code>{"type":"compact","subtype":"started|finished|failed"}</code>；最终 result 增加 <code>compactions</code>。</p></div>
+  </div>
+
+  <h3 id="ctx-lessons">11.8 人工验收中发现的问题与修复</h3>
+  <p>自动测试全部通过后，用真实模型（DeepSeek，窗口配置为 50,000）做验收，又发现了四个问题。这一段最值得学习：单元测试证明了算法正确，但没有覆盖“真实 Token 计数与估算不一致”和“用户的感受”。</p>
+  <div class="table-wrap"><table>
+    <tr><th>现象</th><th>原因</th><th>修复</th></tr>
+    <tr><td>M44 读完 3000 行也没有压缩</td><td>验收配置的副本里漏加了 <code>context_window</code>，按 128K 计算，自动阈值约 95K</td><td>补上配置；验收指南写明“启动区不应再出现未配置提示”，作为自检</td></tr>
+    <tr><td>一轮开始时出现“没有可压缩的内容”</td><td>锚点（真实计数）已超阈值，但按字符估算，近期消息覆盖了全部历史；这次空尝试还被当成失败计入熔断</td><td>自动压缩先算 <code>cut_point</code>，为 0 时不发事件、不计失败，直接发送请求（超限还有自救兜底）</td></tr>
+    <tr><td>手动 <code>/compact</code> 说没有可压缩的内容</td><td>手动与自动共用“至少 1 万 Token、5 条”的保留规则；小窗口压缩一次后，剩余历史全落在保留范围内</td><td>新增 <code>cut_point(manual=True)</code>：常规规则为 0 时只保留最后一组，与 Claude Code 的 <code>/compact</code> 一致</td></tr>
+    <tr><td>编辑失败后十几秒没有反应</td><td>自动压缩期间只有底部状态栏在计时，对话区没有任何变化</td><td>新增 <code>CompactRow</code> 实时进度行，完成后原地变为结果；取消时变为“已取消压缩”</td></tr>
+  </table></div>
+  <p>修复后新增 4 个测试：手动切点、阈值已到但无可压缩时静默跳过、进度行原地变为结果、取消时进度行收尾。第八章测试从 43 个增加到 47 个，全量 591 passed。</p>
+
+  <h3 id="ctx-limits">11.9 已知限制</h3>
+  <ul>
+    <li>估算没有分词器，与服务计费数字有差异；压缩时机以估算为准，超限时由自救兜底。</li>
+    <li>摘要质量依赖模型；关键细节靠记录文件和“修改前必须重新读取”的约束兜底。</li>
+    <li>会话目录不是对话记录，不支持退出后恢复会话。</li>
+  </ul>
+</section>
+
+<!-- 12 -->
+<section id="tests">
+  <div class="head"><span class="no">12</span><h2>测试方法</h2></div>
+  <p class="sub">测试不读取 API 配置、不发送真实请求。三种替身覆盖了几乎全部行为。</p>
+  <div class="grid three">
+    <div class="card"><h4>SequenceProvider</h4><p><a href="../../tests/test_agent.py">tests/test_agent.py</a>：按顺序返回预设的回复、异常或可等待的生成器，并记录每次请求的消息、系统提示、工具和 <code>allow_tools</code>。断言“摘要请求不带工具”就是检查它记录的参数。</p></div>
+    <div class="card"><h4>模拟 SSE</h4><p>Provider 测试用 httpx 的 MockTransport 回放真实格式的流事件，检查三种协议的请求体（例如压缩后的历史在每种协议下都是合法请求）。</p></div>
+    <div class="card"><h4>Textual pilot</h4><p><code>app.run_test()</code> 无界面运行 TUI，模拟按键，检查组件和状态栏文字。用 <code>asyncio.Event</code> 卡住摘要请求，就能在“压缩进行中”这个时刻做断言。</p></div>
+  </div>
+  <div class="table-wrap"><table>
+    <tr><th>范围</th><th>测试文件</th><th>数量</th></tr>
+    <tr><td>Agent Loop 与对话</td><td>test_agent · test_agent_tui · test_conversation · test_tool_conversation</td><td>37</td></tr>
+    <tr><td>模型协议与配置</td><td>test_providers · test_tool_providers · test_config · test_cli · test_cache_probe</td><td>82</td></tr>
+    <tr><td>提示词与缓存（含阶段 1、6）</td><td>test_prompts · test_prompt_cache · test_model_side · test_prompts_stage6</td><td>44</td></tr>
+    <tr><td>工具（含阶段 2）</td><td>test_tools · test_tools_stage2 · test_tool_tui</td><td>31</td></tr>
+    <tr><td>权限与计划模式（含阶段 3、3b）</td><td>test_permissions · test_permission_modes · test_permission_tui · test_plan_commands · test_permissions_stage3b</td><td>236</td></tr>
+    <tr><td>MCP（含阶段 5）</td><td>test_mcp · test_mcp_stage5</td><td>39</td></tr>
+    <tr><td>界面与交互（含阶段 4）</td><td>test_tui · test_interaction_stage4 · test_scrollback · test_windows_input · test_windows_inline</td><td>67</td></tr>
+    <tr><td>文档</td><td>test_docs</td><td>9</td></tr>
+    <tr><td>上下文管理（第 8 章）</td><td>test_context_stage8</td><td>47</td></tr>
+    <tr><td>全部</td><td colspan="2">592 项：591 passed · 1 skipped（当前 Windows 用户不能创建文件符号链接）</td></tr>
+  </table></div>
+<pre><code><span class="c"># 在 F:\code-storage\PyCharm\MossCode 下运行</span>
+.\.venv\Scripts\python.exe -m pytest -q tests\test_context_stage8.py</code></pre>
+</section>
+
+<!-- 13 -->
+<section id="route">
+  <div class="head"><span class="no">13</span><h2>源码阅读路线</h2></div>
+  <p class="sub">建议按数据流动的顺序读，每一步都配一个测试文件对照。</p>
+  <ol class="steps">
+    <li><a href="../../src/mosscode/messages.py">messages.py</a>：先熟悉所有数据类型和事件。</li>
+    <li><a href="../../src/mosscode/agent.py">agent.py</a> 的 <code>run()</code>，对照 <a href="../../tests/test_agent.py">test_agent.py</a>。</li>
+    <li><a href="../../src/mosscode/tools/base.py">tools/base.py</a> 的 <code>execute()</code> 与 <a href="../../src/mosscode/tools/execution.py">execution.py</a>，对照 test_tools_stage2.py。</li>
+    <li><a href="../../src/mosscode/permissions.py">permissions.py</a> 的 <code>operation()</code>、<code>decide()</code>、<code>authorize()</code>，对照 test_permissions_stage3b.py。</li>
+    <li><a href="../../src/mosscode/providers.py">providers.py</a>：先读 <code>SDKProvider.stream</code>，再挑一个协议（推荐 Anthropic）读 <code>_stream</code>。</li>
+    <li><a href="../../src/mosscode/prompts.py">prompts.py</a>：七个模块、<code>environment()</code>、<code>mode_reminder()</code>。</li>
+    <li>第八章：<a href="../../src/mosscode/context.py">context.py</a> → <a href="../../src/mosscode/tool_budget.py">tool_budget.py</a> → <a href="../../src/mosscode/compaction.py">compaction.py</a> → agent.py 的 <code>_compact</code>，对照 <a href="../../tests/test_context_stage8.py">test_context_stage8.py</a>（按 T1–T6 分节）。</li>
+    <li><a href="../../src/mosscode/conversation.py">conversation.py</a> 与 <a href="../../src/mosscode/cli.py">cli.py</a>：看事件如何被两种前端消费。</li>
+    <li>最后读 <a href="../../src/mosscode/tui.py">tui.py</a> 的 <code>_respond()</code>、<code>_commit_ready_transcript()</code>、<code>_tick()</code>。</li>
+  </ol>
+</section>
+
+<!-- 14 -->
+<section id="quiz">
+  <div class="head"><span class="no">14</span><h2>自测题</h2></div>
+  <p class="sub">先自己回答，再展开核对。</p>
+  <details><summary>1. 第一次请求就被取消，历史里会留下那条用户消息吗？</summary><p>不会。用户消息在收到第一个完整回复后才写入历史（<code>committed</code>），之前只作为 <code>fresh</code> 临时拼进请求。</p></details>
+  <details><summary>2. 为什么首事件之后断流不重试？</summary><p>正文可能已经显示给用户，重放会重复显示；更重要的是，只有“什么都没产生”的请求才能保证没有任何工具调用被执行，重试才安全。</p></details>
+  <details><summary>3. 模型一次回复了 read、read、edit、read，执行顺序是怎样的？</summary><p>分成三批：<code>[0,1]</code> 并发，<code>[2]</code> 单独，<code>[3]</code> 单独。写入之后的读取不会被提前；历史中的结果顺序始终是原始顺序。</p></details>
+  <details><summary>4. bypassPermissions 能放行 <code>git push --force</code> 吗？能放行 <code>rm -rf /</code> 吗？</summary><p>前者是高风险级，任何档位都要求每次确认，只提供“本次允许”和“拒绝”；后者是灾难级，在 <code>operation()</code> 中直接以 <code>dangerous_command</code> 拒绝，任何授权都解除不了。</p></details>
+  <details><summary>5. 为什么 read_file 不参与第一层存盘？</summary><p>它已经分页，而且读的就是磁盘上的文件。如果把它的结果也存盘，模型为了看完整内容又会去 read_file 存盘文件，形成循环。</p></details>
+  <details><summary>6. 为什么存盘决定必须在结果写入历史之前做，而且之后不再改？</summary><p>为了 Prompt Cache。已经发送过的历史前缀必须逐字节不变，否则之后每次请求都无法复用缓存。<code>budgeted</code> 标记保证同一结果不会被处理两次。</p></details>
+  <details><summary>7. 窗口 50,000、输出上限 4,096 时，自动阈值是多少？保留部分最多多少？</summary><p>输出预留取 max(4096, 20000) = 20000，有效窗口 30000，自动阈值 30000 − 13000 = 17000；保留部分上限是 17000 × 0.4 = 6800（但至少保留最后一组）。</p></details>
+  <details><summary>8. 压缩成功后，模型直接 edit 一个之前读过的文件会怎样？</summary><p>返回 <code>not_read</code>。压缩时 <code>forget_reads()</code> 清空了 FileState，因为模型手里已经没有文件原文。重新 read_file 后才能修改（验收 M46）。</p></details>
+  <details><summary>9. 用户最早的一句要求，经过两次压缩后还在吗？</summary><p>在。原话是边界消息中独立的 <code>▸</code> 内容块，第二次压缩时 <code>carried_quotes()</code> 取回它们重新排预算；预算不够时较早的会被缩短到 200 字符并注明见记录文件。</p></details>
+  <details><summary>10. 为什么“阈值已到但没有可压缩的内容”时，自动压缩要静默跳过而不是报失败？</summary><p>这不是摘要失败，而是估算口径差异造成的空操作。报出来会让用户困惑，计入熔断还会在几轮后错误地暂停自动压缩。请求照常发送，真超限时还有自救兜底。</p></details>
+  <details><summary>11. 手动 /compact 和自动压缩的保留规则有什么不同？为什么？</summary><p>自动压缩要保证压缩后仍有足够的近期原文继续工作（至少 1 万 Token、5 条）。手动是用户明确要求，常规规则找不到可压缩内容时改为只保留最后一组，否则小窗口下手动压缩几乎总是“没有可压缩的内容”。</p></details>
+  <details><summary>12. 进度行为什么要等完成后才进入终端滚动历史？</summary><p>写入滚动历史后就不能再改了。<code>_commit_ready_transcript()</code> 遇到 <code>transcript is None</code> 的 CompactRow 就停止提交，等它 <code>finish()</code> 后再连同后面的内容一起按顺序写入。</p></details>
+</section>
+</main>
+</div>
+
+<script>
+(function(){
+  // Threshold calculator: mirrors ContextBudget in src/mosscode/context.py.
+  var RESERVE=20000, AUTO=13000, MANUAL=3000, MIN=16000, SHARE=0.4;
+  var $=function(id){return document.getElementById(id)};
+  var fmt=function(n){return n.toLocaleString('en-US')};
+  function loadPreset(){var v=$('preset').value.split(',');$('cw').value=v[0];$('mo').value=v[1];$('ct').value=v[2];calc()}
+  function calc(){
+    var w=parseInt($('cw').value,10)||0, o=parseInt($('mo').value,10)||0, ctRaw=$('ct').value.trim(), ct=ctRaw?parseInt(ctRaw,10):null;
+    var reserve=Math.max(o,RESERVE), eff=w-reserve, wt=eff-AUTO, auto=ct?Math.min(wt,ct):wt, manual=eff-MANUAL;
+    var items=[['输出预留 max(输出上限, 20,000)',reserve],['有效窗口',eff],['窗口阈值（有效窗口 − 13,000）',wt],['自动压缩阈值',auto],['手动摘要请求上限',manual],['保留部分上限（阈值 × 40%）',Math.floor(auto*SHARE)]];
+    $('calc-out').innerHTML=items.map(function(i){return '<div><small>'+i[0]+'</small><b>'+fmt(i[1])+'</b></div>'}).join('');
+    var err='';
+    if(wt<MIN) err='配置错误：context_window 减去输出预留和安全余量后不足 16,000（当前 '+fmt(wt)+'），启动时会报错。';
+    else if(ct!==null&&!(ct>=MIN&&ct<=wt)) err='配置错误：compact_threshold 需在 16,000 与 '+fmt(wt)+' 之间。';
+    $('calc-err').textContent=err;
+  }
+  $('preset').addEventListener('change',loadPreset);
+  ['cw','mo','ct'].forEach(function(id){$(id).addEventListener('input',calc)});
+  loadPreset();
+
+  // Kept-tail simulator: mirrors split_point / cut_point in src/mosscode/compaction.py.
+  var KEEP_TOKENS=10000, KEEP_MESSAGES=5;
+  var SCENES={
+    m44:{th:17000,msgs:[['user',60,'用户：分页读 long.txt'],['assistant',60,'调用 read_file'],['tool',10723,'第 1–2000 行'],['assistant',60,'调用 read_file'],['tool',5500,'第 2001–3000 行']]},
+    chat:{th:100000,msgs:(function(){var a=[];for(var i=0;i<10;i++){a.push(['user',2004,'问 '+i]);a.push(['assistant',2004,'答 '+i])}return a})()},
+    after:{th:17000,msgs:[['user',900,'上次的摘要',true],['assistant',300,'上一条回复'],['user',40,'问：第一行是什么'],['assistant',60,'调用 read_file'],['tool',80,'notes.txt'],['assistant',120,'回答']]},
+    big:{th:100000,msgs:[['user',2004,'问 0'],['assistant',2004,'答 0'],['user',2004,'问 1'],['assistant',2004,'答 1'],['user',2004,'问 2'],['assistant',2004,'答 2'],['assistant',60,'调用命令'],['tool',50000,'5 万 Token 输出']]}
+  };
+  function groupStart(h,i){while(i>0&&h[i][0]==='tool')i--;return i}
+  function sum(h,a,b){var t=0;for(var i=a;i<b;i++)t+=h[i][1];return t}
+  function onlyBoundary(h,end){for(var i=0;i<end;i++)if(!h[i][3])return false;return true}
+  function simulate(){
+    var s=SCENES[$('scenario').value], h=s.msgs, th=parseInt($('th').value,10)||0, manual=$('manual').checked, log=[];
+    var start=groupStart(h,h.length-1), tokens=sum(h,start,h.length), cap=Math.floor(th*0.4);
+    log.push('最后一组从第 '+start+' 条开始，约 '+fmt(tokens)+' Token；保留上限 '+fmt(cap)+'（阈值 × 40%）');
+    while(start>0&&(tokens<KEEP_TOKENS||h.length-start<KEEP_MESSAGES)){
+      var earlier=groupStart(h,start-1), extra=sum(h,earlier,start);
+      if(tokens+extra>cap){log.push('再加第 '+earlier+'–'+(start-1)+' 条（'+fmt(extra)+'）会到 '+fmt(tokens+extra)+'，超过上限，停止');break}
+      log.push('加入第 '+earlier+'–'+(start-1)+' 条，保留 '+(h.length-earlier)+' 条、约 '+fmt(tokens+extra)+' Token');
+      start=earlier;tokens+=extra;
+    }
+    if(start>0&&tokens>=KEEP_TOKENS&&h.length-start>=KEEP_MESSAGES)log.push('已满足至少 10,000 Token 且至少 5 条');
+    var cut=onlyBoundary(h,start)?0:start;
+    if(start===0)log.push('保留部分已覆盖全部历史');
+    else if(cut===0)log.push('切点之前只剩上次的摘要（边界消息）');
+    log.push('split_point = '+cut);
+    if(cut===0&&manual&&h.length){var last=groupStart(h,h.length-1);cut=onlyBoundary(h,last)?0:last;log.push('手动：改为只保留最后一组 → cut_point = '+cut)}
+    log.push(cut===0?(manual?'结果：提示“没有可压缩的内容”':'结果：自动压缩静默跳过，照常发送请求'):'结果：压缩第 0–'+(cut-1)+' 条（'+cut+' 条），保留后 '+(h.length-cut)+' 条原文');
+    $('sim-msgs').innerHTML=h.map(function(m,i){var cls='msg '+(cut&&i<cut?'gone':'kept')+(m[3]?' bnd':'');return '<div class="'+cls+'"><b>#'+i+' '+m[0]+'</b>'+m[2]+'<br>'+fmt(m[1])+'</div>'}).join('');
+    $('sim-log').textContent=log.join('\n');
+  }
+  function loadScene(){$('th').value=SCENES[$('scenario').value].th;simulate()}
+  $('scenario').addEventListener('change',loadScene);$('th').addEventListener('input',simulate);$('manual').addEventListener('change',simulate);
+  loadScene();
+
+  // Highlight the section being read.
+  var links=[].slice.call(document.querySelectorAll('.nav a'));
+  var map={};links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a});
+  var obs=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting&&map[e.target.id]){links.forEach(function(a){a.classList.remove('active')});map[e.target.id].classList.add('active')}})},{rootMargin:'-10% 0px -80% 0px'});
+  Object.keys(map).forEach(function(id){var el=document.getElementById(id);if(el)obs.observe(el)});
+})();
+</script>
+</body>
+</html>
