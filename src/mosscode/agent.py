@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 from typing import AsyncIterator, Protocol, Sequence
 
-from .compaction import CompactionError, compact_history
+from .compaction import NOTHING, CompactionError, compact_history, cut_point
 from .context import ContextBudget, ContextMeter
 from .messages import (Completed, CompactFailed, CompactFinished, CompactStarted, Message, ContentBlock, ProviderError,
                        StreamEvent, ResponseBoundary, ToolDefinition, ToolProgress, ToolResult, IterationProgress,
@@ -138,13 +138,18 @@ class AgentLoop:
 
     async def _compact(self, instructions: str = "", *, manual: bool = False):
         """One compaction attempt; events report the outcome, the history changes only on success."""
+        if not cut_point(self.history, self.budget.auto_threshold, manual=manual):
+            # Nothing older than the kept tail: automatic attempts skip silently and never trip the breaker.
+            if manual:
+                yield CompactFailed(NOTHING, self.compact_failures, self.auto_paused, "nothing", True)
+            return
         yield CompactStarted(manual)
         started = time.monotonic()
         try:
             done = await compact_history(self.provider, self.history, self.budget, session=self.session,
-                                         instructions=instructions)
+                                         instructions=instructions, manual=manual)
         except CompactionError as exc:
-            if not manual:
+            if not manual and exc.code != "nothing":
                 self.compact_failures += 1
             yield CompactFailed(str(exc), self.compact_failures, self.auto_paused, exc.code, manual)
             return

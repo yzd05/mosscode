@@ -261,6 +261,28 @@ class PlanEntry(Static):
         self.update(self.transcript)
 
 
+CANCELLED_COMPACT = "└ 已取消压缩，对话历史未改变。"
+
+
+class CompactRow(Static):
+    """A running compaction, shown in the conversation and turned into its result line in place."""
+
+    def __init__(self, manual: bool):
+        super().__init__(classes="local-note")
+        self.label = "正在压缩上下文" if manual else "上下文接近上限，正在压缩"
+        self.started = monotonic()
+        self.transcript: Text | None = None  # Set once finished; scrollback waits until then.
+        self.tick()
+
+    def tick(self) -> None:
+        if self.transcript is None:
+            self.update(Text(f"✻ {self.label} · {monotonic() - self.started:.1f}s", style=OPERATION_COLOR))
+
+    def finish(self, text: str, style: str | None = None) -> None:
+        self.transcript = Text(text, style=style or "")
+        self.update(self.transcript)
+
+
 class KeyboardOptions(OptionList):
     async def _on_click(self, event: events.Click) -> None:
         # Choices require Enter. Mouse clicks may focus the list but cannot execute an action.
@@ -653,6 +675,7 @@ class MossCodeApp(TerminalApp[None]):
         self._approval_request: ApprovalRequest | None = None
         self._startup_task = None
         self._compacting: float | None = None  # Start time while a compaction runs.
+        self._compact_row: CompactRow | None = None
         self._context_share: tuple[int, bool] | None = None  # (percent of the effective window, near threshold)
 
     def compose(self) -> ComposeResult:
@@ -802,6 +825,10 @@ class MossCodeApp(TerminalApp[None]):
                     if widget.elapsed is None:
                         break
                     rendered = widget.transcript
+                elif isinstance(widget, CompactRow):
+                    if widget.transcript is None:
+                        break
+                    rendered = widget.transcript
                 elif widget.id == "banner":
                     rendered = startup_banner(self.provider_name)
                 elif hasattr(widget, "transcript"):
@@ -874,6 +901,8 @@ class MossCodeApp(TerminalApp[None]):
 
     def _tick(self) -> None:
         if self._generating and self._compacting is not None:
+            if self._compact_row is not None:
+                self._compact_row.tick()
             self._status(f"压缩上下文中 · {monotonic() - self._compacting:.1f}s · Esc 取消")
             return
         if self._generating and self._active_reply is not None:
@@ -1042,6 +1071,25 @@ class MossCodeApp(TerminalApp[None]):
     def _compact_style(event) -> str | None:
         return OPERATION_COLOR if isinstance(event, CompactFailed) and event.code != "nothing" else None
 
+    async def _show_compact(self, manual: bool, before=None) -> None:
+        chat = self.query_one("#chat", VerticalScroll)
+        self._compact_row = CompactRow(manual)
+        self._compacting = self._compact_row.started
+        await chat.mount(self._compact_row, before=before)
+        chat.anchor()
+        self._tick()
+
+    async def _end_compact(self, text: str, style: str | None = None, before=None) -> None:
+        """The running row becomes the result; without one (nothing to compact) a note is added."""
+        self._compacting = None
+        row, self._compact_row = self._compact_row, None
+        if row is not None:
+            row.finish(text, style)
+            return
+        chat = self.query_one("#chat", VerticalScroll)
+        await chat.mount(self._note(text, style), before=before)
+        chat.anchor()
+
     async def _start_compact(self, instructions: str) -> None:
         self.started = self._compacting = monotonic()
         self._generating = True
@@ -1052,18 +1100,21 @@ class MossCodeApp(TerminalApp[None]):
         try:
             async with aclosing(self.conversation.compact(instructions)) as stream:
                 async for event in stream:
-                    if isinstance(event, (CompactFinished, CompactFailed)):
-                        self._compacting = None
-                        await self._local_note(compact_notice(event), self._compact_style(event))
+                    if isinstance(event, CompactStarted):
+                        await self._show_compact(event.manual)
+                    elif isinstance(event, (CompactFinished, CompactFailed)):
+                        await self._end_compact(compact_notice(event), self._compact_style(event))
+                    await self._commit_ready_transcript()
         except asyncio.CancelledError:
             if not self._closing:
-                await self._local_note("└ 已取消压缩，对话历史未改变。")
+                await self._end_compact(CANCELLED_COMPACT)
         except ProviderError as exc:
-            await self._local_note(f"! {exc}", OPERATION_COLOR)
+            await self._end_compact(f"! {exc}", OPERATION_COLOR)
         finally:
             self._generating = False
             self._compacting = None
             if not self._closing:
+                await self._commit_ready_transcript()
                 field = self.query_one("#prompt", PromptArea)
                 queued = self.conversation.take_queued()
                 if queued:
@@ -1268,14 +1319,11 @@ class MossCodeApp(TerminalApp[None]):
                         self._refresh_context()
                         self._tick()
                     elif isinstance(event, CompactStarted):
-                        self._compacting = monotonic()
-                        self._tick()
+                        # Before a reply that has not started yet, so the row reads in time order.
+                        await self._show_compact(event.manual, None if continuation else reply)
                     elif isinstance(event, (CompactFinished, CompactFailed)):
-                        self._compacting = None
-                        note = self._note(compact_notice(event), self._compact_style(event))
-                        # Before a reply that has not started yet, so the note reads in time order.
-                        await (chat.mount(note) if continuation else chat.mount(note, before=reply))
-                        chat.anchor()
+                        await self._end_compact(compact_notice(event), self._compact_style(event),
+                                                None if continuation else reply)
                         self._refresh_context()
                     elif isinstance(event, RunStopped):
                         completed = event.reason == "completed"
@@ -1357,6 +1405,8 @@ class MossCodeApp(TerminalApp[None]):
             reply.interrupted("出现内部错误，请检查安装环境。")
             self._status("失败 · 未完成正文未保存，已执行工具结果保留")
         finally:
+            if self._compact_row is not None:
+                await self._end_compact(CANCELLED_COMPACT)
             self._generating = False
             self._compacting = None
             self._retry_notice = ""

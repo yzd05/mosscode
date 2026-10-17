@@ -26,6 +26,7 @@ DROP_SHARE = 0.2
 BOUNDARY = "compact"
 QUOTE = "\n\n▸ "  # Prefix of each verbatim user quote block in a boundary message.
 CLIPPED = " …（较长，原文见记录文件）"
+NOTHING = "没有可压缩的内容：对话中只有最近一轮。"
 
 SYSTEM = "你是对话摘要器。禁止调用任何工具，只输出纯文本；任何工具调用都会被拒绝，本次任务会失败。"
 
@@ -56,29 +57,41 @@ class Compacted:
     record: Path | None
 
 
+def _group_start(history: Sequence[Message], index: int) -> int:
+    # Never start on tool results: keep the assistant call that produced them.
+    while index > 0 and history[index].role == "tool":
+        index -= 1
+    return index
+
+
+def _only_boundary(messages: Sequence[Message]) -> bool:
+    # Re-summarizing a lone summary gains nothing.
+    return all(m.synthetic == BOUNDARY for m in messages)
+
+
 def split_point(history: Sequence[Message], threshold: int) -> int:
     """Index where the kept tail starts (C3); 0 means nothing can be compacted."""
-    def group_start(index):
-        # Never start on tool results: keep the assistant call that produced them.
-        while index > 0 and history[index].role == "tool":
-            index -= 1
-        return index
-
     if not history:
         return 0
-    start = group_start(len(history) - 1)
+    start = _group_start(history, len(history) - 1)
     tokens = estimate_messages(history[start:])
     cap = int(threshold * KEEP_SHARE)
     while start > 0 and (tokens < KEEP_TOKENS or len(history) - start < KEEP_MESSAGES):
-        earlier = group_start(start - 1)
+        earlier = _group_start(history, start - 1)
         extra = estimate_messages(history[earlier:start])
         if tokens + extra > cap:
             break
         start, tokens = earlier, tokens + extra
-    # Re-summarizing a lone summary gains nothing.
-    if all(m.synthetic == BOUNDARY for m in history[:start]):
-        return 0
-    return start
+    return 0 if _only_boundary(history[:start]) else start
+
+
+def cut_point(history: Sequence[Message], threshold: int, *, manual: bool = False) -> int:
+    """split_point; a manual /compact on a short history keeps only the last group instead."""
+    cut = split_point(history, threshold)
+    if cut or not manual or not history:
+        return cut
+    start = _group_start(history, len(history) - 1)
+    return 0 if _only_boundary(history[:start]) else start
 
 
 def carried_quotes(message: Message) -> list[str]:
@@ -190,10 +203,10 @@ async def _ask(provider, prompt: str) -> Completed:
 
 
 async def compact_history(provider, history: Sequence[Message], budget: ContextBudget, *,
-                          session: Session | None = None, instructions: str = "") -> Compacted:
-    cut = split_point(history, budget.auto_threshold)
+                          session: Session | None = None, instructions: str = "", manual: bool = False) -> Compacted:
+    cut = cut_point(history, budget.auto_threshold, manual=manual)
     if cut == 0:
-        raise CompactionError("没有可压缩的内容：近期消息已覆盖全部历史。", "nothing")
+        raise CompactionError(NOTHING, "nothing")
     removed, tail = list(history[:cut]), list(history[cut:])
     limit = budget.manual_limit
     shrink, dropped = False, 0

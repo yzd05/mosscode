@@ -59,7 +59,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`587 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
+- **pytest**：`591 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -79,7 +79,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 界面修复（宽度重绘、按键、/clear） | `tests\test_scrollback.py tests\test_windows_input.py` | 17 passed |
 | 5 MCP | `tests\test_mcp_stage5.py` | 15 passed |
 | 6 提示与文档 | `tests\test_prompts_stage6.py tests\test_docs.py` | 13 passed |
-| 8 上下文管理 | `tests\test_context_stage8.py` | 43 passed |
+| 8 上下文管理 | `tests\test_context_stage8.py` | 47 passed |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 
@@ -221,7 +221,7 @@ M40 的命令：
 Copy-Item "$moss\config.yaml" "$moss\.test-artifacts\acceptance\context-config.yaml"
 ```
 
-在副本的默认 Provider 下加一行 `context_window: 50000`（输出预留 2 万、安全余量 1.3 万，自动阈值约 1.7 万 Token；小于 49,000 会被判为配置错误）。M42–M48 都用这份配置启动：
+在副本的默认 Provider（`default_provider` 指向的那一项）下加一行 `context_window: 50000`（输出预留 2 万、安全余量 1.3 万，自动阈值约 1.7 万 Token；小于 49,000 会被判为配置错误）。M42–M48 都用这份配置启动，启动区不应再出现“未配置 context_window”的提示；出现就说明这一行没加到默认 Provider 下，自动压缩不会触发：
 
 ```powershell
 & "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\.test-artifacts\acceptance\context-config.yaml"
@@ -231,10 +231,10 @@ Copy-Item "$moss\config.yaml" "$moss\.test-artifacts\acceptance\context-config.y
 | --- | --- | --- |
 | M42 上下文比例 | 问“验收暗号是什么？不要使用工具。” | 回答完成后状态栏出现“上下文 约 N%”。达到自动阈值的 80% 时变为琥珀色 |
 | M43 读取存盘文件 | “运行 seq 1 20000，然后用 read_file 读取存盘文件的第 10000 行附近（offset 9995，limit 10）。” | 工具行显示“完整结果已存盘：路径”。读取存盘文件不弹审批（默认档位和计划模式都一样），结果包含 10000 |
-| M44 自动压缩 | 新会话（`/clear`）：“请记住：以后所有回答都以‘收到’开头。”然后：“用 read_file 分页读完 long.txt 全部 3000 行，再依次读取 src/app.py、src/util.py、notes.txt，每读一个用一句话说明。” | 读取几轮后，对话中出现“✓ 已压缩上下文 · N 条消息 → 摘要 · 约 X Token · 用时 …”，显示在下一段回复之前；任务不中断，继续读完。状态栏比例明显下降 |
+| M44 自动压缩 | 新会话（`/clear`）：“请记住：以后所有回答都以‘收到’开头。”然后：“用 read_file 分页读完 long.txt 全部 3000 行，再依次读取 src/app.py、src/util.py、notes.txt，每读一个用一句话说明。” | 读取几轮后，对话中先出现“✻ 上下文接近上限，正在压缩 · Ns”并持续计时，完成后这一行变为“✓ 已压缩上下文 · N 条消息 → 摘要 · 约 X Token · 用时 …”，显示在下一段回复之前；任务不中断，继续读完。状态栏比例明显下降 |
 | M45 原话保留 | 压缩后问“我最开始给你的要求原话是什么？” | 模型能复述“以后所有回答都以‘收到’开头”（原话由程序附在摘要后，不经模型改写），回答也仍以“收到”开头 |
-| M46 压缩后先读后改 | “把 notes.txt 第一行改成‘标题二’。” | 模型先 read_file 再编辑；直接编辑的话第一次调用失败（not_read），重读后成功 |
-| M47 手动压缩 | 输入 `/compact 只保留与 notes.txt 相关的内容`；再执行一次 `/compact`，在“压缩上下文中”计时期间按 Esc | 第一次：状态栏显示“压缩上下文中 · Ns · Esc 取消”，完成后显示“✓ 已压缩上下文…”。第二次按 Esc 后显示“已取消压缩，对话历史未改变。”。刚压缩完紧接着再压缩时，可能先提示“没有可压缩的内容”，这也是预期行为 |
+| M46 压缩后先读后改 | “把 notes.txt 第一行改成‘标题二’。” | 模型先 read_file 再编辑；直接编辑的话第一次调用失败（not_read），重读后成功。这一轮如果又触发自动压缩，对话中会显示进度行，不会长时间没有反应；不应出现“没有可压缩的内容” |
+| M47 手动压缩 | 输入 `/compact 只保留与 notes.txt 相关的内容`；再执行一次 `/compact`，在“压缩上下文中”计时期间按 Esc | 第一次：对话中显示“✻ 正在压缩上下文 · Ns”，状态栏显示“压缩上下文中 · Ns · Esc 取消”，完成后这一行变为“✓ 已压缩上下文…”（刚自动压缩过也会执行，只保留最后一条回复）。第二次按 Esc 后这一行变为“已取消压缩，对话历史未改变。”。连续执行两次都不按 Esc 时，第二次提示“没有可压缩的内容” |
 | M48 无界面输出 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\.test-artifacts\acceptance\context-config.yaml" -p "用 read_file 依次读取 long.txt、src/app.py、notes.txt 并分别总结" --output-format stream-json` | 出现 `{"type": "compact", "subtype": "started"…}` 和 `"finished"` 事件；最后的 `result` 中 `compactions` 至少为 1 |
 | M49 会话目录 | `Get-ChildItem ~\.mosscode\sessions` 并查看最新目录 | 目录名形如 `20261016-153000-a1b2`，其中有 `.mosscode-session`、`tool-results\` 和 `compact-1.md`；记录文件包含被压缩的完整消息。超过 30 天的会话目录会在启动时删除 |
 

@@ -213,8 +213,8 @@ def test_other_bad_requests_are_not_overflow():
 
 # T4 / AC5–AC7: layer 2 building blocks
 
-from mosscode.compaction import (BOUNDARY, CLIPPED, CompactionError, collect_quotes, compact_history, fit_quotes,
-                                 split_point)
+from mosscode.compaction import (BOUNDARY, CLIPPED, CompactionError, collect_quotes, compact_history, cut_point,
+                                 fit_quotes, split_point)
 from mosscode.messages import Completed, ProviderError
 from test_agent import SequenceProvider, response
 
@@ -223,6 +223,9 @@ BLOCK = "abcd" * 2000  # 2,000 tokens.
 
 def chat(pairs):
     return [text(role, f"{role}{i} " + BLOCK) for i in range(pairs) for role in ("user", "assistant")]
+
+
+NO_SUMMARY_REPLY = Completed(Message("assistant", (ContentBlock("text", "只有分析"),)), "stop")
 
 
 def summary_reply(body="1. 主要请求和意图：测试", stop="stop"):
@@ -245,6 +248,17 @@ def test_split_keeps_ten_thousand_tokens_and_five_messages_within_the_share():
         assert mixed[split_point(mixed, threshold)].role != "tool"
     lone = [Message("user", (ContentBlock("text", "摘要"),), synthetic=BOUNDARY)] + chat(1)[1:]
     assert split_point(lone, 4_000) == 0
+
+
+def test_manual_cut_keeps_only_the_last_group_when_the_tail_covers_everything():
+    assert cut_point(chat(2), 100_000) == 0
+    assert cut_point(chat(2), 100_000, manual=True) == 3
+    calls = (ToolCall("t", "dump", "{}"),)
+    tooled = chat(1) + [Message("assistant", (), tool_calls=calls),
+                        Message("tool", (), tool_results=(ToolResult("t", "dump", "ok"),))]
+    assert cut_point(tooled, 100_000, manual=True) == 2  # The call stays with its result.
+    lone = [Message("user", (ContentBlock("text", "摘要"),), synthetic=BOUNDARY)] + chat(1)[1:]
+    assert cut_point(lone, 100_000, manual=True) == 0 and cut_point([], 100_000, manual=True) == 0
 
 
 async def test_summary_request_has_no_tools_and_the_boundary_keeps_user_words(tmp_path):
@@ -286,6 +300,9 @@ async def test_failed_summaries_leave_the_history_unchanged(reply, reason):
     with pytest.raises(CompactionError) as nothing:
         await compact_history(SequenceProvider(), chat(2), ContextBudget.for_provider(200_000, 8_000))
     assert nothing.value.code == "nothing"
+    with pytest.raises(CompactionError, match="没有有效"):
+        await compact_history(SequenceProvider(NO_SUMMARY_REPLY), chat(2), ContextBudget.for_provider(200_000, 8_000),
+                              manual=True)
 
 
 async def test_oversized_summary_requests_shrink_results_then_drop_the_oldest():
@@ -398,10 +415,23 @@ async def test_three_failures_pause_automatic_compaction_until_a_manual_success(
     assert provider.requests[-1][0][0].synthetic == "compact"
 
 
-async def test_manual_compaction_with_nothing_to_do_is_not_a_failure_and_needs_idle():
-    conv = seeded(SequenceProvider(), chat(2))
+async def test_threshold_reached_with_nothing_older_skips_silently():
+    provider = SequenceProvider(response("一", usage=Usage(27_000, 0)), response("二"))
+    conv = seeded(provider, chat(2))
+    await conv.ask("第一问")
+    events = [e async for e in conv.reply("第二问")]  # Over the threshold, but the tail is the whole history.
+    assert not any(isinstance(e, (CompactStarted, CompactFailed)) for e in events)
+    assert conv._agent.compact_failures == 0 and len(provider.requests) == 2
+
+
+async def test_manual_compaction_of_a_short_history_keeps_the_last_reply():
+    conv = seeded(SequenceProvider(summary_reply()), chat(2))
     events = [e async for e in conv.compact()]
-    assert events[-1].code == "nothing" and events[-1].consecutive == 0 and "没有可压缩" in events[-1].reason
+    assert isinstance(events[0], CompactStarted) and isinstance(events[-1], CompactFinished)
+    assert [m.synthetic for m in conv.history] == ["compact", None] and conv.history[1].role == "assistant"
+    events = [e async for e in conv.compact()]
+    assert len(events) == 1 and events[0].code == "nothing" and events[0].consecutive == 0
+    assert "没有可压缩" in events[0].reason and events[0].manual
     conv._agent.busy = True
     with pytest.raises(ProviderError, match="正在运行"):
         async for _ in conv.compact():
@@ -445,7 +475,7 @@ from textual.widgets import Static
 from mosscode import cli
 from mosscode.appearance import compact_notice
 from mosscode.messages import ToolProgress
-from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
+from mosscode.tui import ChatEntry, CompactRow, MossCodeApp, PromptArea, ToolEntry
 
 
 def notes(app):
@@ -469,7 +499,7 @@ async def test_tui_shows_automatic_compaction_before_the_reply_and_the_context_s
 
 
 async def test_tui_compact_command_runs_idle_with_instructions():
-    provider = SequenceProvider(summary_reply())
+    provider = SequenceProvider(summary_reply(), summary_reply())
     app = MossCodeApp(seeded(provider, chat(8)), "Demo")
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause()
@@ -479,11 +509,63 @@ async def test_tui_compact_command_runs_idle_with_instructions():
         await pilot.pause()
         assert any("已压缩上下文" in n for n in notes(app)) and "侧重测试" in provider.requests[0][0][0].text
         assert app.conversation.history[0].synthetic == "compact" and not app._generating
-        app.query_one("#prompt", PromptArea).value = "/compact"
+        for _ in range(2):  # Right after a compaction, /compact still folds all but the last reply.
+            app.query_one("#prompt", PromptArea).value = "/compact"
+            await pilot.press("enter")
+            await app._reply_task
+            await pilot.pause()
+        assert len(provider.requests) == 2 and "没有可压缩" in notes(app)[-1]
+        assert all(row.transcript is not None for row in app.query(CompactRow))
+
+
+async def test_tui_shows_a_live_row_while_compacting_and_turns_it_into_the_result():
+    gate = asyncio.Event()
+
+    async def hold():
+        await gate.wait()
+        yield summary_reply()
+
+    provider = SequenceProvider(hold, response("好"))
+    app = MossCodeApp(seeded(provider, chat(8)), "Demo")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", PromptArea).value = "继续"
         await pilot.press("enter")
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if app.query(CompactRow):
+                break
+        row = app.query_one(CompactRow)
+        assert "上下文接近上限，正在压缩" in str(row.render()) and row.transcript is None
+        assert "压缩上下文中" in str(app.query_one("#status", Static).render())
+        gate.set()
         await app._reply_task
         await pilot.pause()
-        assert "没有可压缩" in notes(app)[-1]
+        assert row.transcript is not None and "已压缩上下文" in row.transcript.plain
+        assert len(app.query(CompactRow)) == 1
+
+
+async def test_tui_cancelling_a_compaction_finishes_its_row():
+    gate = asyncio.Event()
+
+    async def hold():
+        await gate.wait()
+        yield summary_reply()
+
+    app = MossCodeApp(seeded(SequenceProvider(hold), chat(8)), "Demo")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", PromptArea).value = "/compact"
+        await pilot.press("enter")
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if app.query(CompactRow):
+                break
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+        row = app.query_one(CompactRow)
+        assert row.transcript is not None and "已取消压缩" in row.transcript.plain
+        assert app.conversation.history[0].synthetic is None and not app._generating
 
 
 async def test_tool_row_names_the_stored_file(tmp_path):
