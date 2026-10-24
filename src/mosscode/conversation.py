@@ -8,7 +8,7 @@ from pathlib import Path
 from .agent import DEFAULT_MAX_ITERATIONS, AgentLoop, Provider
 from .context import ContextBudget
 from .messages import Completed, ProviderError, RunStopped
-from .prompts import git_snapshot, instructions_section, load_instructions
+from .prompts import display_path, git_snapshot, instructions_section, load_instructions
 from .tools.base import ToolRegistry
 
 
@@ -125,16 +125,12 @@ class Conversation:
         self._agent.instructions = instructions_section(files)
         self._agent.git = await asyncio.to_thread(git_snapshot, root)
 
-        def shown(path):
-            try:
-                return path.resolve().relative_to(root).as_posix()
-            except ValueError:
-                return str(path)
-        notices = []
-        if files:
-            notices.append("已加载项目指令：" + "、".join(shown(f.path) + ("（已截断）" if f.truncated else "") for f in files))
-        notices.extend("已跳过项目指令：" + problem for problem in problems)
-        return notices
+        def shown(item):
+            notes = [f"引用 {'、'.join(display_path(root, path) for path in item.includes)}"] if item.includes else []
+            notes += ["已截断"] if item.truncated or item.overflow else []
+            return display_path(root, item.path) + "".join(f"（{note}）" for note in notes)
+        notices = ["已加载项目指令：" + "、".join(shown(f) for f in files)] if files else []
+        return notices + problems
 
     async def start(self, *, wait_mcp: bool = True, on_mcp=None):
         """Idempotent; only the first call reports context notices.

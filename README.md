@@ -53,7 +53,7 @@ providers:
 | --- | --- | --- |
 | `~/.mosscode/permissions.yaml`、`.mosscode/permissions.yaml`、`.mosscode/permissions.local.yaml` | 权限规则（用户、项目、本机） | [工具权限](docs/reference/permissions.md)，示例 [permissions.example.yaml](permissions.example.yaml) |
 | `~/.mosscode/mcp.yaml`、`.mosscode/mcp.yaml` | MCP Server | [MCP 外部工具](docs/reference/mcp.md)，示例 [mcp.example.yaml](mcp.example.yaml) |
-| `AGENTS.md`（或 `CLAUDE.md`）、`~/.mosscode/AGENTS.md` | 项目指令，追加到系统提示 | [系统提示与缓存](docs/reference/prompts.md#项目指令agentsmd) |
+| `AGENTS.md`（或 `CLAUDE.md`）、`.mosscode/AGENTS.md`、`~/.mosscode/AGENTS.md` | 项目指令，追加到系统提示；单独一行的 `@路径` 引用其他文件 | [系统提示与缓存](docs/reference/prompts.md#项目指令agentsmd) |
 
 ## 使用
 

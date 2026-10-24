@@ -1,4 +1,4 @@
-# 完善阶段 1–6 与上下文管理验收指南
+# 完善阶段 1–6、上下文管理与项目指令引用（9a）验收指南
 
 分三层验收，从快到慢：
 
@@ -6,7 +6,7 @@
 2. **离线检查**（约 5 分钟，不需要 API）：用不可达的 Provider 启动真实 CLI 和界面，检查重试、配置、MCP 启动、命令和按键。
 3. **真实模型用例**（约 30–40 分钟，消耗少量 Token）：在专用的验收项目里，用你配置的模型走完各阶段的主要场景。
 
-每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md` 和 `docs/specs/chapter-08-context/spec.md`。
+每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md`、`docs/specs/chapter-08-context/spec.md` 和 `docs/specs/chapter-09-memory/9a-instructions.md`。
 
 ## 准备
 
@@ -26,6 +26,8 @@
 | `mcp-demo.log` | 测试 MCP Server 收到的调用记录（含环境变量 `MOSS_MCP_FIXTURE`） |
 | `project\` | 验收项目，独立的 git 仓库（分支 main，已提交；`notes.txt` 有改动，`untracked.txt` 未跟踪） |
 | `project\AGENTS.md`、`CLAUDE.md` | 暗号第二段“翠竹”；同级的 CLAUDE.md（“错误”）不应被加载 |
+| `project\.mosscode\AGENTS.md` | 引用 `@../docs/style.md`（展开）和 `@../../outside.txt`（超出项目目录，拒绝） |
+| `project\docs\style.md` | 暗号第三段“红梅”；其中代码块里的 `@../notes.txt` 应原样保留，不展开 |
 | `project\.gitignore` | `build/`、`*.log`、`!keep.log`；`build\output.txt`、`debug.log`、`keep.log`、`src\app.py` 都含 `NEEDLE` |
 | `project\src\util.py` | `old_name` 出现 3 次，用于 `replace_all` |
 | `project\crlf.txt` | CRLF 换行的三行文本 |
@@ -59,7 +61,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`591 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
+- **pytest**：`603 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -80,6 +82,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 5 MCP | `tests\test_mcp_stage5.py` | 15 passed |
 | 6 提示与文档 | `tests\test_prompts_stage6.py tests\test_docs.py` | 13 passed |
 | 8 上下文管理 | `tests\test_context_stage8.py` | 47 passed |
+| 9a 项目指令引用 | `tests\test_instructions_stage9a.py` | 12 passed |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 
@@ -95,7 +98,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | --- | --- | --- |
 | O1 配置查找 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --list-providers` | 退出码 1。错误按顺序列出查找过的三个路径：`project\.mosscode\config.yaml`、`project\config.yaml`、`~\.mosscode\config.yaml` |
 | O2 strict 已删除 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" --permission-mode strict -p hi` | 参数错误“权限模式 strict 已移除，请改用 default。”，退出码 2，不发请求 |
-| O3 重试与启动 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config ..\offline-config.yaml -p 你好` | stderr 依次出现：<br>1. `已加载项目指令：…\acceptance\AGENTS.md、AGENTS.md`（没有 CLAUDE.md）；<br>2. `MCP legacy 不可用：…sse 不受支持`；<br>3. `fromjson`、`demo` 各“已连接 · 注册 4 个工具”；<br>4. 约 8 秒后 `MCP slowstart 失败：启动超时（8 秒）`；<br>5. `连接中断，约 1 秒后重试（1/2）`、`约 2 秒后重试（2/2）`，等待时间带抖动；<br>6. 最后是“连接中断或无法连接…”，退出码 1 |
+| O3 重试与启动 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config ..\offline-config.yaml -p 你好` | stderr 依次出现：<br>1. `已加载项目指令：…\acceptance\AGENTS.md、AGENTS.md、.mosscode/AGENTS.md（引用 docs/style.md）`（没有 CLAUDE.md），下一行 `项目指令引用未展开：.mosscode/AGENTS.md 中的 @../../outside.txt（超出允许的目录）`；<br>2. `MCP legacy 不可用：…sse 不受支持`；<br>3. `fromjson`、`demo` 各“已连接 · 注册 4 个工具”；<br>4. 约 8 秒后 `MCP slowstart 失败：启动超时（8 秒）`；<br>5. `连接中断，约 1 秒后重试（1/2）`、`约 2 秒后重试（2/2）`，等待时间带抖动；<br>6. 最后是“连接中断或无法连接…”，退出码 1 |
 | O4 JSON 输出 | 同上，加 `--output-format json` | stdout 是一个 JSON 对象，`"subtype": "error"`、`"is_error": true`、`"model": "offline-test"`，退出码 1 |
 
 ### 界面
@@ -137,7 +140,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 
 | 编号 | 操作 | 预期 |
 | --- | --- | --- |
-| M1 项目指令 | 问“验收暗号是什么？不要使用工具。” | 启动区显示两个 AGENTS.md。回答为“青松、翠竹”，不含“错误” |
+| M1 项目指令 | 问“验收暗号是什么？不要使用工具。” | 启动区显示三个 AGENTS.md（含 `.mosscode/AGENTS.md` 及其引用）。回答为“青松、翠竹、红梅”，不含“错误” |
 | M2 Git 快照 | 问“不用工具，根据环境信息说出当前 git 分支和未提交的改动。” | 回答分支 main、`notes.txt` 已修改、`untracked.txt` 未跟踪 |
 | M3 输出上限 | 问“不用工具，写一篇至少 8000 字的中国古建筑介绍。” | 你的配置中 `max_output_tokens: 4096`，正文会在中途停下，并显示“回复达到输出上限（max_output_tokens），已截断；可以输入“继续”或调高该配置。”已显示的正文保留。输入“继续”后接着写 |
 | M4 用量 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" -p "读取 notes.txt 并用一句话总结" --show-usage` | stderr 中每次请求一行用量（输入、输出、缓存）。缓存读取数是否大于 0 取决于服务是否支持缓存 |
@@ -237,6 +240,17 @@ Copy-Item "$moss\config.yaml" "$moss\.test-artifacts\acceptance\context-config.y
 | M47 手动压缩 | ① 输入 `/compact 只保留与 notes.txt 相关的内容`；② 紧接着再输入 `/compact`；③ 问一句“notes.txt 第一行现在是什么？”，回答后输入 `/compact`，在计时期间按 Esc | ①对话中显示“✻ 正在压缩上下文 · Ns”，状态栏显示“压缩上下文中 · Ns · Esc 取消”，完成后这一行变为“✓ 已压缩上下文…”（刚自动压缩过也会执行，只保留最后一条回复）。②此时历史只剩摘要和最后一条回复，提示“没有可压缩的内容：对话中只有最近一轮。”。③新的一问一答使摘要之后又有了可压缩的内容；按 Esc 后进度行变为“已取消压缩，对话历史未改变。” |
 | M48 无界面输出 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\.test-artifacts\acceptance\context-config.yaml" -p "用 read_file 依次读取 long.txt、src/app.py、notes.txt 并分别总结" --output-format stream-json` | 出现 `{"type": "compact", "subtype": "started"…}` 和 `"finished"` 事件；最后的 `result` 中 `compactions` 至少为 1 |
 | M49 会话目录 | `Get-ChildItem ~\.mosscode\sessions` 并查看最新目录 | 目录名形如 `20261016-153000-a1b2`，其中有 `.mosscode-session`、`tool-results\` 和 `compact-1.md`；记录文件包含被压缩的完整消息。超过 30 天的会话目录会在启动时删除 |
+
+### 阶段 9a：项目指令与引用
+
+用你的 `config.yaml` 在验收项目中启动界面（不要用上面的 context-config）。
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M50 启动提示 | 观察启动区 | “已加载项目指令”的最后一项是 `.mosscode/AGENTS.md（引用 docs/style.md）`；另有一行 `项目指令引用未展开：.mosscode/AGENTS.md 中的 @../../outside.txt（超出允许的目录）` |
+| M51 越界内容不可见 | 问“不用工具，outside.txt 里写的是什么？你的项目指令里有哪些未展开的引用？” | 模型说不知道 outside.txt 的内容（不应答出“这是项目目录之外的文件”），能指出 `../../outside.txt` 因超出允许的目录而未展开 |
+| M52 代码块不展开 | 问“不用工具，原样给出项目指令中 style.md 部分的代码块内容。” | 回答是 `@../notes.txt` 这一行本身，不含 notes.txt 的内容“笔记” |
+| M53 冻结与 /clear | 在另一个终端把 `project\docs\style.md` 中的“红梅”改成“白梅”，回到界面问“验收暗号是什么？不要使用工具。”；再输入 `/clear` 后问同样的问题 | 第一次仍回答“青松、翠竹、红梅”（会话中途不重新加载）；`/clear` 后回答“青松、翠竹、白梅”。验收完重新运行 `acceptance_setup.py --force` 恢复 |
 
 ## 已知限制
 

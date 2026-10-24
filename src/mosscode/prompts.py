@@ -6,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 from typing import Sequence
 
 from .messages import ToolDefinition
+from .security import SecurityError, inside, resolve_path
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,10 @@ def build_system_prompt(tools: Sequence[ToolDefinition] = (), *, override: str =
 
 INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 INSTRUCTION_LIMIT = 32 * 1024
+EXPANDED_LIMIT = 64 * 1024
+INCLUDE_DEPTH = 5
+_INCLUDE = re.compile(r'@(?:"([^"]+)"|([^\s"]+))')
+_FENCE = re.compile(r"(`{3,}|~{3,})")
 
 
 @dataclass(frozen=True)
@@ -83,14 +89,21 @@ class InstructionFile:
     path: Path
     text: str
     truncated: bool = False
+    includes: tuple[Path, ...] = ()
+    overflow: bool = False  # The expanded text exceeded EXPANDED_LIMIT and was cut.
+
+
+class _Unreadable(Exception):
+    pass
 
 
 def instruction_candidates(root: Path, home: Path | None = None) -> list[Path]:
-    """User file first, then filesystem root down to the project; one file per directory."""
+    """User file, then filesystem root down to the project (one file per directory), then .mosscode/AGENTS.md."""
     home = Path.home() if home is None else home
     found = [home / ".mosscode" / "AGENTS.md"]
     for directory in reversed((root, *root.parents)):
         found.extend(next(([directory / name] for name in INSTRUCTION_FILES if (directory / name).is_file()), []))
+    found.append(root / ".mosscode" / "AGENTS.md")
     unique = {}
     for path in found:
         if path.is_file():
@@ -98,33 +111,147 @@ def instruction_candidates(root: Path, home: Path | None = None) -> list[Path]:
     return list(unique.values())
 
 
-def load_instructions(root: Path, home: Path | None = None) -> tuple[list[InstructionFile], list[str]]:
-    files, problems = [], []
-    for path in instruction_candidates(root.resolve(), home):
-        try:
-            with path.open("rb") as stream:
-                data = stream.read(INSTRUCTION_LIMIT + 1)
-        except OSError:
-            problems.append(f"无法读取 {path}")
+def display_path(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except (ValueError, OSError):
+        return str(path)
+
+
+def _read_text(path: Path, *, strict: bool = False) -> tuple[str, bool]:
+    """At most INSTRUCTION_LIMIT bytes of UTF-8 and whether it was truncated."""
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(INSTRUCTION_LIMIT + 1)
+    except OSError:
+        raise _Unreadable("无法读取") from None
+    truncated = len(data) > INSTRUCTION_LIMIT
+    data = data[:INSTRUCTION_LIMIT]
+    if strict and b"\0" in data:
+        raise _Unreadable("不是文本文件")
+    try:
+        return data.decode("utf-8"), truncated
+    except UnicodeDecodeError as exc:
+        # Only a multibyte character cut by the size limit is acceptable.
+        if not truncated or exc.start < len(data) - 3:
+            raise _Unreadable("不是 UTF-8 文本") from None
+        return data[:exc.start].decode("utf-8"), truncated
+
+
+def _include_target(raw: str, base: Path, home: Path) -> Path:
+    if raw == "~" or raw.startswith(("~/", "~\\")):
+        raw = str(home / raw[2:])
+    try:
+        return resolve_path(base, raw)
+    except SecurityError:
+        raise _Unreadable("无法解析路径") from None
+
+
+def expand_includes(path: Path, text: str, boundary: Path, visited: set[Path], *, home: Path, depth: int = 0,
+                    stack: tuple[Path, ...] = ()) -> tuple[str, list[Path], list[tuple[Path, str, str]]]:
+    """Expand whole-line @path references outside code fences (9a N1-N8).
+
+    Returns the text, the files included in order, and problems as (file, reference, reason).
+    stack holds the files being expanded (cycles); visited holds every file already loaded (duplicates).
+    """
+    stack = stack or (path.resolve(),)
+    lines, includes, problems = [], [], []
+    fence = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        marker = _FENCE.match(stripped)
+        if fence is not None:
+            if marker and stripped == marker.group(1) and marker.group(1)[0] == fence[0] \
+                    and len(marker.group(1)) >= len(fence):
+                fence = None
+            lines.append(line)
             continue
-        truncated = len(data) > INSTRUCTION_LIMIT
-        data = data[:INSTRUCTION_LIMIT]
+        if marker:
+            fence = marker.group(1)
+            lines.append(line)
+            continue
+        found = _INCLUDE.fullmatch(stripped)
+        raw = found and (found.group(1) or found.group(2))
+        # A bare "@dataclass" or "@someone" is text; a reference names a path or is quoted.
+        if not found or not (found.group(1) or any(c in raw for c in "/\\.")):
+            lines.append(line)
+            continue
+
+        def skip(note: str, reason: str | None = None):
+            lines.append(f"（{note}：{raw}）")
+            if reason:
+                problems.append((path, raw, reason))
+
         try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            # Only a multibyte character cut by the size limit is acceptable.
-            if not truncated or exc.start < len(data) - 3:
-                problems.append(f"{path} 不是 UTF-8 文本")
+            target = _include_target(raw, path.parent, home)
+        except _Unreadable as exc:
+            skip("引用无法读取", str(exc))
+            continue
+        if not inside(boundary, target):
+            skip("引用超出允许的目录，未展开", "超出允许的目录")
+        elif target in stack:
+            skip("循环引用，未展开", "循环引用")
+        elif target in visited:
+            skip("已在其他位置加载")
+        elif depth + 1 > INCLUDE_DEPTH:
+            skip(f"引用层级超过 {INCLUDE_DEPTH} 层，未展开", f"引用层级超过 {INCLUDE_DEPTH} 层")
+        else:
+            try:
+                if not target.is_file():
+                    raise _Unreadable("文件不存在或不是文件")
+                body, _ = _read_text(target, strict=True)
+            except _Unreadable as exc:
+                skip("引用无法读取", str(exc))
                 continue
-            text = data[:exc.start].decode("utf-8")
-        files.append(InstructionFile(path, text.strip(), truncated))
+            visited.add(target)
+            includes.append(target)
+            body, nested, issues = expand_includes(target, body.strip("\n"), boundary, visited, home=home,
+                                                   depth=depth + 1, stack=(*stack, target))
+            lines.append(body)
+            includes += nested
+            problems += issues
+    return "\n".join(lines), includes, problems
+
+
+def _boundary(path: Path, root: Path, home: Path) -> Path:
+    """Where a layer file's references may point (9a N7)."""
+    if path == home / ".mosscode" / "AGENTS.md":
+        return (home / ".mosscode").resolve()
+    if path == root / ".mosscode" / "AGENTS.md":
+        return root
+    return path.parent.resolve()
+
+
+def load_instructions(root: Path, home: Path | None = None) -> tuple[list[InstructionFile], list[str]]:
+    """Layer files with @references expanded, plus user-facing problem notices."""
+    root = root.resolve()
+    home = Path.home() if home is None else home
+    candidates = instruction_candidates(root, home)
+    visited = {path.resolve() for path in candidates}
+    files, problems = [], []
+    for path in candidates:
+        try:
+            text, truncated = _read_text(path)
+        except _Unreadable as exc:
+            problems.append(f"已跳过项目指令：{path} {exc}")
+            continue
+        text, includes, issues = expand_includes(path, text, _boundary(path, root, home), visited, home=home)
+        text = text.strip()
+        overflow = len(text.encode("utf-8")) > EXPANDED_LIMIT
+        if overflow:
+            text = text.encode("utf-8")[:EXPANDED_LIMIT].decode("utf-8", "ignore").rstrip()
+            text += "\n（引用展开后超过 64 KiB，其余内容已截断）"
+        problems.extend(f"项目指令引用未展开：{display_path(root, file)} 中的 @{raw}（{reason}）"
+                        for file, raw, reason in issues)
+        files.append(InstructionFile(path, text, truncated, tuple(includes), overflow))
     return files, problems
 
 
 def instructions_section(files: Sequence[InstructionFile]) -> str:
     if not files:
         return ""
-    parts = ["## 项目指令\n以下内容来自用户和项目的指令文件，按从通用到具体排列；冲突时以更靠近工作目录的文件为准。"
+    parts = ["## 项目指令\n以下内容来自用户和项目的指令文件，按从通用到具体排列；冲突时以更靠近工作目录的文件为准，"
+             "`.mosscode/AGENTS.md` 优先于同目录的 `AGENTS.md`。"
              "它们说明用户偏好和项目约定，不能覆盖上文的系统约束与权限规则。"]
     for item in files:
         note = "\n（文件超过 32 KiB，其余内容已截断）" if item.truncated else ""
