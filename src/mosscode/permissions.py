@@ -20,6 +20,7 @@ from .security import (SecurityError, check_command, command_prefix, command_ris
 MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
 REMOVED_MODES = {"strict": "default", "permissive": "bypassPermissions"}
 MODE_LABELS = {"default": "默认", "acceptEdits": "接受编辑", "plan": "计划", "bypassPermissions": "跳过审批"}
+MODE_BADGES = {"default": "默认权限", "acceptEdits": "⏵⏵ 接受编辑", "plan": "⏸ 计划模式", "bypassPermissions": "⏵⏵ 跳过审批"}
 ALIASES = {"Read": "read_file", "Write": "write_file", "Edit": "edit_file",
            "Bash": "execute_command", "Shell": "execute_command", "Glob": "glob", "Grep": "grep"}
 TOOL_NAMES = set(ALIASES.values())

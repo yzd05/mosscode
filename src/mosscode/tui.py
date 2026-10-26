@@ -19,9 +19,11 @@ from textual.message import Message as UIMessage
 from textual.widgets import Markdown, OptionList, Static, TextArea
 from textual.widgets.markdown import MarkdownFence
 
-from .appearance import (COMMAND_HIGHLIGHT_COLOR, HELP_TEXT, TERMINAL_CSS, USER_MESSAGE_BACKGROUND, USER_MESSAGE_COLOR,
+from .appearance import (COMMAND_HIGHLIGHT_COLOR, TERMINAL_CSS, USER_MESSAGE_BACKGROUND, USER_MESSAGE_COLOR,
                          TOOL_SUCCESS_COLOR, PARAMETER_COLOR, OPERATION_COLOR, ERROR_COLOR,
-                         command_matches, compact_notice, moss_themes, startup_banner)
+                         compact_notice, moss_themes, startup_banner)
+from .builtin_commands import BUILTIN, dispatch, open_sessions
+from .commands import CommandContext, Hint, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, Settings
 from .conversation import Conversation
 from .tools import shell_label
@@ -33,7 +35,7 @@ from .messages import (CompactFailed, CompactFinished, CompactStarted, Completed
 from .tool_budget import persisted_note
 from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
 from .usage import cache_summary
-from .permissions import EDIT_TOOLS, ApprovalRequest, CHOICES, MODE_LABELS, MODES, safe_display
+from .permissions import EDIT_TOOLS, ApprovalRequest, CHOICES, MODE_BADGES, safe_display
 
 
 Result = TypeVar("Result")
@@ -102,7 +104,6 @@ def preview_text(preview: str) -> Text:
 
 # Shift+Tab order; bypassPermissions is entered only explicitly and leaves to default.
 MODE_CYCLE = {"default": "acceptEdits", "acceptEdits": "plan", "plan": "default", "bypassPermissions": "default"}
-MODE_BADGES = {"default": "默认权限", "acceptEdits": "⏵⏵ 接受编辑", "plan": "⏸ 计划模式", "bypassPermissions": "⏵⏵ 跳过审批"}
 DIFF_ROWS = 20  # Diff lines shown under an edit/write result.
 NEW_FILE_ROWS = 8
 
@@ -535,7 +536,7 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
         if message.synthetic == "compact":
             rows.append(Text("（较早的对话已压缩）"))
         elif message.role == "user":
-            rows.append(Padding(message_row("❯", Text(message.text)), 0, expand=True,
+            rows.append(Padding(message_row("❯", Text(message.shown)), 0, expand=True,
                                 style=f"{USER_MESSAGE_COLOR} on {USER_MESSAGE_BACKGROUND}"))
         else:
             parts = [message_row("●", TranscriptMarkdown(message.text))] if message.text.strip() else []
@@ -707,9 +708,9 @@ class MossCodeApp(TerminalApp[None]):
         self.conversation = conversation
         # --resume ID / --continue restore at startup; "" opens the session list once started.
         self._resume = resume
-        self._panel = "models"
         self._panel_rows = 0
-        self._sessions: list = []
+        self._pick = None  # The open picker's on_pick (CommandUI.choose).
+        self.commands = BUILTIN
         self.provider_name = provider_name
         self.settings, self.model = settings, model
         if provider_factory is None:
@@ -727,7 +728,7 @@ class MossCodeApp(TerminalApp[None]):
         self._mcp_notices: list[str] = []  # MCP servers that settled while a task was running.
         self._retry_notice = ""  # Held until the next event so the ticker does not hide it.
         self._hint_until = 0.0  # Short notes shown over the running status until this time.
-        self._hint_choices: list[tuple[str, str]] = []
+        self._hint_choices: list[Hint] = []
         self._dismissed_prompt: str | None = None
         self._scrollback_lock = asyncio.Lock()
         self._history: list = []  # Everything committed to scrollback, re-rendered after a width change.
@@ -786,7 +787,7 @@ class MossCodeApp(TerminalApp[None]):
         elif self.conversation.mcp_manager is not None or self.conversation.context_root is not None:
             self._startup_task = asyncio.create_task(self._initialize())
         elif self._resume == "":
-            self.call_later(self._open_sessions)
+            self.call_later(open_sessions, self._command_context())
 
     async def _initialize(self):
         try:
@@ -800,7 +801,7 @@ class MossCodeApp(TerminalApp[None]):
                 self._status("")
         if self._resume == "" and not self._closing:
             self._resume = None
-            await self._open_sessions()
+            await open_sessions(self._command_context())
 
     def _on_mcp_update(self, status) -> None:
         if self._closing:
@@ -830,43 +831,6 @@ class MossCodeApp(TerminalApp[None]):
         self._usage = self.conversation.total_usage  # A10: extraction requests are a real cost.
         if not self._generating:
             self._status(self._status_note)
-
-    def _memory_report(self, name: str) -> str:
-        store = self.conversation.memory
-        files = self.conversation.instruction_files
-        instructions = ["项目指令（启动、/clear 和恢复会话时加载）",
-                        *(f"  {item}" for item in files or ("（未找到 AGENTS.md 或 CLAUDE.md）",))]
-        if store is None:
-            return "\n".join([*instructions, "记忆已关闭（memory: false）。"])
-        notes = store.load()
-        if name:
-            matches = [note for note in notes if note.name == name]
-            if not matches:
-                return f"没有名为 {name} 的笔记。输入 /memory 查看全部笔记。"
-            parts = []
-            for note in matches:
-                try:
-                    content = note.path.read_text(encoding="utf-8").strip()
-                except (OSError, UnicodeError):
-                    content = "（无法读取）"
-                parts.append(f"{SCOPE_LABELS[note.scope]} · {note.path}\n\n{content}")
-            return "\n\n".join(parts)
-        lines = list(instructions)
-        for scope in ("user", "project"):
-            lines.append(f"{SCOPE_LABELS[scope]}笔记 · {store.directory(scope)}")
-            scoped = [note for note in notes if note.scope == scope]
-            for note in scoped:
-                if note.error:
-                    lines.append(f"  {note.path.name}  格式错误：{note.error}")
-                else:
-                    lines.append(f"  {note.updated}  {note.type:<9} {note.name} — {note.description}")
-            if not scoped:
-                lines.append("  （暂无）")
-        extraction = "开启" if self.conversation.extractor is not None else "关闭"
-        if self.conversation.extractor is not None and self.conversation.extractor.paused:
-            extraction = "已暂停"
-        lines.append(f"自动笔记：{extraction}。/memory 名称 查看全文；修改或删除可以直接编辑文件，或让模型用 memory 工具完成。")
-        return "\n".join(lines)
 
     def on_resize(self, event: events.Resize) -> None:
         self.call_later(self._refresh_layout)
@@ -1081,19 +1045,16 @@ class MossCodeApp(TerminalApp[None]):
         help_line = self.query_one("#command-help", Static)
         previous = (self._hint_choices[hints.highlighted][0]
                     if hints.highlighted is not None and hints.highlighted < len(self._hint_choices) else None)
-        providers = [item.name for item in self.settings.providers] if self.settings else []
-        manager = self.conversation.mcp_manager
-        servers = [c.config.name for c in manager.connections] if manager is not None else []
         recalled = self.query_one("#prompt", PromptArea).recalled
         self._hint_choices = ([] if recalled or value == self._dismissed_prompt
-                              else command_matches(value, providers, servers))
+                              else self.commands.matches(self._command_context(), value))
         hints.clear_options()
         width = min(24, max(10, (self.size.width - 8) // 2))
-        for command, description in self._hint_choices:
+        for hint in self._hint_choices:
             row = Table.grid(padding=(0, 2), expand=True)
             row.add_column(width=width, no_wrap=True, overflow="ellipsis")
             row.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-            row.add_row(Text(command), Text(description))
+            row.add_row(Text(hint.label or hint.value), Text(hint.description))
             hints.add_option(row)
         hints.display = bool(self._hint_choices)
         help_line.display = hints.display
@@ -1105,8 +1066,11 @@ class MossCodeApp(TerminalApp[None]):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action in {"move_hint", "complete_hint"}:
             field = self.focused
-            if not self._hint_choices or not isinstance(field, PromptArea) or field.id != "prompt" or field.disabled:
+            if not isinstance(field, PromptArea) or field.id != "prompt" or field.disabled:
                 return False
+            if not self._hint_choices:
+                # C3: after Esc closed the menu, Tab still completes a unique command prefix.
+                return action == "complete_hint" and parameters != (False,) and self._unique_hint() is not None
             if action == "complete_hint" and parameters == (False,):
                 hints = self.query_one("#command-hints", OptionList)
                 return hints.highlighted is not None and self._hint_choices[hints.highlighted][0] != field.value.strip()
@@ -1119,16 +1083,26 @@ class MossCodeApp(TerminalApp[None]):
         else:
             hints.action_cursor_down()
 
+    def _unique_hint(self) -> Hint | None:
+        value = self.query_one("#prompt", PromptArea).value
+        if value != self._dismissed_prompt or " " in value.strip():
+            return None
+        matches = self.commands.matches(self._command_context(), value)
+        return matches[0] if len(matches) == 1 and matches[0].value != value.strip() else None
+
     def action_complete_hint(self, tab: bool = True) -> None:
         hints = self.query_one("#command-hints", OptionList)
-        if hints.highlighted is None:
+        if not self._hint_choices:
+            unique = self._unique_hint() if tab else None
+            if unique is None:
+                return
+            completion = unique.value
+        elif hints.highlighted is None:
             return
-        completion = self._hint_choices[hints.highlighted][0]
-        # Tab continues into the argument hints of commands that have fixed arguments.
-        manager = self.conversation.mcp_manager
-        if tab and (completion == "/permissions"
-                    or completion == "/model" and self.settings and len(self.settings.providers) > 1
-                    or completion == "/mcp" and manager is not None and manager.connections):
+        else:
+            completion = self._hint_choices[hints.highlighted].value
+        # C4: Tab continues into the argument candidates of commands that have them.
+        if tab and self.commands.takes_completion(self._command_context(), completion):
             completion += " "
         self._dismissed_prompt = None if completion.endswith(" ") else completion
         field = self.query_one("#prompt", PromptArea)
@@ -1142,29 +1116,31 @@ class MossCodeApp(TerminalApp[None]):
     async def on_prompt_area_submitted(self, event: PromptArea.Submitted) -> None:
         prompt = event.value
         field = event.text_area
-        if not prompt.strip():
+        parsed = parse_input(prompt, self.commands)
+        if parsed.kind == "empty":
             return
         if self._task_running:
-            if prompt.lstrip().startswith("/"):
+            if parsed.kind != "message":
                 # Commands change state the running task depends on; keep the text for later.
                 self._hint_until = monotonic() + 2
                 self._status("运行中只能排队消息，命令请在完成后发送 · Esc 取消")
                 return
             field.remember(prompt)
             field.clear()
-            self.conversation.queue(prompt)
+            self.conversation.queue(parsed.text)
             self._refresh_queue()
             return
         field.remember(prompt)
         field.clear()
         self._dismissed_prompt = None
         self._refresh_hints("")
-        if prompt.lstrip().startswith("/"):
-            await self._command(prompt.strip())
+        if parsed.kind != "message":
+            await self._command(prompt.strip(), parsed)
             return
-        await self._start_request(prompt)
+        await self._start_request(parsed.text)
 
-    async def _start_request(self, prompt: str, *, show_user: bool = True, shown: tuple[str, ...] = ()) -> None:
+    async def _start_request(self, prompt: str, *, show_user: bool = True, shown: tuple[str, ...] = (),
+                             command: str | None = None) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         reply = ChatEntry("MossCode")
         self._active_reply = reply
@@ -1178,7 +1154,7 @@ class MossCodeApp(TerminalApp[None]):
         self._generating = True
         self._status("连接中…")
         await self._commit_ready_transcript()
-        self._reply_task = asyncio.create_task(self._respond(prompt, reply))
+        self._reply_task = asyncio.create_task(self._respond(prompt, reply, command))
 
     @staticmethod
     def _note(text: str, style: str | None = None) -> Static:
@@ -1317,29 +1293,8 @@ class MossCodeApp(TerminalApp[None]):
                     self._resume = None
                     self._startup_task = asyncio.create_task(self._initialize())
 
-    async def _open_sessions(self) -> None:
-        reason = self.conversation.unavailable()
-        if reason:
-            await self._local_note(reason)
-            return
-        current = self.conversation.session_id
-        self._sessions = await asyncio.to_thread(self.conversation.sessions)
-        if not any(item.id != current for item in self._sessions):
-            await self._local_note("本项目没有可恢复的会话。")
-            return
-        options = self.query_one("#models", OptionList)
-        options.clear_options()
-        rows = []
-        for item in self._sessions:
-            mark = "  （当前）" if item.id == current else "  （使用中）" if item.locked else ""
-            rows.append(Text(f"{item.modified:%m-%d %H:%M}  {item.title}  · {item.messages} 条 · {item.id[-4:]}{mark}",
-                             no_wrap=True, overflow="ellipsis"))
-        options.add_options(rows)
-        self._show_panel("sessions", "恢复会话 · 本项目最近的会话", len(rows))
-        options.highlighted = next((i for i, item in enumerate(self._sessions) if item.id != current), 0)
-
-    def _show_panel(self, kind: str, title: str, rows: int) -> None:
-        self._panel, self._panel_rows = kind, rows
+    def _show_panel(self, title: str, rows: int) -> None:
+        self._panel_rows = rows
         self.query_one("#model-title", Static).update(title)
         options = self.query_one("#models", OptionList)
         # One row per choice, so the panel height reserved in _fit_chat holds.
@@ -1348,108 +1303,56 @@ class MossCodeApp(TerminalApp[None]):
         options.focus()
         self.call_later(self._fit_chat)
 
-    async def _command(self, prompt: str) -> None:
+    async def _command(self, typed: str, parsed: Parsed) -> None:
+        """P9: echo what was typed, then run it; prompt commands echo the command, not the template."""
         chat = self.query_one("#chat", VerticalScroll)
-        await chat.mount(ChatEntry("You", prompt))
+        await chat.mount(ChatEntry("You", typed))
         chat.anchor()
         await self._commit_ready_transcript()
-        command, _, argument = prompt.partition(" ")
-        argument = argument.strip()
-        if command == "/help" and not argument:
-            await self._local_note(HELP_TEXT)
-        elif command in {"/exit", "/quit"} and not argument:
-            self.exit()
-        elif command == "/plan":
-            self.conversation.set_mode("plan")
-            self._status("")
-            if argument:
-                await self._start_request(argument, show_user=False)
-            else:
-                await self._local_note("└ 已进入计划模式：只读调查和规划（含只读命令），模型提交计划后由你批准执行。"
-                                       "Shift+Tab 或 /permissions 可手动退出。")
-        elif command == "/clear" and not argument:
-            notices = await self.conversation.clear()
-            self._usage = self.conversation.total_usage
-            self._refresh_context()
-            self._status("")
-            await self._clear_screen()
-            await self._local_note("└ 已开始新会话：屏幕、模型上下文和 Token 统计已清空，权限档位与会话授权保留。")
-            for notice in notices:
-                await self._local_note("└ " + notice)
-        elif command == "/compact":
-            await self._start_compact(argument)
-        elif command == "/model":
-            providers = self.settings.providers if self.settings else ()
-            if argument:
-                config = next((item for item in providers if item.name == argument), None)
-                if config is None:
-                    names = "、".join(item.name for item in providers) or "无"
-                    await self._local_note(f"未找到提供商 {argument}。可用：{names}")
-                else:
-                    await self._switch_model(config)
-            elif len(providers) < 2:
-                await self._local_note(f"当前模型：{self.provider_name}" + (f"（{self.model}）" if self.model else "")
-                                       + "。在配置文件的 providers 中添加更多提供商后可以切换。")
-            else:
-                options = self.query_one("#models", OptionList)
-                options.clear_options()
-                options.add_options([Text(f"{item.name}{'  ✓' if item.name == self.provider_name else ''}"
-                                          f"  {item.protocol} / {item.model}", no_wrap=True, overflow="ellipsis")
-                                     for item in providers])
-                self._show_panel("models", "切换模型 · 对话历史保留", len(providers))
-                options.highlighted = next((i for i, item in enumerate(providers) if item.name == self.provider_name), 0)
-        elif command == "/resume":
-            if argument:
-                try:
-                    self.conversation.resolve_session(argument)
-                except ProviderError as exc:
-                    await self._local_note(str(exc))
-                else:
-                    self._start_resume(argument)
-            else:
-                await self._open_sessions()
-        elif command == "/mcp":
-            await self._local_note(self._mcp_report(argument))
-        elif command == "/memory":
-            await self._local_note(self._memory_report(argument))
-        elif command == "/permissions":
-            if not self.conversation.registry:
-                await self._local_note("当前会话未启用工具。")
-            elif argument in MODES:
-                self.conversation.set_permission_mode(argument)
-                self._status("")
-                mode = self.conversation.registry.permissions.mode
-                await self._local_note("└ 权限档位：" + MODE_LABELS[mode] + f"（{mode}）；硬限制和显式拒绝仍生效。")
-            else:
-                await self._local_note("/permissions default：读取自动通过，写入和命令默认确认\n/permissions acceptEdits：文件写入和编辑自动通过，命令默认确认\n/permissions plan：只读调查，批准计划后执行\n/permissions bypassPermissions：跳过未匹配规则的确认；硬限制、高风险确认和拒绝仍生效\nShift+Tab 依次切换 default → acceptEdits → plan")
-        else:
-            await self._local_note("未知命令或参数。输入 /help 查看本地命令。")
+        if parsed.kind == "unknown":
+            await self._local_note(unknown_note(parsed, self.commands))
+            return
+        try:
+            await dispatch(self._command_context(), parsed)
+        except ProviderError as exc:
+            await self._local_note(f"! {exc}", OPERATION_COLOR)
 
-    def _mcp_report(self, name: str) -> str:
-        manager = self.conversation.mcp_manager
-        if manager is None or not (manager.connections or manager.notices):
-            return ("未配置 MCP Server。在 ~/.mosscode/mcp.yaml 或项目 .mosscode/mcp.yaml 的 mcp_servers 中添加；"
-                    "设置 import_mcp_json: true 可读取项目的 .mcp.json。")
-        statuses = manager.statuses()
-        if name:
-            status = next((item for item in statuses if item.name == name), None)
-            if status is None:
-                return f"未找到 MCP Server {name}。已配置：" + ("、".join(item.name for item in statuses) or "无")
-            lines = [f"MCP {status.name}（{status.type}）· {status.describe()}"]
-            for tool in status.tools:
-                summary = (tool.description.removeprefix(f"MCP Server {tool.server_name} 的工具 {tool.remote_name}。")
-                           .strip().splitlines() or [""])[0]
-                lines.append(f"  {tool.name}" + ("  [只读]" if tool.read_only else "") + (f"  {summary[:80]}" if summary else ""))
-            if status.state in {"ready", "closed"} and not status.tools:
-                lines.append("  （Server 没有提供工具）")
-            return "\n".join(lines)
-        marks = {"ready": "●", "connecting": "○", "new": "○"}
-        lines = [f"MCP Server（{len(statuses)}）"]
-        width = max((len(item.name) for item in statuses), default=0)
-        lines.extend(f"{marks.get(item.state, '×')} {item.name.ljust(width)}  {item.type:<5}  {item.describe()}" for item in statuses)
-        lines.extend("! " + notice for notice in manager.notices)
-        lines.append("/mcp 名称 查看工具；修改配置后重新启动生效，不自动重连。")
-        return "\n".join(lines)
+    def _command_context(self) -> CommandContext:
+        return CommandContext(self.conversation, self, self.commands, self.settings)
+
+    # CommandUI (chapter 10 U1/U2) -------------------------------------------------------
+
+    async def note(self, text: str, style: str | None = None) -> None:
+        await self._local_note(text, style)
+
+    async def submit(self, prompt: str, *, command: str | None = None) -> None:
+        await self._start_request(prompt, show_user=False, command=command)
+
+    def refresh_status(self) -> None:
+        self._usage = self.conversation.total_usage
+        self._refresh_context()
+        self._status("")
+
+    async def clear_screen(self) -> None:
+        await self._clear_screen()
+
+    def choose(self, title: str, options, current: int, on_pick) -> None:
+        picker = self.query_one("#models", OptionList)
+        picker.clear_options()
+        picker.add_options(list(options))
+        self._pick = on_pick
+        self._show_panel(title, len(options))
+        picker.highlighted = current
+
+    async def compact(self, instructions: str) -> None:
+        await self._start_compact(instructions)
+
+    def resume(self, session_id: str) -> None:
+        self._start_resume(session_id)
+
+    async def switch_model(self, name: str) -> None:
+        config = next(item for item in self.settings.providers if item.name == name)
+        await self._switch_model(config)
 
     async def _switch_model(self, config: ProviderConfig) -> None:
         if config.name == self.provider_name:
@@ -1469,17 +1372,17 @@ class MossCodeApp(TerminalApp[None]):
             await self._local_note(f"└ {config.name} 未配置 context_window，按 128K 估算上下文。")
 
     def _close_model_panel(self) -> None:
+        self._pick = None
         self.query_one("#model-panel").display = False
         self.query_one("#prompt", PromptArea).focus()
         self.call_later(self._fit_chat)
 
     async def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "models":
+            pick = self._pick
             self._close_model_panel()
-            if self._panel == "sessions":
-                self._start_resume(self._sessions[event.option_index].id)
-            elif self.settings:
-                await self._switch_model(self.settings.providers[event.option_index])
+            if pick is not None:
+                await pick(event.option_index)
         elif event.option_list.id == "approval-options" and self._approval_request:
             self._answer_approval(self._approval_request.choices[event.option_index])
 
@@ -1525,14 +1428,14 @@ class MossCodeApp(TerminalApp[None]):
             self._hide_approval()
             self._tick()
 
-    async def _respond(self, prompt: str, reply: ChatEntry) -> None:
+    async def _respond(self, prompt: str, reply: ChatEntry, command: str | None = None) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         tool_rows: dict[str, ToolEntry] = {}
         continuation = False
         completed = False
 
         try:
-            async with aclosing(self.conversation.reply(prompt)) as stream:
+            async with aclosing(self.conversation.reply(prompt, command=command)) as stream:
                 async for event in stream:
                     if not isinstance(event, Retrying):
                         self._retry_notice = ""

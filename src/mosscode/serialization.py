@@ -42,6 +42,8 @@ def message_to_json(message: Message) -> dict:
                                  "code": r.code, "details": jsonable(r.details)} for r in message.tool_results]
     if message.synthetic is not None:
         data["synthetic"] = message.synthetic
+    if message.command is not None:
+        data["command"] = message.command
     return data
 
 
@@ -86,4 +88,5 @@ def message_from_json(data: Any) -> Message:
                                   _string(item.get("output"), "tool_results.output"), item["is_error"],
                                   _string(item.get("code"), "tool_results.code", optional=True), details))
     return Message(role, tuple(content), _string(data.get("protocol"), "protocol", optional=True), tuple(native),
-                   tuple(calls), tuple(results), _string(data.get("synthetic"), "synthetic", optional=True))
+                   tuple(calls), tuple(results), _string(data.get("synthetic"), "synthetic", optional=True),
+                   _string(data.get("command"), "command", optional=True))

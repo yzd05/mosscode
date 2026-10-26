@@ -136,7 +136,7 @@ async def test_mcp_command_lists_status_reasons_and_tools(tmp_path):
             await pilot.press("tab")
             await pilot.pause()
             assert field.value == "/mcp "
-            assert app._hint_choices == [(f"/mcp {name}", "查看该 Server 的工具") for name in ("notes", "missing", "web", "hang")]
+            assert [hint[:2] for hint in app._hint_choices] == [(f"/mcp {name}", "查看该 Server 的工具") for name in ("notes", "missing", "web", "hang")]
 
 
 async def test_mcp_command_without_servers_points_to_configuration():

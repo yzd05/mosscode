@@ -62,7 +62,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`681 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
+- **pytest**：`710 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -81,11 +81,12 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 4 交互 | `tests\test_interaction_stage4.py` | 22 passed |
 | 界面修复（宽度重绘、按键、/clear） | `tests\test_scrollback.py tests\test_windows_input.py` | 17 passed |
 | 5 MCP | `tests\test_mcp_stage5.py` | 16 passed |
-| 6 提示与文档 | `tests\test_prompts_stage6.py tests\test_docs.py` | 15 passed |
+| 6 提示与文档 | `tests\test_prompts_stage6.py tests\test_docs.py` | 16 passed |
 | 8 上下文管理 | `tests\test_context_stage8.py` | 47 passed |
 | 9a 项目指令引用 | `tests\test_instructions_stage9a.py` | 13 passed |
 | 9b 会话存档与恢复 | `tests\test_sessions_stage9b.py` | 30 passed |
 | 9c 记忆笔记 | `tests\test_memory_stage9c.py` | 44 passed |
+| 10 命令系统 | `tests\test_commands_stage10.py` | 28 passed |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 
@@ -125,11 +126,16 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | U5 /mcp 名称与补全 | 输入 `/mcp ` 后按 Tab；再执行 `/mcp demo` | 补全出现 Server 名称。`/mcp demo` 列出 echo、fail、slow、mixed；没有 `[只读]` 标记（未开启 `trust_read_only_hint`） |
 | U6 多行输入 | 分别用 Shift+Enter、Ctrl+J、行尾 `\` 加 Enter 换行，输入 10 行以上 | 每种方式都换行，不会发送。输入框最多增高到 8 行，之后在框内滚动 |
 | U7 输入历史 | 依次执行 `/help`、`/permissions`。输入草稿“abc”，然后按 ↑ ↑ ↓ ↓ | ↑ 依次调出 `/permissions`、`/help`，调出的命令不弹出命令提示；↓ 依次回到 `/permissions` 和草稿“abc”。修改调出的命令后提示重新出现 |
-| U8 删除的命令 | 输入 `/theme`、`/do` | 都提示未知命令 |
+| U8 未知命令 | 输入 `/theme`；再输入 `/compcat` | `/theme` 提示“未知命令 /theme。输入 /help 查看命令；要把以 / 开头的文字发给模型，在开头再加一个 /。”`/compcat` 的提示前面多一句“是不是想输入 /compact？” |
 | U9 /model | 输入 `/model`；再输入 `/model abc` | 离线配置只有一个提供商，因此不打开面板，显示“当前模型：unreachable（offline-test）。在配置文件的 providers 中添加更多提供商后可以切换。”`/model abc` 显示“未找到提供商 abc。可用：unreachable” |
 | U10 /clear | 先 Shift+Tab 切到接受编辑，再输入 `/clear` | 屏幕和终端滚动历史被清空（向上滚动也看不到之前的内容），只剩启动区，随后显示“已开始新会话：屏幕、模型上下文和 Token 统计已清空，权限档位与会话授权保留。”，再显示项目指令引用未展开的提示；状态栏仍是 `⏵⏵ 接受编辑` |
 | U11 /resume | 输入 `/resume` | 刚重建验收项目时提示“本项目没有可恢复的会话。”，不打开面板 |
 | U12 /memory | 输入 `/memory`；再输入 `/memory abc` | 先列出“项目指令（启动、/clear 和恢复会话时加载）”及验收项目的 AGENTS.md，再列出“用户级笔记 · …\.mosscode\memory”和“项目级笔记 · …\.mosscode\projects\…acceptance-project-…\memory”两组（用户级可能已有你自己的笔记，项目级为“（暂无）”），最后一行“自动笔记：开启。…”。`/memory abc` 提示“没有名为 abc 的笔记。” |
+| U13 /help 与别名 | 输入 `/help`；再输入 `/help review`、`/Permission` | `/help` 列出 14 个命令，`/permissions` 一行注明“（别名 /permission）”，`/exit` 注明“（别名 /quit）”，后面是按键说明。`/help review` 显示用法、“提示词命令：把预设的请求发给模型”和模板首行。`/Permission` 与 `/permissions` 相同，显示档位说明 |
+| U14 补全 | 输入 `/q`；按 Esc 收起菜单后把输入改成 `/sta` 再按 Esc，然后按 Tab；再输入 `/permissions` 按 Tab | `/q` 的菜单只有一行 `/exit`，描述后注明“（别名 /quit）”，Tab 补全为 `/exit`。`/sta` 收起菜单后按 Tab 仍补全为 `/status`。`/permissions` 按 Tab 后追加空格，菜单列出四个档位 |
+| U15 /plan 与 /do | Shift+Tab 切到接受编辑；输入 `/do 继续`；再输入 `/plan`，然后 `/do` | `/do 继续` 只提示“当前不在计划模式。任务未发送。”，不发请求。`/plan` 后状态栏为 `⏸ 计划模式`；`/do` 显示“└ 已退出计划模式，回到接受编辑（acceptEdits）。”，状态栏回到 `⏵⏵ 接受编辑` |
+| U16 /status 与 /session | 输入 `/status`；再输入 `/session` | `/status` 列出模型 `unreachable（… / offline-test）`、权限档位、“上下文 尚未发送请求”、会话 ID、工作目录、项目指令文件数、MCP 的已连接与失败数和记忆状态。`/session` 显示会话 ID、存档路径、“（尚无消息）”和开始时间，最后一行“/resume 恢复其他会话。” |
+| U17 参数与路径 | 输入 `/clear extra`；再输入 `/etc/hosts 是什么` | `/clear extra` 显示“/clear 不接受参数。用法：/clear”，屏幕不清空。`/etc/hosts 是什么` 作为普通消息发送（离线配置下随后出现重试和连接错误） |
 
 ## 三、真实模型用例
 
@@ -293,6 +299,16 @@ M58 中，如果关闭窗口时模型还在生成第一次回复，这一轮的�
 | M68 用量 | M63 前后观察状态栏的 Token 累计 | 后台提取的请求计入 Token 累计，上下文比例不因提取而变化 |
 
 **清理**：用 `/memory` 查看本节写入的用户级笔记的名称，退出 MossCode 后删除对应文件，例如 `Remove-Item "$HOME\.mosscode\memory\<名称>.md"`；`MEMORY.md` 在下次启动时重新生成，不需要手工改。也可以在 MossCode 中让模型“用 memory 工具删除笔记 <名称>”。项目级笔记随 `acceptance_setup.py --force` 删除。
+
+### 阶段 10：命令系统
+
+用你的 `config.yaml` 在验收项目中启动界面，在 Windows Terminal 中完成。
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M69 /review | 先在验收项目中修改 notes.txt 的一行（例如 `Add-Content notes.txt "新增一行"`），再输入 `/review 重点看格式` | 对话中显示的是 `/review 重点看格式`，不是模板全文。模型运行 `git status` 和 `git diff HEAD`（default 档位下审批选允许），不调用 write_file / edit_file，按严重程度列出问题，每条带 文件:行号；没有问题时明确说明 |
+| M70 存档中的命令 | 接着 `/exit`，加 `-c` 启动 | 恢复后的简要历史和 `/resume` 列表的标题都是 `/review 重点看格式` |
+| M71 无界面 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" -p "/review"`；再运行 `-p "/clear"` | 第一条输出审查结果，退出码 0。第二条 stderr 显示“/clear 只能在交互界面中使用。”，退出码 2，不发请求 |
 
 ## 已知限制
 

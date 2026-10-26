@@ -83,22 +83,28 @@ providers:
 
 | 命令 | 行为 |
 |------|------|
-| `/help` | 显示本地命令与快捷键 |
+| `/help [命令]` | 显示命令与快捷键；带命令名时显示该命令的用法和别名 |
 | `/clear` | 开始新会话：清空屏幕与终端滚动历史、模型上下文和 Token 统计；权限档位、会话授权和 MCP 连接保留，AGENTS.md 重新加载 |
 | `/compact [说明]` | 压缩上下文：较早的对话换成摘要，近期消息和用户原话保留；说明用于指定摘要侧重点 |
 | `/resume` | 列出本项目最近的会话，↑ / ↓ 选择、Enter 恢复、Esc 收起 |
 | `/resume ID` | 直接恢复指定会话 |
+| `/session` | 显示当前会话的 ID、存档路径、标题和消息数 |
 | `/memory` | 列出已加载的项目指令文件，以及用户级和项目级的记忆笔记及目录 |
 | `/memory 名称` | 显示该笔记的路径和全文 |
 | `/model` | 在输入框下方列出配置的提供商（当前项带 ✓），↑ / ↓ 选择、Enter 切换、Esc 收起 |
 | `/model 名称` | 直接切换到指定提供商；对话历史保留 |
 | `/plan` | 只读调查与规划，模型提交计划经批准后执行 |
 | `/plan 任务` | 切入计划模式并立即调查、生成计划 |
-| `/permissions` | 查看权限档位说明 |
+| `/do [任务]` | 退出计划模式，回到进入前的档位；带任务时随后发给模型 |
+| `/permissions`（别名 `/permission`） | 查看权限档位说明 |
 | `/permissions 档位` | 切换到 default、acceptEdits、plan 或 bypassPermissions |
 | `/mcp` | 列出 MCP Server 的状态（连接中、已连接及工具数、失败原因）与配置问题 |
 | `/mcp 名称` | 列出该 Server 的工具，只读工具标注 `[只读]` |
-| `/exit` | 退出并清理资源 |
+| `/status` | 显示模型、权限档位、上下文、本会话用量、会话、MCP 和记忆的状态 |
+| `/review [侧重点]` | 让模型审查尚未提交的改动（`git diff HEAD`），按严重程度列出问题 |
+| `/exit`（别名 `/quit`） | 退出并清理资源 |
+
+除 `/review` 外都是本地命令，不请求模型；`/review` 把预设的提示词作为一条消息发给模型。命令名不区分大小写。`/etc/hosts 怎么改` 这类不像命令的文字照常发给模型；要发送恰好像命令的文字，在开头再加一个 `/`，如 `//api 怎么设计`。解析、补全和添加命令的方法见 [命令](docs/reference/commands.md)。
 
 界面、输入排队、状态栏与配色的细节见 [终端界面](docs/reference/interface.md)。
 
@@ -131,7 +137,7 @@ providers:
 .\.venv\Scripts\python.exe -m mosscode -p "列出 src 下的模块" --output-format json
 ```
 
-`-p`（`--prompt`）运行一个任务后退出，不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
+`-p`（`--prompt`）运行一个任务后退出，不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/review"` 这类提示词命令展开后执行；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
 
 ## 架构
 
@@ -168,7 +174,7 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md) |
+| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md) |
 | 设计评审 | [对照 Claude Code 与 Pi 的完善建议](docs/research/claude-code-pi-gap-review.md) |
 | 各阶段规格与验证 | `docs/specs/`：`chapter-*` 为各章，`refinement-*` 为完善阶段 1–6，每个目录含 `spec.md` 与 `validation.md` |
 | 人工验收 | [完善阶段 1–6、上下文管理与第九章验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |

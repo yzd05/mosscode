@@ -21,10 +21,17 @@ class Message:
     tool_results: tuple["ToolResult", ...] = ()
     # Written by the program, not typed by the user: "compact" marks a compaction boundary.
     synthetic: str | None = None
+    # A prompt command as typed ("/review 安全"); content holds the expanded template (chapter 10 K3).
+    command: str | None = None
 
     @property
     def text(self) -> str:
         return "".join(b.text for b in self.content if b.kind == "text")
+
+    @property
+    def shown(self) -> str:
+        """What the user typed: the command for prompt commands, otherwise the text."""
+        return self.command if self.command is not None else self.text
 
 
 @dataclass(frozen=True)

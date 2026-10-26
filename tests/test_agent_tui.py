@@ -21,7 +21,7 @@ async def test_plan_then_permissions_command_help_and_chinese_completion(tmp_pat
         field = app.query_one("#prompt", PromptArea)
         field.value = "/p"
         await pilot.pause()
-        assert app._hint_choices == [("/plan", "只读调查和规划，提交计划经批准后执行"),
+        assert [hint[:2] for hint in app._hint_choices] == [("/plan", "只读调查和规划，提交计划经批准后执行"),
                                     ("/permissions", "查看或切换工具权限档位")]
         await pilot.press("tab")
         assert field.value == "/plan"

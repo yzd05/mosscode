@@ -245,14 +245,14 @@ class AgentLoop:
             missing_cached=total.missing_cached + (usage.cached_input_tokens is None),
             missing_cache_write=total.missing_cache_write + (usage.cache_write_tokens is None))
 
-    async def run(self, prompt: str):
+    async def run(self, prompt: str, *, command: str | None = None):
         if self.busy:
             raise ProviderError("已有请求正在运行，请等待或取消。")
         if not prompt.strip():
             raise ProviderError("请输入非空消息。")
         self.busy = True
         iteration, unknown_run = 0, 0
-        user = Message("user", (ContentBlock("text", prompt),))
+        user = Message("user", (ContentBlock("text", prompt),), command=command)
         committed = False
         def outcomes():
             return self.history[-1].tool_results if committed and self.history[-1].role == "tool" else ()

@@ -68,7 +68,8 @@ class Extracted:
 def render(message: Message) -> str:
     """Like compaction.render, but tool results and call arguments are never included."""
     if message.role == "user":
-        return "[用户]\n" + message.text
+        # A prompt command's template is not the user's words (chapter 10 K3).
+        return "[用户]\n" + message.shown
     if message.role == "assistant":
         parts = ["[助手]\n" + message.text] if message.text.strip() else []
         parts += [f"[工具调用] {call.name}" for call in message.tool_calls]

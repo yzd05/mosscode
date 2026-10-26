@@ -4,7 +4,7 @@ import pytest
 from textual.widgets import Footer, Header, Markdown, OptionList, Static
 from mosscode.tui import PromptArea
 
-from mosscode.appearance import COMMAND_HINTS
+from mosscode.builtin_commands import BUILTIN
 from mosscode.config import ProviderConfig, Settings
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Delta, Message
@@ -184,7 +184,7 @@ async def test_model_picker_is_keyboard_only_and_escape_returns_to_input():
         assert provider.requests == [] and not provider.closed
 
 
-async def test_removed_theme_and_do_commands_are_unknown_and_preserve_conversation():
+async def test_removed_theme_is_unknown_and_do_without_tools_preserves_conversation():
     provider = FakeProvider()
     conv = Conversation(provider)
     app = MossCodeApp(conv, "test")
@@ -192,9 +192,12 @@ async def test_removed_theme_and_do_commands_are_unknown_and_preserve_conversati
         await send(app, pilot, "hello")
         await asyncio.wait_for(app._reply_task, timeout=5)
         history = conv.history
-        for command in ("/theme", "/theme dark", "/do", "/do 继续"):
+        for command in ("/theme", "/theme dark"):
             await send(app, pilot, command)
-            assert "未知命令" in str(app.query(".local-note")[-1].render())
+            assert "未知命令 /theme" in str(app.query(".local-note")[-1].render())
+        for command in ("/do", "/do 继续"):
+            await send(app, pilot, command)
+            assert str(app.query(".local-note")[-1].render()) == "当前会话未启用工具。"
         assert app.theme == "moss-dark"
         assert conv.history == history
         assert len(provider.requests) == 1
@@ -284,7 +287,7 @@ async def test_slash_hints_filter_show_chinese_descriptions_and_complete_mode_ar
         await pilot.press("/")
         await pilot.pause()
         hints = app.query_one("#command-hints", OptionList)
-        assert hints.display and hints.option_count == len(COMMAND_HINTS)
+        assert hints.display and hints.option_count == len(BUILTIN.visible())
         rendered = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         assert "查看命令和快捷键" in rendered
         assert "压缩上下文" in rendered  # The list scrolls past eight rows.
@@ -416,7 +419,7 @@ async def test_escape_dismissal_does_not_hide_retyped_slash_and_selected_row_is_
             assert not hints.display
             await pilot.press("backspace", "/")
             await pilot.pause()
-            assert field.value == "/" and hints.display and hints.option_count == len(COMMAND_HINTS)
+            assert field.value == "/" and hints.display and hints.option_count == len(BUILTIN.visible())
 
         def assert_row_color(command, selected):
             row = next(strip for strip in app.screen._compositor.render_strips() if command in strip.text)

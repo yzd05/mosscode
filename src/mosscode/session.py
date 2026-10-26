@@ -276,8 +276,10 @@ def _first_user_line(data: Any) -> str | None:
     message = data.get("message") if isinstance(data, dict) else None
     if not isinstance(message, dict) or message.get("role") != "user" or message.get("synthetic") is not None:
         return None
-    text = "".join(b.get("text", "") for b in message.get("content", [])
-                   if isinstance(b, dict) and b.get("kind") == "text" and isinstance(b.get("text"), str)).strip()
+    command = message.get("command")
+    text = command.strip() if isinstance(command, str) else "".join(
+        b.get("text", "") for b in message.get("content", [])
+        if isinstance(b, dict) and b.get("kind") == "text" and isinstance(b.get("text"), str)).strip()
     return text.splitlines()[0][:TITLE_CHARS] if text else None
 
 
@@ -440,7 +442,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     history, filled = repair(history)
     unanswered = []
     while history and history[-1].role == "user" and history[-1].synthetic is None:
-        unanswered.insert(0, history.pop().text)
+        unanswered.insert(0, history.pop().shown)
     return Restored(path.stem, history, skipped, filled, tuple(unanswered), last_time, read_title(path), stripped)
 
 

@@ -9,6 +9,7 @@ import pytest
 
 from mosscode import memory as memory_module
 from mosscode import memory_extract
+from mosscode.builtin_commands import memory_report
 from mosscode.cli import _memory_options
 from mosscode.config import load_settings
 from mosscode.context import ContextBudget, estimate_text
@@ -546,13 +547,11 @@ async def test_ac8_tui_memory_command_and_update_line(tmp_path):
 
 
 async def test_ac8_memory_command_when_off(tmp_path):
-    from mosscode.tui import MossCodeApp
     conv, _ = make(tmp_path, RoutingProvider(), memory=False)
-    app = MossCodeApp(conv, "test")
-    report = app._memory_report("")
+    report = memory_report(conv, "")
     assert report.startswith("项目指令") and report.endswith("记忆已关闭（memory: false）。")
     conv.instruction_files = ("AGENTS.md", ".mosscode/AGENTS.md（引用 docs/style.md）")
-    assert "  AGENTS.md\n  .mosscode/AGENTS.md（引用 docs/style.md）\n" in app._memory_report("")
+    assert "  AGENTS.md\n  .mosscode/AGENTS.md（引用 docs/style.md）\n" in memory_report(conv, "")
     await conv.close()
 
 

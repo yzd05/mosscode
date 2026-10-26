@@ -8,6 +8,8 @@ import sys
 from .config import ConfigError, find_config, load_settings
 from .conversation import Conversation, Notice, Resumed
 from .appearance import compact_notice
+from .builtin_commands import BUILTIN, typed
+from .commands import argument_problem, parse_input, unknown_note
 from .messages import (CompactFailed, CompactFinished, CompactStarted, Completed, Delta, Message, ProviderError, Retrying,
                        ToolProgress, ResponseBoundary, RunStopped, UsageUpdate)
 from .memory import MemoryStore
@@ -23,6 +25,23 @@ from .mcp_client import MCPManager
 from pathlib import Path
 
 OUTPUT_FORMATS = ("text", "json", "stream-json")
+
+
+def _headless_input(text: str) -> tuple[str, str | None]:
+    """H1/H2: -p sends messages and prompt commands; returns (prompt, command) or exits with code 2."""
+    parsed = parse_input(text, BUILTIN)
+    if parsed.kind in {"empty", "message"}:
+        return (parsed.text if parsed.kind == "message" else text), None
+    if parsed.kind == "unknown":
+        problem = unknown_note(parsed, BUILTIN)
+    elif parsed.command.kind == "local":
+        problem = f"/{parsed.command.name} 只能在交互界面中使用。"
+    else:
+        problem = argument_problem(parsed.command, parsed.argument)
+    if problem:
+        print(problem, file=sys.stderr)
+        raise SystemExit(2)
+    return parsed.command.expand(parsed.argument), typed(parsed.command, parsed.argument)
 
 
 def _permission_mode(value: str) -> str:
@@ -88,10 +107,11 @@ async def _resume(conversation: Conversation, session_id: str | None, report) ->
 
 
 async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False,
-                  output_format: str = "text", model: str = "", resume: str | None = None) -> dict | None:
+                  output_format: str = "text", model: str = "", resume: str | None = None,
+                  command: str | None = None) -> dict | None:
     """Run one headless task; JSON formats return the result object instead of raising."""
     if output_format == "text":
-        await _text_prompt(conversation, prompt, show_usage=show_usage, resume=resume)
+        await _text_prompt(conversation, prompt, show_usage=show_usage, resume=resume, command=command)
         return None
     stream_json = output_format == "stream-json"
     started = monotonic()
@@ -125,7 +145,7 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
                        "permission_mode": registry.permissions.mode if registry else None,
                        "tools": [d.name for d in registry.definitions()] if registry else []})
             usage = None
-            async with aclosing(conversation.reply(prompt)) as stream:
+            async with aclosing(conversation.reply(prompt, command=command)) as stream:
                 async for event in stream:
                     if isinstance(event, UsageUpdate):
                         usage = event.usage
@@ -174,7 +194,7 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
 
 
 async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False,
-                       resume: str | None = None) -> None:
+                       resume: str | None = None, command: str | None = None) -> None:
     def report(kind, value):
         if kind == "compact":
             print("正在压缩上下文…" if isinstance(value, CompactStarted) else compact_notice(value),
@@ -185,7 +205,7 @@ async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: b
         await _resume(conversation, resume, report)
         for notice in await conversation.start():
             print(notice, file=sys.stderr, flush=True)
-        async with aclosing(conversation.reply(prompt)) as stream:
+        async with aclosing(conversation.reply(prompt, command=command)) as stream:
             async for event in stream:
                 if isinstance(event, Delta) and event.kind == "text":
                     print(event.text, end="", flush=True)
@@ -244,6 +264,7 @@ def main() -> None:
         parser.error("--continue 和 --resume 只能选择一个。")
     if args.resume == "" and args.prompt is not None:
         parser.error("无界面模式中 --resume 需要会话 ID；恢复最近的会话请用 --continue。")
+    prompt, command = _headless_input(args.prompt) if args.prompt is not None else (None, None)
     try:
         settings = load_settings(args.config if args.config is not None else find_config())
         if args.list_providers:
@@ -278,8 +299,9 @@ def main() -> None:
             if args.output_format != "text" and hasattr(sys.stdout, "reconfigure"):
                 # Machine-readable output is always UTF-8, whatever the console code page.
                 sys.stdout.reconfigure(encoding="utf-8")
-            result = asyncio.run(_prompt(conversation, args.prompt, show_usage=args.show_usage,
-                                         output_format=args.output_format, model=config.model, resume=resume))
+            result = asyncio.run(_prompt(conversation, prompt, show_usage=args.show_usage,
+                                         output_format=args.output_format, model=config.model, resume=resume,
+                                         command=command))
             if result is not None and result["is_error"]:
                 raise SystemExit(1)
         else:

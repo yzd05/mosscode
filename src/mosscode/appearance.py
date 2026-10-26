@@ -2,7 +2,6 @@
 
 from importlib.metadata import version
 from pathlib import Path
-from typing import Sequence
 
 from rich.table import Table
 from rich.style import Style
@@ -21,42 +20,6 @@ COMMAND_HIGHLIGHT_COLOR = "#3673ff"
 # text stands out on both dark and light terminal backgrounds.
 USER_MESSAGE_BACKGROUND = "#4a4a4a"
 USER_MESSAGE_COLOR = "#f2f2f2"
-
-COMMAND_HINTS = (
-    ("/help", "查看命令和快捷键"),
-    ("/clear", "开始新会话：清空模型上下文和 Token 统计"),
-    ("/compact", "压缩上下文：较早的对话换成摘要，近期消息保留"),
-    ("/resume", "恢复本项目之前的会话"),
-    ("/memory", "查看已加载的项目指令和记忆笔记"),
-    ("/model", "切换提供商与模型，对话历史保留"),
-    ("/plan", "只读调查和规划，提交计划经批准后执行"),
-    ("/permissions", "查看或切换工具权限档位"),
-    ("/mcp", "查看 MCP Server 的连接状态与工具"),
-    ("/exit", "退出 MossCode"),
-)
-
-
-def command_matches(value: str, providers: Sequence[str] = (), servers: Sequence[str] = ()) -> list[tuple[str, str]]:
-    """Complete the local commands and their fixed arguments (modes, providers, MCP servers)."""
-    if "\n" in value:
-        return []
-    value = value.lstrip()
-    command, separator, argument = value.partition(" ")
-    if command == "/model" and separator:
-        return [(f"/model {name}", "切换到该提供商") for name in providers if name.startswith(argument.lstrip())]
-    if command == "/mcp" and separator:
-        return [(f"/mcp {name}", "查看该 Server 的工具") for name in servers if name.startswith(argument.lstrip())]
-    if command == "/permissions" and separator:
-        return [(f"/permissions {slug}", description) for slug, description in (
-            ("default", "默认：读取自动通过，写入和命令确认"),
-            ("acceptEdits", "接受编辑：文件写入/编辑自动通过，命令确认"),
-            ("plan", "计划：只读调查，批准计划后执行"),
-            ("bypassPermissions", "跳过审批：仍遵守硬限制和拒绝规则"),
-        ) if slug.startswith(argument.lstrip())]
-    if separator or not value.startswith("/"):
-        return []
-    choices = COMMAND_HINTS if not value.startswith("/q") else (("/quit", "退出 MossCode（/exit 的别名）"),)
-    return [(command, description) for command, description in choices if command.startswith(value)]
 
 ROBOT_ROWS = (
     "     ▀▀     ",
@@ -154,19 +117,8 @@ def compact_notice(event) -> str:
     return notice
 
 
-HELP_TEXT = """命令
-/help                 显示命令与按键
-/clear                开始新会话：清空模型上下文和 Token 统计，权限与会话授权保留
-/compact [说明]       压缩上下文：较早的对话换成摘要，近期消息保留；说明用于指定摘要侧重点
-/resume [ID]          恢复本项目之前的会话；不带 ID 时打开会话列表
-/memory [名称]        列出已加载的项目指令、记忆笔记和目录；带名称时显示该笔记全文
-/model [名称]         切换提供商与模型，对话历史保留；不带名称时打开选择面板
-/plan [任务]          只读调查和规划；模型提交计划，批准后执行
-/permissions [档位]   default/acceptEdits/plan/bypassPermissions 切换权限
-/mcp [名称]           查看 MCP Server 状态；带名称时列出该 Server 的工具
-/exit                 退出 MossCode
-
-按键
+# The key half of /help; the command half comes from the registry (chapter 10 H1).
+KEY_HELP = """按键
 Enter                 发送消息或执行命令
 Shift+Enter / Ctrl+J  换行（也可在行尾输入 \\ 再按 Enter）
 ↑ / ↓                 在命令提示中选择；首行/末行时浏览本次输入历史

@@ -397,9 +397,9 @@ class Conversation:
             if self.memory_provider is not None and self.memory_provider is not self.provider:
                 await self.memory_provider.close()
 
-    async def reply(self, prompt: str):
+    async def reply(self, prompt: str, *, command: str | None = None):
         await self.start()
-        async with aclosing(self._agent.run(prompt)) as stream:
+        async with aclosing(self._agent.run(prompt, command=command)) as stream:
             async for event in stream:
                 self._observe(event)
                 yield event

@@ -22,6 +22,7 @@ from preview_tools import ToolPreviewProvider, exercise_tools
 from preview_agent import AgentPreviewProvider, exercise_plan, exercise_do
 from preview_permissions import approval_app, exercise_approval
 from mosscode.tools import create_default_registry
+from mosscode.builtin_commands import mcp_report
 
 
 class RecordingStream:
@@ -140,7 +141,7 @@ async def exercise_mcp(pilot):
     app.query_one("#prompt", PromptArea).value = "/mcp"
     await pilot.press("enter")
     await pilot.pause()
-    assert "已连接 · 4 个工具" in app._mcp_report("")  # Notes move to native scrollback inline.
+    assert "已连接 · 4 个工具" in mcp_report(app.conversation)  # Notes move to native scrollback inline.
     app.query_one("#prompt", PromptArea).value = "/permissions acceptEdits"
     await pilot.press("enter")
     assert app.conversation.registry.permissions.mode == "acceptEdits"
