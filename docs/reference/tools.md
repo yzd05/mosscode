@@ -14,6 +14,7 @@
 | `execute_command` | 在 Git Bash / PowerShell / bash 中执行（见下文），返回 stdout/stderr/退出码；默认超时 120 秒、最大 600 秒 |
 | `glob` | 按文件模式查找文件，如 `**/*.py`；遵守 `.gitignore`，按修改时间从新到旧 |
 | `grep` | 按正则搜索内容；`output_mode` 为 `files_with_matches`（默认）、`content` 或 `count`，支持 `glob`、`ignore_case`、`context`、`head_limit` |
+| `memory` | 保存或删除跨会话的记忆笔记，只写两个笔记目录，不接受路径；不需要审批，计划模式中也可用。见 [记忆笔记](memory.md#memory-工具) |
 
 ## 先读后改
 
@@ -39,7 +40,7 @@
 
 ## 计划模式
 
-计划模式只向模型提供只读工具（read_file、glob、grep）、`execute_command`（仅限只读命令）和 `exit_plan_mode`；写入、编辑、非只读命令和外部 MCP 工具返回 `plan_blocked`，任何规则和档位都不能放行。模型调查完成后调用 `exit_plan_mode` 提交 Markdown 计划：计划完整显示在对话中，审批面板提供三项——批准并执行（恢复进入计划前的权限）、批准并自动接受编辑（切换为 acceptEdits）、继续规划（拒绝，模型按反馈修改）。批准后同一任务的下一轮请求即可使用全部工具，无需再次输入。`--prompt` 无界面模式打印计划并返回 approval_required，仍停留在计划模式。输入 `/plan 修复入口报错` 先规划；也可以用 Shift+Tab 或 `/permissions 档位` 手动退出计划模式，再输入要执行的任务。/permissions plan 与 /plan 联动，切换其他权限会退出计划模式。计划保存在当前内存上下文，不建立计划文件。
+计划模式只向模型提供只读工具（read_file、glob、grep）、`execute_command`（仅限只读命令）、`memory` 和 `exit_plan_mode`；写入、编辑、非只读命令和外部 MCP 工具返回 `plan_blocked`，任何规则和档位都不能放行。模型调查完成后调用 `exit_plan_mode` 提交 Markdown 计划：计划完整显示在对话中，审批面板提供三项——批准并执行（恢复进入计划前的权限）、批准并自动接受编辑（切换为 acceptEdits）、继续规划（拒绝，模型按反馈修改）。批准后同一任务的下一轮请求即可使用全部工具，无需再次输入。`--prompt` 无界面模式打印计划并返回 approval_required，仍停留在计划模式。输入 `/plan 修复入口报错` 先规划；也可以用 Shift+Tab 或 `/permissions 档位` 手动退出计划模式，再输入要执行的任务。/permissions plan 与 /plan 联动，切换其他权限会退出计划模式。计划保存在当前内存上下文，不建立计划文件。
 
 ## 路径、超时与取消
 

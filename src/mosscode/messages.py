@@ -164,7 +164,7 @@ class CompactFailed:
     reason: str
     consecutive: int  # Consecutive automatic failures; 3 pauses automatic compaction.
     paused: bool = False
-    code: Literal["failed", "nothing"] = "failed"
+    code: Literal["failed", "nothing", "restore"] = "failed"  # restore: compacting a resumed session
     manual: bool = False
 
 

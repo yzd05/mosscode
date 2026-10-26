@@ -6,11 +6,12 @@ from time import monotonic
 import sys
 
 from .config import ConfigError, find_config, load_settings
-from .conversation import Conversation
+from .conversation import Conversation, Notice, Resumed
 from .appearance import compact_notice
 from .messages import (CompactFailed, CompactFinished, CompactStarted, Completed, Delta, Message, ProviderError, Retrying,
                        ToolProgress, ResponseBoundary, RunStopped, UsageUpdate)
-from .session import Session, prune_sessions
+from .memory import MemoryStore
+from .session import Session, prune_all
 from .usage import request_usage_text
 from .tools import create_default_registry
 from .tools.shell import ShellNotFound
@@ -66,19 +67,52 @@ def _compact_event(event) -> dict:
             "paused": event.paused}
 
 
+async def _resume(conversation: Conversation, session_id: str | None, report) -> None:
+    """Restore before the task; report(kind, value) prints notices and compaction progress."""
+    if session_id is None:
+        return
+    async with aclosing(conversation.resume(session_id)) as stream:
+        async for event in stream:
+            if isinstance(event, Resumed):
+                restored = event.restored
+                report("notice", f"已恢复会话 {restored.id} · {restored.title} · {event.messages} 条消息")
+                for notice in event.notices:
+                    report("notice", notice)
+                for text in restored.unanswered:
+                    # R8: never resent automatically; shown so the user can decide.
+                    report("unanswered", text)
+            elif isinstance(event, Notice):
+                report("notice", event.text)
+            else:
+                report("compact", event)
+
+
 async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False,
-                  output_format: str = "text", model: str = "") -> dict | None:
+                  output_format: str = "text", model: str = "", resume: str | None = None) -> dict | None:
     """Run one headless task; JSON formats return the result object instead of raising."""
     if output_format == "text":
-        await _text_prompt(conversation, prompt, show_usage=show_usage)
+        await _text_prompt(conversation, prompt, show_usage=show_usage, resume=resume)
         return None
     stream_json = output_format == "stream-json"
     started = monotonic()
     stopped: RunStopped | None = None
     final = ""
     error: str | None = None
+
+    def report(kind, value):
+        if kind == "compact":
+            if stream_json:
+                _emit(_compact_event(value))
+        elif stream_json:
+            _emit({"type": "notice", "text": value if kind == "notice" else "未得到回复的消息：" + value})
+        else:
+            print(value if kind == "notice" else "未得到回复的消息：" + value, file=sys.stderr, flush=True)
     try:
         try:
+            if stream_json:
+                _emit({"type": "session", "id": conversation.session_id if resume is None else resume,
+                       "resumed": resume is not None})
+            await _resume(conversation, resume, report)
             notices = await conversation.start()
             for notice in notices:
                 if stream_json:
@@ -114,6 +148,8 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
                                "delay": event.delay, "reason": event.reason})
                     elif isinstance(event, (CompactStarted, CompactFinished, CompactFailed)):
                         _emit(_compact_event(event))
+                    elif isinstance(event, Notice):
+                        _emit({"type": "notice", "text": event.text})
         except ProviderError as exc:
             error = str(exc)
         registry = conversation.registry
@@ -128,6 +164,7 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
                       "cached_input_tokens": total.cached_input_tokens, "cache_write_tokens": total.cache_write_tokens,
                       "requests": total.requests},
             "compactions": conversation.compactions,
+            "session_id": conversation.session_id,
             "model": model, "permission_mode": registry.permissions.mode if registry else None,
         }
         _emit(result)
@@ -136,8 +173,16 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
         await conversation.close()
 
 
-async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False) -> None:
+async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False,
+                       resume: str | None = None) -> None:
+    def report(kind, value):
+        if kind == "compact":
+            print("正在压缩上下文…" if isinstance(value, CompactStarted) else compact_notice(value),
+                  file=sys.stderr, flush=True)
+        else:
+            print(value if kind == "notice" else "未得到回复的消息：" + value, file=sys.stderr, flush=True)
     try:
+        await _resume(conversation, resume, report)
         for notice in await conversation.start():
             print(notice, file=sys.stderr, flush=True)
         async with aclosing(conversation.reply(prompt)) as stream:
@@ -161,9 +206,21 @@ async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: b
                     print("正在压缩上下文…", file=sys.stderr, flush=True)
                 elif isinstance(event, (CompactFinished, CompactFailed)):
                     print(compact_notice(event), file=sys.stderr, flush=True)
+                elif isinstance(event, Notice):
+                    print(event.text, file=sys.stderr, flush=True)
         print()
     finally:
         await conversation.close()
+
+
+def _memory_options(settings, *, interactive: bool) -> dict:
+    """9c: notes and the memory tool everywhere; background extraction only in the TUI (Q3)."""
+    if not settings.memory:
+        return {}
+    options = {"memory": MemoryStore.for_project(Path.cwd()), "auto_memory": interactive and settings.auto_memory}
+    if options["auto_memory"] and settings.memory_provider:
+        options["memory_provider"] = create_provider(settings.select(settings.memory_provider))
+    return options
 
 
 def main() -> None:
@@ -175,10 +232,18 @@ def main() -> None:
                         help="无界面输出格式：text（默认，流式正文）、json（结束时输出一个结果对象）、stream-json（每行一个 JSON 事件）")
     parser.add_argument("--show-usage", action="store_true", help="text 格式在 stderr 显示逐次请求的 Token 与缓存用量")
     parser.add_argument("--list-providers", action="store_true", help="列出配置，不发请求")
+    parser.add_argument("-c", "--continue", dest="continue_session", action="store_true",
+                        help="恢复本项目最近活动的会话")
+    parser.add_argument("--resume", nargs="?", const="", metavar="ID",
+                        help="恢复指定会话；不带 ID 时在交互界面中打开会话列表")
     parser.add_argument("--permission-mode", type=_permission_mode, metavar="MODE", help="权限档位：default/acceptEdits/plan/bypassPermissions；仍遵守硬限制和显式拒绝")
     args = parser.parse_args()
     if args.output_format != "text" and args.prompt is None:
         parser.error("--output-format 只用于 -p/--prompt 无界面模式。")
+    if args.continue_session and args.resume is not None:
+        parser.error("--continue 和 --resume 只能选择一个。")
+    if args.resume == "" and args.prompt is not None:
+        parser.error("无界面模式中 --resume 需要会话 ID；恢复最近的会话请用 --continue。")
     try:
         settings = load_settings(args.config if args.config is not None else find_config())
         if args.list_providers:
@@ -196,23 +261,31 @@ def main() -> None:
         registry = create_default_registry(permission_mode=args.permission_mode, shell=settings.shell)
         mcp_settings = load_mcp_settings(Path.cwd())
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
-        prune_sessions()
+        prune_all()
         budget = config.budget()
         notices = () if budget.configured else (f"{config.name} 未配置 context_window，按 128K 估算上下文。",)
         conversation = Conversation(create_provider(config), settings.system_prompt, registry, mcp_manager=manager,
                                     max_iterations=settings.max_iterations, context_root=Path.cwd(),
-                                    budget=budget, session=Session.create(lazy=True),
-                                    auto_compact=settings.auto_compact, notices=notices)
+                                    budget=budget, session=Session.new(Path.cwd()),
+                                    auto_compact=settings.auto_compact, notices=notices,
+                                    persist=settings.persist_sessions,
+                                    provider_info=(config.name, config.protocol, config.model),
+                                    **_memory_options(settings, interactive=args.prompt is None))
+        resume = args.resume
+        if args.continue_session or resume:
+            resume = conversation.resolve_session(resume or None)
         if args.prompt is not None:
             if args.output_format != "text" and hasattr(sys.stdout, "reconfigure"):
                 # Machine-readable output is always UTF-8, whatever the console code page.
                 sys.stdout.reconfigure(encoding="utf-8")
             result = asyncio.run(_prompt(conversation, args.prompt, show_usage=args.show_usage,
-                                         output_format=args.output_format, model=config.model))
+                                         output_format=args.output_format, model=config.model, resume=resume))
             if result is not None and result["is_error"]:
                 raise SystemExit(1)
         else:
-            MossCodeApp(conversation, config.name, settings=settings, model=config.model).run(
+            if resume == "" and conversation.unavailable():
+                raise ProviderError(conversation.unavailable())
+            MossCodeApp(conversation, config.name, settings=settings, model=config.model, resume=resume).run(
                 inline=True, inline_no_clear=True, mouse=False,
             )
     except (ConfigError, ProviderError, PermissionConfigError, MCPConfigError, ShellNotFound) as exc:

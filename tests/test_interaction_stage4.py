@@ -475,8 +475,9 @@ def test_ac7_stream_json_lines_include_tools_in_order(monkeypatch, capsys):
     code, out, _, _ = run_cli(monkeypatch, capsys, ["-p", "看看", "--output-format", "stream-json"], provider)
     events = [json.loads(line) for line in out.splitlines()]
     kinds = [e["type"] for e in events if e["type"] != "notice"]
-    assert code == 0 and kinds == ["system", "assistant", "tool_result", "assistant", "result"]
-    init, first, tool, final, result = (e for e in events if e["type"] != "notice")
+    assert code == 0 and kinds == ["session", "system", "assistant", "tool_result", "assistant", "result"]
+    session, init, first, tool, final, result = (e for e in events if e["type"] != "notice")
+    assert session["resumed"] is False and session["id"] == result["session_id"]
     assert init["subtype"] == "init" and "read_file" in init["tools"] and init["model"] == "model-a"
     assert first["tool_calls"] == [{"id": "r", "name": "read_file", "arguments": {"path": "pyproject.toml"}}]
     assert first["stop_reason"] == "tool_use" and first["usage"]["input_tokens"] == 5

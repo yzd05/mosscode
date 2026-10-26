@@ -79,6 +79,10 @@ class Settings:
     source: Path | None = None
     shell: str = "auto"
     auto_compact: bool = True
+    persist_sessions: bool = True
+    memory: bool = True
+    auto_memory: bool = True
+    memory_provider: str | None = None  # Background extraction; None uses the current provider.
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -196,7 +200,8 @@ def load_settings(path: str | Path) -> Settings:
         raise ConfigError("配置文件需为有效的 UTF-8 YAML。") from None
     if not isinstance(raw, dict) or not isinstance(raw.get("providers"), list) or not raw["providers"]:
         raise ConfigError("配置需包含非空 providers 列表。")
-    if set(raw) - {"providers", "default_provider", "system_prompt", "max_iterations", "shell", "auto_compact"}:
+    if set(raw) - {"providers", "default_provider", "system_prompt", "max_iterations", "shell", "auto_compact",
+                   "persist_sessions", "memory", "auto_memory", "memory_provider"}:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
     if len({p.name for p in providers}) != len(providers):
@@ -211,9 +216,15 @@ def load_settings(path: str | Path) -> Settings:
     shell = raw.get("shell", Settings.shell)
     if not isinstance(shell, str) or not shell.strip():
         raise ConfigError("shell 需为 auto、bash、powershell 或 shell 可执行文件路径。")
-    auto_compact = raw.get("auto_compact", True)
-    if type(auto_compact) is not bool:
-        raise ConfigError("auto_compact 必须是布尔值。")
-    settings = Settings(providers, default, stable_prompt(system), iterations, Path(path), shell.strip(), auto_compact)
+    switches = {}
+    for key in ("auto_compact", "persist_sessions", "memory", "auto_memory"):
+        switches[key] = raw.get(key, True)
+        if type(switches[key]) is not bool:
+            raise ConfigError(f"{key} 必须是布尔值。")
+    memory_provider = raw.get("memory_provider")
+    if memory_provider is not None and memory_provider not in {p.name for p in providers}:
+        raise ConfigError("memory_provider 必须是已配置的 Provider 名称。")
+    settings = Settings(providers, default, stable_prompt(system), iterations, Path(path), shell.strip(),
+                        memory_provider=memory_provider, **switches)
     settings.select()
     return settings

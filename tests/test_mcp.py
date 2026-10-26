@@ -381,7 +381,7 @@ async def test_tui_startup_discovery_and_keyboard_approval(tmp_path):
         assert not app.query_one("#prompt", PromptArea).disabled
         await asyncio.wait_for(manager.wait(), 5)  # Discovery runs in the background.
         await pilot.pause()
-        assert any("MCP notes 已连接" in str(n.render()) for n in app.query(".local-note"))
+        assert not any("已连接" in str(n.render()) for n in app.query(".local-note"))  # /mcp lists it
         await send(app, pilot, "调用外部工具")
         await wait_approval(app, pilot)
         assert "mcp__notes__echo" in str(app.query_one("#approval-detail", Static).render())
@@ -402,7 +402,7 @@ async def test_headless_startup_does_not_wait_for_mcp_approval(tmp_path, capsys)
     conv = Conversation(provider, registry=reg, mcp_manager=manager)
     await asyncio.wait_for(_prompt(conv, "task"), 5)
     output = capsys.readouterr()
-    assert "已连接" in output.err and "需授权" in output.out
+    assert "已连接" not in output.err and "需授权" in output.out
     assert conv.history[2].tool_results[0].code == "approval_required"
     assert not (tmp_path / "calls.log").exists() and manager.connections[0].task.done()
 

@@ -336,7 +336,9 @@ class MCPManager:
 
     @property
     def pending(self) -> int:
-        return sum(not task.done() for task in self._tasks)
+        # A server settles when it reports, which happens just before its task finishes.
+        return sum(not task.done() and connection.config.name not in self._outcomes
+                   for task, connection in zip(self._tasks, self.connections))
 
     def statuses(self) -> tuple[ServerStatus, ...]:
         result = []
@@ -382,8 +384,11 @@ class MCPManager:
         if self._tasks:
             await asyncio.gather(*self._tasks)
 
-    async def start(self, registry):
-        """Discover and register everything, then report; only the first call reports."""
+    async def start(self, registry, *, problems_only: bool = False):
+        """Discover and register everything, then report; only the first call reports.
+
+        problems_only drops the "connected" lines, as startup output does; /mcp lists those servers.
+        """
         if self._closed:
             return ()
         self.begin(registry)
@@ -395,7 +400,8 @@ class MCPManager:
         if self._closed or self._reported:
             return ()
         self._reported = True
-        return (*self.notices, *(status.notice() for status in self.statuses()))
+        statuses = [s for s in self.statuses() if not problems_only or s.state != "ready"]
+        return (*self.notices, *(status.notice() for status in statuses))
 
     async def close(self):
         if self._closed:

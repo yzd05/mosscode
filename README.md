@@ -46,6 +46,10 @@ providers:
 | `shell` | `auto` | Windows 优先 Git Bash，找不到时用 PowerShell；可设 `bash`、`powershell` 或 bash.exe 路径 |
 | `system_prompt` | 默认提示 | 填写后完整替换默认系统提示 |
 | `auto_compact` | `true` | 接近上下文窗口时自动压缩较早的对话，见 [上下文管理](docs/reference/context.md) |
+| `persist_sessions` | `true` | 把会话实时存档，用于恢复，见 [会话存档与恢复](docs/reference/sessions.md) |
+| `memory` | `true` | 记忆笔记：索引注入系统提示、`memory` 工具和后台提取，见 [记忆笔记](docs/reference/memory.md) |
+| `auto_memory` | `true` | 任务完成后在后台提取值得记住的内容；`false` 时只保留 `memory` 工具 |
+| `memory_provider` | 当前 Provider | 后台提取使用的 Provider 名称，可以指定较便宜的模型 |
 
 ### 权限、MCP 与项目指令
 
@@ -61,6 +65,8 @@ providers:
 .\.venv\Scripts\python.exe -m mosscode                    # 交互界面
 .\.venv\Scripts\python.exe -m mosscode --provider claude  # 指定 Provider
 .\.venv\Scripts\python.exe -m mosscode --list-providers
+.\.venv\Scripts\python.exe -m mosscode -c                 # 恢复本项目最近的会话
+.\.venv\Scripts\python.exe -m mosscode --resume           # 启动后从列表中选择会话
 ```
 
 用自然语言描述任务，例如“读取 README.md，说明项目入口”，模型自行选择工具。界面以内联方式显示在终端中，完成的内容进入终端原生滚动历史。
@@ -80,6 +86,10 @@ providers:
 | `/help` | 显示本地命令与快捷键 |
 | `/clear` | 开始新会话：清空屏幕与终端滚动历史、模型上下文和 Token 统计；权限档位、会话授权和 MCP 连接保留，AGENTS.md 重新加载 |
 | `/compact [说明]` | 压缩上下文：较早的对话换成摘要，近期消息和用户原话保留；说明用于指定摘要侧重点 |
+| `/resume` | 列出本项目最近的会话，↑ / ↓ 选择、Enter 恢复、Esc 收起 |
+| `/resume ID` | 直接恢复指定会话 |
+| `/memory` | 列出已加载的项目指令文件，以及用户级和项目级的记忆笔记及目录 |
+| `/memory 名称` | 显示该笔记的路径和全文 |
 | `/model` | 在输入框下方列出配置的提供商（当前项带 ✓），↑ / ↓ 选择、Enter 切换、Esc 收起 |
 | `/model 名称` | 直接切换到指定提供商；对话历史保留 |
 | `/plan` | 只读调查与规划，模型提交计划经批准后执行 |
@@ -91,6 +101,12 @@ providers:
 | `/exit` | 退出并清理资源 |
 
 界面、输入排队、状态栏与配色的细节见 [终端界面](docs/reference/interface.md)。
+
+### 会话与记忆
+
+会话实时存档到 `~/.mosscode/projects/<项目键>/sessions/`，退出或崩溃后用 `-c`、`--resume [ID]` 或 `/resume` 接着对话，中断时未完成的工具调用会被标记出来。存档保留 30 天。见 [会话存档与恢复](docs/reference/sessions.md)。
+
+对模型说“记住……”时，它用 `memory` 工具写一条笔记；任务完成后，后台还会提取你纠正过的做法和偏好（只依据对话，不依据工具输出）。笔记是 `~/.mosscode/memory/`（用户级）和 `~/.mosscode/projects/<项目键>/memory/`（项目级）中的 Markdown 文件，下次启动时索引进入系统提示。见 [记忆笔记](docs/reference/memory.md)。
 
 ### 权限档位
 
@@ -115,7 +131,7 @@ providers:
 .\.venv\Scripts\python.exe -m mosscode -p "列出 src 下的模块" --output-format json
 ```
 
-`-p`（`--prompt`）运行一个任务后退出，不等待审批：需要确认的调用返回 approval_required，模型据此调整。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
+`-p`（`--prompt`）运行一个任务后退出，不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
 
 ## 架构
 
@@ -124,6 +140,7 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
              └──► conversation.py（启动上下文与 MCP、对外接口）
                     └──► agent.py（Agent Loop）
                            ├──► compaction.py、context.py（上下文估算与压缩）
+                           ├──► session.py（会话存档与恢复）、memory*.py（记忆笔记）
                            ├──► providers.py（三种协议、重试、缓存标记）
                            ├──► prompts.py（系统提示、环境补充、模式提醒）
                            └──► tools/（注册、校验、授权、执行）
@@ -136,7 +153,9 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 | 模块 | 职责 |
 | --- | --- |
 | `agent.py` | Agent Loop：请求、工具执行、排队消息、停止条件、计划模式、压缩时机 |
-| `context.py`、`compaction.py`、`tool_budget.py`、`session.py` | 上下文估算与阈值、摘要压缩、大结果存盘、会话目录 |
+| `context.py`、`compaction.py`、`tool_budget.py` | 上下文估算与阈值、摘要压缩、大结果存盘 |
+| `session.py`、`serialization.py`、`paths.py` | 会话存档、重放与修复、锁、清理；项目键 |
+| `memory.py`、`memory_extract.py`、`tools/memory.py` | 记忆笔记的存储、索引与校验，后台提取，memory 工具 |
 | `providers.py` | Anthropic Messages、OpenAI Responses、Chat Completions 适配，首事件前重试，缓存断点 |
 | `prompts.py` | 七个固定模块、工具清单、`<environment>` 与 `<system-reminder>` 补充、AGENTS.md、git 快照 |
 | `tools/` | `files.py`、`search.py`、`process.py`、`plan.py` 等工具；`execution.py` 分批并发；`base.py` 注册与执行边界 |
@@ -149,10 +168,10 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md) |
+| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md) |
 | 设计评审 | [对照 Claude Code 与 Pi 的完善建议](docs/research/claude-code-pi-gap-review.md) |
 | 各阶段规格与验证 | `docs/specs/`：`chapter-*` 为各章，`refinement-*` 为完善阶段 1–6，每个目录含 `spec.md` 与 `validation.md` |
-| 人工验收 | [完善阶段 1–6 与上下文管理验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |
+| 人工验收 | [完善阶段 1–6、上下文管理与第九章验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |
 
 ### 开发与测试
 
@@ -165,4 +184,4 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 测试使用模拟模型、模拟 SSE 和无界面 TUI，不读取 API 配置，也不发送请求；真实服务的联调需要自行配置。界面预览脚本见 [终端界面](docs/reference/interface.md#预览与烟测脚本)。
 
-目前不支持会话持久化与恢复、网络限制、资源配额和审计日志。
+目前不支持网络限制、资源配额和审计日志。

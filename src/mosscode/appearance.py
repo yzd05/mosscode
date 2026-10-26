@@ -26,6 +26,8 @@ COMMAND_HINTS = (
     ("/help", "查看命令和快捷键"),
     ("/clear", "开始新会话：清空模型上下文和 Token 统计"),
     ("/compact", "压缩上下文：较早的对话换成摘要，近期消息保留"),
+    ("/resume", "恢复本项目之前的会话"),
+    ("/memory", "查看已加载的项目指令和记忆笔记"),
     ("/model", "切换提供商与模型，对话历史保留"),
     ("/plan", "只读调查和规划，提交计划经批准后执行"),
     ("/permissions", "查看或切换工具权限档位"),
@@ -142,6 +144,8 @@ def compact_notice(event) -> str:
                 f" · 用时 {event.elapsed:.1f}s")
     if event.code == "nothing":
         return "└ " + event.reason
+    if event.code == "restore":
+        return "! " + event.reason
     if event.manual:
         return "! 压缩上下文失败：" + event.reason
     notice = f"! 自动压缩上下文失败（连续 {event.consecutive} 次）：{event.reason}"
@@ -154,6 +158,8 @@ HELP_TEXT = """命令
 /help                 显示命令与按键
 /clear                开始新会话：清空模型上下文和 Token 统计，权限与会话授权保留
 /compact [说明]       压缩上下文：较早的对话换成摘要，近期消息保留；说明用于指定摘要侧重点
+/resume [ID]          恢复本项目之前的会话；不带 ID 时打开会话列表
+/memory [名称]        列出已加载的项目指令、记忆笔记和目录；带名称时显示该笔记全文
 /model [名称]         切换提供商与模型，对话历史保留；不带名称时打开选择面板
 /plan [任务]          只读调查和规划；模型提交计划，批准后执行
 /permissions [档位]   default/acceptEdits/plan/bypassPermissions 切换权限

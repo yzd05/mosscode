@@ -17,7 +17,8 @@ from .messages import (Completed, CompactFailed, CompactFinished, CompactStarted
 from .tools import shell_label
 from .tools.base import ToolRegistry
 from .tools.execution import execute_batch
-from .prompts import PromptRequest, build_system_prompt, environment, mode_reminder, stable_prompt
+from .prompts import PromptRequest, Supplement, build_system_prompt, environment, mode_reminder, stable_prompt
+from .session import compact_record, message_record
 
 
 class Provider(Protocol):
@@ -69,6 +70,29 @@ class AgentLoop:
         self.compact_failures = 0
         self.compactions = 0
         self._reannounce = False
+        # Set by the application (the session transcript): receives each record as history changes.
+        self.on_commit = None
+        # Set by the memory extractor (9c): messages a compaction is about to replace with a summary.
+        self.on_compact = None
+        self._gap: Supplement | None = None  # One-time reminder after resuming an old session.
+
+    def _commit(self, record: dict) -> None:
+        if self.on_commit is not None:
+            self.on_commit(record)
+
+    def _append(self, message: Message) -> None:
+        self.history.append(message)
+        self._commit(message_record(message))
+
+    def restore(self, history: list[Message], gap: Supplement | None = None):
+        """Resume a saved session: its messages only; usage, reads and the mode announcement start afresh."""
+        if self.busy:
+            raise ProviderError("当前任务正在运行，不能恢复会话。")
+        self.clear()
+        self.history = list(history)
+        if self.registry is not None:
+            self.registry.forget_reads()
+        self._gap = gap
 
     @property
     def mode(self):
@@ -99,6 +123,7 @@ class AgentLoop:
         self._announced = "normal"
         self.meter.invalidate()
         self.compact_failures = 0
+        self._gap = None
 
     def set_provider(self, provider: Provider, budget: ContextBudget | None = None):
         if self.busy:
@@ -122,7 +147,9 @@ class AgentLoop:
         reminder = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
         self._announced, self._reannounce = self.mode, False
         definitions = self._definitions()
-        prompt = PromptRequest(self._prompt(definitions), (env,) + ((reminder,) if reminder else ()))
+        extra = tuple(item for item in (reminder, self._gap) if item)
+        self._gap = None  # Never part of the history or the transcript; sent with the first request only.
+        prompt = PromptRequest(self._prompt(definitions), (env,) + extra)
         if self.registry is None:
             return self.provider.stream(messages, prompt)
         return self.provider.stream(messages, prompt, definitions)
@@ -136,7 +163,7 @@ class AgentLoop:
     def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
         return self.meter.estimate(list(self.history) + list(extra), env_text, self._fixed_text)
 
-    async def _compact(self, instructions: str = "", *, manual: bool = False):
+    async def _compact(self, instructions: str = "", *, manual: bool = False, failure: str | None = None):
         """One compaction attempt; events report the outcome, the history changes only on success."""
         if not cut_point(self.history, self.budget.auto_threshold, manual=manual):
             # Nothing older than the kept tail: automatic attempts skip silently and never trip the breaker.
@@ -145,15 +172,22 @@ class AgentLoop:
             return
         yield CompactStarted(manual)
         started = time.monotonic()
+        if self.on_compact is not None:
+            # Messages about to be summarized away; the memory extractor still gets to read them.
+            self.on_compact(self.history[:cut_point(self.history, self.budget.auto_threshold, manual=manual)])
         try:
             done = await compact_history(self.provider, self.history, self.budget, session=self.session,
                                          instructions=instructions, manual=manual)
         except CompactionError as exc:
+            if failure is not None:  # Resuming: its own message, and the breaker is untouched.
+                yield CompactFailed(failure.format(exc), self.compact_failures, self.auto_paused, "restore")
+                return
             if not manual and exc.code != "nothing":
                 self.compact_failures += 1
             yield CompactFailed(str(exc), self.compact_failures, self.auto_paused, exc.code, manual)
             return
         self.history = done.history
+        self._commit(compact_record(done.history[0], len(done.history) - 1, str(done.record) if done.record else None))
         if self.registry is not None:
             self.registry.forget_reads()
         # The mode rules may have been summarized away; the next request repeats them (as after /clear).
@@ -171,6 +205,22 @@ class AgentLoop:
         self.busy = True
         try:
             async with aclosing(self._compact(instructions, manual=True)) as events:
+                async for event in events:
+                    yield event
+        finally:
+            self.busy = False
+
+    async def compact_restored(self):
+        """R10: a resumed session over the threshold is compacted before the first input, even with
+        auto_compact off; like /compact it never trips the breaker."""
+        if self.busy:
+            raise ProviderError("当前任务正在运行，不能压缩上下文。")
+        if self.estimate() < self.budget.auto_threshold:
+            return
+        self.busy = True
+        try:
+            failure = "恢复的会话超出上下文窗口，压缩失败：{}；可以 /compact 重试或 /clear"
+            async with aclosing(self._compact(failure=failure)) as events:
                 async for event in events:
                     yield event
         finally:
@@ -217,7 +267,7 @@ class AgentLoop:
                 yield IterationProgress(iteration, self.max_iterations, self.mode)
                 if committed and self.pending:
                     texts, self.pending = tuple(self.pending), []
-                    self.history.append(Message("user", (ContentBlock("text", "\n\n".join(texts)),)))
+                    self._append(Message("user", (ContentBlock("text", "\n\n".join(texts)),)))
                     yield UserInput(texts)
                 fresh = [] if committed else [user]
                 if self._may_compact() and self.estimate(fresh, env.text) >= self.budget.auto_threshold:
@@ -255,9 +305,9 @@ class AgentLoop:
                 if calls and self.registry is None:
                     raise ProviderError("当前会话未启用工具。")
                 if not committed:
-                    self.history.append(deepcopy(user))
+                    self._append(deepcopy(user))
                     committed = True
-                self.history.append(deepcopy(final.message))
+                self._append(deepcopy(final.message))
                 self._usage(final.usage)
                 self.meter.record(final.usage, len(self.history))
                 truncated = final.stop_reason == "max_tokens"
@@ -274,19 +324,25 @@ class AgentLoop:
                     results = tuple(ToolResult(c.id, c.name, "回复达到输出上限，此调用的参数可能不完整，未执行。"
                                                "请缩小单次输出后重试，例如分多次写入或编辑。", True, "output_truncated",
                                                {"executed": False}) for c in calls)
-                    self.history.append(Message("tool", (), tool_results=results))
+                    self._append(Message("tool", (), tool_results=results))
                     yield UsageUpdate(iteration, final.usage, self.total_usage)
                     yield ResponseBoundary(final.message)
                     for call, result in zip(calls, results):
                         yield ToolProgress(call, "finished", result)
                     continue
                 # Enter paired-results cleanup before yielding a committed call.
-                async with aclosing(execute_batch(final.message, self.registry, self.history)) as batch:
-                    boundary = await anext(batch)
-                    yield UsageUpdate(iteration, final.usage, self.total_usage)
-                    yield boundary
-                    async for event in batch:
-                        yield event
+                position = len(self.history)
+                try:
+                    async with aclosing(execute_batch(final.message, self.registry, self.history)) as batch:
+                        boundary = await anext(batch)
+                        yield UsageUpdate(iteration, final.usage, self.total_usage)
+                        yield boundary
+                        async for event in batch:
+                            yield event
+                finally:
+                    # The batch's final results, once, also when cancelled: never its intermediate states.
+                    if len(self.history) > position:
+                        self._commit(message_record(self.history[position]))
                 unknown_run = unknown_run + 1 if all(self.registry.get(c.name) is None for c in calls) else 0
                 if unknown_run >= self.unknown_limit:
                     yield RunStopped("unknown_tools", f"连续 {self.unknown_limit} 轮仅请求未知工具，已停止；可以修改任务后继续。", iteration, outcomes())

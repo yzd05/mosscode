@@ -63,6 +63,7 @@ class Operation:
     read_only: bool = False  # Whitelisted inspection command; runs without approval.
     prefix: str = ""  # Command prefix offered for a permanent Bash(<prefix>:*) rule.
     server: str = ""  # MCP server name from the configuration (tool names may be hashed).
+    notes: bool = False  # The memory tool: writes only the note directories, no approval.
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,7 @@ class PermissionPolicy:
         self.session: list[Rule] = []
         self.interactive = False
         self.session_dir: Path | None = None
+        self.memory_dirs: tuple[Path, ...] = ()  # Note directories: read_file and glob need no approval.
         self.requests: asyncio.Queue[ApprovalRequest] = asyncio.Queue()
         self.pending: dict[str, asyncio.Future] = {}
         self._choices: dict[str, tuple[str, ...]] = {}
@@ -256,10 +258,12 @@ class PermissionPolicy:
 
     def operation(self, tool, params) -> Operation:
         args = params.model_dump()
-        if self.mode == "plan" and not tool.read_only and tool.name != EXIT_PLAN:
+        if self.mode == "plan" and not tool.read_only and tool.name != EXIT_PLAN and not getattr(tool, "plan_allowed", False):
             if not (tool.name == "execute_command" and read_only_command(args["command"])):
                 raise SecurityError("plan_blocked", "计划模式只开放只读工具和只读命令（如 git status/diff/log、ls）；此调用未执行。"
                                                     "调查完成后用 exit_plan_mode 提交计划，用户批准后才能写入、编辑或执行其他命令。")
+        if getattr(tool, "permission_kind", None) == "memory":
+            return Operation(tool.name, f"{args['scope']}:{args['name']}", preview=f"{args['action']} 笔记", notes=True)
         if getattr(tool, "permission_kind", None) == "mcp":
             target = json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
             return Operation(tool.name, target, preview="外部 MCP 调用；本地路径限制不约束 Server 的实际访问。",
@@ -308,8 +312,11 @@ class PermissionPolicy:
             return Decision("deny", "permission_denied", "命中显式拒绝规则；此调用未执行。")
         if operation.risk:
             return Decision("ask", reason=f"高风险命令（{operation.risk}）需要每次确认。")
-        if matched:
+        if matched or operation.notes:
             return Decision("allow")
+        if (operation.outside and operation.tool in {"read_file", "glob"}
+                and any(inside(folder, Path(operation.target)) for folder in self.memory_dirs)):
+            return Decision("allow")  # Memory notes (9c J4), plan mode included.
         if (operation.outside and operation.tool == "read_file" and self.session_dir is not None
                 and inside(self.session_dir, Path(operation.target))):
             return Decision("allow")  # Stored tool results and compaction records of this run.

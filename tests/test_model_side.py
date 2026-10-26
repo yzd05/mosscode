@@ -224,7 +224,7 @@ async def test_instructions_reach_cached_prefix_with_notices(tmp_path):
     provider = SequenceProvider(response("好"), response("好"))
     conv = Conversation(provider, context_root=project, instructions_home=home)
     notices = await conv.start()
-    assert any(n.startswith("已加载项目指令：") and "AGENTS.md" in n for n in notices)
+    assert notices == () and any("AGENTS.md" in item for item in conv.instruction_files)
     assert await conv.start() == ()
     await conv.ask("任务")
     stable = provider.requests[0][1].stable

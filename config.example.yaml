@@ -13,6 +13,14 @@ default_provider: claude
 # shell: auto
 # 接近上下文窗口时自动压缩较早的对话（默认 true）；关闭后仍可用 /compact。
 # auto_compact: true
+# 会话实时存档到 ~/.mosscode/projects/<项目键>/sessions/，可用 -c、--resume 或 /resume 恢复（默认 true）。
+# persist_sessions: true
+# 记忆笔记：索引注入系统提示、memory 工具和后台提取（默认 true）；false 时全部关闭。
+# memory: true
+# 任务完成后在后台提取值得记住的内容（默认 true）；false 时只保留 memory 工具。
+# auto_memory: true
+# 后台提取使用的 Provider 名称，可以指定较便宜的模型；未设置时用当前 Provider。
+# memory_provider: deepseek
 
 providers:
   - name: claude

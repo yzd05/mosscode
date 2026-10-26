@@ -88,7 +88,7 @@ providers:
 
 ## 会话目录
 
-每次启动对应一个会话目录 `~/.mosscode/sessions/<启动时间>-<4 位随机串>/`，第一次存盘或压缩时才创建，其中有 `tool-results/` 和 `compact-<n>.md`。目录中的标记文件 `.mosscode-session` 说明它由 MossCode 创建。启动时删除 30 天前的会话目录，只删除带标记文件的目录。会话目录不是对话记录，不支持恢复会话。
+每个会话对应一个会话目录 `~/.mosscode/projects/<项目键>/sessions/<会话 ID>/`，与该会话的对话记录 `<会话 ID>.jsonl` 同名，第一次存盘或压缩时才创建，其中有 `tool-results/` 和 `compact-<n>.md`。目录中的标记文件 `.mosscode-session` 说明它由 MossCode 创建。恢复会话后继续使用同一目录，历史中引用的路径保持有效；`/clear` 开始新的会话和目录。启动时删除 30 天前的会话，只删除带标记文件的目录。对话记录、恢复和清理见 [会话存档与恢复](sessions.md)。
 
 ## 界面与无界面输出
 

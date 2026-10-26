@@ -53,6 +53,7 @@ class Tool(ABC):
     read_only = False
     plan_only = False  # Offered only in plan mode (exit_plan_mode).
     plan_commands = False  # Offered in plan mode; the policy admits only read-only commands.
+    plan_allowed = False  # Offered and allowed in plan mode although not read-only (memory).
 
     def validate_arguments(self, raw):
         return self.params_model.model_validate(raw)
@@ -134,7 +135,7 @@ class ToolRegistry:
         # Plan mode offers read-only tools, read-only commands and the tool that submits the plan.
         def offered(tool):
             if plan:
-                return tool.read_only or tool.plan_only or tool.plan_commands
+                return tool.read_only or tool.plan_only or tool.plan_commands or tool.plan_allowed
             return not tool.plan_only and (not read_only or tool.read_only)
         return tuple(tool.definition() for tool in self._tools.values() if offered(tool))
 

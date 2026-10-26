@@ -189,8 +189,9 @@ async def test_notices_list_references_and_instructions_stay_frozen(tmp_path):
     provider = SequenceProvider(response("好"), response("好"), response("好"))
     conv = Conversation(provider, context_root=project, instructions_home=home)
     notices = await conv.start()
-    assert any(n.startswith("已加载项目指令：") and "AGENTS.md（引用 docs/style.md）" in n for n in notices)
-    assert "项目指令引用未展开：AGENTS.md 中的 @../outside.md（超出允许的目录）" in notices
+    # Only the problem is announced; the loaded files are listed by /memory.
+    assert conv.instruction_files == ("AGENTS.md（引用 docs/style.md）",)
+    assert notices == ("项目指令引用未展开：AGENTS.md 中的 @../outside.md（超出允许的目录）",)
     await conv.ask("一")
     style.write_text("新规范", encoding="utf-8")
     await conv.ask("二")
@@ -199,3 +200,12 @@ async def test_notices_list_references_and_instructions_stay_frozen(tmp_path):
     await conv.clear()
     await conv.ask("三")
     assert "新规范" in provider.requests[2][1].stable
+
+
+async def test_startup_announces_only_problems(tmp_path):
+    home, project = tree(tmp_path)
+    write(project / "AGENTS.md", "中" * 20000)  # Over 32 KiB of UTF-8.
+    conv = Conversation(SequenceProvider(), context_root=project, instructions_home=home)
+    notices = await conv.start()
+    assert notices == ("项目指令过长，已截断：AGENTS.md；可用 /memory 查看已加载的文件。",)
+    assert conv.instruction_files == ("AGENTS.md（已截断）",)

@@ -62,7 +62,7 @@ async def test_tui_background_startup_registers_between_requests(tmp_path):
         await asyncio.wait_for(app._reply_task, 10)
         await pilot.pause()
         assert seen_mid_task == [False]
-        assert any("MCP notes 已连接 · 注册 4 个工具" in text for text in notes_text(app))
+        assert not any("已连接" in text for text in notes_text(app))  # Only problems are announced.
         assert "mcp__notes__echo" not in [tool.name for tool in provider.requests[0][2]]
         assert "MCP 连接中 1/2" in status_text(app)
         await send(app, pilot, "二")
@@ -73,13 +73,26 @@ async def test_tui_background_startup_registers_between_requests(tmp_path):
     assert all(connection.task.done() for connection in manager.connections)
 
 
+async def test_pending_counts_a_reported_server_as_settled(tmp_path):
+    # A server reports from inside its task; the status bar must not stay at "连接中 n-1/n" afterwards.
+    from mosscode.mcp_client import ServerStatus
+    manager = MCPManager(tmp_path, MCPSettings((stdio_config("notes", tmp_path / "calls.log"),)))
+    gate = asyncio.Event()
+    manager._tasks = [asyncio.create_task(gate.wait())]
+    assert manager.pending == 1
+    manager._outcomes["notes"] = ServerStatus("notes", "stdio", "ready", tools=())
+    assert manager.pending == 0
+    gate.set()
+    await manager._tasks[0]
+
+
 async def test_conversation_start_still_waits_by_default(tmp_path):
     reg = create_default_registry(tmp_path, load_permissions=False)
     manager = MCPManager(tmp_path, MCPSettings((stdio_config("notes", tmp_path / "calls.log"),)))
     conv = Conversation(SequenceProvider(), registry=reg, mcp_manager=manager)
     try:
         notices = await asyncio.wait_for(conv.start(), 10)
-        assert notices == ("MCP notes 已连接 · 注册 4 个工具。",) and reg.get("mcp__notes__echo")
+        assert notices == () and reg.get("mcp__notes__echo")
         assert await conv.start() == () and manager.pending == 0
     finally:
         await conv.close()
