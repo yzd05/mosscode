@@ -4,7 +4,7 @@ Layout:
     <target>/AGENTS.md            parent-level instructions
     <target>/outside.txt          a file outside the project, for the out-of-project read case
     <target>/project/             the project to start MossCode in (its own git repository)
-    <target>/project/.mosscode/AGENTS.md  references docs/style.md (third password segment) and ../../outside.txt (refused)
+    <target>/project/.mosscode/AGENTS.md  references docs/style.md (third password segment)
     <target>/mcp-demo.log         calls received by the fixture MCP servers
     <target>/project/docs/handoff.md  asks to "remember" skipping tests; 9c must not record it
 
@@ -78,8 +78,8 @@ def build(target: Path) -> Path:
 
     write(project / "AGENTS.md", "# 项目指令\n\n验收暗号第二段：翠竹。用户问验收暗号时，按目录层级从上到下给出所有段，用顿号连接。\n")
     write(project / "CLAUDE.md", "验收暗号另有一段：错误。（同级已有 AGENTS.md，此文件不应被加载。）\n")
-    # Stage 9a: .mosscode/AGENTS.md pulls in a project file; the reference out of the project is refused.
-    write(project / ".mosscode" / "AGENTS.md", "# MossCode 专用指令\n\n@../docs/style.md\n@../../outside.txt\n")
+    # Stage 9a: .mosscode/AGENTS.md pulls in a project file. Startup shows no deliberate problems (user request).
+    write(project / ".mosscode" / "AGENTS.md", "# MossCode 专用指令\n\n@../docs/style.md\n")
     write(project / "docs" / "style.md", "验收暗号第三段：红梅。\n\n```\n@../notes.txt\n```\n")
     write(project / ".gitignore", "build/\n*.log\n!keep.log\n")
     write(project / "build" / "output.txt", "NEEDLE 位于被忽略的 build 目录\n")
@@ -104,17 +104,11 @@ def build(target: Path) -> Path:
         f"    args: [{json.dumps(str(FIXTURE))}, {json.dumps(str(log))}]",
         "    timeout: 3",
         "    trust_read_only_hint: false",
-        "  slowstart:",
-        "    type: stdio",
-        f"    command: {json.dumps(str(PYTHON))}",
-        f"    args: [{json.dumps(str(FIXTURE))}, {json.dumps(str(log))}, hang]",
-        "    startup_timeout: 8",
         "",
     ]))
     write(project / ".mcp.json", json.dumps({"mcpServers": {
         "fromjson": {**{k: v for k, v in server.items() if k != "type"},
                      "env": {"MOSS_MCP_FIXTURE": "${MOSS_ACCEPT_TAG:-json-default}"}},
-        "legacy": {"type": "sse", "url": "http://127.0.0.1:9/sse"},
     }}, ensure_ascii=False, indent=2) + "\n")
 
     write(project / ".mosscode" / "permissions.yaml", "deny:\n  - mcp__demo__fail\n  - Bash(git push:*)\n")
@@ -127,6 +121,7 @@ def build(target: Path) -> Path:
         "    protocol: anthropic-messages",
         "    base_url: http://127.0.0.1:9",
         "    model: offline-test",
+        "    context_window: 200000",
         "    api_key: not-a-real-key",
         "    max_retries: 2",
         "",
