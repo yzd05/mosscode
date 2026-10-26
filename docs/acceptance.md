@@ -306,7 +306,7 @@ M58 中，如果关闭窗口时模型还在生成第一次回复，这一轮的�
 
 | 编号 | 操作 | 预期 |
 | --- | --- | --- |
-| M69 /review | 先在验收项目中修改 notes.txt 的一行（例如 `Add-Content notes.txt "新增一行"`），再输入 `/review 重点看格式` | 对话中显示的是 `/review 重点看格式`，不是模板全文。模型运行 `git status` 和 `git diff HEAD`（default 档位下审批选允许），不调用 write_file / edit_file，按严重程度列出问题，每条带 文件:行号；没有问题时明确说明 |
+| M69 /review | 先在验收项目中修改 notes.txt 的一行（例如 `Add-Content notes.txt "新增一行"`），然后在同一目录启动 MossCode：`& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml"`。确认启动区第三行是 `…\.test-artifacts\acceptance\project`（是仓库根目录 `…\MossCode` 就说明启动目录错了，审查的会是主仓库），再输入 `/review 重点看格式` | 对话中显示的是 `/review 重点看格式`，不是模板全文。模型运行 `git status` 和 `git diff HEAD`（default 档位下审批选允许），不调用 write_file / edit_file，按严重程度列出问题，每条带 文件:行号；没有问题时明确说明。Windows PowerShell 5.1 的 `Add-Content` 默认以 GBK 编码、CRLF 行尾写入，所以审查应指出 `notes.txt:3` 的编码（与其余 UTF-8 行不一致）和行尾（与前两行的 LF 混用）问题 |
 | M70 存档中的命令 | 接着 `/exit`，加 `-c` 启动 | 恢复后的简要历史和 `/resume` 列表的标题都是 `/review 重点看格式` |
 | M71 无界面 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" -p "/review"`；再运行 `-p "/clear"` | 第一条输出审查结果，退出码 0。第二条 stderr 显示“/clear 只能在交互界面中使用。”，退出码 2，不发请求 |
 
