@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +43,8 @@ def setup_cli(monkeypatch, args, *, multiple=True, selection="second", default="
         return provider
 
     monkeypatch.setattr(sys, "argv", ["mosscode", *args])
+    # Never look for a real config.yaml: it is gitignored, so a fresh clone has none.
+    monkeypatch.setattr(cli, "find_config", lambda: Path("config.yaml"))
     monkeypatch.setattr(cli, "load_settings", lambda path: settings)
     monkeypatch.setattr(cli, "ProviderSelectApp", Picker)
     monkeypatch.setattr(cli, "MossCodeApp", Chat)

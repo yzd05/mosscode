@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from mosscode.tui import PromptArea
 from textual.drivers.win32 import get_console_mode
 
+from mosscode.appearance import USER_MESSAGE_BACKGROUND
 from mosscode.conversation import Conversation
 from mosscode.config import ProviderConfig, Settings
 from mosscode.tui import ChatEntry, MossCodeApp, ProviderSelectApp
@@ -232,12 +233,17 @@ if __name__ == "__main__":
     assert permanent.count("OLD-SCROLLBACK-000") == permanent.count("OLD-SCROLLBACK-079") == 1
     assert permanent.count("NEW-SCROLLBACK-000") == 1
     assert permanent.index("OLD-SCROLLBACK-079") < permanent.index("NEW-SCROLLBACK-000")
+    # The user's own messages keep their gray background so they stand out; no other background is drawn.
+    user_background = [48, 2, *bytes.fromhex(USER_MESSAGE_BACKGROUND.removeprefix("#"))]
     for sgr in re.findall(r"\x1b\[([\d;]*)m", output):
         codes = [int(code or 0) for code in sgr.split(";")]
         index = 0
         while index < len(codes):
             code = codes[index]
-            assert code != 48 and not 40 <= code <= 47 and not 100 <= code <= 107
+            if codes[index:index + 5] == user_background:
+                index += 5
+                continue
+            assert code != 48 and not 40 <= code <= 47 and not 100 <= code <= 107, sgr
             assert code != 2  # No dim text, including directory and status.
             # RGB / indexed foreground payload values are not SGR commands.
             index += (5 if codes[index + 1] == 2 else 3) if code == 38 else 1
