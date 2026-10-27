@@ -1,12 +1,12 @@
-# 完善阶段 1–6、上下文管理与第九章（指令引用、会话存档、记忆笔记）验收指南
+# 完善阶段 1–6、上下文管理与第九至十一章（指令与记忆、命令系统、Skill）验收指南
 
 分三层验收，从快到慢：
 
 1. **自动测试**（约 2 分钟，不需要 API）：确认全部行为契约。
 2. **离线检查**（约 5 分钟，不需要 API）：用不可达的 Provider 启动真实 CLI 和界面，检查重试、配置、MCP 启动、命令和按键。
-3. **真实模型用例**（约 50–70 分钟，消耗少量 Token）：在专用的验收项目里，用你配置的模型走完各阶段的主要场景。
+3. **真实模型用例**（约 70–90 分钟，消耗少量 Token）：在专用的验收项目里，用你配置的模型走完各阶段的主要场景。
 
-每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md`、`docs/specs/chapter-08-context/spec.md` 和 `docs/specs/chapter-09-memory/` 下的 `9a-instructions.md`、`9b-sessions.md`、`9c-auto-memory.md`。
+每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md`、`docs/specs/chapter-08-context/spec.md`、`docs/specs/chapter-09-memory/` 下的 `9a-instructions.md`、`9b-sessions.md`、`9c-auto-memory.md`，以及 `docs/specs/chapter-10-commands/spec.md`、`docs/specs/chapter-11-skills/spec.md`。
 
 ## 准备
 
@@ -306,9 +306,48 @@ M58 中，如果关闭窗口时模型还在生成第一次回复，这一轮的�
 
 | 编号 | 操作 | 预期 |
 | --- | --- | --- |
-| M69 /review | 先在验收项目中修改 notes.txt 的一行（例如 `Add-Content notes.txt "新增一行"`），然后在同一目录启动 MossCode：`& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml"`。确认启动区第三行是 `…\.test-artifacts\acceptance\project`（是仓库根目录 `…\MossCode` 就说明启动目录错了，审查的会是主仓库），再输入 `/review 重点看格式` | 对话中显示的是 `/review 重点看格式`，不是模板全文。模型运行 `git status` 和 `git diff HEAD`（default 档位下审批选允许），不调用 write_file / edit_file，按严重程度列出问题，每条带 文件:行号；没有问题时明确说明。Windows PowerShell 5.1 的 `Add-Content` 默认以 GBK 编码、CRLF 行尾写入，所以审查应指出 `notes.txt:3` 的编码（与其余 UTF-8 行不一致）和行尾（与前两行的 LF 混用）问题 |
-| M70 存档中的命令 | 接着 `/exit`，加 `-c` 启动 | 恢复后的简要历史和 `/resume` 列表的标题都是 `/review 重点看格式` |
-| M71 无界面 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" -p "/review"`；再运行 `-p "/clear"` | 第一条输出审查结果，退出码 0。第二条 stderr 显示“/clear 只能在交互界面中使用。”，退出码 2，不发请求 |
+| M69 /review | 先在验收项目中修改 notes.txt 的一行（例如 `Add-Content notes.txt "新增一行"`），然后在同一目录启动 MossCode：`& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml"`。确认启动区第三行是 `…\.test-artifacts\acceptance\project`（是仓库根目录 `…\MossCode` 就说明启动目录错了，审查的会是主仓库），先发一句“我叫阿青，记住这个名字。”，再输入 `/review 重点看格式` | 对话中显示的是 `/review 重点看格式`，不是规程全文，下面一行是“└ 在独立上下文中运行 Skill review”。审查者运行 `git status` 和 `git diff HEAD`（default 档位下审批选允许），不调用 write_file / edit_file，按严重程度列出问题，每条带 文件:行号；没有问题时明确说明。审查者看不到之前的对话（回复中不会提到“阿青”）。Windows PowerShell 5.1 的 `Add-Content` 默认以 GBK 编码、CRLF 行尾写入，所以审查应指出 `notes.txt:3` 的编码（与其余 UTF-8 行不一致）和行尾（与前两行的 LF 混用）问题 |
+| M70 接着追问与存档 | 先问“第一条问题怎么修？只说做法，不要改文件。”，再 `/exit`，加 `-c` 启动 | 主对话能接上审查结果，直接针对第一条问题回答。恢复后的简要历史中是 `/review 重点看格式` 和审查结果这一对消息，`/resume` 列表的标题是第一句“我叫阿青……” |
+| M71 无界面 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" -p "/review"`；再运行 `-p "/clear"` | 第一条先在 stderr 显示“在独立上下文中运行 Skill review”，然后输出审查结果，退出码 0。第二条 stderr 显示“/clear 只能在交互界面中使用。”，退出码 2，不发请求 |
+
+### 第十一章：Skill
+
+用你的 `config.yaml` 在验收项目中启动界面，在 Windows Terminal 中完成。
+
+**本节用到的项目级 Skill**：在验收项目中运行下面的命令，创建 `.mosscode\skills\py-docstring\SKILL.md`（单引号的 here-string 不展开 `$ARGUMENTS`；Windows PowerShell 5.1 写入的 BOM 会被容忍）：
+
+```powershell
+New-Item -ItemType Directory -Force .mosscode\skills\py-docstring | Out-Null
+@'
+---
+name: py-docstring
+description: 检查 Python 函数的文档字符串是否写明参数、返回值和异常
+allowed_tools: [read_file, grep]
+argument-hint: "[文件]"
+---
+
+按下面的规程检查函数的文档字符串。要检查的文件（为空时检查用户提到的文件）：$ARGUMENTS
+
+1. 用 read_file 读取文件，逐个列出顶层函数。
+2. 对每个函数判断文档字符串是否写明参数、返回值和可能抛出的异常。
+3. 回复的第一行必须是“【文档检查】共 N 个函数”，然后用表格列出 函数 | 参数 | 返回值 | 异常 | 结论。
+4. 只报告，不修改文件。
+'@ | Set-Content -Encoding utf8 .mosscode\skills\py-docstring\SKILL.md
+```
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M72 补全标记 | 启动 MossCode，在输入框输入 `/`，再输入 `/skills` | 补全菜单中 `/commit`、`/review`、`/test`、`/py-docstring` 的描述后带 `[skill]`，与描述之间对齐正常。`/skills` 列出这四个 Skill，来源分别为内置和项目级 |
+| M73 模型加载 | 不用命令，直接问“帮我看看 src/util.py 里函数的文档字符串写得合不合格。” | 模型先调用 `load_skill`（不弹审批），再按规程读取文件，回复第一行是“【文档检查】共 N 个函数”，后面是表格；不修改文件。`/status` 的“已激活 Skill”一行是 py-docstring |
+| M74 /clear 后重新加载 | `/clear`，再问同样的问题 | 模型再次调用 `load_skill` 后才按规程回答（`/clear` 卸载了已加载的规程） |
+| M75 恢复会话 | M74 之后 `/exit`，加 `-c` 启动，问“src/app.py 呢？” | 恢复提示没有“未恢复的 Skill”；模型不需要再调用 `load_skill`，直接按规程回答（第一行仍是“【文档检查】…”）。`/status` 仍显示 py-docstring |
+| M76 修改后直接生效 | 不退出 MossCode，在另一个终端把 SKILL.md 正文中的“【文档检查】”改成“【文档检查 v2】”，然后输入 `/py-docstring src/util.py`；再把 description 改为“检查文档字符串（第二版）”，输入 `/skills reload`、`/skills` | 命令运行时用的是新正文，回复第一行以“【文档检查 v2】”开头。reload 后 `/skills` 中显示新的描述 |
+| M77 白名单检查 | 把 `allowed_tools` 改为 `[read_file, reed_file]`，`/exit` 后重新启动，输入 `/skills`；再改为 `[read_file, mcp__x__y]`，重新启动，输入 `/py-docstring src/util.py` | 第一次：启动区提示 py-docstring 已跳过，原因是 `allowed_tools` 中的 reed_file 不是已知工具，并给出文件路径；`/skills` 的列表中没有它，只在末尾的问题中列出；输入 `/py-docstring` 是未知命令。第二次：正常启动，没有提示；运行命令时提示“Skill py-docstring 未运行：工具不可用：mcp__x__y。…”，不发请求。验收后把 `allowed_tools` 改回 `[read_file, grep]` |
+| M78 /test | 在仓库根目录（`cd $moss`）启动 MossCode，输入 `/test 只运行 tests/test_docs.py`；审批都选“本次允许” | 先弹出 `skill__test__detect` 的审批，能看到 Skill 名、工具名、替换后的命令（Python 解释器和 `…\skills\builtin\test\scripts\detect.py`）与参数 JSON。检测结果是 `.venv/Scripts/python -m pytest`，依据包含 `pyproject.toml 含 [tool.pytest]` 和 `tests/ 目录`。随后模型运行该命令（只测 test_docs.py），报告通过数；没有修改文件 |
+| M79 /commit | 回到验收项目（`cd "$moss\.test-artifacts\acceptance\project"`），启动后输入 `/commit 只提交 notes.txt 的改动` | `git add` 和 `git commit` 执行前都经过审批（default 档位）；模型把两者用 `&&` 合并成一条命令时只审批一次，面板中显示完整命令。只暂存 notes.txt，`untracked.txt` 仍未跟踪，`.mosscode\` 下的文件不被暂存；不运行 `git push`。`git log -1 --stat` 只含 notes.txt |
+| M80 取消 fork | 输入 `/review`，在审查者运行中按 Esc；然后问“刚才发生了什么？” | 显示已取消；主对话末尾是 `/review` 和“[Skill review 未完成：已取消]”这一对消息，追问能正常得到回复 |
+
+M73–M76 的规程、M78 的检测结果和 M79 暂存的文件由应用决定，模型措辞不同不影响判断。
 
 ## 已知限制
 

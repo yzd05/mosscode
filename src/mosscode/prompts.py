@@ -307,6 +307,18 @@ def as_prompt(value: str | PromptRequest) -> PromptRequest:
     return value if isinstance(value, PromptRequest) else PromptRequest(value)
 
 
+# Supplements that stay the same between requests and belong to the cached prefix (ch11 A6).
+PREFIX_KINDS = frozenset({"environment", "active-skills"})
+
+
+def active_skills(texts: Sequence[str]) -> Supplement | None:
+    """A6: the SOPs of the loaded skills, in the order they were loaded."""
+    if not texts:
+        return None
+    return Supplement("active-skills", "以下 Skill 已加载。处理相关任务时按对应规程执行，直到用户另有要求。\n\n"
+                      + "\n\n".join(f"=== {text}" for text in texts))
+
+
 def environment(root: Path, *, tools_enabled: bool, permission_mode: str | None = None, git: dict | None = None,
                 shell: str | None = None) -> Supplement:
     facts = {"date": date.today().isoformat(), "os": platform.system(),

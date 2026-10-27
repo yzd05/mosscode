@@ -111,6 +111,11 @@ def compact_record(boundary: Message, keep: int, record: str | None) -> dict:
     return {"type": "compact", "time": _now(), "boundary": message_to_json(boundary), "keep": keep, "record": record}
 
 
+def skill_record(name: str, arguments: str, pinned: bool) -> dict:
+    """A9: a skill was used; pinned when its SOP went into <active-skills>."""
+    return {"type": "skill", "time": _now(), "name": name, "arguments": arguments, "pinned": pinned}
+
+
 def provider_record(name: str, protocol: str, model: str) -> dict:
     """Earlier messages lose their native data, as in a /model switch."""
     return {"type": "provider", "time": _now(), "name": name, "protocol": protocol, "model": model}
@@ -354,6 +359,7 @@ class Restored:
     last_time: datetime | None = None
     title: str = "（无标题）"
     stripped: bool = False
+    skills: tuple[tuple[str, str, bool], ...] = ()  # A9: (name, arguments, pinned) in record order.
 
 
 def _strip(history: Sequence[Message]) -> list[Message]:
@@ -402,6 +408,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     """Replay the records (R5-R9). provider is the current (name, protocol)."""
     history: list[Message] = []
     skipped, last_time, last_provider = 0, None, None
+    skills: list[tuple[str, str, bool]] = []
     with path.open("rb") as stream:
         for raw in stream:
             if not raw.strip():
@@ -424,6 +431,12 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                         raise ValueError("provider 记录不合法")
                     history = _strip(history)
                     last_provider = (record["name"], record["protocol"])
+                elif kind == "skill":
+                    name, arguments, pinned = record.get("name"), record.get("arguments", ""), record.get("pinned")
+                    if not isinstance(name, str) or not name or not isinstance(arguments, str) \
+                            or not isinstance(pinned, bool):
+                        raise ValueError("skill 记录不合法")
+                    skills.append((name, arguments, pinned))
                 elif kind != "session":
                     pass  # A later version's record type.
             except (ValueError, TypeError, KeyError, UnicodeError):
@@ -443,7 +456,8 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     unanswered = []
     while history and history[-1].role == "user" and history[-1].synthetic is None:
         unanswered.insert(0, history.pop().shown)
-    return Restored(path.stem, history, skipped, filled, tuple(unanswered), last_time, read_title(path), stripped)
+    return Restored(path.stem, history, skipped, filled, tuple(unanswered), last_time, read_title(path), stripped,
+                    tuple(skills))
 
 
 # Pruning ------------------------------------------------------------------------------------

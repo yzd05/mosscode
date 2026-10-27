@@ -17,7 +17,9 @@ from .messages import (Completed, CompactFailed, CompactFinished, CompactStarted
 from .tools import shell_label
 from .tools.base import ToolRegistry
 from .tools.execution import execute_batch
-from .prompts import PromptRequest, Supplement, build_system_prompt, environment, mode_reminder, stable_prompt
+from .prompts import (PromptRequest, Supplement, active_skills, build_system_prompt, environment, mode_reminder,
+                      stable_prompt)
+from .skills import ActiveSkills
 from .session import compact_record, message_record
 
 
@@ -56,6 +58,8 @@ class AgentLoop:
         # Assembled by the application layer (project files, git); the loop never reads them itself.
         self.instructions = ""
         self.git: dict | None = None
+        self.skill_catalog = ""  # The model-visible list of skills (ch11 A1), after the instructions.
+        self.active_skills = ActiveSkills()  # Pinned SOPs, sent in the cached prefix (A6).
         self._announced = "normal"
         self.history: list[Message] = []
         self.busy = False
@@ -124,6 +128,7 @@ class AgentLoop:
         self.meter.invalidate()
         self.compact_failures = 0
         self._gap = None
+        self.active_skills.clear()
 
     def set_provider(self, provider: Provider, budget: ContextBudget | None = None):
         if self.busy:
@@ -141,7 +146,11 @@ class AgentLoop:
         return self.registry.definitions(plan=self.mode == "plan") if self.registry else ()
 
     def _prompt(self, definitions):
-        return build_system_prompt(definitions, override=self.system, instructions=self.instructions)
+        instructions = "\n\n".join(part for part in (self.instructions, self.skill_catalog) if part)
+        return build_system_prompt(definitions, override=self.system, instructions=instructions)
+
+    def _active(self) -> Supplement | None:
+        return active_skills(self.active_skills.texts())
 
     def _model(self, messages, iteration, env):
         reminder = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
@@ -149,7 +158,8 @@ class AgentLoop:
         definitions = self._definitions()
         extra = tuple(item for item in (reminder, self._gap) if item)
         self._gap = None  # Never part of the history or the transcript; sent with the first request only.
-        prompt = PromptRequest(self._prompt(definitions), (env,) + extra)
+        prefix = (env, active) if (active := self._active()) else (env,)
+        prompt = PromptRequest(self._prompt(definitions), prefix + extra)
         if self.registry is None:
             return self.provider.stream(messages, prompt)
         return self.provider.stream(messages, prompt, definitions)
@@ -161,6 +171,8 @@ class AgentLoop:
         return self._prompt(definitions) + schemas
 
     def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
+        active = self._active()
+        env_text += active.render() if active else ""
         return self.meter.estimate(list(self.history) + list(extra), env_text, self._fixed_text)
 
     async def _compact(self, instructions: str = "", *, manual: bool = False, failure: str | None = None):

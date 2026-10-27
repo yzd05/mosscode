@@ -13,7 +13,7 @@ import openai
 from .config import ProviderConfig
 from .messages import (Completed, ContentBlock, Delta, Message, ProviderError, Retrying, StreamEvent, Usage, ToolCall,
                        ToolDefinition, ToolProgress)
-from .prompts import PromptRequest, as_prompt
+from .prompts import PREFIX_KINDS, PromptRequest, as_prompt
 from .usage import parse_usage, usage_data
 
 
@@ -213,10 +213,10 @@ class AnthropicProvider(SDKProvider):
         cache = config.prompt_cache if config.prompt_cache is not None else official
         if blocks and cache:
             blocks[-1]["cache_control"] = {"type": "ephemeral"}
-        # Environment is stable within a run and belongs to the cached prefix;
+        # Environment and active skills are stable within a run and belong to the cached prefix;
         # reminders are request-only and follow the last history breakpoint.
-        blocks.extend({"type": "text", "text": item.render()} for item in prompt.supplements if item.kind == "environment")
-        reminders = [{"type": "text", "text": item.render()} for item in prompt.supplements if item.kind != "environment"]
+        blocks.extend({"type": "text", "text": item.render()} for item in prompt.supplements if item.kind in PREFIX_KINDS)
+        reminders = [{"type": "text", "text": item.render()} for item in prompt.supplements if item.kind not in PREFIX_KINDS]
         turns = options["messages"]
         if turns and cache:
             turns[-1]["content"][-1]["cache_control"] = {"type": "ephemeral"}
@@ -314,7 +314,7 @@ class ResponsesProvider(SDKProvider):
                       tools: Sequence[ToolDefinition] = (), *, allow_tools: bool = True) -> AsyncIterator[StreamEvent]:
         prompt = as_prompt(system)
         inputs: list[dict[str, Any]] = [{"role": "developer", "content": s.render()}
-                                      for s in prompt.supplements if s.kind == "environment"]
+                                      for s in prompt.supplements if s.kind in PREFIX_KINDS]
         for message in messages:
             if message.role == "tool":
                 inputs.extend({"type": "function_call_output", "call_id": r.call_id, "output": r.model_text()}
@@ -327,7 +327,7 @@ class ResponsesProvider(SDKProvider):
                 inputs.extend({"type": "function_call", "call_id": c.id, "name": c.name, "arguments": c.arguments}
                               for c in message.tool_calls)
         inputs.extend({"role": "developer", "content": s.render()}
-                      for s in prompt.supplements if s.kind != "environment")
+                      for s in prompt.supplements if s.kind not in PREFIX_KINDS)
         options: dict[str, Any] = {
             "model": self.config.model,
             "input": inputs,
@@ -403,7 +403,7 @@ class ChatCompletionsProvider(SDKProvider):
                       tools: Sequence[ToolDefinition] = (), *, allow_tools: bool = True) -> AsyncIterator[StreamEvent]:
         prompt = as_prompt(system)
         history = [{"role": "system", "content": s.render()}
-                   for s in prompt.supplements if s.kind == "environment"]
+                   for s in prompt.supplements if s.kind in PREFIX_KINDS]
         for message in messages:
             if message.role == "tool":
                 history.extend({"role": "tool", "tool_call_id": r.call_id, "content": r.model_text()}
@@ -419,7 +419,7 @@ class ChatCompletionsProvider(SDKProvider):
         if prompt.stable:
             history.insert(0, {"role": "system", "content": prompt.stable})
         history.extend({"role": "system", "content": s.render()}
-                       for s in prompt.supplements if s.kind != "environment")
+                       for s in prompt.supplements if s.kind not in PREFIX_KINDS)
         options: dict[str, Any] = {
             "model": self.config.model,
             "messages": history,

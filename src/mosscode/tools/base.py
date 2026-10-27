@@ -131,6 +131,26 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._tools)
+
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
+
+    def subset(self, names=None, extra=()) -> "ToolRegistry":
+        """K3: a view for a sub-agent; the same tool instances, permission policy and session.
+
+        names None keeps every tool; extra tools are added and replace same-named ones.
+        """
+        view = ToolRegistry(permissions=self.permissions)
+        view.session = self.session
+        view._tools = {name: tool for name, tool in self._tools.items() if names is None or name in names}
+        for tool in extra:
+            if tool.root != self.permissions.root:
+                raise ValueError("工具与权限策略必须使用同一个项目根目录。")
+            view._tools[tool.name] = tool
+        return view
+
     def definitions(self, *, read_only: bool = False, plan: bool = False) -> tuple[ToolDefinition, ...]:
         # Plan mode offers read-only tools, read-only commands and the tool that submits the plan.
         def offered(tool):

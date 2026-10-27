@@ -79,7 +79,7 @@ async def tools_http(url: str, client: httpx.AsyncClient):
                 await stream.aclose()
 
 
-def _check_schema(schema):
+def check_schema(schema):
     if not isinstance(schema, dict) or schema.get("type") != "object":
         raise ValueError("工具参数 Schema 必须为 object。")
     if len(json.dumps(schema).encode()) > 65536:
@@ -108,6 +108,23 @@ class MCPArguments:
 
     def model_dump(self):
         return deepcopy(self.values)
+
+
+def json_arguments(validator, raw, kind: str) -> MCPArguments:
+    """Arguments checked against a tool's JSON Schema (MCP tools, skill tools); at most 64 KB."""
+    try:
+        if not isinstance(raw, dict) or len(json.dumps(raw, allow_nan=False).encode()) > 65536:
+            raise ValueError
+        errors = list(islice(validator.iter_errors(raw), 5))
+        if errors:
+            fields = [".".join(map(str, e.absolute_path)) or "参数对象" for e in errors[:5]]
+            raise ToolFailure("invalid_arguments", f"{kind} 参数不符合工具 JSON Schema，问题字段：" + "、".join(fields),
+                              fields=fields)
+    except ToolFailure:
+        raise
+    except Exception:
+        raise ToolFailure("invalid_arguments", f"无法校验 {kind} JSON 参数或参数过大。") from None
+    return MCPArguments(deepcopy(raw))
 
 
 def describe_failure(exc: BaseException, config: ServerConfig) -> str:
@@ -154,25 +171,13 @@ class MCPTool(Tool):
         self.description = f"MCP Server {self.server_name} 的工具 {self.remote_name}。" + (remote.description or "")
         self.prompt_summary = f"外部 MCP 工具：{self.server_name} / {self.remote_name}" + ("（只读）" if self.read_only else "")
         self.schema = deepcopy(remote.inputSchema)
-        self.validator = _check_schema(self.schema)
+        self.validator = check_schema(self.schema)
 
     def definition(self):
         return ToolDefinition(self.name, self.description, deepcopy(self.schema), self.prompt_summary)
 
     def validate_arguments(self, raw):
-        try:
-            if not isinstance(raw, dict) or len(json.dumps(raw, allow_nan=False).encode()) > 65536:
-                raise ValueError
-            errors = list(islice(self.validator.iter_errors(raw), 5))
-            if errors:
-                fields = [".".join(map(str, e.absolute_path)) or "参数对象" for e in errors[:5]]
-                raise ToolFailure("invalid_arguments", "MCP 参数不符合工具 JSON Schema，问题字段：" + "、".join(fields),
-                                  fields=fields)
-        except ToolFailure:
-            raise
-        except Exception:
-            raise ToolFailure("invalid_arguments", "无法校验 MCP JSON 参数或参数过大。") from None
-        return MCPArguments(deepcopy(raw))
+        return json_arguments(self.validator, raw, "MCP")
 
     async def execute(self, params):
         result = await self.connection.call(self.remote_name, params.model_dump())

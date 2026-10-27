@@ -30,6 +30,15 @@ EDIT_TOOLS = {"write_file", "edit_file"}
 
 def is_mcp_tool(name: str) -> bool:
     return bool(re.fullmatch(r"mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+", name)) and len(name) <= 64
+
+
+def is_skill_tool(name: str) -> bool:
+    return bool(re.fullmatch(r"skill__[a-z0-9_]+__[a-z0-9_]+", name)) and len(name) <= 64
+
+
+def is_json_tool(name: str) -> bool:
+    """MCP and skill tools: rules name the whole tool and match its arguments as canonical JSON."""
+    return is_mcp_tool(name) or is_skill_tool(name)
 CHOICES = ("once", "session", "permanent", "deny")
 COMMAND_CHOICES = ("once", "session", "prefix", "permanent", "deny")  # prefix: saved as Bash(<prefix>:*).
 EDIT_CHOICES = ("once", "session", "accept_edits", "permanent", "deny")  # accept_edits: switch mode.
@@ -64,7 +73,8 @@ class Operation:
     read_only: bool = False  # Whitelisted inspection command; runs without approval.
     prefix: str = ""  # Command prefix offered for a permanent Bash(<prefix>:*) rule.
     server: str = ""  # MCP server name from the configuration (tool names may be hashed).
-    notes: bool = False  # The memory tool: writes only the note directories, no approval.
+    skill: str = ""  # Skill whose own tool this is (ch11 X7).
+    notes: bool = False  # memory and load_skill: they touch only their own files, no approval.
 
 
 @dataclass(frozen=True)
@@ -124,10 +134,10 @@ class Rule:
         if self.tool != operation.tool or (self.cwd is not None and self.cwd != operation.cwd):
             return False
         if self.exact:
-            if operation.tool != "execute_command" and not is_mcp_tool(operation.tool) and os.name == "nt":
+            if operation.tool != "execute_command" and not is_json_tool(operation.tool) and os.name == "nt":
                 return self.pattern.casefold() == operation.target.casefold()
             return self.pattern == operation.target
-        if is_mcp_tool(operation.tool):
+        if is_json_tool(operation.tool):
             return fnmatch.fnmatchcase(operation.target, self.pattern)
         if operation.tool == "execute_command":
             if self.pattern.endswith(PREFIX_SUFFIX):
@@ -156,16 +166,18 @@ def parse_rule(value, action: str) -> Rule:
         raise PermissionConfigError("规则需为 Tool(pattern) 字符串或带 rule/exact/cwd 的对象。")
     if isinstance(text, str) and text.startswith("mcp__") and "(" not in text and not exact and cwd is None:
         return mcp_rule(text, action)
+    if isinstance(text, str) and is_skill_tool(text) and not exact and cwd is None:
+        return Rule(text, "*", action)  # A skill tool with any arguments.
     match = re.fullmatch(r"([A-Za-z_][A-Za-z_0-9]*)\((.*)\)", text, re.DOTALL) if isinstance(text, str) else None
     if not match or not match[2] or "\0" in match[2]:
         raise PermissionConfigError("规则格式需为 Tool(pattern)，模式不能为空。")
     tool = ALIASES.get(match[1], match[1])
-    if tool not in TOOL_NAMES and not is_mcp_tool(tool):
+    if tool not in TOOL_NAMES and not is_json_tool(tool):
         raise PermissionConfigError(f"未知权限工具名：{match[1]}。")
-    pattern = match[2] if tool == "execute_command" or is_mcp_tool(tool) else normalized(match[2])
-    if tool != "execute_command" and not is_mcp_tool(tool) and ".." in pattern.split("/"):
+    pattern = match[2] if tool == "execute_command" or is_json_tool(tool) else normalized(match[2])
+    if tool != "execute_command" and not is_json_tool(tool) and ".." in pattern.split("/"):
         raise PermissionConfigError("文件规则不能包含 ..。")
-    if tool not in READ_TOOLS and tool != "execute_command" and not is_mcp_tool(tool) and Path(pattern).is_absolute():
+    if tool not in READ_TOOLS and tool != "execute_command" and not is_json_tool(tool) and Path(pattern).is_absolute():
         raise PermissionConfigError("写入和编辑规则需使用项目相对路径；只有读取类规则可以使用绝对路径。")
     if cwd is not None:
         cwd = normalized(cwd)
@@ -236,6 +248,7 @@ class PermissionPolicy:
         self.interactive = False
         self.session_dir: Path | None = None
         self.memory_dirs: tuple[Path, ...] = ()  # Note directories: read_file and glob need no approval.
+        self.skill_dirs: tuple[Path, ...] = ()  # Directories of skills in use (ch11 S1): treated the same.
         self.requests: asyncio.Queue[ApprovalRequest] = asyncio.Queue()
         self.pending: dict[str, asyncio.Future] = {}
         self._choices: dict[str, tuple[str, ...]] = {}
@@ -265,6 +278,13 @@ class PermissionPolicy:
                                                     "调查完成后用 exit_plan_mode 提交计划，用户批准后才能写入、编辑或执行其他命令。")
         if getattr(tool, "permission_kind", None) == "memory":
             return Operation(tool.name, f"{args['scope']}:{args['name']}", preview=f"{args['action']} 笔记", notes=True)
+        if getattr(tool, "permission_kind", None) == "load_skill":
+            return Operation(tool.name, args["name"], preview="加载 Skill 规程", notes=True)
+        if getattr(tool, "permission_kind", None) == "skill":
+            target = json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+            preview = (f"Skill {tool.skill_name} 的专属工具 {tool.short_name}\n命令：" + " ".join(tool.argv())
+                       + "\n参数：" + safe_display(target, 2000))
+            return Operation(tool.name, target, preview=preview, skill=tool.skill_name)
         if getattr(tool, "permission_kind", None) == "mcp":
             target = json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
             return Operation(tool.name, target, preview="外部 MCP 调用；本地路径限制不约束 Server 的实际访问。",
@@ -316,8 +336,8 @@ class PermissionPolicy:
         if matched or operation.notes:
             return Decision("allow")
         if (operation.outside and operation.tool in {"read_file", "glob"}
-                and any(inside(folder, Path(operation.target)) for folder in self.memory_dirs)):
-            return Decision("allow")  # Memory notes (9c J4), plan mode included.
+                and any(inside(folder, Path(operation.target)) for folder in (*self.memory_dirs, *self.skill_dirs))):
+            return Decision("allow")  # Memory notes (9c J4) and skill files (ch11 S1), plan mode included.
         if (operation.outside and operation.tool == "read_file" and self.session_dir is not None
                 and inside(self.session_dir, Path(operation.target))):
             return Decision("allow")  # Stored tool results and compaction records of this run.
@@ -371,8 +391,8 @@ class PermissionPolicy:
                 if latest.action == "deny":
                     return latest
                 rule = Rule(operation.tool, operation.target, "allow", True, operation.cwd)
-                if operation.server:
-                    rule = Rule(operation.tool, "*", "allow")  # MCP grants cover the tool with any arguments.
+                if operation.server or operation.skill:
+                    rule = Rule(operation.tool, "*", "allow")  # MCP and skill grants cover the tool, any arguments.
                 if choice == "prefix":
                     rule = Rule(operation.tool, operation.prefix + PREFIX_SUFFIX, "allow")
                 if choice == "session":
@@ -469,8 +489,8 @@ class PermissionPolicy:
             entry = {"rule": f"{rule.tool}({rule.pattern})", "exact": True}
             if rule.cwd is not None:
                 entry["cwd"] = rule.cwd
-        elif is_mcp_tool(rule.tool):
-            entry = rule.tool  # Whole-tool MCP grant, Claude Code style.
+        elif is_json_tool(rule.tool):
+            entry = rule.tool  # Whole-tool MCP or skill grant, Claude Code style.
         else:
             entry = f"Bash({rule.pattern})"  # Prefix grant: readable and editable by hand.
         raw.setdefault("allow", []).append(entry)

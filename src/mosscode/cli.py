@@ -9,11 +9,12 @@ from .config import ConfigError, find_config, load_settings
 from .conversation import Conversation, Notice, Resumed
 from .appearance import compact_notice
 from .builtin_commands import BUILTIN, typed
-from .commands import argument_problem, parse_input, unknown_note
+from .commands import CommandRegistry, argument_problem, parse_input, unknown_note
 from .messages import (CompactFailed, CompactFinished, CompactStarted, Completed, Delta, Message, ProviderError, Retrying,
                        ToolProgress, ResponseBoundary, RunStopped, UsageUpdate)
 from .memory import MemoryStore
 from .session import Session, prune_all
+from .skills import ForkRequest, SkillCatalog
 from .usage import request_usage_text
 from .tools import create_default_registry
 from .tools.shell import ShellNotFound
@@ -27,21 +28,42 @@ from pathlib import Path
 OUTPUT_FORMATS = ("text", "json", "stream-json")
 
 
-def _headless_input(text: str) -> tuple[str, str | None]:
-    """H1/H2: -p sends messages and prompt commands; returns (prompt, command) or exits with code 2."""
-    parsed = parse_input(text, BUILTIN)
+def _headless_input(text: str, commands: CommandRegistry = BUILTIN,
+                    notices: tuple[str, ...] = ()) -> tuple[str, str | None, str | None]:
+    """H1/H2/E4: -p sends messages, prompt commands and skills; returns (prompt, command, skill) or exits with 2.
+
+    For a skill the prompt is its argument: the request is rendered once the tools are known.
+    """
+    parsed = parse_input(text, commands)
     if parsed.kind in {"empty", "message"}:
-        return (parsed.text if parsed.kind == "message" else text), None
+        return (parsed.text if parsed.kind == "message" else text), None, None
     if parsed.kind == "unknown":
-        problem = unknown_note(parsed, BUILTIN)
+        problem = unknown_note(parsed, commands)
     elif parsed.command.kind == "local":
         problem = f"/{parsed.command.name} 只能在交互界面中使用。"
     else:
         problem = argument_problem(parsed.command, parsed.argument)
     if problem:
+        for notice in notices:  # D8: say why a skill is missing before the run ends here.
+            print(notice, file=sys.stderr)
         print(problem, file=sys.stderr)
         raise SystemExit(2)
-    return parsed.command.expand(parsed.argument), typed(parsed.command, parsed.argument)
+    if parsed.command.kind == "skill":
+        return parsed.argument, typed(parsed.command, parsed.argument), parsed.command.skill
+    return parsed.command.expand(parsed.argument), typed(parsed.command, parsed.argument), None
+
+
+def _skill_prompt(conversation: Conversation, skill: str | None, prompt: str, report):
+    """E4: check the skill's tools once MCP is up, then send it like the TUI does; returns (prompt, fork)."""
+    if skill is None:
+        return prompt, None
+    found, rendered, notices = conversation.prepare_skill(skill, prompt)
+    for notice in notices:
+        report("notice", notice)
+    if found.mode != "fork":
+        return rendered, None
+    report("notice", f"在独立上下文中运行 Skill {found.name}")
+    return rendered, ForkRequest(found, rendered)
 
 
 def _permission_mode(value: str) -> str:
@@ -108,10 +130,10 @@ async def _resume(conversation: Conversation, session_id: str | None, report) ->
 
 async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False,
                   output_format: str = "text", model: str = "", resume: str | None = None,
-                  command: str | None = None) -> dict | None:
+                  command: str | None = None, skill: str | None = None) -> dict | None:
     """Run one headless task; JSON formats return the result object instead of raising."""
     if output_format == "text":
-        await _text_prompt(conversation, prompt, show_usage=show_usage, resume=resume, command=command)
+        await _text_prompt(conversation, prompt, show_usage=show_usage, resume=resume, command=command, skill=skill)
         return None
     stream_json = output_format == "stream-json"
     started = monotonic()
@@ -139,13 +161,14 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
                     _emit({"type": "notice", "text": notice})
                 else:
                     print(notice, file=sys.stderr, flush=True)
+            prompt, fork = _skill_prompt(conversation, skill, prompt, report)
             registry = conversation.registry
             if stream_json:
                 _emit({"type": "system", "subtype": "init", "cwd": str(Path.cwd()), "model": model,
                        "permission_mode": registry.permissions.mode if registry else None,
                        "tools": [d.name for d in registry.definitions()] if registry else []})
             usage = None
-            async with aclosing(conversation.reply(prompt, command=command)) as stream:
+            async with aclosing(conversation.reply(prompt, command=command, fork=fork)) as stream:
                 async for event in stream:
                     if isinstance(event, UsageUpdate):
                         usage = event.usage
@@ -194,7 +217,7 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
 
 
 async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False,
-                       resume: str | None = None, command: str | None = None) -> None:
+                       resume: str | None = None, command: str | None = None, skill: str | None = None) -> None:
     def report(kind, value):
         if kind == "compact":
             print("正在压缩上下文…" if isinstance(value, CompactStarted) else compact_notice(value),
@@ -205,7 +228,8 @@ async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: b
         await _resume(conversation, resume, report)
         for notice in await conversation.start():
             print(notice, file=sys.stderr, flush=True)
-        async with aclosing(conversation.reply(prompt, command=command)) as stream:
+        prompt, fork = _skill_prompt(conversation, skill, prompt, report)
+        async with aclosing(conversation.reply(prompt, command=command, fork=fork)) as stream:
             async for event in stream:
                 if isinstance(event, Delta) and event.kind == "text":
                     print(event.text, end="", flush=True)
@@ -264,7 +288,10 @@ def main() -> None:
         parser.error("--continue 和 --resume 只能选择一个。")
     if args.resume == "" and args.prompt is not None:
         parser.error("无界面模式中 --resume 需要会话 ID；恢复最近的会话请用 --continue。")
-    prompt, command = _headless_input(args.prompt) if args.prompt is not None else (None, None)
+    # L5: skills are scanned first so that -p "/<name>" parses.
+    skills = SkillCatalog.load(Path.cwd(), reserved=BUILTIN.names())
+    commands, skipped = BUILTIN.with_skills(skills)
+    prompt, command, skill = _headless_input(args.prompt, commands, skills.problems + skipped) if args.prompt is not None else (None, None, None)
     try:
         settings = load_settings(args.config if args.config is not None else find_config())
         if args.list_providers:
@@ -284,12 +311,15 @@ def main() -> None:
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
         prune_all()
         budget = config.budget()
-        notices = () if budget.configured else (f"{config.name} 未配置 context_window，按 128K 估算上下文。",)
+        notices = skills.problems + skipped
+        if not budget.configured:
+            notices += (f"{config.name} 未配置 context_window，按 128K 估算上下文。",)
         conversation = Conversation(create_provider(config), settings.system_prompt, registry, mcp_manager=manager,
                                     max_iterations=settings.max_iterations, context_root=Path.cwd(),
                                     budget=budget, session=Session.new(Path.cwd()),
                                     auto_compact=settings.auto_compact, notices=notices,
-                                    persist=settings.persist_sessions,
+                                    persist=settings.persist_sessions, skills=skills,
+                                    provider_configs=settings.providers, provider_factory=create_provider,
                                     provider_info=(config.name, config.protocol, config.model),
                                     **_memory_options(settings, interactive=args.prompt is None))
         resume = args.resume
@@ -301,13 +331,14 @@ def main() -> None:
                 sys.stdout.reconfigure(encoding="utf-8")
             result = asyncio.run(_prompt(conversation, prompt, show_usage=args.show_usage,
                                          output_format=args.output_format, model=config.model, resume=resume,
-                                         command=command))
+                                         command=command, skill=skill))
             if result is not None and result["is_error"]:
                 raise SystemExit(1)
         else:
             if resume == "" and conversation.unavailable():
                 raise ProviderError(conversation.unavailable())
-            MossCodeApp(conversation, config.name, settings=settings, model=config.model, resume=resume).run(
+            MossCodeApp(conversation, config.name, settings=settings, model=config.model, resume=resume,
+                        commands=commands).run(
                 inline=True, inline_no_clear=True, mouse=False,
             )
     except (ConfigError, ProviderError, PermissionConfigError, MCPConfigError, ShellNotFound) as exc:

@@ -14,6 +14,7 @@ from .commands import Command, CommandContext, CommandRegistry, Parsed, argument
 from .memory import SCOPE_LABELS
 from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
+from .skills import SOURCE_LABELS, ForkRequest
 
 USAGE_WIDTH = 22
 
@@ -33,14 +34,6 @@ MODE_CHOICES = (
     ("bypassPermissions", "跳过审批：仍遵守硬限制和拒绝规则"),
 )
 
-REVIEW_TEMPLATE = """请审查当前仓库中尚未提交的改动。
-
-1. 先用 git status 和 git diff HEAD 查看改动范围；不是 git 仓库或没有改动时，直接说明并结束。
-2. 阅读改动涉及的上下文代码，找出正确性问题、边界条件、错误处理、安全隐患，以及与周边代码约定不一致的地方。
-3. 只审查，不修改文件，不运行会改变仓库或环境状态的命令。
-4. 按严重程度从高到低列出问题，每条写出 文件:行号、问题、触发场景和修改建议；没有发现问题时明确说明。"""
-
-
 async def dispatch(ctx: CommandContext, parsed: Parsed) -> None:
     """P7 and K1/K2: check the argument, then run the handler or send the expanded template."""
     command, argument = parsed.command, parsed.argument
@@ -49,6 +42,8 @@ async def dispatch(ctx: CommandContext, parsed: Parsed) -> None:
         await ctx.ui.note(problem)
     elif command.kind == "prompt":
         await ctx.ui.submit(command.expand(argument), command=typed(command, argument))
+    elif command.kind == "skill":
+        await run_skill(ctx, command, argument)
     else:
         await command.handler(ctx, argument)
 
@@ -58,18 +53,42 @@ def typed(command: Command, argument: str) -> str:
     return f"/{command.name}" + (f" {argument}" if argument else "")
 
 
+async def run_skill(ctx: CommandContext, command: Command, argument: str) -> None:
+    """E2: read the skill again, check its tools, then send the rendered SOP as the user's message."""
+    try:
+        skill, prompt, notices = ctx.conversation.prepare_skill(command.skill, argument)
+    except ProviderError as exc:
+        await ctx.ui.note(str(exc))
+        return
+    for notice in notices:
+        await ctx.ui.note("└ " + notice)
+    if skill.mode == "fork":
+        await ctx.ui.note(f"└ 在独立上下文中运行 Skill {skill.name}")  # K7
+        await ctx.ui.submit(prompt, command=typed(command, argument), fork=ForkRequest(skill, prompt))
+        return
+    await ctx.ui.submit(prompt, command=typed(command, argument))
+
+
 # Help -------------------------------------------------------------------------------------
 
-def help_text(registry: CommandRegistry, name: str = "") -> str:
+def help_text(registry: CommandRegistry, name: str = "", skills=None) -> str:
     if name:
         command = registry.get(name)
         if command is None or command.hidden:
             return f"未知命令 /{name.removeprefix('/')}。输入 /help 查看命令。"
-        kind = "提示词命令：把预设的请求发给模型" if command.kind == "prompt" else "本地命令：不经过模型"
+        skill = skills.get(command.skill) if skills is not None and command.kind == "skill" else None
+        if skill is not None:
+            kind = f"Skill：{skill.mode}，来源{SOURCE_LABELS[skill.source]}（/skills {skill.name} 查看详情）"
+        elif command.kind == "prompt":
+            kind = "提示词命令：把预设的请求发给模型"
+        else:
+            kind = "本地命令：不经过模型"
         lines = [command.usage, command.description, kind,
                  "别名：" + ("、".join(f"/{alias}" for alias in command.aliases) or "无")]
         if command.kind == "prompt":
             lines.append("模板首行：" + command.template.strip().splitlines()[0])
+        if skill is not None:
+            lines.append("规程首行：" + _first_line(skill.body))
         return "\n".join(lines)
     commands = registry.visible()
     width = max([USAGE_WIDTH, *(cell_len(command.usage) + 2 for command in commands)])
@@ -81,7 +100,7 @@ def help_text(registry: CommandRegistry, name: str = "") -> str:
 
 
 async def _help(ctx: CommandContext, argument: str) -> None:
-    await ctx.ui.note(help_text(ctx.registry, argument))
+    await ctx.ui.note(help_text(ctx.registry, argument, ctx.conversation.skills))
 
 
 # Session ----------------------------------------------------------------------------------
@@ -362,7 +381,10 @@ def status_report(ctx: CommandContext) -> str:
         ("MCP", _mcp_line(conversation)),
         ("记忆", memory),
     ]
-    return "状态\n" + "\n".join(f"  {label}{' ' * (12 - cell_len(label))}{value}" for label, value in rows)
+    if conversation.active_skills:
+        rows.append(("已激活 Skill", "、".join(conversation.active_skills)))
+    width = max(12, *(cell_len(label) + 2 for label, _ in rows))
+    return "状态\n" + "\n".join(f"  {label}{' ' * (width - cell_len(label))}{value}" for label, value in rows)
 
 
 async def _status(ctx: CommandContext, argument: str) -> None:
@@ -409,6 +431,72 @@ def _server_names(ctx: CommandContext):
     return [(connection.config.name, "查看该 Server 的工具") for connection in manager.connections]
 
 
+# Skills -----------------------------------------------------------------------------------
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), "（空）")
+
+
+def skills_report(catalog, name: str = "", active=()) -> str:
+    """C1/C2."""
+    if name:
+        skill = catalog.get(name)
+        if skill is None:
+            names = "、".join(catalog.skills) or "无"
+            return f"未找到 Skill {name}。已加载：{names}"
+        rows = [
+            ("路径", str(skill.path)),
+            ("来源", SOURCE_LABELS[skill.source]),
+            ("覆盖", "、".join(str(path) for path in skill.overrides) or "无"),
+            ("模式", skill.mode + (f"（fork_context: {skill.fork_context}）" if skill.mode == "fork" else "")),
+            ("模型", skill.model or "当前模型"),
+            ("工具白名单", "、".join(skill.allowed_tools) or "未限制"),
+            ("模型可见", "是" if skill.model_invocable else "否（disable-model-invocation）"),
+            ("已激活", "是" if skill.name in active else "否"),
+            ("命令", f"/{skill.name}" if skill.user_invocable else "不列出（user-invocable: false），仍可输入调用"),
+            ("规程首行", _first_line(skill.body)),
+        ]
+        lines = [f"Skill {skill.name}", *(f"  {label}{' ' * (12 - cell_len(label))}{value}" for label, value in rows)]
+        if skill.tools:
+            lines.append("  专属工具")
+            for tool in skill.tools:
+                lines.append(f"    {tool.full_name}  {' '.join(tool.command)}  超时 {tool.timeout:g} 秒")
+        return "\n".join(lines)
+    if not catalog.skills and not catalog.problems:
+        return "没有 Skill。可以在 .mosscode/skills/<名称>/SKILL.md 中添加。"
+    lines = [f"Skill（{len(catalog.skills)}）"]
+    width = max((cell_len(f"/{item}") for item in catalog.skills), default=0)
+    for skill in catalog.skills.values():
+        label = f"/{skill.name}"
+        lines.append(f"{label}{' ' * (width - cell_len(label))}  {SOURCE_LABELS[skill.source]}  {skill.mode:<6}  "
+                     f"{skill.description}")
+    lines.extend("! " + problem for problem in catalog.problems)
+    lines.append("输入 /<名称> 调用；/skills 名称 查看详情；/skills reload 重新扫描。")
+    return "\n".join(lines)
+
+
+async def _skills(ctx: CommandContext, argument: str) -> None:
+    if argument != "reload":
+        await ctx.ui.note(skills_report(ctx.conversation.skills, argument, ctx.conversation.active_skills))
+        return
+    old = ctx.conversation.skills
+    catalog = await asyncio.to_thread(old.reload)
+    problems = ctx.registry.set_skills(catalog)
+    notices = ctx.conversation.use_skills(catalog)
+    added = [name for name in catalog.skills if name not in old.skills]
+    removed = [name for name in old.skills if name not in catalog.skills]
+    lines = [f"└ 已重新扫描 Skill：共 {len(catalog.skills)} 个"
+             + (f"，新增 {'、'.join(added)}" if added else "") + (f"，移除 {'、'.join(removed)}" if removed else "")
+             + "。"]
+    lines.extend("  ! " + problem for problem in (*catalog.problems, *problems, *notices))
+    await ctx.ui.note("\n".join(lines))
+
+
+def _skill_names(ctx: CommandContext):
+    return [("reload", "重新扫描 Skill 目录"),
+            *((skill.name, skill.description) for skill in ctx.conversation.skills.skills.values())]
+
+
 async def _exit(ctx: CommandContext, argument: str) -> None:
     ctx.ui.exit()
 
@@ -435,7 +523,7 @@ BUILTIN = CommandRegistry((
     Command("status", "查看模型、权限、上下文、用量和连接状态", "/status", "local", handler=_status),
     Command("mcp", "查看 MCP Server 的连接状态与工具", "/mcp [名称]", "local", argument="optional",
             argument_hint="[名称]", handler=_mcp, complete=_server_names),
-    Command("review", "让模型审查尚未提交的改动（只读）", "/review [范围或侧重点]", "prompt", argument="optional",
-            argument_hint="[范围或侧重点]", template=REVIEW_TEMPLATE),
+    Command("skills", "查看、重新扫描 Skill", "/skills [名称|reload]", "local", aliases=("skill",),
+            argument="optional", argument_hint="[名称|reload]", handler=_skills, complete=_skill_names),
     Command("exit", "退出 MossCode", "/exit", "local", aliases=("quit",), handler=_exit),
 ))

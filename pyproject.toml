@@ -18,6 +18,9 @@ mosscode = "mosscode.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"mosscode.skills" = ["builtin/*/SKILL.md", "builtin/*/tool.json", "builtin/*/scripts/*.py"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

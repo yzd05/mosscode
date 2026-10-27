@@ -59,14 +59,31 @@ def _decode_cut(data: bytes, *, start: bool) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+async def _feed(stream, data: bytes) -> None:
+    """Write stdin and close it; a child that exits without reading is not an error."""
+    try:
+        if data:
+            stream.write(data)
+            await stream.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        stream.close()
+
+
 async def run_process(args: list[str], cwd: Path, *, check: bool = True, limit: int = OUTPUT_LIMIT, tail: int = 0,
-                      env: dict[str, str] | None = None):
+                      env: dict[str, str] | None = None, input: bytes | None = None):
+    """input, when given, is written to the child's stdin, which is then closed; otherwise stdin is empty."""
     options = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}
     # Windows commands wait on a one-byte gate until Job assignment completes.
     # This closes the race in which a fast shell could spawn before assignment.
-    command = [sys.executable, "-c", "import subprocess,sys; sys.stdin.buffer.read(1); sys.exit(subprocess.call(sys.argv[1:],stdin=subprocess.DEVNULL))", *args] if os.name == "nt" else args
+    # os.read takes exactly the gate byte, so the child inherits the rest of the pipe as its stdin.
+    inherit = "" if input is not None else ",stdin=subprocess.DEVNULL"
+    gate = f"import os,subprocess,sys; os.read(0,1); sys.exit(subprocess.call(sys.argv[1:]{inherit}))"
+    command = [sys.executable, "-c", gate, *args] if os.name == "nt" else args
+    piped = os.name == "nt" or input is not None
     spawn = asyncio.create_task(asyncio.create_subprocess_exec(
-        *command, cwd=cwd, stdin=asyncio.subprocess.PIPE if os.name == "nt" else asyncio.subprocess.DEVNULL,
+        *command, cwd=cwd, stdin=asyncio.subprocess.PIPE if piped else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env, **options,
     ))
     try:
@@ -82,8 +99,9 @@ async def run_process(args: list[str], cwd: Path, *, check: bool = True, limit: 
         except OSError:
             await terminate_tree(process)
             raise ToolFailure("process_cleanup_unavailable", "无法建立命令进程的生命周期边界，命令已终止。") from None
-        process.stdin.write(b"\n")
-        process.stdin.close()
+    feeder = None
+    if piped:
+        feeder = asyncio.create_task(_feed(process.stdin, (b"\n" if os.name == "nt" else b"") + (input or b"")))
 
     async def drain(stream):
         # Keep the first `limit` bytes and, with `tail`, a rolling window of the
@@ -117,7 +135,7 @@ async def run_process(args: list[str], cwd: Path, *, check: bool = True, limit: 
         return details
     finally:
         await terminate_tree(process)
-        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        await asyncio.gather(stdout_task, stderr_task, *(task for task in (feeder,) if task), return_exceptions=True)
 
 
 class CommandParams(Params):

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, NamedTuple,
 if TYPE_CHECKING:
     from .config import Settings
     from .conversation import Conversation
+    from .skills import SkillCatalog
 
 NAME = re.compile(r"[a-z][a-z0-9_-]*")
 WORD = re.compile(r"/[A-Za-z][A-Za-z0-9_-]*")
@@ -71,7 +72,7 @@ class Command:
     name: str  # Lower case, without the slash.
     description: str  # One line, for the menu and /help.
     usage: str  # "/compact [说明]"
-    kind: Literal["local", "prompt"]
+    kind: Literal["local", "prompt", "skill"]
     aliases: tuple[str, ...] = ()
     argument: Literal["none", "optional", "required"] = "none"
     argument_hint: str = ""  # Shown after the name in the menu, e.g. "[说明]".
@@ -79,6 +80,7 @@ class Command:
     handler: Handler | None = None  # local
     template: str = ""  # prompt
     complete: Completer | None = None  # Argument candidates as (value, description).
+    skill: str = ""  # skill: the SkillDef it runs (E1).
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -119,8 +121,35 @@ class CommandRegistry:
             raise CommandConflict(f"本地命令 /{command.name} 缺少处理函数。")
         if command.kind == "prompt" and not command.template.strip():
             raise CommandConflict(f"提示词命令 /{command.name} 缺少模板。")
+        if command.kind == "skill" and not command.skill:
+            raise CommandConflict(f"Skill 命令 /{command.name} 缺少 Skill 名称。")
         self._commands.append(command)
         self._index.update((name, command) for name in folded)
+
+    def names(self) -> tuple[str, ...]:
+        """Every name and alias, for L4."""
+        return tuple(self._index)
+
+    def with_skills(self, catalog: SkillCatalog) -> tuple[CommandRegistry, tuple[str, ...]]:
+        """A copy for one run with a command per skill (E1); the built-in table is never changed."""
+        registry = CommandRegistry(command for command in self._commands if command.kind != "skill")
+        return registry, registry.set_skills(catalog)
+
+    def set_skills(self, catalog: SkillCatalog) -> tuple[str, ...]:
+        """Replace the skill commands (C3); a skill whose name is taken is skipped with a problem."""
+        self._commands = [command for command in self._commands if command.kind != "skill"]
+        self._index = {name: command for name, command in self._index.items() if command.kind != "skill"}
+        problems = []
+        for skill in catalog.skills.values():
+            hint = skill.argument_hint or "[参数]"
+            command = Command(skill.name, f"{skill.description} [skill]", f"/{skill.name} {hint}", "skill",
+                              argument="optional", argument_hint=hint, hidden=not skill.user_invocable,
+                              skill=skill.name)
+            try:
+                self.register(command)
+            except CommandConflict as exc:
+                problems.append(f"Skill {skill.name} 未登记为命令：{exc}")
+        return tuple(problems)
 
     def get(self, word: str) -> Command | None:
         return self._index.get(word.removeprefix("/").lower())

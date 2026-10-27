@@ -23,7 +23,7 @@ from .appearance import (COMMAND_HIGHLIGHT_COLOR, TERMINAL_CSS, USER_MESSAGE_BAC
                          TOOL_SUCCESS_COLOR, PARAMETER_COLOR, OPERATION_COLOR, ERROR_COLOR,
                          compact_notice, moss_themes, startup_banner)
 from .builtin_commands import BUILTIN, dispatch, open_sessions
-from .commands import CommandContext, Hint, Parsed, parse_input, unknown_note
+from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, Settings
 from .conversation import Conversation
 from .tools import shell_label
@@ -78,9 +78,9 @@ def choice_label(request: ApprovalRequest, choice: str) -> str:
         return f"永久允许以 {request.operation.prefix} 开头的命令 · 保存到本项目本地配置"
     if choice == "accept_edits" and request.operation.tool in EDIT_TOOLS:
         return "本会话自动接受编辑 · 切换为接受编辑档位，命令仍需确认"
-    if request.operation.server and choice == "session":
+    if (request.operation.server or request.operation.skill) and choice == "session":
         return "本会话允许该工具 · 任意参数，退出后失效"
-    if request.operation.server and choice == "permanent":
+    if (request.operation.server or request.operation.skill) and choice == "permanent":
         return "永久允许该工具 · 任意参数，保存到本项目本地配置"
     return CHOICE_LABELS[choice]
 
@@ -511,7 +511,7 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
         args = json.loads(call.arguments)
         if isinstance(args, dict):
             arguments = args
-        if call.name.startswith("mcp__"):
+        if call.name.startswith(("mcp__", "skill__")):
             detail = json.dumps(args, ensure_ascii=False, sort_keys=True)
         elif call.name == "memory":
             detail = f"{args.get('action', '')} {args.get('name', '')}".strip()
@@ -586,7 +586,7 @@ class ToolEntry(Static):
         if state in {"error", "stopped"}:
             action_color = color
         else:
-            action_color = OPERATION_COLOR if self.operation in {"write_file", "edit_file", "execute_command"} or self.operation.startswith("mcp__") else TOOL_SUCCESS_COLOR
+            action_color = OPERATION_COLOR if self.operation in {"write_file", "edit_file", "execute_command"} or self.operation.startswith(("mcp__", "skill__")) else TOOL_SUCCESS_COLOR
         text = Text()
         text.append(marker + " ", style=color)
         text.append(self.operation_name, style=f"bold {action_color}")
@@ -703,14 +703,16 @@ class MossCodeApp(TerminalApp[None]):
     ]
 
     def __init__(self, conversation: Conversation, provider_name: str, *, settings: Settings | None = None,
-                 model: str = "", provider_factory=None, resume: str | None = None) -> None:
+                 model: str = "", provider_factory=None, resume: str | None = None,
+                 commands: CommandRegistry | None = None) -> None:
         super().__init__()
         self.conversation = conversation
         # --resume ID / --continue restore at startup; "" opens the session list once started.
         self._resume = resume
         self._panel_rows = 0
         self._pick = None  # The open picker's on_pick (CommandUI.choose).
-        self.commands = BUILTIN
+        # A table of this run's own: skill commands are added here and replaced by /skills reload.
+        self.commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
         self.provider_name = provider_name
         self.settings, self.model = settings, model
         if provider_factory is None:
@@ -1140,7 +1142,7 @@ class MossCodeApp(TerminalApp[None]):
         await self._start_request(parsed.text)
 
     async def _start_request(self, prompt: str, *, show_user: bool = True, shown: tuple[str, ...] = (),
-                             command: str | None = None) -> None:
+                             command: str | None = None, fork=None) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         reply = ChatEntry("MossCode")
         self._active_reply = reply
@@ -1154,7 +1156,7 @@ class MossCodeApp(TerminalApp[None]):
         self._generating = True
         self._status("连接中…")
         await self._commit_ready_transcript()
-        self._reply_task = asyncio.create_task(self._respond(prompt, reply, command))
+        self._reply_task = asyncio.create_task(self._respond(prompt, reply, command, fork))
 
     @staticmethod
     def _note(text: str, style: str | None = None) -> Static:
@@ -1325,8 +1327,8 @@ class MossCodeApp(TerminalApp[None]):
     async def note(self, text: str, style: str | None = None) -> None:
         await self._local_note(text, style)
 
-    async def submit(self, prompt: str, *, command: str | None = None) -> None:
-        await self._start_request(prompt, show_user=False, command=command)
+    async def submit(self, prompt: str, *, command: str | None = None, fork=None) -> None:
+        await self._start_request(prompt, show_user=False, command=command, fork=fork)
 
     def refresh_status(self) -> None:
         self._usage = self.conversation.total_usage
@@ -1428,14 +1430,14 @@ class MossCodeApp(TerminalApp[None]):
             self._hide_approval()
             self._tick()
 
-    async def _respond(self, prompt: str, reply: ChatEntry, command: str | None = None) -> None:
+    async def _respond(self, prompt: str, reply: ChatEntry, command: str | None = None, fork=None) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         tool_rows: dict[str, ToolEntry] = {}
         continuation = False
         completed = False
 
         try:
-            async with aclosing(self.conversation.reply(prompt, command=command)) as stream:
+            async with aclosing(self.conversation.reply(prompt, command=command, fork=fork)) as stream:
                 async for event in stream:
                     if not isinstance(event, Retrying):
                         self._retry_notice = ""

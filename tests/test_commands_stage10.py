@@ -6,7 +6,7 @@ import pytest
 from rich.console import Console
 
 from mosscode import cli
-from mosscode.builtin_commands import BUILTIN, REVIEW_TEMPLATE, dispatch, help_text, session_report, status_report
+from mosscode.builtin_commands import BUILTIN, dispatch, help_text, session_report, status_report
 from mosscode.commands import (Command, CommandConflict, CommandContext, CommandRegistry, parse_input,
                                unknown_note)
 from mosscode.config import ProviderConfig, Settings
@@ -20,6 +20,13 @@ from mosscode.tools import create_default_registry
 from test_cli import setup_cli
 from test_conversation import FakeProvider
 from test_sessions_stage9b import make, records, write_session, user, assistant
+
+
+REVIEW_TEMPLATE = "请审查当前仓库中尚未提交的改动。\n\n1. 先用 git status 和 git diff HEAD 查看改动范围。"
+# Chapter 11 turned the built-in /review into a skill; prompt commands are still tested with this one.
+PROMPTS = CommandRegistry([*BUILTIN.visible(), Command(
+    "review", "让模型审查尚未提交的改动（只读）", "/review [范围或侧重点]", "prompt", argument="optional",
+    argument_hint="[范围或侧重点]", template=REVIEW_TEMPLATE)])
 
 
 async def noop(ctx, argument):
@@ -37,8 +44,8 @@ class FakeUI:
     async def note(self, text, style=None):
         self.notes.append(text)
 
-    async def submit(self, prompt, *, command=None):
-        self.calls.append(("submit", prompt, command))
+    async def submit(self, prompt, *, command=None, fork=None):
+        self.calls.append(("submit", prompt, command) if fork is None else ("submit", prompt, command, fork))
 
     def refresh_status(self):
         self.calls.append(("refresh",))
@@ -110,9 +117,10 @@ def test_ac1_malformed_commands_are_rejected(command):
 
 
 def test_ac1_builtin_registry_has_fourteen_visible_commands():
+    # Chapter 11 adds /skills and turns /review into a built-in skill.
     assert [c.name for c in BUILTIN.visible()] == [
         "help", "clear", "compact", "resume", "session", "memory", "model", "plan", "do", "permissions",
-        "status", "mcp", "review", "exit"]
+        "status", "mcp", "skills", "exit"]
     assert BUILTIN.get("/PERMISSION").name == "permissions" and BUILTIN.get("quit").name == "exit"
 
 
@@ -131,7 +139,7 @@ def test_ac2_parsing():
     assert unknown.kind == "unknown"
     assert unknown_note(unknown, BUILTIN).startswith("是不是想输入 /compact？未知命令 /compcat。")
     assert "未知命令 /zzzz。输入 /help 查看命令" in unknown_note(parse_input("/zzzz", BUILTIN), BUILTIN)
-    assert parse_input("/review\n重点看并发", BUILTIN).argument == "重点看并发"
+    assert parse_input("/compact\n重点看并发", BUILTIN).argument == "重点看并发"
     assert unknown_note(parse_input("/", BUILTIN), BUILTIN) == "输入 /help 查看命令。"
 
 
@@ -258,12 +266,12 @@ async def test_ac7_session_report_and_help_for_one_command(tmp_path):
     assert "未存档（persist_sessions: false）" in session_report(off, off.sessions())
     ui = await run(context(conv), "/session")
     assert ui.notes[0].startswith("会话 ")
-    shown = help_text(BUILTIN, "review")
+    shown = help_text(PROMPTS, "review")
     assert shown.splitlines()[:3] == ["/review [范围或侧重点]", "让模型审查尚未提交的改动（只读）", "提示词命令：把预设的请求发给模型"]
     assert "模板首行：请审查当前仓库中尚未提交的改动。" in shown
     assert "别名：/quit" in help_text(BUILTIN, "exit") and help_text(BUILTIN, "nope").startswith("未知命令 /nope")
     listing = help_text(BUILTIN)
-    assert "/permissions [档位]     查看或切换工具权限档位（别名 /permission）" in listing and "\n\n按键\n" in listing
+    assert "/permissions [档位]    查看或切换工具权限档位（别名 /permission）" in listing and "\n\n按键\n" in listing
     await conv.close()
     await off.close()
 
@@ -285,7 +293,7 @@ async def test_ac8_review_in_the_tui_is_shown_saved_titled_and_replayed(tmp_path
     from test_tui import send
     provider = FakeProvider()
     conv = make(tmp_path, provider)
-    app = MossCodeApp(conv, "test")
+    app = MossCodeApp(conv, "test", commands=PROMPTS)
     async with app.run_test() as pilot:
         await send(app, pilot, "/review 安全")
         await asyncio.wait_for(app._reply_task, timeout=5)
@@ -371,6 +379,7 @@ async def test_c3_tab_completes_a_unique_prefix_after_escape():
 # AC9 --------------------------------------------------------------------------------------
 
 def test_ac9_headless_prompt_commands(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "BUILTIN", PROMPTS)
     provider, _ = setup_cli(monkeypatch, ["-p", "/review 只看 cli"])
     cli.main()
     sent = provider.requests[0][-1]
