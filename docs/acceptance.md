@@ -1,4 +1,4 @@
-# 完善阶段 1–6、上下文管理与第九至十一章（指令与记忆、命令系统、Skill）验收指南
+# 完善阶段 1–6、上下文管理与第九至十四章（指令与记忆、命令系统、Skill、Hook、子 Agent、Git 工作树）验收指南
 
 分三层验收，从快到慢：
 
@@ -6,7 +6,7 @@
 2. **离线检查**（约 5 分钟，不需要 API）：用不可达的 Provider 启动真实 CLI 和界面，检查重试、配置、MCP 启动、命令和按键。
 3. **真实模型用例**（约 70–90 分钟，消耗少量 Token）：在专用的验收项目里，用你配置的模型走完各阶段的主要场景。
 
-每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md`、`docs/specs/chapter-08-context/spec.md`、`docs/specs/chapter-09-memory/` 下的 `9a-instructions.md`、`9b-sessions.md`、`9c-auto-memory.md`，以及 `docs/specs/chapter-10-commands/spec.md`、`docs/specs/chapter-11-skills/spec.md`。
+每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md`、`docs/specs/chapter-08-context/spec.md`、`docs/specs/chapter-09-memory/` 下的 `9a-instructions.md`、`9b-sessions.md`、`9c-auto-memory.md`，以及 `docs/specs/chapter-10-commands/spec.md`、`docs/specs/chapter-11-skills/spec.md`、`docs/specs/chapter-12-hooks/spec.md`、`docs/specs/chapter-13-subagents/spec.md`、`docs/specs/chapter-14-worktree/spec.md`。
 
 ## 准备
 
@@ -62,7 +62,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`710 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限。
+- **pytest**：`961 passed, 2 skipped`。跳过的两项分别需要创建文件符号链接的权限和安装 ripgrep。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -87,6 +87,9 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 9b 会话存档与恢复 | `tests\test_sessions_stage9b.py` | 30 passed |
 | 9c 记忆笔记 | `tests\test_memory_stage9c.py` | 44 passed |
 | 10 命令系统 | `tests\test_commands_stage10.py` | 28 passed |
+| 12 Hook | `tests\test_hooks_stage12.py` | 73 passed |
+| 13 子 Agent | `tests\test_subagents_stage13.py` | 32 passed |
+| 14 Git 工作树 | `tests\test_worktree_stage14.py` | 49 passed, 1 skipped（ripgrep 未安装） |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 
@@ -131,7 +134,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | U10 /clear | 先 Shift+Tab 切到接受编辑，再输入 `/clear` | 屏幕和终端滚动历史被清空（向上滚动也看不到之前的内容），只剩启动区，随后显示“已开始新会话：屏幕、模型上下文和 Token 统计已清空，权限档位与会话授权保留。”，没有其他提示；状态栏仍是 `⏵⏵ 接受编辑` |
 | U11 /resume | 输入 `/resume` | 刚重建验收项目时提示“本项目没有可恢复的会话。”，不打开面板 |
 | U12 /memory | 输入 `/memory`；再输入 `/memory abc` | 先列出“项目指令（启动、/clear 和恢复会话时加载）”及验收项目的 AGENTS.md，再列出“用户级笔记 · …\.mosscode\memory”和“项目级笔记 · …\.mosscode\projects\…acceptance-project-…\memory”两组（用户级可能已有你自己的笔记，项目级为“（暂无）”），最后一行“自动笔记：开启。…”。`/memory abc` 提示“没有名为 abc 的笔记。” |
-| U13 /help 与别名 | 输入 `/help`；再输入 `/help review`、`/Permission` | `/help` 列出 14 个命令，`/permissions` 一行注明“（别名 /permission）”，`/exit` 注明“（别名 /quit）”，后面是按键说明。`/help review` 显示用法、“提示词命令：把预设的请求发给模型”和模板首行。`/Permission` 与 `/permissions` 相同，显示档位说明 |
+| U13 /help 与别名 | 输入 `/help`；再输入 `/help review`、`/Permission` | `/help` 列出 18 个命令，`/permissions` 一行注明“（别名 /permission）”，`/exit` 注明“（别名 /quit）”，后面是按键说明。`/help review` 显示用法、“提示词命令：把预设的请求发给模型”和模板首行。`/Permission` 与 `/permissions` 相同，显示档位说明 |
 | U14 补全 | 输入 `/q`；按 Esc 收起菜单后把输入改成 `/sta` 再按 Esc，然后按 Tab；再输入 `/permissions` 按 Tab | `/q` 的菜单只有一行 `/exit`，描述后注明“（别名 /quit）”，Tab 补全为 `/exit`。`/sta` 收起菜单后按 Tab 仍补全为 `/status`。`/permissions` 按 Tab 后追加空格，菜单列出四个档位 |
 | U15 /plan 与 /do | Shift+Tab 切到接受编辑；输入 `/do 继续`；再输入 `/plan`，然后 `/do` | `/do 继续` 只提示“当前不在计划模式。任务未发送。”，不发请求。`/plan` 后状态栏为 `⏸ 计划模式`；`/do` 显示“└ 已退出计划模式，回到接受编辑（acceptEdits）。”，状态栏回到 `⏵⏵ 接受编辑` |
 | U16 /status 与 /session | 输入 `/status`；再输入 `/session` | `/status` 列出模型 `unreachable（… / offline-test）`、权限档位、“上下文 尚未发送请求”、会话 ID、工作目录、项目指令文件数、MCP 的已连接与失败数和记忆状态。`/session` 显示会话 ID、存档路径、“（尚无消息）”和开始时间，最后一行“/resume 恢复其他会话。” |
@@ -349,11 +352,136 @@ argument-hint: "[文件]"
 
 M73–M76 的规程、M78 的检测结果和 M79 暂存的文件由应用决定，模型措辞不同不影响判断。
 
+### 第十二章：Hook
+
+用你的 `config.yaml` 在验收项目中启动界面，在 Windows Terminal 中完成。
+
+**本节用到的 Hook 文件**：在验收项目中运行下面的命令，创建一个生产配置文件、一个简单的格式化脚本和项目级 `.mosscode\hooks.yaml`（三条 Hook：拒绝编辑 `config/prod/**`、写入 Python 文件后格式化、会话开始时注入最近三次提交）：
+
+```powershell
+New-Item -ItemType Directory -Force config\prod, .mosscode | Out-Null
+Set-Content -Encoding utf8 config\prod\app.yaml "debug: false"
+@'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+if path.suffix == ".py":
+    text = path.read_text(encoding="utf-8-sig")
+    lines = [line.rstrip().replace("\t", "    ") for line in text.splitlines()]
+    tidy = "\n".join(lines).rstrip("\n") + "\n"
+    if tidy != text:
+        path.write_text(tidy, encoding="utf-8", newline="\n")
+'@ | Set-Content -Encoding utf8 .mosscode\fmt.py
+@'
+hooks:
+  - id: protect-prod
+    event: pre_tool_use
+    if: tool =~ /^(write_file|edit_file)$/ && path ~= "config/prod/**"
+    reject: 生产配置只能由发布流程修改，请改 config/dev/ 下的文件。
+  - id: format-python
+    event: post_tool_use
+    if: tool == Write || tool == Edit
+    action:
+      type: command
+      command: ["${PYTHON}", .mosscode/fmt.py, "${FILE_PATH}"]
+  - id: recent-commits
+    event: session_start
+    action: {type: command, command: [git, log, -3, --oneline], feedback: true}
+'@ | Set-Content -Encoding utf8 .mosscode\hooks.yaml
+```
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M81 信任面板 | 启动 MossCode | 启动区先列出“项目 Hook 文件 .mosscode\hooks.yaml 尚未确认。”和三条 Hook：每条第一行是 `id · 事件`，下面缩进列出“条件”和“命令”或“拒绝”，没有折到行首的半行，输入框下方是“信任并启用 / 本次不启用”面板。选“本次不启用”后，`/hooks` 中该文件标为“（未确认，未启用）”，每条状态为“未确认”；`/status` 的 Hook 一行为“已启用 0 条（项目级未确认 3 条）” |
+| M82 信任后拦截 | `/exit` 后重新启动，选“信任并启用”。让模型“把 config/prod/app.yaml 里的 debug 改成 true” | 工具行显示被拒绝，原因是“Hook protect-prod 拒绝了此调用：生产配置只能由发布流程修改…”；没有弹出审批，文件没有变化。模型说明不能修改或改用 config/dev/，不会反复尝试同一调用 |
+| M83 格式化 | 让模型“用 write_file 创建 src/messy.py：一个 add(a, b) 函数，用 tab 缩进，每行末尾多加两个空格；然后把函数名改成 plus” | Write 工具行下方有一行灰色的“文件已被 Hook format-python 修改（如格式化），模型再次编辑前会重新读取。”（新建文件的预览仍是模型写入的原文）。模型在 edit_file 之前先 read_file（或 edit_file 返回 stale_read 后重新读取）。最终文件用 4 个空格缩进，行尾没有空格 |
+| M84 会话注入 | 问“最近三次提交是什么？不要调用工具。”；然后 `/clear` 再问一次 | 两次都不调用工具，直接列出与 `git log -3 --oneline` 一致的提交 |
+| M85 reload 与本地文件 | 不退出，在另一个终端先 `cd "$moss\.test-artifacts\acceptance\project"`（新终端里先重新设置 `$moss`），再运行下面的命令创建 `.mosscode\hooks.local.yaml`，然后输入 `/hooks reload` | 提示“已重新加载 Hook：已启用 3 条，…”，随后弹出 hooks.local.yaml 的信任面板，列出 slow-read 和 review-no-bash；选“信任并启用”后 `/hooks` 中两个文件都已启用 |
+| M86 超时 | 让模型“读一下 src/app.py” | 读取结果正常显示；出现一行“Hook slow-read（post_tool_use）失败：超过 1 秒未结束，已终止；已忽略。”。`/hooks slow-read` 的执行记录中是“超时”，其中列出的 `hooks.log` 文件里有一行 `"outcome": "timeout"` |
+| M87 子 Agent 拦截 | 输入 `/review` | 审查子 Agent 调用 execute_command 时被拒绝（原因“审查时只读代码，不运行命令。”），没有弹出审批；它改用 read_file 等工具继续，最后给出审查结果 |
+| M88 无界面 | 在验收项目中运行 `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" -p "你好"`；再改一下 hooks.yaml（如在末尾加一个空行）后运行同一命令 | 第一次正常回答，stderr 没有 Hook 提示（两个文件都已信任）。第二次 stderr 提示“项目 Hook 文件 …\.mosscode\hooks.yaml 未经确认，未启用；…”。加 `--trust-project-hooks` 再运行，提示消失，下次交互启动时仍会询问 |
+| M89 显示 | 在 Windows Terminal 中检查 M81 的信任面板和 `/hooks`、`/hooks format-python` 的输出 | 面板选项可以用 ↑ / ↓ 选择、Enter 确认，Esc 等同“本次不启用”；中文与路径对齐正常，没有错位或残留 |
+
+M85 用到的本地 Hook 文件：
+
+```powershell
+@'
+hooks:
+  - id: slow-read
+    event: post_tool_use
+    if: tool == Read
+    action: {type: command, command: ["${PYTHON}", -c, "import time; time.sleep(5)"], timeout: 1}
+  - id: review-no-bash
+    event: pre_tool_use
+    if: agent == fork && tool == Bash
+    reject: 审查时只读代码，不运行命令。
+'@ | Set-Content -Encoding utf8 .mosscode\hooks.local.yaml
+```
+
+验收完成后删除 `.mosscode\hooks.yaml`、`.mosscode\hooks.local.yaml`、`.mosscode\fmt.py`、`config\` 和 `src\messy.py`，以免影响其他用例。
+
+### 第十三章：子 Agent
+
+用你的 `config.yaml` 在验收项目中启动界面，在 Windows Terminal 中完成。先按第十二章末尾删除 Hook 文件（`slow-read` 会让每次读取多等 1 秒并显示失败提示）。权限档位为“默认权限”。
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M90 前台 explore | 让模型“用 explore 子 Agent 找出 old_name 在哪些文件里定义和使用” | 出现一行 agent 工具行，标题为 `explore · …`；运行中下方实时更新“工具调用 N 次 · 最近 … · Token · 秒 · Ctrl+B 转入后台”，状态栏提示“Ctrl+B 转入后台”；子 Agent 的每次读取不单独显示为工具行。完成后工具行显示结果首行和统计，主回复只给出结论（src/util.py 定义、src/app.py 使用） |
+| M91 并行 | 让模型“同时启动两个 explore 子 Agent，一个看 src/ 的结构，一个看 docs/ 的结构，然后汇总” | 两行 agent 工具行同时在更新进度，而不是一个结束后另一个才开始 |
+| M92 Ctrl+B | 让模型“用 general 子 Agent 逐个读取 src 和 docs 下的每个文件，各写一句总结，最后汇总”；在它运行时按 Ctrl+B，然后问“1+1 等于几？不要调用工具。” | 按下后工具行变为“后台 · 任务 tN”，出现一行“后台任务 tN（general · …）已启动”，状态栏显示“后台任务 1”。可以继续提问并得到回答。子 Agent 完成后出现“后台任务 tN（general · …）已完成”，随后不需要输入就自动开始一轮，模型报告汇总结果 |
+| M93 Fork 与缓存 | 先问“src/util.py 里有什么？”，再让模型“Fork 一个去检查 util.py 里的函数在项目中哪些地方被调用”（Fork 一律在后台运行，默认权限下不能请求审批，所以这里用只读任务） | agent 调用立即返回，工具行为“后台 · 任务 tN”；完成后自动开始一轮。`/tasks tN` 的用量中缓存命中的 Token 接近主对话当时的上下文（DeepSeek 或开启 `prompt_cache` 的提供商） |
+| M94 计划模式 | Shift+Tab 切到计划模式，让模型“用 general 子 Agent 在 notes.txt 末尾加一行 hello” | 子 Agent 的写入被计划模式拒绝，notes.txt 没有变化；模型说明计划模式下不能修改。之后 Shift+Tab 回到默认权限 |
+| M95 子 Agent 审批 | 让模型“用 general 子 Agent 创建 build/sub.txt，内容 hi”；再让模型“用 general 子 Agent 在后台（run_in_background）创建 build/bg.txt” | 第一次弹出审批面板，标题末尾是“ · 子 Agent general · …”；允许后文件创建。第二次没有审批面板，子 Agent 的写入返回需要审批（原因说明后台子 Agent 不能请求审批），build/bg.txt 不存在；主 Agent 收到通知后报告这一点 |
+| M96 覆盖内置定义 | 运行下面的命令创建 `.mosscode\agents\explore.md`，然后输入 `/agents reload`、`/agents`、`/agents explore`；再让模型“用 explore 子 Agent 看看 src/app.py” | reload 提示“已重新加载 Agent 定义：共 3 个，修改 explore；下一次请求起生效。”。`/agents` 中 explore 的来源为项目级，带“[覆盖 1 个]”；详情列出被覆盖的内置文件、实际工具只有 read_file。子 Agent 的结果以“【项目版 explore】”开头 |
+| M97 /tasks 与确认 | 输入 `/tasks`、`/tasks t1`；让模型启动一个后台的 general 子 Agent 做一个较长的任务（如 M92 的任务加上 run_in_background），运行中输入 `/tasks stop tN`；再启动一次，运行中输入 `/clear` | `/tasks` 列出本会话的任务（id、类型、标签、状态、用时、Token）；详情含任务说明、结果预览、用量和对话记录路径（`…\subagents\t1.jsonl`，文件存在）。stop 后状态为“已取消”，不再自动开始一轮。`/clear` 弹出“有 1 个后台任务在运行：…”面板，默认选中“返回”；选“返回”什么都不变，再 `/clear` 选“取消这些任务并继续”，显示“└ 已取消 1 个后台任务。”后清屏 |
+| M98 退出确认 | 再启动一个后台任务，运行中按 Ctrl+Q；再输入 `/exit` | 两次都弹出同样的确认面板；选“返回”留在界面，选“取消这些任务并继续”后退出 |
+| M101 运行中 /tasks | 让模型用 general 子 Agent 做 M92 的任务（前台），运行中依次输入 `/status`、`/tasks`、`/tasks stop tN`（tN 为该任务）；再输入 `/help` | 前三个命令立即执行，结果显示在当前位置，输入框清空；stop 后工具行结束，结果为“[子 Agent 未完成：已取消]”，主 Agent 接着回复（说明任务被停止）。`/help` 不执行，状态栏提示“运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送”，输入保留 |
+| M99 无界面 | 在验收项目中运行 `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" -p "用 run_in_background 启动一个 explore 子 Agent 统计 src 下有哪些函数，启动后直接结束这一轮"`；再运行 `-p "/tasks"` | 第一条命令的 stderr 先后出现“后台任务 t1（explore · …）已启动”“…已完成”；进程等到子 Agent 完成、模型根据通知回答后才退出，退出码 0。`-p "/tasks"` 以退出码 2 结束 |
+| M100 显示 | 在 Windows Terminal 中检查 M90 的进度行、M92 的状态栏、M97 的确认面板和 `/agents`、`/tasks` 的输出 | 进度行原地更新，不留下重复行；中文与列对齐正常，没有错位或残留；确认面板可以用 ↑ / ↓ 选择、Enter 确认，Esc 等同“返回” |
+
+M96 用到的项目级定义：
+
+```powershell
+New-Item -ItemType Directory -Force .mosscode\agents | Out-Null
+@'
+---
+name: explore
+description: 项目版只读探索
+tools: Read
+---
+你是只读探索助手。最终回复以“【项目版 explore】”开头，再写结论。
+'@ | Set-Content -Encoding utf8 .mosscode\agents\explore.md
+```
+
+验收完成后删除 `.mosscode\agents\` 和 `build\sub.txt`，以免影响其他用例。
+
+### 第十四章：Git 工作树
+
+接着第十三章，用你的 `config.yaml` 在验收项目中启动界面（验收项目是一个 git 仓库），在 Windows Terminal 中完成。先删除第十三章的 `.mosscode\agents\`，权限档位为“接受编辑”（Shift+Tab），免得每次写入都弹审批。下面的 `agent-xxxxxxxx` 指实际生成的名称。
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M102 隔离写入 | 让模型“用 general 子 Agent，isolation 设为 worktree，在 notes.txt 末尾加一行 hello” | 工具行标题为 `general · 工作树 · …`，进度行以“工作树 agent-xxxxxxxx · ”开头。主目录的 notes.txt 没有变化，`git status` 仍然干净（不显示 `.mosscode/worktrees`）。工具结果末尾是“[工作树] 已保留：.mosscode/worktrees/agent-xxxxxxxx”，下一行“分支 mosscode/agent-xxxxxxxx，基于 …；未提交 1 个文件。”，再下一行是合并、查看和删除的方法；`.mosscode\worktrees\agent-xxxxxxxx\notes.txt` 末尾有 hello |
+| M103 列表与详情 | 输入 `/worktree`；再输入 `/tasks tN`（M102 的任务）、`/agents general` | `/worktree` 列出 agent-xxxxxxxx：“临时  有改动（未提交 1 个文件）”，下一行是分支、基准提交、创建时间和路径。`/tasks tN` 有一行“工作树  .mosscode/worktrees/agent-xxxxxxxx（分支 mosscode/agent-xxxxxxxx）· 已保留”。`/agents general` 的“隔离”一行为“无” |
+| M104 无改动自动删除 | 让模型“用 general 子 Agent，isolation 设为 worktree，读 src/app.py 并总结，不要修改文件” | 结果末尾是“[工作树] 无改动，已删除。”；`/worktree` 中没有新的工作树，`git branch` 中没有新的 `mosscode/agent-…` 分支 |
+| M105 主目录写入被拒 | 让模型“用 general 子 Agent，isolation 设为 worktree，用 write_file 写入绝对路径 <验收项目的绝对路径>\build\main.txt” | 子 Agent 的写入返回 `path_blocked`（路径在项目之外），没有审批面板，主目录的 build\main.txt 不存在 |
+| M106 计划模式与 Fork | 让模型“用 explore 子 Agent，isolation 设为 worktree，看看 src 里有什么”；再让模型“Fork 一个，isolation 设为 worktree，检查 util.py” | explore 是计划模式，结果第一行是“（计划模式下未创建工作树：子 Agent 在主目录只读运行。）”，`/worktree` 不变。Fork 返回 `isolation_unsupported` 错误，没有启动任务 |
+| M107 运行中的命令 | 让模型做一个较长的隔离任务（如“用 general 子 Agent，isolation 设为 worktree，逐个读取 src 和 docs 下的文件并各写一句总结”），运行中输入 `/worktree list`，再输入 `/worktree clean` | `/worktree list` 立即执行，新工作树显示“使用中（任务 tN）”。`/worktree clean` 不执行，状态栏提示“运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送”，输入保留 |
+| M108 手动创建与删除 | 输入 `/worktree create demo/a`；在另一个终端中运行 `"x" \| Set-Content .mosscode\worktrees\demo+a\new.txt`；再输入 `/worktree remove demo/a`，然后 `/worktree remove demo/a --discard` | create 显示“└ 已创建工作树 demo/a：.mosscode/worktrees/demo+a”、分支 `mosscode/demo+a` 和进入目录的 cd 命令。第一次 remove 显示“! 工作树 demo/a 有改动（未提交 1 个文件：new.txt），未删除；确认丢弃时加 --discard。”；加 `--discard` 后显示“└ 已删除工作树 demo/a 和它的分支（已丢弃：未提交 1 个文件）。”，目录和 `mosscode/demo+a` 分支都不存在 |
+| M109 名称与补全 | 输入 `/worktree create ../x`、`/worktree create con`；再输入 `/worktree ` 后按 Tab | 两个 create 都以“! 名称 … 不可用：…”拒绝，不创建目录。补全菜单列出 list、create、remove、clean 和“remove agent-xxxxxxxx”（M102 留下的） |
+| M110 合并与清理 | 在另一个终端中：`git -C .mosscode\worktrees\agent-xxxxxxxx commit -am hello`，然后 `git merge mosscode/agent-xxxxxxxx`；回到 MossCode 输入 `/worktree`，再 `/worktree remove agent-xxxxxxxx` | 合并后主目录 notes.txt 末尾有 hello。`/worktree` 中该工作树为“无改动”（提交已合并进主分支，不再算独有提交）；remove 直接删除，没有要求 `--discard` |
+| M111 显示 | 在 Windows Terminal 中检查 M102 的进度行、`/worktree` 和 `/tasks tN` 的输出 | 进度行原地更新，不留下重复行；中文与路径对齐正常，没有错位或残留 |
+| M112 并行隔离 | 让模型“同时启动两个 general 子 Agent，isolation 都设为 worktree：一个在 notes.txt 开头加一行 A，一个在末尾加一行 B” | 两个工具行同时更新进度，工作树名称不同。两个结果都“已保留”；各自工作树中的 notes.txt 只有自己的那一行，主目录不变 |
+| M113 链接依赖目录 | 退出 MossCode，在你的 `config.yaml` 顶层临时加入 `worktree_links: [node_modules]`；在验收项目中运行 `New-Item -ItemType Directory -Force node_modules\pkg \| Out-Null; "x" \| Set-Content node_modules\pkg\index.js`；重新启动后输入 `/worktree create links`，在另一个终端中运行 `(Get-Item .mosscode\worktrees\links\node_modules).LinkType`；然后 `/worktree`、`/worktree remove links` | LinkType 为 `SymbolicLink` 或 `Junction`。`/worktree` 中 links 为“无改动”（链接不算改动）；remove 直接删除，之后主目录的 `node_modules\pkg\index.js` 仍然存在。验收后删除 `node_modules` 和 `config.yaml` 中的这一行 |
+| M114 在工作树中启动 | 输入 `/worktree create demo`，按提示在另一个终端中 `cd` 进入，用 `--config "$moss\config.yaml"` 启动 MossCode，输入 `/memory`；退出后回到原来的界面，让模型“用 grep 搜索 old_name” | `/memory` 的“项目指令”中 AGENTS.md 只出现一次，路径在 `.mosscode\worktrees\demo` 中（MCP 状态不作为判断依据）。主界面的 grep 结果不含 `.mosscode/worktrees` 中的文件。最后 `/worktree remove demo` |
+
+验收完成后如果还有工作树，用 `/worktree` 查看并逐个 `/worktree remove <名称> --discard`；用 `git checkout notes.txt` 还原 M110 合并前的内容（或重新生成验收项目）。
+
 ## 已知限制
 
 - **ripgrep**：本机没有安装 ripgrep，搜索走 Python 实现。rg 路径只按文档实现，没有在本机运行过。
 - **缓存命中**：取决于服务。非 Anthropic 官方端点默认不发送缓存标记（见 `prompt_cache`）。
 - **只能人工判断的行为**：模型是否并行调用、回复是否简洁，没有严格的通过标准。后台提取是否记录、记成哪个范围和类型由模型判断，同样的对话可能得到不同的笔记。
+- **工作树中的命令**：隔离的子 Agent 的 `execute_command` 在工作树中运行，但命令本身仍能访问主目录；路径检查只约束文件工具。
 - **Token 估算**：上下文比例是估算值（中文按 1 字 1 Token 偏保守），与服务的计费数字会有差异；压缩时机以估算为准，超限时由自救兜底。
 
 ## 记录结果

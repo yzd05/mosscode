@@ -128,7 +128,8 @@ Shift+Tab             依次切换 default → acceptEdits → plan
 Esc                   关闭命令提示（保留输入）
 Esc / Ctrl+C          取消正在生成的回复；排队消息放回输入框
 授权面板              ↑ / ↓ 选择，Enter 确认，Esc 拒绝本次，Ctrl+C 取消任务
-Ctrl+Q                退出
+Ctrl+B                把前台运行的子 Agent 转入后台
+Ctrl+Q                退出（有后台任务时先确认）
 鼠标滚轮              滚动对话记录
 鼠标拖选              使用终端原生文字选择
 Ctrl+V                粘贴（多行内容保持原样）"""

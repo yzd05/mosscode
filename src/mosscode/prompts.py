@@ -97,11 +97,24 @@ class _Unreadable(Exception):
     pass
 
 
+def worktree_top(root: Path) -> Path | None:
+    """Ch14 S3: the root of the MossCode worktree (.mosscode/worktrees/<name>) that holds root, if any."""
+    parts = root.parts
+    for index in range(len(parts) - 2):
+        if parts[index:index + 2] == (".mosscode", "worktrees"):
+            top = Path(*parts[:index + 3])
+            return top if (top / ".git").is_file() else None
+    return None
+
+
 def instruction_candidates(root: Path, home: Path | None = None) -> list[Path]:
     """User file, then filesystem root down to the project (one file per directory), then .mosscode/AGENTS.md."""
     home = Path.home() if home is None else home
     found = [home / ".mosscode" / "AGENTS.md"]
+    top = worktree_top(root)
     for directory in reversed((root, *root.parents)):
+        if top is not None and not directory.is_relative_to(top):
+            continue  # Ch14 S3: the main project's files would come twice.
         found.extend(next(([directory / name] for name in INSTRUCTION_FILES if (directory / name).is_file()), []))
     found.append(root / ".mosscode" / "AGENTS.md")
     unique = {}
@@ -308,7 +321,33 @@ def as_prompt(value: str | PromptRequest) -> PromptRequest:
 
 
 # Supplements that stay the same between requests and belong to the cached prefix (ch11 A6).
-PREFIX_KINDS = frozenset({"environment", "active-skills"})
+PREFIX_KINDS = frozenset({"environment", "active-skills", "hook-context"})
+HOOK_TEXT_LIMIT = 8000  # Ch12 P5: per supplement.
+
+
+def _hook_text(notes: Sequence[tuple[str, str]]) -> str:
+    parts, room = [], HOOK_TEXT_LIMIT
+    for hook_id, note in notes:
+        if room <= 0:
+            break
+        text = note if len(note) <= room else note[:room] + "\n（Hook 内容超出 8000 个字符，已截断）"
+        room -= len(note)
+        parts.append(f"=== Hook {hook_id}\n{text}")
+    return "\n\n".join(parts)
+
+
+def hook_context(notes: Sequence[tuple[str, str]]) -> Supplement | None:
+    """Ch12 P1: session_start output, in the cached prefix for the whole session."""
+    if not notes:
+        return None
+    return Supplement("hook-context", "以下内容由用户配置的 Hook 在会话开始时提供。\n\n" + _hook_text(notes))
+
+
+def hook_notification(notes: Sequence[tuple[str, str]]) -> Supplement | None:
+    """Ch12 P2, P3: turn_start and pre_send output, with the request only (after the cache breakpoint)."""
+    if not notes:
+        return None
+    return Supplement("hook-notification", "以下内容由用户配置的 Hook 提供。\n\n" + _hook_text(notes))
 
 
 def active_skills(texts: Sequence[str]) -> Supplement | None:

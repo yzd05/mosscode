@@ -9,7 +9,7 @@
   sessions/
     <会话 ID>.jsonl     对话记录
     <会话 ID>.lock      使用中的锁
-    <会话 ID>/          会话目录：tool-results/、compact-<n>.md
+    <会话 ID>/          会话目录：tool-results/、compact-<n>.md、hooks.log、subagents/
 ```
 
 - **项目键**由启动目录的绝对路径生成：路径末尾的可读部分加上 8 位哈希，例如 Windows 上的 `f--code-storage-pycharm-mosscode-1a2b3c4d`。同一目录总是得到同一个键。
@@ -27,6 +27,9 @@
 | `message` | 一条进入历史的消息，带写入时间 `time`。用户消息与第一次完整回复一起写；一批工具结果在执行结束后写一次；生成到一半的回复不写 |
 | `compact` | 压缩成功：历史变为 `boundary`（摘要消息）加上当前历史的最后 `keep` 条；`record` 是压缩记录文件的路径 |
 | `provider` | `/model` 切换：此前消息中只对原模型有效的数据（thinking 签名、加密推理）清除 |
+| `task` | 子 Agent 任务的开始（`event: start`）和结束（`event: end`）：任务 id、类型、标签、状态、对话记录路径。恢复时跳过，不重新运行旧任务 |
+
+子 Agent 的消息不进入主对话历史，写在会话目录的 `subagents/<任务 id>.jsonl` 中：第一行是 `{"type": "subagent", ...}` 任务信息，之后是与上表相同的 `message` 记录（见 [子 Agent](subagents.md#对话记录)）。后台任务的通知是 `synthetic` 为 `task-notification` 的用户消息，随主对话历史保存。
 
 每条记录用一次 `write()` 写入后立即 `flush()`。追加前如果文件末尾是半行，先截断到最后一个完整行。写入失败（磁盘满、权限错误等）时提示一次“会话存档写入失败：原因，本会话之后的消息不会被保存。”，对话继续。
 

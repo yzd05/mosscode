@@ -50,8 +50,10 @@ providers:
 | `memory` | `true` | 记忆笔记：索引注入系统提示、`memory` 工具和后台提取，见 [记忆笔记](docs/reference/memory.md) |
 | `auto_memory` | `true` | 任务完成后在后台提取值得记住的内容；`false` 时只保留 `memory` 工具 |
 | `memory_provider` | 当前 Provider | 后台提取使用的 Provider 名称，可以指定较便宜的模型 |
+| `worktree_links` | `[]` | 链接进每个 git 工作树的路径（相对仓库根），如 `node_modules`、`.venv`，见 [Git 工作树](docs/reference/worktree.md#初始化) |
+| `worktree_stale_hours` | `24` | 子 Agent 留下的无改动工作树多少小时后自动清理；`0` 关闭 |
 
-### 权限、MCP、项目指令与 Skill
+### 权限、MCP、项目指令、Skill、Hook、子 Agent 与工作树
 
 | 文件 | 用途 | 说明 |
 | --- | --- | --- |
@@ -59,6 +61,9 @@ providers:
 | `~/.mosscode/mcp.yaml`、`.mosscode/mcp.yaml` | MCP Server | [MCP 外部工具](docs/reference/mcp.md)，示例 [mcp.example.yaml](mcp.example.yaml) |
 | `AGENTS.md`（或 `CLAUDE.md`）、`.mosscode/AGENTS.md`、`~/.mosscode/AGENTS.md` | 项目指令，追加到系统提示；单独一行的 `@路径` 引用其他文件 | [系统提示与缓存](docs/reference/prompts.md#项目指令agentsmd) |
 | `~/.mosscode/skills/<名称>/`、`.mosscode/skills/<名称>/` | Skill：`SKILL.md` 规程和可选的 `tool.json` 脚本工具；项目级覆盖用户级和内置 | [Skill](docs/reference/skills.md) |
+| `~/.mosscode/hooks.yaml`、`.mosscode/hooks.yaml`、`.mosscode/hooks.local.yaml` | Hook：在会话、轮次、请求和工具调用前后执行命令、注入提示、发送 HTTP 请求或拦截工具调用；项目级文件需确认后启用 | [Hook](docs/reference/hooks.md) |
+| `~/.mosscode/agents/<名称>.md`、`.mosscode/agents/<名称>.md` | 子 Agent 定义：frontmatter 写名称、描述、工具范围、模型、轮数和权限档位，正文是系统提示词；项目级覆盖用户级和内置的 explore、plan、general | [子 Agent](docs/reference/subagents.md) |
+| `.worktreeinclude`（仓库根） | 用 `.gitignore` 语法列出创建工作树时要复制过去的被忽略文件，如 `.env` | [Git 工作树](docs/reference/worktree.md#初始化) |
 
 ## 使用
 
@@ -101,8 +106,12 @@ providers:
 | `/permissions 档位` | 切换到 default、acceptEdits、plan 或 bypassPermissions |
 | `/mcp` | 列出 MCP Server 的状态（连接中、已连接及工具数、失败原因）与配置问题 |
 | `/mcp 名称` | 列出该 Server 的工具，只读工具标注 `[只读]` |
-| `/status` | 显示模型、权限档位、上下文、本会话用量、会话、MCP 和记忆的状态 |
+| `/status` | 显示模型、权限档位、上下文、本会话用量、会话、MCP、记忆、Hook 和子 Agent 的状态 |
 | `/skills`（别名 `/skill`） | 列出全部 Skill 及其来源、模式和描述；`/skills 名称` 查看详情，`/skills reload` 重新扫描 |
+| `/hooks`（别名 `/hook`） | 列出 Hook 及其来源、条件、状态和最近的执行记录；`/hooks id` 查看详情，`/hooks reload` 重新加载 |
+| `/agents`（别名 `/agent`） | 列出子 Agent 定义及其来源和描述；`/agents 名称` 查看实际可用的工具和有效权限档位，`/agents reload` 重新扫描 |
+| `/tasks`（别名 `/task`） | 列出本会话的子 Agent 任务及其状态、用时和 Token；`/tasks id` 查看详情，`/tasks stop id` 停止 |
+| `/worktree`（别名 `/worktrees`） | 列出 MossCode 管理的 git 工作树及其状态；`/worktree create 名称` 创建，`/worktree remove 名称 [--discard]` 删除，`/worktree clean` 清理过期的临时工作树 |
 | `/<Skill 名> [参数]` | 运行 Skill，如内置的 `/commit`、`/review`（在独立上下文中审查未提交的改动）、`/test` |
 | `/exit`（别名 `/quit`） | 退出并清理资源 |
 
@@ -139,7 +148,7 @@ providers:
 .\.venv\Scripts\python.exe -m mosscode -p "列出 src 下的模块" --output-format json
 ```
 
-`-p`（`--prompt`）运行一个任务后退出，不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
+`-p`（`--prompt`）运行一个任务后退出，不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。未经确认的项目级 Hook 在 `-p` 中不启用（stderr 有提示），`--trust-project-hooks` 只在本次信任，`--no-hooks` 不加载任何 Hook。模型启动的后台子 Agent 在 `-p` 中照常运行：回复结束后等待它们完成，每个结果开启新的一轮，全部结束后才退出；stderr 提示任务的开始与结束。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
 
 ## 架构
 
@@ -154,7 +163,10 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
                            └──► tools/（注册、校验、授权、执行）
                                   ├──► permissions.py、security.py（档位、规则、命令风险）
                                   ├──► mcp_client.py、mcp_config.py（MCP）
-                                  └──► skills/、tools/skill.py（Skill 与专属工具）
+                                  ├──► skills/、tools/skill.py（Skill 与专属工具）
+                                  ├──► hooks/（生命周期 Hook、工具调用拦截）
+                                  └──► agents/、tools/agent.py（子 Agent 与后台任务）
+                                         └──► worktree/（git 工作树隔离）
 ```
 
 一次任务：Agent Loop 用“稳定系统提示 + 历史 + 本次环境补充”请求模型，把流式事件交给界面；回复中的工具调用经校验和授权后执行（相邻只读调用最多 4 个并发），纯文本结果写回历史，再请求模型，直到回复不再调用工具或遇到停止条件（取消、轮数上限、连续未知工具等）。TUI 与 `-p` 共用 `Conversation`；在 Python 中可连续调用 `Conversation.ask()` 保持多轮历史，结束后 `await conversation.close()`。
@@ -171,6 +183,9 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 | `permissions.py`、`security.py` | 档位、分层规则、审批请求、只读命令白名单、危险命令分级、项目路径检查 |
 | `mcp_client.py`、`mcp_config.py` | MCP 配置、后台连接与发现、工具适配 |
 | `skills/`、`tools/skill.py` | Skill 扫描与覆盖、目录与 `<active-skills>`、`load_skill` 和专属脚本工具；`skills/builtin/` 为内置 Skill |
+| `hooks/` | Hook 文件读取与信任、条件、四种动作、按事件执行与日志；接入工具执行、Agent Loop 和会话 |
+| `agents/`、`tools/agent.py` | 子 Agent 定义的加载与覆盖、定义式与 Fork 的运行时、后台任务管理与通知；`agent`、`task_output`、`task_stop` 工具；`agents/builtin/` 为内置定义 |
+| `worktree/` | git 工作树的命名、创建与初始化（链接、复制）、改动检查、安全删除、元数据与自动清理 |
 | `tui.py`、`appearance.py`、`scrollback.py` | 界面、命令与提示、原生滚动历史 |
 | `config.py`、`cli.py` | 配置加载与命令行入口 |
 
@@ -178,10 +193,10 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md) |
+| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[Git 工作树](docs/reference/worktree.md) |
 | 设计评审 | [对照 Claude Code 与 Pi 的完善建议](docs/research/claude-code-pi-gap-review.md) |
 | 各阶段规格与验证 | `docs/specs/`：`chapter-*` 为各章，`refinement-*` 为完善阶段 1–6，每个目录含 `spec.md` 与 `validation.md` |
-| 人工验收 | [完善阶段 1–6、上下文管理与第九至十一章验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |
+| 人工验收 | [完善阶段 1–6、上下文管理与第九至十四章验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |
 
 ### 开发与测试
 

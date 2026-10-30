@@ -4,19 +4,23 @@ import asyncio
 from contextlib import aclosing
 import difflib
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .agent import DEFAULT_MAX_ITERATIONS, AgentLoop, Provider
+from .agents import AgentCatalog
+from .agents.runtime import AUTO_BACKGROUND, GLOBAL_BAN, MAX_BACKGROUND, SubAgents
 from .context import ContextBudget, estimate_text
 from .memory import INDEX_TOKENS, MemoryStore
 from .memory_extract import MemoryExtractor
-from .messages import CompactFailed, CompactFinished, Completed, ContentBlock, Message, ProviderError, RunStopped
-from .prompts import (display_path, gap_reminder, git_snapshot, instructions_section, load_instructions,
-                      memory_section)
+from .messages import (NOTIFICATION, CompactFailed, CompactFinished, Completed, ContentBlock, Message, ProviderError,
+                       RunStopped, ToolProgress, UsageUpdate)
+from .prompts import (display_path, gap_reminder, git_snapshot, hook_context, instructions_section,
+                      load_instructions, memory_section)
 from .skills import ACTIVE_LIMIT, LOAD_SKILL, ForkRequest, SkillCatalog, SkillDef, missing_tools
 from .session import (Restored, Session, SessionLocked, Transcript, find_session, list_sessions, load_session,
                       provider_record, skill_record)
+from .tools.agent import AgentTool, TaskOutput, TaskStop
 from .tools.base import ToolFailure, ToolRegistry
 from .tools.memory import Memory
 from .tools.skill import LoadSkill, SkillTool
@@ -50,8 +54,17 @@ class Conversation:
                  notices: tuple[str, ...] = (), persist: bool = False,
                  provider_info: tuple[str, str, str] | None = None, sessions_home: Path | None = None,
                  memory: MemoryStore | None = None, auto_memory: bool = False, memory_provider: Provider | None = None,
-                 skills: SkillCatalog | None = None, provider_configs=(), provider_factory=None):
+                 skills: SkillCatalog | None = None, provider_configs=(), provider_factory=None, hooks=None,
+                 agents: AgentCatalog | None = None, agent_auto_background: float = AUTO_BACKGROUND,
+                 agent_max_background: int = MAX_BACKGROUND, worktree_links=(), worktree_stale_hours: float = 24.0):
         self.provider, self.system, self.registry = provider, system, registry
+        # Ch14: the worktree manager is built on first use; it needs a git repository.
+        self.worktree_links, self.worktree_stale_hours = tuple(worktree_links), worktree_stale_hours
+        self._worktrees = None
+        self._worktree_cleanup: asyncio.Task | None = None
+        # Ch12: the HookEngine; None runs no hooks at all.
+        self.hooks = hooks
+        self._session_started = False
         self.mcp_manager = mcp_manager
         self.skills = skills if skills is not None else SkillCatalog()  # L7: empty without a scan.
         self._skill_tools: dict[str, tuple[str, ...]] = {}  # Skill name -> its tools registered here (X8).
@@ -77,6 +90,11 @@ class Conversation:
         self.sessions_home = sessions_home
         self._transcript: Transcript | None = None
         self._agent.on_commit = self._record
+        if hooks is not None:
+            hooks.on_notice = self._hook_notice
+            self._agent.hooks = hooks
+            if registry is not None:
+                registry.hooks = hooks
         self._use_session(session)
         # 9c: notes are injected only when context is loaded (context_root); None turns memory off.
         self.memory = memory
@@ -97,6 +115,16 @@ class Conversation:
                                                  on_usage=self._agent._usage)
                 self._agent.on_compact = self._handover
         self._notices.extend(self._offer_skills())
+        # Ch13: sub-agents. The agent tools are offered only with a catalog (None keeps the core hermetic);
+        # the runtime itself always exists, Skill fork runs on it (S1).
+        self.project_instructions = ""  # G3: the project files only, for definition sub-agents.
+        self.on_tasks = None  # Set by the UI: background results wait while the main agent is idle (B6).
+        self.subagents = SubAgents(self, agents, auto_background=agent_auto_background,
+                                   max_background=agent_max_background)
+        self.agents_enabled = agents is not None
+        if hooks is not None:
+            hooks.agent_runner = self.subagents.hook_agent
+        self._notices.extend(self._offer_agents())
 
     def _use_session(self, session) -> None:
         if self._transcript is not None:
@@ -104,6 +132,8 @@ class Conversation:
         self.session = session
         # Stored tool results and compaction records; without it large results are only cut to a preview.
         self._agent.session = session
+        if self.hooks is not None:
+            self.hooks.use_session(session)
         if self.registry is not None and session is not None:
             self.registry.use_session(session)
         root = self.context_root or Path.cwd()
@@ -118,6 +148,42 @@ class Conversation:
     def _emit(self, event) -> None:
         if self.on_memory is not None:
             self.on_memory(event)
+
+    # Hooks (ch12) --------------------------------------------------------------------------------
+
+    def _hook_notice(self, text: str) -> None:
+        """O3: background failures go out at once; without a listener they join the next events."""
+        if self.on_memory is not None:
+            self._emit(Notice(text))
+        else:
+            self._raised.append(text)
+
+    async def _fire(self, name: str, fields: dict):
+        if self.hooks is None or not self.hooks.wants(name):
+            return ()
+        from .hooks import HookEvent
+        return (await self.hooks.fire(HookEvent(name, fields=fields))).notes
+
+    async def _session_start(self, source: str) -> None:
+        """P1: its output is the hook-context prefix of the whole session."""
+        self._session_started = True
+        if self.hooks is not None:
+            self._agent.hook_context = hook_context(await self._fire("session_start", {"source": source}))
+
+    async def _session_end(self, reason: str) -> None:
+        if self._session_started:
+            self._session_started = False
+            await self._fire("session_end", {"reason": reason})
+
+    async def _turn_end(self, reason: str, notice: str) -> None:
+        if reason == "error":
+            await self._fire("error", {"error": notice})  # Before turn_end (E1); hook failures never fire it (E5).
+        await self._fire("turn_end", {"reason": reason})
+
+    def _turn_end_later(self, reason: str) -> None:
+        """A cancelled turn cannot wait: its end hooks run in the background."""
+        if self.hooks is not None and self.hooks.wants("turn_end"):
+            self.hooks.spawn(self._fire("turn_end", {"reason": reason}))
 
     # Background extraction (9c A1, A2) ---------------------------------------------------------
 
@@ -230,15 +296,23 @@ class Conversation:
 
     async def clear(self) -> tuple[str, ...]:
         """New session: empty model context and usage; permissions and MCP stay."""
+        if self._busy:
+            raise ProviderError("当前任务正在运行，不能清空会话。")
+        await self.tasks.reset()  # M4: tasks belong to the session.
+        await self._session_end("clear")
         self._agent.clear()  # A8: active skills too.
         self._drop_skills()
         self._next_session()
         self._rewind()
-        if self.context_root is None:
-            return ()
-        async with self._start_lock:
-            self._context_loaded = True
-            return tuple(await self._load_context())
+        if self.hooks is not None:
+            self.hooks.new_session(self.session)  # R3: once resets before the new session_start.
+        notices = []
+        if self.context_root is not None:
+            async with self._start_lock:
+                self._context_loaded = True
+                notices = await self._load_context()
+        await self._session_start("clear")
+        return tuple(notices)
 
     async def set_provider(self, provider: Provider, budget: ContextBudget | None = None,
                            info: tuple[str, str, str] | None = None):
@@ -413,6 +487,62 @@ class Conversation:
             notices.append("未恢复的 Skill：" + "、".join(lost) + "。")
         return notices
 
+    # Sub-agents (ch13) --------------------------------------------------------------------------
+
+    @property
+    def agents(self) -> AgentCatalog:
+        return self.subagents.catalog
+
+    @property
+    def tasks(self):
+        return self.subagents.tasks
+
+    def _offer_agents(self) -> list[str]:
+        """G1/G2/M2: the catalog section and the three tools, when tools are on."""
+        if self.registry is None or not self.agents_enabled:
+            return []
+        self._agent.agent_catalog = self.agents.catalog_section()
+        root = self.registry.permissions.root
+        for tool in (AgentTool(root, self.subagents), TaskOutput(root, self.subagents), TaskStop(root, self.subagents)):
+            if self.registry.get(tool.name) is None:
+                self.registry.register(tool)
+        problems = self.agents.problems
+        return [f"{len(problems)} 个 Agent 定义有问题，已跳过；输入 /agents 查看。"] if problems else []
+
+    def use_agents(self, catalog: AgentCatalog) -> tuple[str, ...]:
+        """F7: /agents reload; the next request sees the new catalog."""
+        self.subagents.catalog = catalog
+        return tuple(self._offer_agents())
+
+    def _tasks_ready(self) -> None:
+        """B6: a background result waits in notifications; an idle main agent starts a turn for it."""
+        if not self._busy and self.on_tasks is not None:
+            self.on_tasks()
+
+    def take_notifications(self) -> tuple[str, ...]:
+        texts, self._agent.notifications = tuple(self._agent.notifications), []
+        return texts
+
+    @property
+    def notifications(self) -> tuple[str, ...]:
+        return tuple(self._agent.notifications)
+
+    async def notify(self):
+        """B6: a turn whose first message is the waiting notifications, merged into one."""
+        texts = self.take_notifications()
+        if not texts:
+            return
+        async with aclosing(self.reply("\n\n".join(texts), synthetic=NOTIFICATION)) as stream:
+            async for event in stream:
+                yield event
+
+    async def cancel_tasks(self, wait: float | None = None) -> int:
+        """B8: cancel every running task; their notifications are never sent."""
+        from .agents.tasks import CANCEL_WAIT
+        count = await self.tasks.cancel_all(CANCEL_WAIT if wait is None else wait)
+        self._agent.notifications = []
+        return count
+
     # Resuming -------------------------------------------------------------------------------
 
     def _sessions_root(self) -> Path:
@@ -468,9 +598,13 @@ class Conversation:
         except OSError as exc:
             transcript.close()
             raise ProviderError(f"无法读取会话存档：{exc.strerror or exc}") from None
+        await self.tasks.reset()  # M4; their end records go to the session being left.
+        await self._session_end("resume")
         if self._transcript is not None:
             self._transcript.close()
         self.session, self._agent.session = session, session
+        if self.hooks is not None:
+            self.hooks.new_session(session)
         if self.registry is not None:
             self.registry.use_session(session)
             # Approvals belong to the run that granted them, never to a restored transcript.
@@ -491,6 +625,9 @@ class Conversation:
             notices.append(f"{restored.interrupted} 个工具调用在中断时没有结果，已标记为“会话中断”；模型会先检查状态。")
         if restored.unanswered:
             notices.append(f"最后 {len(restored.unanswered)} 条消息没有得到回复，已放回输入框，可以修改后重新发送。")
+        await self._session_start("resume")
+        notices.extend(self._raised)
+        self._raised = []
         yield Resumed(restored, sum(1 for m in restored.history if m.role != "tool"), tuple(notices))
         async with aclosing(self._agent.compact_restored()) as events:
             async for event in events:
@@ -505,6 +642,7 @@ class Conversation:
         root = self.context_root.resolve()
         files, problems = await asyncio.to_thread(load_instructions, root, self.instructions_home)
         sections = [instructions_section(files)]
+        self.project_instructions = sections[0]
         if self.memory is not None:
             sections.append(await asyncio.to_thread(self._memory_section))
         self._agent.instructions = "\n\n".join(part for part in sections if part)
@@ -541,6 +679,8 @@ class Conversation:
             if self.context_root is not None and not self._context_loaded:
                 self._context_loaded = True
                 notices = notices + await self._load_context()
+            if not self._session_started:
+                await self._session_start("new")
         if self.mcp_manager is not None:
             if wait_mcp and not self._mcp_background:
                 notices.extend(await self.mcp_manager.start(self.registry, problems_only=True))
@@ -550,8 +690,44 @@ class Conversation:
                 self.mcp_manager.begin(self.registry, on_mcp)
         return tuple(notices)
 
+    def worktree_manager(self):
+        """Ch14: the git repository of the project; WorktreeError outside one."""
+        if self._worktrees is None:
+            from .worktree import WorktreeManager
+            root = self.registry.permissions.root if self.registry is not None else (self.context_root or Path.cwd())
+            self._worktrees = WorktreeManager.discover(Path(root), links=self.worktree_links,
+                                                       stale_hours=self.worktree_stale_hours)
+        return self._worktrees
+
+    def start_worktree_cleanup(self, on_report) -> bool:
+        """W17: in the background; nothing outside a repository or when turned off."""
+        if self._worktree_cleanup is not None or self.worktree_stale_hours <= 0:
+            return False
+
+        async def run() -> None:
+            from .worktree import WorktreeError
+            try:
+                manager = await asyncio.to_thread(self.worktree_manager)
+            except WorktreeError:
+                return
+            await manager.keep_clean(on_report)
+
+        self._worktree_cleanup = asyncio.ensure_future(run())
+        return True
+
     async def close(self):
         try:
+            if self._worktree_cleanup is not None:
+                self._worktree_cleanup.cancel()
+                await asyncio.gather(self._worktree_cleanup, return_exceptions=True)
+            await self.tasks.cancel_all()
+            if self.hooks is not None:
+                try:
+                    # R7: session_end's synchronous hooks get 10 seconds, background ones 3 more.
+                    await asyncio.wait_for(self._session_end("exit"), 10)
+                except TimeoutError:
+                    pass
+                await self.hooks.drain(3)
             if self.extractor is not None:
                 await self.extractor.close()
             if self.mcp_manager is not None:
@@ -563,15 +739,51 @@ class Conversation:
             if self.memory_provider is not None and self.memory_provider is not self.provider:
                 await self.memory_provider.close()
 
-    async def reply(self, prompt: str, *, command: str | None = None, fork: ForkRequest | None = None):
+    async def reply(self, prompt: str, *, command: str | None = None, fork: ForkRequest | None = None,
+                    synthetic: str | None = None):
+        try:
+            async with aclosing(self._reply(prompt, command, fork, synthetic)) as stream:
+                async for event in stream:
+                    yield event
+        finally:
+            if self._agent.notifications:  # Arrived after the last iteration boundary (B6).
+                self._tasks_ready()
+
+    async def _reply(self, prompt: str, command: str | None, fork: ForkRequest | None, synthetic: str | None):
         await self.start()
-        run = self._fork(fork, command or f"/{fork.skill.name}") if fork else self._agent.run(prompt, command=command)
-        async with aclosing(run) as stream:
-            async for event in stream:
-                self._observe(event)
-                yield event
-                for notice in self._drain():
-                    yield notice
+        command = command or (f"/{fork.skill.name}" if fork else None)
+        if self.hooks is not None:
+            if self._busy:
+                raise ProviderError("已有请求正在运行，请等待或取消。")
+            self.hooks.begin_turn()
+            # P2: with every request of this turn; a fork's sub-agent never sees it (E3).
+            self._agent.turn_notes = await self._fire("turn_start", {"prompt": command or prompt})
+            for notice in self._drain():
+                yield notice
+        run = self._fork(fork, command) if fork else self._agent.run(prompt, command=command, synthetic=synthetic)
+        stopped = None
+        try:
+            async with aclosing(run) as stream:
+                async for event in stream:
+                    if isinstance(event, RunStopped):
+                        stopped = event
+                    self._observe(event)
+                    yield event
+                    for notice in self._drain():
+                        yield notice
+        except ProviderError as exc:
+            self._agent.turn_notes = ()
+            await self._turn_end("error", str(exc))
+            raise
+        except BaseException:  # Cancelled, or closed by the consumer.
+            self._agent.turn_notes = ()
+            self._turn_end_later("cancelled")
+            raise
+        self._agent.turn_notes = ()
+        if self.hooks is not None:
+            await self._turn_end(stopped.reason if stopped else "completed", stopped.notice if stopped else "")
+            for notice in self._drain():
+                yield notice
 
     # Fork skills (K1-K11) ------------------------------------------------------------------------
 
@@ -591,17 +803,23 @@ class Conversation:
             return history[starts[-3]:] if starts else []
         return []
 
-    def _fork_registry(self, skill: SkillDef) -> ToolRegistry | None:
-        """K3: the main tools and its own, or only those it lists; never load_skill."""
+    def _fork_registry(self, skill: SkillDef, task) -> ToolRegistry | None:
+        """K3: the main tools and its own, or only those it lists; never load_skill or another L1 tool (ch13).
+
+        S1: its own file tools (a copy of the main reads when it sees some history) and permission view.
+        """
         if self.registry is None:
             return None
-        root = self.registry.permissions.root
+        policy = self.subagents.policy(None, task)
+        root = policy.root
         own = [SkillTool(root, skill, spec) for spec in skill.tools]
-        if not skill.allowed_tools:
-            names = [name for name in self.registry.names() if name != LOAD_SKILL]
-            return self.registry.subset(names, own)
-        listed = set(skill.allowed_tools) - {LOAD_SKILL}
-        return self.registry.subset(listed, [tool for tool in own if tool.name in listed])
+        listed = set(skill.allowed_tools) - GLOBAL_BAN if skill.allowed_tools else None
+        state = self.registry.file_state()
+        state = state.copy() if state is not None and skill.fork_context != "none" else None
+        return self.registry.for_agent(
+            agent="fork", agent_type=task.agent_type, permissions=policy, state=state,
+            keep=lambda name: name not in GLOBAL_BAN and (listed is None or name in listed),
+            extra=[tool for tool in own if listed is None or tool.name in listed])
 
     def _fork_provider(self, skill: SkillDef):
         """K6: (provider, budget, owned); owned providers are closed after the run."""
@@ -630,32 +848,44 @@ class Conversation:
         if main.busy:
             raise ProviderError("已有请求正在运行，请等待或取消。")
         provider, budget, owned = self._fork_provider(skill)
-        child = AgentLoop(provider, "", self._fork_registry(skill), max_iterations=main.max_iterations,
+        tasks = self.subagents.tasks
+        task = tasks.new(origin="skill", agent="fork", agent_type=f"skill:{skill.name}", description=command,
+                         prompt=fork.prompt)
+        child = AgentLoop(provider, "", self._fork_registry(skill, task), max_iterations=main.max_iterations,
                           unknown_limit=main.unknown_limit)
         child.system, child.instructions, child.git = main.system, main.instructions, main.git  # K4: no catalog.
         child.budget, child.auto_compact, child.session = budget, main.auto_compact, self.session  # K11
         child.history = self._fork_history(skill.fork_context)
-        child.total_usage = main.total_usage  # K10: its requests count towards this conversation.
+        self.subagents.attach(task, child)  # K10/I4: usage to the task and this conversation; M5 transcript.
         main.busy = True
         stopped, final, ended = None, None, False
 
         def end(text: str) -> None:
             nonlocal ended
-            main.total_usage = child.total_usage
             self._fork_result(skill, command, text)
             ended = True
+            if task.status == "running" and not (stopped is not None and stopped.reason in {"completed", "max_tokens"}
+                                                 and final is not None):
+                task.status = "failed"
+            tasks.settle(task, text)
 
         try:
             try:
-                async with aclosing(child.run(fork.prompt)) as events:
+                prompt = await self.subagents.start_hooks(task, fork.prompt)
+                async with aclosing(child.run(prompt)) as events:
                     async for event in events:
                         if isinstance(event, RunStopped):
                             stopped = event  # K7: the one RunStopped comes after the exchange is added.
                             continue
                         if isinstance(event, Completed):
                             final = event.message.text
+                        if isinstance(event, UsageUpdate):
+                            event = replace(event, total=main.total_usage)  # The session total, as before.
+                        elif isinstance(event, ToolProgress) and event.phase == "running":
+                            task.tool_calls += 1
                         yield event
             except asyncio.CancelledError:
+                task.status = "cancelled"
                 end(f"[Skill {skill.name} 未完成：已取消]")
                 yield RunStopped("cancelled", f"已取消 Skill {skill.name}；主对话可以继续。",
                                  stopped.iterations if stopped else 0, stopped.results if stopped else ())
@@ -671,6 +901,7 @@ class Conversation:
                 yield stopped
         finally:
             if not ended:  # Closed from outside, e.g. the consumer was cancelled between events.
+                task.status = "cancelled"
                 end(f"[Skill {skill.name} 未完成：已取消]")
             main.busy = False
             if owned:

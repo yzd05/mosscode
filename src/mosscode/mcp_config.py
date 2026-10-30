@@ -75,7 +75,7 @@ def _read(path: Path) -> tuple[dict, bool]:
 PLACEHOLDER = r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}"
 
 
-def _substitute(value: str) -> str:
+def substitute_env(value: str) -> str:
     """${VAR} must be set; ${VAR:-default} falls back when VAR is unset or empty."""
     if "${" in re.sub(PLACEHOLDER, "", value):
         raise MCPConfigError("环境变量占位符需为 ${VAR} 或 ${VAR:-默认值} 格式。")
@@ -92,7 +92,7 @@ def _substitute(value: str) -> str:
 def _expand(values, label):
     if not isinstance(values, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in values.items()):
         raise MCPConfigError(f"{label} 必须是字符串键值对象。")
-    return {k: _substitute(v) for k, v in values.items()}
+    return {k: substitute_env(v) for k, v in values.items()}
 
 
 def _options(raw) -> dict:
@@ -174,11 +174,11 @@ def _read_mcp_json(path: Path) -> tuple[dict, list[str]]:
         try:
             # Claude Code expands variables in these fields too, not only env/headers.
             if isinstance(item.get("command"), str):
-                item["command"] = _substitute(item["command"])
+                item["command"] = substitute_env(item["command"])
             if isinstance(item.get("url"), str):
-                item["url"] = _substitute(item["url"])
+                item["url"] = substitute_env(item["url"])
             if isinstance(item.get("args"), list):
-                item["args"] = [_substitute(a) if isinstance(a, str) else a for a in item["args"]]
+                item["args"] = [substitute_env(a) if isinstance(a, str) else a for a in item["args"]]
         except MCPConfigError as exc:
             notices.append(f"MCP {name} 不可用：{exc}")
             continue

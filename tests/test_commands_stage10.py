@@ -39,7 +39,7 @@ class FakeUI:
     def __init__(self, provider_name="main", model="model-a"):
         self.provider_name, self.model = provider_name, model
         self.notes, self.calls = [], []
-        self.pick = None
+        self.pick = self.cancel = None
 
     async def note(self, text, style=None):
         self.notes.append(text)
@@ -53,9 +53,9 @@ class FakeUI:
     async def clear_screen(self):
         self.calls.append(("clear_screen",))
 
-    def choose(self, title, options, current, on_pick):
+    def choose(self, title, options, current, on_pick, on_cancel=None):
         self.calls.append(("choose", title, len(options), current))
-        self.pick = on_pick
+        self.pick, self.cancel = on_pick, on_cancel
 
     async def compact(self, instructions):
         self.calls.append(("compact", instructions))
@@ -116,11 +116,12 @@ def test_ac1_malformed_commands_are_rejected(command):
         CommandRegistry([command])
 
 
-def test_ac1_builtin_registry_has_fourteen_visible_commands():
-    # Chapter 11 adds /skills and turns /review into a built-in skill.
+def test_ac1_builtin_registry_has_eighteen_visible_commands():
+    # Chapter 11 adds /skills and turns /review into a built-in skill; chapter 12 adds /hooks, chapter 13 /agents and /tasks,
+    # chapter 14 /worktree.
     assert [c.name for c in BUILTIN.visible()] == [
         "help", "clear", "compact", "resume", "session", "memory", "model", "plan", "do", "permissions",
-        "status", "mcp", "skills", "exit"]
+        "status", "mcp", "skills", "hooks", "agents", "tasks", "worktree", "exit"]
     assert BUILTIN.get("/PERMISSION").name == "permissions" and BUILTIN.get("quit").name == "exit"
 
 
@@ -150,9 +151,9 @@ def test_ac3_completion(tmp_path):
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
     conv = Conversation(FakeProvider(), registry=tools(tmp_path), memory=store)
     ctx = context(conv, Settings((ProviderConfig("only", "anthropic-messages", "m"),), "only"))
-    assert len(BUILTIN.matches(ctx, "/")) == 14
+    assert len(BUILTIN.matches(ctx, "/")) == 18
     hidden = CommandRegistry([*BUILTIN.visible(), Command("debug", "x", "/debug", "local", hidden=True, handler=noop)])
-    assert len(hidden.matches(ctx, "/")) == 14 and hidden.get("/debug") is not None
+    assert len(hidden.matches(ctx, "/")) == 18 and hidden.get("/debug") is not None
     assert [tuple(h) for h in BUILTIN.matches(ctx, "/q")] == [("/exit", "退出 MossCode（别名 /quit）", "/exit")]
     assert [h.value for h in BUILTIN.matches(ctx, "/permissions ")] == [
         "/permissions default", "/permissions acceptEdits", "/permissions plan", "/permissions bypassPermissions"]
@@ -333,8 +334,8 @@ async def test_ac5_argument_check_running_commands_and_forced_messages(tmp_path)
         await send(app, pilot, "next")
         await asyncio.wait_for(provider.started.wait(), timeout=5)
         field = app.query_one("#prompt", PromptArea)
-        await send(app, pilot, "/status")
-        assert field.value == "/status" and conv.queued == ()
+        await send(app, pilot, "/compact")  # /status and /tasks run during a task (ch13); others wait.
+        assert field.value == "/compact" and conv.queued == ()
         field.clear()
         await send(app, pilot, "//x 不是命令")
         assert conv.queued == ("/x 不是命令",)

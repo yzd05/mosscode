@@ -7,23 +7,27 @@
 | 命令 | 别名 | 类型 | 行为 |
 | --- | --- | --- | --- |
 | `/help [命令]` | — | 本地 | 不带参数时列出所有命令和按键；带命令名时显示该命令的用法、描述、类型和别名，Skill 命令附上方式、来源和规程第一行 |
-| `/clear` | — | 本地 | 开始新会话：清空屏幕、终端滚动历史、模型上下文和 Token 统计；权限档位、会话授权和 MCP 连接保留 |
+| `/clear` | — | 本地 | 开始新会话：清空屏幕、终端滚动历史、模型上下文和 Token 统计；权限档位、会话授权和 MCP 连接保留。有后台任务在运行时先确认是否取消（见 [子 Agent](subagents.md#命令与界面)） |
 | `/compact [说明]` | — | 本地 | 压缩上下文，说明用于指定摘要侧重点（见 [上下文管理](context.md#何时压缩)） |
-| `/resume [ID]` | — | 本地 | 不带 ID 时打开会话列表，带 ID 时直接恢复（见 [会话存档与恢复](sessions.md)） |
+| `/resume [ID]` | — | 本地 | 不带 ID 时打开会话列表，带 ID 时直接恢复（见 [会话存档与恢复](sessions.md)）；有后台任务在运行时先确认 |
 | `/session` | — | 本地 | 显示当前会话的 ID、存档路径、标题、消息数和开始时间；`persist_sessions: false` 时说明未存档 |
 | `/memory [名称]` | — | 本地 | 列出项目指令和记忆笔记；带名称时显示笔记全文（见 [记忆笔记](memory.md)） |
 | `/model [名称]` | — | 本地 | 切换提供商，对话历史保留；配置了多个提供商时，不带名称会打开选择面板 |
 | `/plan [任务]` | — | 本地 | 进入计划模式；带任务时随后把任务发给模型（见 [计划模式](tools.md#计划模式)） |
 | `/do [任务]` | — | 本地 | 退出计划模式，回到进入前的档位（从 acceptEdits 进入就回到 acceptEdits）；带任务时随后把任务发给模型。不在计划模式时只提示“当前不在计划模式。”，不发送任务 |
 | `/permissions [档位]` | `/permission` | 本地 | 查看档位说明，或切换到 default、acceptEdits、plan、bypassPermissions（见 [工具权限](permissions.md)） |
-| `/status` | — | 本地 | 显示模型、权限档位、上下文估算、本会话用量、会话 ID、工作目录、项目指令、MCP、记忆和已激活 Skill 的状态 |
+| `/status` | — | 本地 | 显示模型、权限档位、上下文估算、本会话用量、会话 ID、工作目录、项目指令、MCP、记忆、已激活 Skill、Hook 的状态，以及 Agent 定义数和运行中的后台任务数 |
 | `/mcp [名称]` | — | 本地 | 列出 MCP Server 的状态；带名称时列出该 Server 的工具（见 [MCP](mcp.md)） |
 | `/skills [名称\|reload]` | `/skill` | 本地 | 列出 Skill；带名称时显示详情，`reload` 重新扫描（见 [Skill](skills.md#skills)） |
-| `/exit` | `/quit` | 本地 | 退出并清理资源 |
+| `/hooks [id\|reload]` | `/hook` | 本地 | 列出 Hook 和最近的执行记录；带 `id` 时显示详情，`reload` 重新加载并询问未确认的项目级文件（见 [Hook](hooks.md#hooks)） |
+| `/agents [名称\|reload]` | `/agent` | 本地 | 列出子 Agent 定义；带名称时显示详情（含本会话实际的权限档位和可用工具），`reload` 重新加载（见 [子 Agent](subagents.md#命令与界面)） |
+| `/tasks [id\|stop id]` | `/task` | 本地 | 列出本会话的子 Agent 任务；带 `id` 时显示详情，`stop id` 停止运行中的任务 |
+| `/worktree [list\|create 名称\|remove 名称 [--discard]\|clean]` | `/worktrees` | 本地 | 列出、创建、删除 MossCode 管理的 git 工作树，或清理过期的临时工作树（见 [Git 工作树](worktree.md#命令)） |
+| `/exit` | `/quit` | 本地 | 退出并清理资源；有后台任务在运行时先确认 |
 
 除内置命令外，每个 Skill 是一条 `/<名称> [参数]` 命令，例如内置 Skill `/commit`、`/review`、`/test`（见 [Skill](skills.md#内置-skill)）。补全菜单和 `/help` 中，Skill 命令的描述后面带 `[skill]`；`user-invocable: false` 的 Skill 不列出，但输入全名仍可执行。
 
-本地命令不请求模型，结果只显示在界面中，不进入模型上下文；`/compact` 例外，它用一次不带工具的请求生成摘要。任务运行期间不接受命令：输入命令会提示“运行中只能排队消息，命令请在完成后发送”，输入保留在框中。
+本地命令不请求模型，结果只显示在界面中，不进入模型上下文；`/compact` 例外，它用一次不带工具的请求生成摘要。任务运行期间只接受 `/tasks`、`/status` 和 `/worktree`、`/worktree list`（查看或停止子 Agent 任务、查看状态，不改变正在运行的任务所依赖的状态）；输入其他命令会提示“运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送”，输入保留在框中。
 
 ## 输入如何解析
 
@@ -55,7 +59,7 @@ Skill 命令和提示词命令（`kind` 为 `prompt`，目前没有内置的此�
 
 - 输入以 `/` 开头的单行文字时，菜单按前缀列出命令，每行是用法和描述。前缀匹配到别名时，菜单显示主命令，描述后注明“（别名 /quit）”，选中后补全为主命令。
 - Tab 补全高亮项；只有一项匹配时它默认高亮。按 Esc 收起菜单后，如果输入是某个命令唯一的前缀，Tab 仍然补全。
-- 有参数候选的命令，Tab 补全命令名后追加空格，菜单换成参数候选：`/permissions` 的档位、`/model` 的提供商名（多于一个时）、`/mcp` 的 Server 名（有连接时）、`/memory` 的笔记名、`/skills` 的 Skill 名和 `reload`。
+- 有参数候选的命令，Tab 补全命令名后追加空格，菜单换成参数候选：`/permissions` 的档位、`/model` 的提供商名（多于一个时）、`/mcp` 的 Server 名（有连接时）、`/memory` 的笔记名、`/skills` 的 Skill 名和 `reload`、`/hooks` 的 Hook `id` 和 `reload`、`/worktree` 的子命令和 `remove <工作树名>`。
 
 ## 无界面模式
 
@@ -79,6 +83,7 @@ Command("name", "一行描述", "/name [参数]", "local", aliases=("n",), argum
 - `argument` 为 `none`、`optional` 或 `required`，分派前校验。
 - `complete` 返回参数候选 `(值, 描述)` 的列表；返回空列表时 Tab 不追加空格。
 - `hidden=True` 的命令不出现在菜单和 `/help` 中，但输入全名仍可执行。
+- `while_running` 为 `True` 时任务运行期间也能执行；也可以是 `(argument) -> bool`，按参数决定，例如 `/worktree` 只允许 `list`。
 - 名称和别名必须匹配 `[a-z][a-z0-9_-]*`，并且（转小写后）互不重复。违反时导入模块就抛出 `CommandConflict`，程序无法启动。
 
 处理函数只通过 `ctx` 工作。读写状态（权限档位、会话、用量、MCP）用 `ctx.conversation`；改界面用 `ctx.ui`。`ctx.ui` 是 `CommandUI` 协议，由 `MossCodeApp` 实现：

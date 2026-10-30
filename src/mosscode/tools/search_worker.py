@@ -106,7 +106,7 @@ def files(root: Path, base: Path | None):
         kept = []
         for name in folders:
             path = current / name
-            if (name in SKIP_DIRS or path.is_symlink() or path.is_junction()
+            if (name in SKIP_DIRS or (name == "worktrees" and current.name == ".mosscode") or path.is_symlink() or path.is_junction()
                     or not path.resolve().is_relative_to(boundary) or ignore.ignored(path, True)):
                 continue
             kept.append(name)

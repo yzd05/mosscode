@@ -9,8 +9,12 @@ from pathlib import Path
 from rich.cells import cell_len
 from rich.text import Text
 
+from .agents import SOURCE_LABELS as AGENT_SOURCES
+from .agents.runtime import GLOBAL_BAN, WORKSPACE_TOOLS, effective_mode, stats
+from .agents.tasks import ORIGIN_LABELS, STATUS_LABELS
 from .appearance import KEY_HELP
 from .commands import Command, CommandContext, CommandRegistry, Parsed, argument_problem
+from .hooks.config import SOURCE_LABELS as HOOK_SOURCES
 from .memory import SCOPE_LABELS
 from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
@@ -105,7 +109,32 @@ async def _help(ctx: CommandContext, argument: str) -> None:
 
 # Session ----------------------------------------------------------------------------------
 
+TASK_OPTIONS = ("取消这些任务并继续", "返回")
+
+
+async def confirm_tasks(ui, conversation, proceed) -> None:
+    """Ch13 B8: running background tasks are cancelled only once the user says so; Esc means 返回."""
+    tasks = getattr(conversation, "tasks", None)
+    running = tasks.background() if tasks is not None else []
+    if not running:
+        await proceed()
+        return
+
+    async def pick(index: int) -> None:
+        if index == 0:
+            count = await conversation.cancel_tasks()
+            await ui.note(f"└ 已取消 {count} 个后台任务。")
+            await proceed()
+
+    labels = "、".join(f"{task.id}（{task.label}）" for task in running[:3]) + ("等" if len(running) > 3 else "")
+    ui.choose(f"有 {len(running)} 个后台任务在运行：{labels}", TASK_OPTIONS, 1, pick)
+
+
 async def _clear(ctx: CommandContext, argument: str) -> None:
+    await confirm_tasks(ctx.ui, ctx.conversation, lambda: _do_clear(ctx))
+
+
+async def _do_clear(ctx: CommandContext) -> None:
     notices = await ctx.conversation.clear()
     ctx.ui.refresh_status()
     await ctx.ui.clear_screen()
@@ -125,9 +154,13 @@ async def _resume(ctx: CommandContext, argument: str) -> None:
         except ProviderError as exc:
             await ctx.ui.note(str(exc))
         else:
-            ctx.ui.resume(argument)
+            await confirm_tasks(ctx.ui, ctx.conversation, lambda: _resume_now(ctx, argument))
         return
     await open_sessions(ctx)
+
+
+async def _resume_now(ctx: CommandContext, session_id: str) -> None:
+    ctx.ui.resume(session_id)
 
 
 async def open_sessions(ctx: CommandContext) -> None:
@@ -148,7 +181,7 @@ async def open_sessions(ctx: CommandContext) -> None:
                          no_wrap=True, overflow="ellipsis"))
 
     async def pick(index: int) -> None:
-        ctx.ui.resume(sessions[index].id)
+        await confirm_tasks(ctx.ui, conversation, lambda: _resume_now(ctx, sessions[index].id))
 
     ctx.ui.choose("恢复会话 · 本项目最近的会话", rows,
                   next((i for i, item in enumerate(sessions) if item.id != current), 0), pick)
@@ -381,8 +414,12 @@ def status_report(ctx: CommandContext) -> str:
         ("MCP", _mcp_line(conversation)),
         ("记忆", memory),
     ]
+    if conversation.hooks is not None:
+        rows.append(("Hook", hooks_line(conversation.hooks)))
     if conversation.active_skills:
         rows.append(("已激活 Skill", "、".join(conversation.active_skills)))
+    if registry is not None and getattr(conversation, "agents_enabled", False):
+        rows.append(("子 Agent", agents_line(conversation)))
     width = max(12, *(cell_len(label) + 2 for label, _ in rows))
     return "状态\n" + "\n".join(f"  {label}{' ' * (width - cell_len(label))}{value}" for label, value in rows)
 
@@ -497,8 +534,460 @@ def _skill_names(ctx: CommandContext):
             *((skill.name, skill.description) for skill in ctx.conversation.skills.skills.values())]
 
 
+# Hooks (ch12) ------------------------------------------------------------------------------
+
+TRUST_OPTIONS = ("信任并启用", "本次不启用")
+OUTCOME_LABELS = {"ok": "成功", "failed": "失败", "rejected": "拒绝", "timeout": "超时", "cancelled": "已取消",
+                  "skipped": "跳过"}
+
+
+def hooks_line(engine) -> str:
+    """O6."""
+    if not engine.enabled:
+        return "已关闭（--no-hooks）"
+    waiting = sum(len(file.hooks) for file in engine.untrusted)
+    return f"已启用 {len(engine.hooks)} 条" + (f"（项目级未确认 {waiting} 条）" if waiting else "") + "（/hooks 查看）"
+
+
+ACTION_LABELS = {"command": "命令", "http": "请求", "prompt": "注入", "agent": "子 Agent"}
+
+
+def _shown(path: Path, root: Path) -> str:
+    """Hook files as the user knows them: relative inside the project, ~ under home."""
+    for base, prefix in ((root, ""), (Path.home(), "~")):
+        try:
+            relative = path.relative_to(base)
+        except ValueError:
+            continue
+        return str(Path(prefix, relative)) if prefix else str(relative)
+    return str(path)
+
+
+def _hook_lines(hook, head: str = "") -> list[str]:
+    """One line for id and event, then the condition and the action indented below, so long ones wrap legibly."""
+    lines = [f"  {hook.id} · {hook.event}{head}"]
+    if hook.condition is not None:
+        lines.append(f"      条件  {hook.condition.text}")
+    action = hook.action
+    if action is None:
+        lines.append(f"      拒绝  {hook.reject.replace(chr(10), ' ')}")
+    elif action.type in {"prompt", "agent"}:
+        text = action.message if action.type == "prompt" else action.prompt
+        lines.append(f"      {ACTION_LABELS[action.type]}  {text.replace(chr(10), ' ')[:60]}")
+    else:
+        lines.append(f"      {ACTION_LABELS[action.type]}  {action.summary()}")
+    return lines
+
+
+def _hook_row(engine, hook) -> list[str]:
+    flags = "".join(f" [{flag}]" for flag in hook.flags())
+    return _hook_lines(hook, f"{flags} · {engine.status(hook)}")
+
+
+def _run_row(run) -> str:
+    detail = f"  {run.detail.splitlines()[0][:80]}" if run.detail.strip() else ""
+    return (f"  {run.time[11:19]}  {run.hook}  {run.event}  {OUTCOME_LABELS.get(run.outcome, run.outcome)}"
+            f"  {run.duration_ms} ms{detail}")
+
+
+def _masked(raw: dict) -> dict:
+    """U2: header values are secrets more often than not."""
+    action = raw.get("action")
+    if isinstance(action, dict) and isinstance(action.get("headers"), dict):
+        raw = {**raw, "action": {**action, "headers": {key: "***" for key in action["headers"]}}}
+    return raw
+
+
+def hooks_report(engine, name: str = "") -> str:
+    """U1, U2."""
+    import yaml
+    if engine is None or not engine.enabled:
+        return "Hook 已关闭（本次运行使用了 --no-hooks）。"
+    if name:
+        hook = engine.find(name)
+        if hook is None:
+            known = "、".join(h.id for f in engine.config.files for h in f.hooks) or "无"
+            return f"未找到 Hook {name}。已加载：{known}"
+        lines = [f"Hook {hook.id} · {HOOK_SOURCES[hook.source]} · {engine.status(hook)}",
+                 f"  文件  {_shown(hook.path, engine.root)}",
+                 "  配置"]
+        dumped = yaml.safe_dump(_masked(hook.raw), allow_unicode=True, sort_keys=False).rstrip()
+        lines.extend("    " + line for line in dumped.splitlines())
+        runs = [run for run in engine.recent if run.hook == hook.id]
+        lines.append("  本次运行的执行记录" + ("" if runs else "：无"))
+        lines.extend("  " + _run_row(run) for run in runs[-10:])
+        lines.append(f"  日志  {engine.log_path or '（本次运行没有会话目录）'}")
+        return "\n".join(lines)
+    files = [file for file in engine.config.files if file.hooks]
+    if not files and not engine.problems:
+        return ("没有 Hook。可以在 ~/.mosscode/hooks.yaml 或项目 .mosscode/hooks.yaml、.mosscode/hooks.local.yaml 中添加，"
+                "格式见 docs/reference/hooks.md。")
+    lines = [f"Hook（已启用 {len(engine.hooks)} 条）"]
+    for file in files:
+        mark = "" if file.trusted else "（未确认，未启用）"
+        lines.append(f"{HOOK_SOURCES[file.source]}  {_shown(file.path, engine.root)}{mark}")
+        for hook in file.hooks:
+            lines.extend(_hook_row(engine, hook))
+    lines.extend("! " + problem for problem in engine.problems)
+    for file in engine.untrusted:
+        lines.append(f"! 项目 Hook 文件 {_shown(file.path, engine.root)} 未确认；/hooks reload 后可以确认。")
+    if engine.recent:
+        lines.append("最近执行")
+        lines.extend(_run_row(run) for run in list(engine.recent)[-10:])
+    lines.append("/hooks <id> 查看详情；/hooks reload 重新加载。")
+    return "\n".join(lines)
+
+
+def trust_text(file, root: Path) -> str:
+    lines = [f"项目 Hook 文件 {_shown(file.path, root)} 尚未确认。",
+             "Hook 以 MossCode 的权限自动运行，不经过工具审批；请先确认内容："]
+    for hook in file.hooks:
+        lines.extend(_hook_lines(hook))
+    return "\n".join(lines)
+
+
+async def offer_trust(ui, engine, on_done=None) -> None:
+    """S3: one picker per untrusted project file; Esc means 本次不启用. Returns at once (callbacks chain)."""
+    pending = list(engine.pending_trust()) if engine is not None and engine.enabled else []
+
+    async def next_file() -> None:
+        if not pending:
+            if on_done is not None:
+                await on_done()
+            return
+        file = pending.pop(0)
+        shown = _shown(file.path, engine.root)
+        await ui.note(trust_text(file, engine.root))
+
+        async def pick(index: int) -> None:
+            if index == 0:
+                try:
+                    engine.trust(file)
+                    await ui.note(f"└ 已信任并启用 {shown}。")
+                except OSError as exc:
+                    await ui.note(f"└ 无法写入信任记录（{exc.strerror or exc}），未启用 {shown}。")
+            else:
+                engine.decline(file)
+                await ui.note(f"└ 本次不启用 {shown}；/hooks reload 时会再次询问。")
+            ui.refresh_status()
+            await next_file()
+
+        async def cancel() -> None:
+            await pick(1)
+
+        ui.choose(f"信任项目 Hook · {file.path.name}", TRUST_OPTIONS, 0, pick, on_cancel=cancel)
+
+    await next_file()
+
+
+async def _hooks(ctx: CommandContext, argument: str) -> None:
+    engine = ctx.conversation.hooks
+    if argument != "reload" or engine is None or not engine.enabled:
+        await ctx.ui.note(hooks_report(engine, argument))
+        return
+    added, removed = await asyncio.to_thread(engine.reload)
+    lines = [f"└ 已重新加载 Hook：已启用 {len(engine.hooks)} 条"
+             + (f"，新增 {'、'.join(added)}" if added else "") + (f"，移除 {'、'.join(removed)}" if removed else "") + "。"]
+    lines.extend("  ! " + problem for problem in engine.problems)
+    await ctx.ui.note("\n".join(lines))
+    ctx.ui.refresh_status()
+    await offer_trust(ctx.ui, engine)
+
+
+def _hook_names(ctx: CommandContext):
+    engine = ctx.conversation.hooks
+    hooks = [hook for file in engine.config.files for hook in file.hooks] if engine is not None else []
+    return [("reload", "重新加载 Hook 文件"), *((hook.id, f"{hook.event} · {hook.summary()}") for hook in hooks)]
+
+
+# Sub-agents (ch13) ---------------------------------------------------------------------------
+
+def agents_line(conversation) -> str:
+    """U5."""
+    catalog, tasks = conversation.agents, conversation.tasks
+    running = tasks.background()
+    line = f"{len(catalog.agents)} 个定义" + (f"（{len(catalog.problems)} 个有问题）" if catalog.problems else "")
+    line += f"，后台任务 {len(running)} 个运行中" if running else "，没有运行中的后台任务"
+    return line + "（/agents、/tasks 查看）"
+
+
+def _model_missing(conversation, agent) -> bool:
+    return bool(agent.model) and not conversation._is_current(agent.model)         and conversation._fork_provider_config(agent.model) is None
+
+
+def _agent_model(conversation, agent) -> str:
+    """F6: a missing provider is shown here, and the call fails; it never falls back to the current model."""
+    if not agent.model:
+        return "继承当前模型"
+    return f"{agent.model}（没有该提供商，调用时报错）" if _model_missing(conversation, agent) else agent.model
+
+
+def agents_report(conversation, name: str = "") -> str:
+    """U4."""
+    if conversation.registry is None or not getattr(conversation, "agents_enabled", False):
+        return "当前会话未启用工具，子 Agent 不可用。"
+    catalog = conversation.agents
+    if name:
+        agent = catalog.get(name)
+        if agent is None:
+            return f"未找到 Agent 定义 {name}。已加载：" + ("、".join(catalog.agents) or "无")
+        names = conversation.registry.names()
+        available = [tool for tool in names if tool not in GLOBAL_BAN and agent.allows(tool)]
+        isolated = agent.isolation == "worktree"
+        lost = [tool for tool in available if tool not in WORKSPACE_TOOLS] if isolated else []
+        available = [tool for tool in available if tool not in lost]
+        rows = [
+            ("路径", str(agent.path)),
+            ("来源", AGENT_SOURCES[agent.source]),
+            ("覆盖", "、".join(str(path) for path in agent.overrides) or "无"),
+            ("描述", agent.description),
+            ("模型", _agent_model(conversation, agent)),
+            ("权限模式", f"{agent.permission_mode or '继承会话'}；本会话实际为 "
+                         f"{effective_mode(agent, conversation.registry.permissions.mode)}"),
+            ("最大轮数", str(agent.max_turns) if agent.max_turns else "与主对话相同"),
+            ("默认后台", "是" if agent.background else "否"),
+            ("隔离", "worktree（在独立的 git 工作树中运行）" if isolated else "无"),
+            ("工具白名单", "、".join(agent.tools) or "未限制"),
+            ("禁用工具", "、".join(agent.disallowed_tools) or "无"),
+            ("可用工具", "、".join(available) or "无"),
+            *([("隔离时不可用", "、".join(lost))] if lost else []),
+            ("未支持字段", "、".join(agent.unsupported) or "无"),
+            ("不存在的工具", "、".join(agent.unknown_tools(names)) or "无"),
+            ("提示词首行", _first_line(agent.prompt)),
+        ]
+        return "\n".join([f"Agent {agent.name}",
+                          *(f"  {label}{' ' * (14 - cell_len(label))}{value}" for label, value in rows)])
+    lines = [f"Agent 定义（{len(catalog.agents)}）"]
+    width = max((cell_len(item) for item in catalog.agents), default=0)
+    for agent in catalog.agents.values():
+        marks = ((f"  [覆盖 {len(agent.overrides)} 个]" if agent.overrides else "")
+                 + (f"  [模型 {agent.model} 不存在]" if _model_missing(conversation, agent) else ""))
+        lines.append(f"{agent.name}{' ' * (width - cell_len(agent.name))}  {AGENT_SOURCES[agent.source]}  "
+                     f"{agent.description}{marks}")
+    lines.extend("! " + problem for problem in catalog.problems)
+    lines.append("模型用 agent 工具调用；/agents 名称 查看详情；/agents reload 重新加载。")
+    return "\n".join(lines)
+
+
+async def _agents(ctx: CommandContext, argument: str) -> None:
+    conversation = ctx.conversation
+    if argument != "reload" or conversation.registry is None or not getattr(conversation, "agents_enabled", False):
+        await ctx.ui.note(agents_report(conversation, argument))
+        return
+    old = conversation.agents
+    catalog = await asyncio.to_thread(old.reload)
+    conversation.use_agents(catalog)
+    added = [name for name in catalog.agents if name not in old.agents]
+    removed = [name for name in old.agents if name not in catalog.agents]
+    changed = [name for name, agent in catalog.agents.items() if name in old.agents and agent != old.agents[name]]
+    lines = [f"└ 已重新加载 Agent 定义：共 {len(catalog.agents)} 个"
+             + (f"，新增 {'、'.join(added)}" if added else "") + (f"，移除 {'、'.join(removed)}" if removed else "")
+             + (f"，修改 {'、'.join(changed)}" if changed else "") + "；下一次请求起生效。"]
+    lines.extend("  ! " + problem for problem in catalog.problems)
+    await ctx.ui.note("\n".join(lines))
+    ctx.ui.refresh_status()
+
+
+def _agent_names(ctx: CommandContext):
+    if not getattr(ctx.conversation, "agents_enabled", False):
+        return []
+    return [("reload", "重新加载 Agent 定义"),
+            *((agent.name, agent.description) for agent in ctx.conversation.agents.agents.values())]
+
+
+def _task_usage(task) -> str:
+    usage = task.usage
+    return (f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）· 输出 {usage.output_tokens:,}"
+            f" · 请求 {usage.requests} 次")
+
+
+def _preview(text: str, lines: int = 12, size: int = 1500) -> list[str]:
+    shown = text[:size].splitlines()[:lines]
+    more = len(text) > size or len(text.splitlines()) > lines
+    return [*shown, *(["…（完整内容见对话记录）"] if more else [])]
+
+
+def tasks_report(conversation, task_id: str = "") -> str:
+    """M3."""
+    tasks = conversation.tasks
+    if task_id:
+        task = tasks.get(task_id)
+        if task is None:
+            return f"没有任务 {task_id}。输入 /tasks 查看本会话的任务。"
+        rows = [
+            ("来源", ORIGIN_LABELS[task.origin]),
+            ("类型", task.agent_type),
+            ("标签", task.description),
+            ("状态", STATUS_LABELS[task.status] + ("（后台）" if task.background else "（前台）")),
+            ("统计", stats(task)),
+            ("用量", _task_usage(task)),
+            ("最近工具", task.last_tool or "无"),
+            ("对话记录", str(task.transcript) if task.transcript is not None else "未保存"),
+        ]
+        worktree = task.worktree
+        if worktree:  # Ch14 M6.
+            rows.append(("工作树", f"{worktree['relative']}（分支 {worktree['branch']}）· {worktree['outcome']}"))
+        lines = [f"任务 {task.id}", *(f"  {label}{' ' * (10 - cell_len(label))}{value}" for label, value in rows)]
+        lines.append("  任务内容")
+        lines.extend("    " + line for line in _preview(task.prompt, 6, 600))
+        if task.result:
+            lines.append("  结果")
+            lines.extend("    " + line for line in _preview(task.result))
+        if task.status == "running":
+            lines.append(f"/tasks stop {task.id} 停止。")
+        return "\n".join(lines)
+    if not tasks.tasks:
+        return "本会话还没有子 Agent 任务。"
+    lines = [f"任务（{len(tasks.tasks)}）"]
+    for task in tasks.tasks.values():
+        place = "后台" if task.background else "前台"
+        lines.append(f"  {task.id:<4} {STATUS_LABELS[task.status]}  {place}  {task.label}  "
+                     f"{task.elapsed:.0f} 秒  Token {task.tokens:,}")
+    lines.append("/tasks <id> 查看详情；/tasks stop <id> 停止。")
+    return "\n".join(lines)
+
+
+async def _tasks(ctx: CommandContext, argument: str) -> None:
+    action, _, rest = argument.partition(" ")
+    if action != "stop":
+        await ctx.ui.note(tasks_report(ctx.conversation, argument))
+        return
+    task_id = rest.strip()
+    if not task_id:
+        await ctx.ui.note("用法：/tasks stop <id>")
+        return
+    tasks = ctx.conversation.tasks
+    task = tasks.get(task_id)
+    if task is None:
+        await ctx.ui.note(f"没有任务 {task_id}。")
+    elif await tasks.stop(task_id):
+        await ctx.ui.note(f"└ 已停止任务 {task_id}（{task.label}）；不会再收到它的通知。")
+    else:
+        await ctx.ui.note(f"任务 {task_id} 已结束（{STATUS_LABELS[task.status]}），无需停止。")
+    ctx.ui.refresh_status()
+
+
+def _task_names(ctx: CommandContext):
+    tasks = getattr(ctx.conversation, "tasks", None)
+    if tasks is None:
+        return []
+    return [*((task.id, f"{STATUS_LABELS[task.status]} · {task.label}") for task in tasks.tasks.values()),
+            *((f"stop {task.id}", f"停止 · {task.label}") for task in tasks.running())]
+
+
+# Worktrees (ch14) ---------------------------------------------------------------------------
+
+WORKTREE_USAGE = ("用法：/worktree [list] · /worktree create <名称> · /worktree remove <名称> [--discard] · "
+                  "/worktree clean")
+
+
+def worktree_manager(conversation):
+    """(manager, problem)."""
+    from .worktree import WorktreeError
+    getter = getattr(conversation, "worktree_manager", None)
+    if getter is None:
+        return None, "当前会话不支持工作树。"
+    try:
+        return getter(), ""
+    except WorktreeError as exc:
+        return None, f"工作树不可用：{exc}"
+
+
+def _when(stamp: str) -> str:
+    try:
+        return datetime.fromisoformat(stamp).astimezone().strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return stamp or "未知"
+
+
+async def worktree_report(manager) -> str:
+    """M1."""
+    entries = await manager.entries()
+    if not entries:
+        return "没有 MossCode 管理的工作树。/worktree create <名称> 创建一个；子 Agent 隔离运行时会自动创建。"
+    lines = [f"工作树（{len(entries)}）"]
+    for entry in entries:
+        meta = entry.meta
+        if meta is None:
+            lines.append(f"  {entry.name}  {entry.status}")
+            continue
+        lines.append(f"  {meta.name}  {'手动' if meta.manual else '临时'}  {entry.status}")
+        lines.append(f"    分支 {meta.branch}，基于 {meta.base[:7]}，创建于 {_when(meta.created)}；"
+                     f"{manager.display(meta.path)}")
+    lines.append("/worktree remove <名称> 删除；/worktree clean 清理过期的临时工作树。")
+    return "\n".join(lines)
+
+
+def clean_text(report, *, automatic: bool = False) -> str:
+    """M4 and W17."""
+    if automatic:
+        return f"└ 已自动清理 {len(report.removed)} 个过期的临时工作树：{'、'.join(report.removed)}"
+    lines = [f"└ 已删除 {len(report.removed)} 个，跳过 {len(report.skipped)} 个"
+             + (f"：{'、'.join(report.removed)}" if report.removed else "。")]
+    lines.extend(f"  {name}：{reason}" for name, reason in report.skipped)
+    return "\n".join(lines)
+
+
+async def _worktree(ctx: CommandContext, argument: str) -> None:
+    from .worktree import WorktreeError
+    action, _, rest = argument.strip().partition(" ")
+    rest = rest.strip()
+    manager, problem = worktree_manager(ctx.conversation)
+    if manager is None:
+        await ctx.ui.note(problem)
+        return
+    try:
+        if action in ("", "list") and not rest:
+            await ctx.ui.note(await worktree_report(manager))
+        elif action == "create" and rest and " " not in rest:
+            created = await manager.create(rest)
+            meta = created.meta
+            root = manager.root_in(meta)
+            head = f"工作树 {meta.name} 已存在" if created.resumed else f"已创建工作树 {meta.name}"
+            lines = [f"└ {head}：{manager.display(meta.path)}",
+                     f"  分支 {meta.branch}，基于 {meta.base[:7]}",
+                     *(f"  ! {warning}" for warning in created.warnings),
+                     *(["  ! 主目录有未提交的改动，它们不在这个工作树中"] if created.dirty else []),
+                     f"  在另一个终端中进入：cd \"{root}\""]
+            await ctx.ui.note("\n".join(lines))
+        elif action == "remove" and rest:
+            words = rest.split()
+            discard = "--discard" in words
+            names = [word for word in words if word != "--discard"]
+            if len(names) != 1:
+                await ctx.ui.note(WORKTREE_USAGE)
+                return
+            changes = await manager.remove(names[0], discard=discard)
+            dropped = f"（已丢弃：{changes.describe()}）" if changes.any else ""
+            await ctx.ui.note(f"└ 已删除工作树 {names[0]} 和它的分支{dropped}。")
+        elif action == "clean" and not rest:
+            await ctx.ui.note(clean_text(await manager.clean()))
+        else:
+            await ctx.ui.note(WORKTREE_USAGE)
+    except WorktreeError as exc:
+        await ctx.ui.note(f"! {exc}")
+
+
+def _worktree_names(ctx: CommandContext):
+    choices = [("list", "列出工作树"), ("create", "创建或恢复工作树"), ("remove", "删除工作树"),
+               ("clean", "清理过期的临时工作树")]
+    manager, _ = worktree_manager(ctx.conversation) if getattr(ctx.conversation, "_worktrees", None) else (None, "")
+    if manager is not None:
+        choices.extend((f"remove {meta.name}", "删除 · " + ("手动" if meta.manual else "临时"))
+                       for _, meta in manager.metas())
+    return choices
+
+
+def _worktree_reads(argument: str) -> bool:
+    """M5: listing is safe during a run."""
+    return argument.strip() in ("", "list")
+
+
 async def _exit(ctx: CommandContext, argument: str) -> None:
-    ctx.ui.exit()
+    async def leave() -> None:
+        ctx.ui.exit()
+
+    await confirm_tasks(ctx.ui, ctx.conversation, leave)
 
 
 BUILTIN = CommandRegistry((
@@ -520,10 +1009,21 @@ BUILTIN = CommandRegistry((
             argument_hint="[任务]", handler=_do),
     Command("permissions", "查看或切换工具权限档位", "/permissions [档位]", "local", aliases=("permission",),
             argument="optional", argument_hint="[档位]", handler=_permissions, complete=lambda ctx: MODE_CHOICES),
-    Command("status", "查看模型、权限、上下文、用量和连接状态", "/status", "local", handler=_status),
+    Command("status", "查看模型、权限、上下文、用量和连接状态", "/status", "local", handler=_status,
+            while_running=True),
     Command("mcp", "查看 MCP Server 的连接状态与工具", "/mcp [名称]", "local", argument="optional",
             argument_hint="[名称]", handler=_mcp, complete=_server_names),
     Command("skills", "查看、重新扫描 Skill", "/skills [名称|reload]", "local", aliases=("skill",),
             argument="optional", argument_hint="[名称|reload]", handler=_skills, complete=_skill_names),
+    Command("hooks", "查看、重新加载 Hook", "/hooks [id|reload]", "local", aliases=("hook",),
+            argument="optional", argument_hint="[id|reload]", handler=_hooks, complete=_hook_names),
+    Command("agents", "查看、重新加载子 Agent 定义", "/agents [名称|reload]", "local", aliases=("agent",),
+            argument="optional", argument_hint="[名称|reload]", handler=_agents, complete=_agent_names),
+    Command("tasks", "查看、停止本会话的子 Agent 任务", "/tasks [id|stop id]", "local", aliases=("task",),
+            argument="optional", argument_hint="[id|stop id]", handler=_tasks, complete=_task_names,
+            while_running=True),
+    Command("worktree", "查看、创建、删除 git 工作树", "/worktree [子命令]", "local",
+            aliases=("worktrees",), argument="optional", argument_hint="[子命令]",
+            handler=_worktree, complete=_worktree_names, while_running=_worktree_reads),
     Command("exit", "退出 MossCode", "/exit", "local", aliases=("quit",), handler=_exit),
 ))

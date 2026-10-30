@@ -83,6 +83,10 @@ class Settings:
     memory: bool = True
     auto_memory: bool = True
     memory_provider: str | None = None  # Background extraction; None uses the current provider.
+    agent_auto_background: float = 120.0  # Ch13 B3: seconds before a foreground sub-agent moves on; 0 never.
+    agent_max_background: int = 4  # Ch13 G7: running background tasks at most.
+    worktree_links: tuple[str, ...] = ()  # Ch14 W9: paths relative to the repository linked into each worktree.
+    worktree_stale_hours: float = 24.0  # Ch14 W16: unused sub-agent worktrees older than this go; 0 never.
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -96,6 +100,26 @@ def _positive_int(value: Any, label: str) -> int:
     if type(value) is not int or value <= 0:
         raise ConfigError(f"{label} 必须是正整数。")
     return value
+
+
+def _links(raw: Any) -> tuple[str, ...]:
+    """C1: relative paths inside the repository."""
+    problem = "worktree_links 需为相对仓库根的路径列表（不能是绝对路径，不能含 ..）。"
+    if not isinstance(raw, list):
+        raise ConfigError(problem)
+    links = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(problem)
+        text = item.strip().replace("\\", "/").strip("/")
+        parts = text.split("/")
+        if (not text or Path(item.strip()).is_absolute() or item.strip().startswith(("/", "\\")) or ":" in text
+                or ".." in parts or "." in parts or parts[0] == ".git"
+                or parts[:2] == [".mosscode", "worktrees"]):
+            raise ConfigError(problem)
+        if text not in links:
+            links.append(text)
+    return tuple(links)
 
 
 def _provider(raw: Any) -> ProviderConfig:
@@ -201,7 +225,8 @@ def load_settings(path: str | Path) -> Settings:
     if not isinstance(raw, dict) or not isinstance(raw.get("providers"), list) or not raw["providers"]:
         raise ConfigError("配置需包含非空 providers 列表。")
     if set(raw) - {"providers", "default_provider", "system_prompt", "max_iterations", "shell", "auto_compact",
-                   "persist_sessions", "memory", "auto_memory", "memory_provider"}:
+                   "persist_sessions", "memory", "auto_memory", "memory_provider", "agent_auto_background",
+                   "agent_max_background", "worktree_links", "worktree_stale_hours"}:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
     if len({p.name for p in providers}) != len(providers):
@@ -224,7 +249,18 @@ def load_settings(path: str | Path) -> Settings:
     memory_provider = raw.get("memory_provider")
     if memory_provider is not None and memory_provider not in {p.name for p in providers}:
         raise ConfigError("memory_provider 必须是已配置的 Provider 名称。")
+    auto_background = raw.get("agent_auto_background", Settings.agent_auto_background)
+    if type(auto_background) not in {int, float} or not 0 <= auto_background <= 3600:
+        raise ConfigError("agent_auto_background 需为 0–3600 之间的秒数（0 表示不自动转入后台）。")
+    max_background = _positive_int(raw.get("agent_max_background", Settings.agent_max_background),
+                                   "agent_max_background")
+    links = _links(raw.get("worktree_links", []))
+    stale = raw.get("worktree_stale_hours", Settings.worktree_stale_hours)
+    if type(stale) not in {int, float} or not 0 <= stale <= 8760:
+        raise ConfigError("worktree_stale_hours 需为 0–8760 之间的小时数（0 表示不自动清理）。")
     settings = Settings(providers, default, stable_prompt(system), iterations, Path(path), shell.strip(),
-                        memory_provider=memory_provider, **switches)
+                        memory_provider=memory_provider, agent_auto_background=float(auto_background),
+                        agent_max_background=max_background, worktree_links=links,
+                        worktree_stale_hours=float(stale), **switches)
     settings.select()
     return settings

@@ -13,12 +13,12 @@ from .compaction import NOTHING, CompactionError, compact_history, cut_point
 from .context import ContextBudget, ContextMeter
 from .messages import (Completed, CompactFailed, CompactFinished, CompactStarted, Message, ContentBlock, ProviderError,
                        StreamEvent, ResponseBoundary, ToolDefinition, ToolProgress, ToolResult, IterationProgress,
-                       UsageTotals, UsageUpdate, RunStopped, UserInput)
+                       NOTIFICATION, TasksNotified, Usage, UsageTotals, UsageUpdate, RunStopped, UserInput)
 from .tools import shell_label
 from .tools.base import ToolRegistry
 from .tools.execution import execute_batch
-from .prompts import (PromptRequest, Supplement, active_skills, build_system_prompt, environment, mode_reminder,
-                      stable_prompt)
+from .prompts import (PromptRequest, Supplement, active_skills, build_system_prompt, environment, hook_notification,
+                      mode_reminder, stable_prompt)
 from .skills import ActiveSkills
 from .session import compact_record, message_record
 
@@ -44,6 +44,18 @@ class ResponseCollector:
 
 
 DEFAULT_MAX_ITERATIONS = 200
+
+
+def add_usage(total: UsageTotals, usage: Usage) -> UsageTotals:
+    return UsageTotals(
+        input_tokens=total.input_tokens + (usage.input_tokens or 0),
+        output_tokens=total.output_tokens + (usage.output_tokens or 0),
+        missing_input=total.missing_input + (usage.input_tokens is None),
+        missing_output=total.missing_output + (usage.output_tokens is None), requests=total.requests + 1,
+        cached_input_tokens=total.cached_input_tokens + (usage.cached_input_tokens or 0),
+        cache_write_tokens=total.cache_write_tokens + (usage.cache_write_tokens or 0),
+        missing_cached=total.missing_cached + (usage.cached_input_tokens is None),
+        missing_cache_write=total.missing_cache_write + (usage.cache_write_tokens is None))
 BREAKER = 3  # Consecutive automatic compaction failures before automatic compaction pauses.
 
 
@@ -59,6 +71,7 @@ class AgentLoop:
         self.instructions = ""
         self.git: dict | None = None
         self.skill_catalog = ""  # The model-visible list of skills (ch11 A1), after the instructions.
+        self.agent_catalog = ""  # Ch13 G2: the sub-agent types, after the skills.
         self.active_skills = ActiveSkills()  # Pinned SOPs, sent in the cached prefix (A6).
         self._announced = "normal"
         self.history: list[Message] = []
@@ -66,6 +79,9 @@ class AgentLoop:
         self.total_usage = UsageTotals()
         # Steering: text queued while running, merged before the next model request.
         self.pending: list[str] = []
+        # Ch13 B6: background task notifications, merged the same way as their own message.
+        self.notifications: list[str] = []
+        self.on_usage = None  # Ch13 I4: a sub-agent reports each request's usage to its task and the session.
         # Context management: thresholds of the current provider, set by the application.
         self.budget = ContextBudget.for_provider(None, 0)
         self.session = None
@@ -79,6 +95,10 @@ class AgentLoop:
         # Set by the memory extractor (9c): messages a compaction is about to replace with a summary.
         self.on_compact = None
         self._gap: Supplement | None = None  # One-time reminder after resuming an old session.
+        # Ch12: the main conversation's HookEngine (a fork sub-agent has none, E3).
+        self.hooks = None
+        self.hook_context: Supplement | None = None  # session_start output, cached prefix (P1).
+        self.turn_notes: tuple[tuple[str, str], ...] = ()  # turn_start output, every request this turn (P2).
 
     def _commit(self, record: dict) -> None:
         if self.on_commit is not None:
@@ -121,7 +141,7 @@ class AgentLoop:
     def clear(self):
         if self.busy:
             raise ProviderError("当前任务正在运行，不能清空会话。")
-        self.history, self.pending = [], []
+        self.history, self.pending, self.notifications = [], [], []
         self.total_usage = UsageTotals()
         # A fresh context has not seen the mode rules yet.
         self._announced = "normal"
@@ -129,6 +149,7 @@ class AgentLoop:
         self.compact_failures = 0
         self._gap = None
         self.active_skills.clear()
+        self.hook_context, self.turn_notes = None, ()  # The next session_start regenerates it (P1).
 
     def set_provider(self, provider: Provider, budget: ContextBudget | None = None):
         if self.busy:
@@ -146,19 +167,19 @@ class AgentLoop:
         return self.registry.definitions(plan=self.mode == "plan") if self.registry else ()
 
     def _prompt(self, definitions):
-        instructions = "\n\n".join(part for part in (self.instructions, self.skill_catalog) if part)
+        instructions = "\n\n".join(part for part in (self.instructions, self.skill_catalog, self.agent_catalog) if part)
         return build_system_prompt(definitions, override=self.system, instructions=instructions)
 
     def _active(self) -> Supplement | None:
         return active_skills(self.active_skills.texts())
 
-    def _model(self, messages, iteration, env):
+    def _model(self, messages, iteration, env, notes=()):
         reminder = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
         self._announced, self._reannounce = self.mode, False
         definitions = self._definitions()
-        extra = tuple(item for item in (reminder, self._gap) if item)
+        extra = tuple(item for item in (reminder, self._gap, hook_notification((*self.turn_notes, *notes))) if item)
         self._gap = None  # Never part of the history or the transcript; sent with the first request only.
-        prefix = (env, active) if (active := self._active()) else (env,)
+        prefix = tuple(item for item in (env, self._active(), self.hook_context) if item)
         prompt = PromptRequest(self._prompt(definitions), prefix + extra)
         if self.registry is None:
             return self.provider.stream(messages, prompt)
@@ -173,6 +194,7 @@ class AgentLoop:
     def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
         active = self._active()
         env_text += active.render() if active else ""
+        env_text += self.hook_context.render() if self.hook_context else ""  # Ch12 P7.
         return self.meter.estimate(list(self.history) + list(extra), env_text, self._fixed_text)
 
     async def _compact(self, instructions: str = "", *, manual: bool = False, failure: str | None = None):
@@ -209,6 +231,10 @@ class AgentLoop:
         self.compactions += 1
         yield CompactFinished(done.removed, done.summary_tokens, time.monotonic() - started,
                               str(done.record) if done.record else None)
+        if self.hooks is not None and self.hooks.wants("compact"):
+            from .hooks import HookEvent
+            trigger = "restore" if failure is not None else "manual" if manual else "auto"
+            await self.hooks.fire(HookEvent("compact", fields={"trigger": trigger}))
 
     async def compact(self, instructions: str = ""):
         """Manual /compact: idle only, regardless of the threshold; resets the breaker on success."""
@@ -246,25 +272,24 @@ class AgentLoop:
         return self.auto_compact and not self.auto_paused
 
     def _usage(self, usage):
-        total = self.total_usage
-        self.total_usage = UsageTotals(
-            input_tokens=total.input_tokens + (usage.input_tokens or 0),
-            output_tokens=total.output_tokens + (usage.output_tokens or 0),
-            missing_input=total.missing_input + (usage.input_tokens is None),
-            missing_output=total.missing_output + (usage.output_tokens is None), requests=total.requests + 1,
-            cached_input_tokens=total.cached_input_tokens + (usage.cached_input_tokens or 0),
-            cache_write_tokens=total.cache_write_tokens + (usage.cache_write_tokens or 0),
-            missing_cached=total.missing_cached + (usage.cached_input_tokens is None),
-            missing_cache_write=total.missing_cache_write + (usage.cache_write_tokens is None))
+        self.total_usage = add_usage(self.total_usage, usage)
+        if self.on_usage is not None:
+            self.on_usage(usage)
 
-    async def run(self, prompt: str, *, command: str | None = None):
+    async def _hook(self, name: str, fields: dict) -> tuple[tuple[str, str], ...]:
+        if self.hooks is None or not self.hooks.wants(name):
+            return ()
+        from .hooks import HookEvent
+        return (await self.hooks.fire(HookEvent(name, fields=fields))).notes
+
+    async def run(self, prompt: str, *, command: str | None = None, synthetic: str | None = None):
         if self.busy:
             raise ProviderError("已有请求正在运行，请等待或取消。")
         if not prompt.strip():
             raise ProviderError("请输入非空消息。")
         self.busy = True
         iteration, unknown_run = 0, 0
-        user = Message("user", (ContentBlock("text", prompt),), command=command)
+        user = Message("user", (ContentBlock("text", prompt),), command=command, synthetic=synthetic)
         committed = False
         def outcomes():
             return self.history[-1].tool_results if committed and self.history[-1].role == "tool" else ()
@@ -281,17 +306,22 @@ class AgentLoop:
                     texts, self.pending = tuple(self.pending), []
                     self._append(Message("user", (ContentBlock("text", "\n\n".join(texts)),)))
                     yield UserInput(texts)
+                if committed and self.notifications:
+                    texts, self.notifications = tuple(self.notifications), []
+                    self._append(Message("user", (ContentBlock("text", "\n\n".join(texts)),), synthetic=NOTIFICATION))
+                    yield TasksNotified(texts)
                 fresh = [] if committed else [user]
                 if self._may_compact() and self.estimate(fresh, env.text) >= self.budget.auto_threshold:
                     async with aclosing(self._compact()) as events:
                         async for event in events:
                             yield event
+                notes = await self._hook("pre_send", {"iteration": str(iteration)})
                 rescued = False
                 while True:
                     request = deepcopy(self.history) + fresh
                     collector = ResponseCollector()
                     try:
-                        async with aclosing(collector.collect(self._model(request, iteration, env))) as events:
+                        async with aclosing(collector.collect(self._model(request, iteration, env, notes))) as events:
                             async for event in events:
                                 yield event
                     except ProviderError as exc:
@@ -316,6 +346,7 @@ class AgentLoop:
                     raise ProviderError("工具调用 ID 或名称不合法；未执行工具。")
                 if calls and self.registry is None:
                     raise ProviderError("当前会话未启用工具。")
+                await self._hook("post_receive", {"iteration": str(iteration), "tool_calls": str(len(calls))})
                 if not committed:
                     self._append(deepcopy(user))
                     committed = True

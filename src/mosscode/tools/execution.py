@@ -9,19 +9,27 @@ from ..tool_budget import bound_message
 from .base import ExecutionCancelled, ToolRegistry
 
 
+PARALLEL_AGENTS = "agent"  # Ch13 G6: adjacent agent calls run together like adjacent reads.
+
+
+def _group(call, registry: ToolRegistry) -> str | None:
+    if call.name == PARALLEL_AGENTS and registry.get(call.name) is not None:
+        return "agent"
+    return "read" if registry.is_read_only(call.name) else None
+
+
 def partition_calls(calls, registry: ToolRegistry, concurrency: int = 4):
-    batch = []
+    batch, kind = [], None
     for index, call in enumerate(calls):
-        if registry.is_read_only(call.name):
-            batch.append(index)
-            if len(batch) == concurrency:
-                yield batch
-                batch = []
-        else:
-            if batch:
-                yield batch
-                batch = []
+        group = _group(call, registry)
+        if batch and (group != kind or len(batch) == concurrency):
+            yield batch
+            batch = []
+        if group is None:
             yield [index]
+            continue
+        batch.append(index)
+        kind = group
     if batch:
         yield batch
 

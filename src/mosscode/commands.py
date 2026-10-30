@@ -43,8 +43,9 @@ class CommandUI(Protocol):
     async def clear_screen(self) -> None: ...
 
     def choose(self, title: str, options: Sequence[Any], current: int,
-               on_pick: Callable[[int], Awaitable[None]]) -> None:
-        """Open a picker and return at once; on_pick runs with the chosen index, Esc runs nothing."""
+               on_pick: Callable[[int], Awaitable[None]],
+               on_cancel: Callable[[], Awaitable[None]] | None = None) -> None:
+        """Open a picker and return at once; on_pick runs with the chosen index, Esc runs on_cancel (if any)."""
 
     async def compact(self, instructions: str) -> None: ...
 
@@ -81,10 +82,15 @@ class Command:
     template: str = ""  # prompt
     complete: Completer | None = None  # Argument candidates as (value, description).
     skill: str = ""  # skill: the SkillDef it runs (E1).
+    # Ch13: safe during a run (reads state or stops a task); others wait (P8). Ch14: or a test of the argument.
+    while_running: bool | Callable[[str], bool] = False
 
     @property
     def names(self) -> tuple[str, ...]:
         return (self.name, *self.aliases)
+
+    def runs_while_running(self, argument: str) -> bool:
+        return self.while_running(argument) if callable(self.while_running) else self.while_running
 
     def expand(self, argument: str) -> str:
         """K2: the template, with the argument appended as an extra requirement."""

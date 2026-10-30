@@ -15,6 +15,8 @@ from .messages import (CompactFailed, CompactFinished, CompactStarted, Completed
 from .memory import MemoryStore
 from .session import Session, prune_all
 from .skills import ForkRequest, SkillCatalog
+from .agents import AgentCatalog
+from .agents.tasks import Announcer
 from .usage import request_usage_text
 from .tools import create_default_registry
 from .tools.shell import ShellNotFound
@@ -23,6 +25,7 @@ from .providers import create_provider
 from .tui import MossCodeApp, ProviderSelectApp, plan_text
 from .mcp_config import MCPConfigError, load_mcp_settings
 from .mcp_client import MCPManager
+from .hooks import HookEngine
 from pathlib import Path
 
 OUTPUT_FORMATS = ("text", "json", "stream-json")
@@ -128,6 +131,46 @@ async def _resume(conversation: Conversation, session_id: str | None, report) ->
                 report("compact", event)
 
 
+def _background_notices(conversation: Conversation, report) -> None:
+    """Ch12 O3: hook failures, background ones included, go to stderr (stream-json: a notice event)."""
+    conversation.on_memory = lambda event: report("notice", event.text) if isinstance(event, Notice) else None
+
+
+def _task_notices(conversation: Conversation, report) -> None:
+    """Ch13 B7: a line on stderr (stream-json: a notice event) when a background task starts or ends."""
+    conversation.tasks.on_change = Announcer(lambda text: report("notice", text))
+
+
+async def _turns(conversation: Conversation, prompt: str, *, command: str | None, fork):
+    """B7: the task's turn, then one turn per batch of notifications until no task is left running."""
+    async with aclosing(conversation.reply(prompt, command=command, fork=fork)) as stream:
+        async for event in stream:
+            yield event
+    tasks = conversation.tasks
+    while True:
+        if conversation.notifications:
+            async with aclosing(conversation.notify()) as stream:
+                async for event in stream:
+                    yield event
+            continue
+        if not tasks.running():
+            return
+        tasks.finished.clear()
+        await tasks.finished.wait()
+
+
+def _hook_engine(args, registry, *, interactive: bool):
+    """C7, S4: --no-hooks loads nothing; -p skips untrusted project files unless --trust-project-hooks."""
+    tool = registry.get("execute_command")
+    engine = HookEngine(Path.cwd(), shell=getattr(tool, "shell", None), enabled=not args.no_hooks,
+                        trust_project=args.trust_project_hooks)
+    notices = list(engine.problems)
+    if not interactive:
+        notices += [f"项目 Hook 文件 {file.path} 未经确认，未启用；请在交互界面中启动一次并确认，或使用 --trust-project-hooks。"
+                    for file in engine.untrusted]
+    return engine, tuple(notices)
+
+
 async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool = False,
                   output_format: str = "text", model: str = "", resume: str | None = None,
                   command: str | None = None, skill: str | None = None) -> dict | None:
@@ -149,6 +192,8 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
             _emit({"type": "notice", "text": value if kind == "notice" else "未得到回复的消息：" + value})
         else:
             print(value if kind == "notice" else "未得到回复的消息：" + value, file=sys.stderr, flush=True)
+    _background_notices(conversation, report)
+    _task_notices(conversation, report)
     try:
         try:
             if stream_json:
@@ -168,7 +213,7 @@ async def _prompt(conversation: Conversation, prompt: str, *, show_usage: bool =
                        "permission_mode": registry.permissions.mode if registry else None,
                        "tools": [d.name for d in registry.definitions()] if registry else []})
             usage = None
-            async with aclosing(conversation.reply(prompt, command=command, fork=fork)) as stream:
+            async with aclosing(_turns(conversation, prompt, command=command, fork=fork)) as stream:
                 async for event in stream:
                     if isinstance(event, UsageUpdate):
                         usage = event.usage
@@ -224,12 +269,14 @@ async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: b
                   file=sys.stderr, flush=True)
         else:
             print(value if kind == "notice" else "未得到回复的消息：" + value, file=sys.stderr, flush=True)
+    _background_notices(conversation, report)
+    _task_notices(conversation, report)
     try:
         await _resume(conversation, resume, report)
         for notice in await conversation.start():
             print(notice, file=sys.stderr, flush=True)
         prompt, fork = _skill_prompt(conversation, skill, prompt, report)
-        async with aclosing(conversation.reply(prompt, command=command, fork=fork)) as stream:
+        async with aclosing(_turns(conversation, prompt, command=command, fork=fork)) as stream:
             async for event in stream:
                 if isinstance(event, Delta) and event.kind == "text":
                     print(event.text, end="", flush=True)
@@ -281,6 +328,9 @@ def main() -> None:
     parser.add_argument("--resume", nargs="?", const="", metavar="ID",
                         help="恢复指定会话；不带 ID 时在交互界面中打开会话列表")
     parser.add_argument("--permission-mode", type=_permission_mode, metavar="MODE", help="权限档位：default/acceptEdits/plan/bypassPermissions；仍遵守硬限制和显式拒绝")
+    parser.add_argument("--no-hooks", action="store_true", help="本次运行不加载任何 Hook")
+    parser.add_argument("--trust-project-hooks", action="store_true",
+                        help="本次运行信任项目级 Hook 文件（不写入确认记录），用于无界面模式")
     args = parser.parse_args()
     if args.output_format != "text" and args.prompt is None:
         parser.error("--output-format 只用于 -p/--prompt 无界面模式。")
@@ -311,7 +361,8 @@ def main() -> None:
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
         prune_all()
         budget = config.budget()
-        notices = skills.problems + skipped
+        hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None)
+        notices = skills.problems + skipped + hook_notices
         if not budget.configured:
             notices += (f"{config.name} 未配置 context_window，按 128K 估算上下文。",)
         conversation = Conversation(create_provider(config), settings.system_prompt, registry, mcp_manager=manager,
@@ -320,7 +371,12 @@ def main() -> None:
                                     auto_compact=settings.auto_compact, notices=notices,
                                     persist=settings.persist_sessions, skills=skills,
                                     provider_configs=settings.providers, provider_factory=create_provider,
-                                    provider_info=(config.name, config.protocol, config.model),
+                                    provider_info=(config.name, config.protocol, config.model), hooks=hooks,
+                                    agents=AgentCatalog.load(Path.cwd()),
+                                    agent_auto_background=settings.agent_auto_background,
+                                    agent_max_background=settings.agent_max_background,
+                                    worktree_links=settings.worktree_links,
+                                    worktree_stale_hours=settings.worktree_stale_hours,
                                     **_memory_options(settings, interactive=args.prompt is None))
         resume = args.resume
         if args.continue_session or resume:

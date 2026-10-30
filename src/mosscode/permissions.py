@@ -25,6 +25,9 @@ ALIASES = {"Read": "read_file", "Write": "write_file", "Edit": "edit_file",
            "Bash": "execute_command", "Shell": "execute_command", "Glob": "glob", "Grep": "grep"}
 TOOL_NAMES = set(ALIASES.values())
 READ_TOOLS = {"read_file", "glob", "grep"}  # May read outside the project after approval.
+# Permission, MCP and hook files under a project root: the user's to edit, never the model's.
+PROTECTED_FILES = (".mosscode/permissions.yaml", ".mosscode/permissions.local.yaml", ".mosscode/mcp.yaml", ".mcp.json",
+                   ".mosscode/hooks.yaml", ".mosscode/hooks.local.yaml")
 EDIT_TOOLS = {"write_file", "edit_file"}
 
 
@@ -47,6 +50,12 @@ PLAN_CHOICES = ("execute", "accept_edits", "deny")  # deny = keep planning.
 ALL_CHOICES = frozenset((*COMMAND_CHOICES, *EDIT_CHOICES, *PLAN_CHOICES))
 EXIT_PLAN = "exit_plan_mode"
 PREFIX_SUFFIX = ":*"
+STRICTNESS = ("plan", "default", "acceptEdits", "bypassPermissions")  # Ch13 P3: strictest first.
+NONINTERACTIVE = "此操作需要用户确认；无界面模式不会自动授权。"
+
+
+def stricter(a: str, b: str) -> str:
+    return a if STRICTNESS.index(a) <= STRICTNESS.index(b) else b
 
 
 class PermissionConfigError(ValueError):
@@ -84,6 +93,7 @@ class ApprovalRequest:
     operation: Operation
     reason: str
     choices: tuple[str, ...] = CHOICES
+    source: str = ""  # Ch13 P6: the sub-agent asking, e.g. "子 Agent explore · 查找配置加载".
 
 
 @dataclass(frozen=True)
@@ -253,6 +263,14 @@ class PermissionPolicy:
         self.pending: dict[str, asyncio.Future] = {}
         self._choices: dict[str, tuple[str, ...]] = {}
         self._approval_lock = asyncio.Lock()
+        self.noninteractive_reason = NONINTERACTIVE
+
+    def view(self, mode: str, *, interactive: bool, label: str = "", root: Path | None = None) -> "PolicyView":
+        """Ch13 P1: a sub-agent's policy; rule files, approvals and directories shared, mode and grants its own.
+
+        Ch14 I2: root moves the project boundary and relative rules to a worktree.
+        """
+        return PolicyView(self, mode, interactive=interactive, label=label, root=root)
 
     @property
     def mode(self):
@@ -280,6 +298,10 @@ class PermissionPolicy:
             return Operation(tool.name, f"{args['scope']}:{args['name']}", preview=f"{args['action']} 笔记", notes=True)
         if getattr(tool, "permission_kind", None) == "load_skill":
             return Operation(tool.name, args["name"], preview="加载 Skill 规程", notes=True)
+        if getattr(tool, "permission_kind", None) == "agent":
+            # Ch13: starting or managing a sub-agent needs no approval; its own calls are checked one by one.
+            target = args.get("agent_type") or args.get("task_id") or "fork"
+            return Operation(tool.name, target, preview="子 Agent", notes=True)
         if getattr(tool, "permission_kind", None) == "skill":
             target = json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
             preview = (f"Skill {tool.skill_name} 的专属工具 {tool.short_name}\n命令：" + " ".join(tool.argv())
@@ -305,10 +327,14 @@ class PermissionPolicy:
         target = resolved.as_posix() if outside else resolved.relative_to(self.root).as_posix()
         if not tool.read_only:
             actual = project_path(self.root, target)
-            protected = (self.user_path, self.project_file, self.local_file,
-                         Path.home() / ".mosscode/mcp.yaml", self.root / ".mosscode/mcp.yaml", self.root / ".mcp.json")
+            # Ch14 I2: a worktree view guards the copies in its worktree as well as the project's own files.
+            roots = dict.fromkeys((self.root, self.project_file.parent.parent))
+            protected = (self.user_path, Path.home() / ".mosscode/mcp.yaml",
+                         # Ch12 S5: hooks run arbitrary commands without approval.
+                         Path.home() / ".mosscode/hooks.yaml",
+                         *(root / name for root in roots for name in PROTECTED_FILES))
             if any(actual == p.resolve() for p in protected):
-                raise SecurityError("policy_protected", "权限与 MCP 配置文件由用户管理，模型不能自行写入或编辑。")
+                raise SecurityError("policy_protected", "权限、MCP 与 Hook 配置文件由用户管理，模型不能自行写入或编辑。")
         preview = ""
         if tool.name == "write_file":
             preview = f"写入 {len(args['content'])} 个字符，内容预览：\n" + safe_display(args["content"])
@@ -351,19 +377,28 @@ class PermissionPolicy:
             return Decision("allow")
         return Decision("ask", reason="此操作没有明确的放行规则。")
 
-    async def authorize(self, call_id: str, tool, params) -> Decision:
+    async def authorize(self, call_id: str, tool, params, *, gate=None, notify=None) -> Decision:
+        """gate(operation) runs pre_tool_use hooks after the hard checks and deny rules, before approval
+        (ch12 I1); it returns a deny Decision or None. notify(request) is awaited before an approval is shown."""
         if tool.name == EXIT_PLAN:
-            return await self._approve_plan(call_id, params)
+            return await self._approve_plan(call_id, params, gate, notify)
         # Hard checks always run, including for bypassPermissions and exact grants.
         try:
             operation = self.operation(tool, params)
         except SecurityError as exc:
             return Decision("deny", exc.code, str(exc))
         decision = self.decide(operation, read_only=tool.read_only)
+        if decision.action == "deny":
+            return decision
+        if gate is not None:
+            # Hooks only tighten (I6): a hook never turns "ask" into "allow".
+            rejected = await gate(operation)
+            if rejected is not None:
+                return rejected
         if decision.action != "ask":
             return decision
         if not self.interactive:
-            return Decision("deny", "approval_required", "此操作需要用户确认；无界面模式不会自动授权。")
+            return Decision("deny", "approval_required", self.noninteractive_reason)
         async with self._approval_lock:
             # A preceding approval may have added a session/local rule.
             try:
@@ -378,7 +413,11 @@ class PermissionPolicy:
                 operation = replace(operation, preview=preview)
             request = ApprovalRequest(uuid4().hex, call_id, operation, decision.reason, self._choices_for(operation))
             try:
+                if notify is not None:
+                    await notify(request)
                 choice = await self._ask(request)
+                if choice == "deny" and not self.interactive:  # Ch13 P7: moved to the background meanwhile.
+                    return Decision("deny", "approval_required", self.noninteractive_reason)
                 if choice == "deny":
                     return Decision("deny", "permission_denied", "用户拒绝了此操作；此调用未执行。")
                 try:
@@ -449,16 +488,22 @@ class PermissionPolicy:
         if future is not None and not future.done():
             future.cancel()
 
-    async def _approve_plan(self, call_id: str, params) -> Decision:
+    async def _approve_plan(self, call_id: str, params, gate=None, notify=None) -> Decision:
         """The user, never a rule or mode, decides whether planning ends."""
         if self.mode != "plan":
             return Decision("deny", "not_in_plan", "当前不在计划模式，无需提交计划；直接按用户请求执行。")
+        if gate is not None:
+            rejected = await gate(None)  # Ch12 E4: pre_tool_use before the plan approval.
+            if rejected is not None:
+                return rejected
         if not self.interactive:
             return Decision("deny", "approval_required", "计划需要用户批准；无界面模式不会自动批准，仍处于计划模式。")
         async with self._approval_lock:
             operation = Operation(EXIT_PLAN, "提交计划", preview=safe_display(params.plan, 4000))
             request = ApprovalRequest(uuid4().hex, call_id, operation, "请审阅计划，决定是否开始执行。", PLAN_CHOICES)
             try:
+                if notify is not None:
+                    await notify(request)
                 choice = await self._ask(request)
             finally:
                 self._settle(request)
@@ -504,3 +549,59 @@ class PermissionPolicy:
             if os.path.exists(temporary):
                 os.unlink(temporary)
         self.layers[2] = (*existing, rule)
+
+
+BACKGROUND_REASON = "此操作需要用户确认；后台子 Agent 不能请求审批，可以添加允许规则或在前台运行。"
+
+
+class PolicyView(PermissionPolicy):
+    """Ch13 P1–P7: shares the parent's rule layers, pending approvals and directories.
+
+    It has its own mode, session grants and request queue; the sub-agent runner forwards
+    its requests to the parent's queue so the UI sees one stream.
+    """
+
+    _SHARED = frozenset({"root", "user_path", "project_file", "local_file", "layers", "pending", "_choices",
+                         "_approval_lock", "session_dir", "memory_dirs", "skill_dirs"})
+
+    def __init__(self, parent: PermissionPolicy, mode: str, *, interactive: bool, label: str = "",
+                 root: Path | None = None):
+        object.__setattr__(self, "parent", parent)
+        if root is not None:  # Ch14 I2: a sub-agent in a worktree; rule files stay the project's.
+            object.__setattr__(self, "root", root.resolve())
+        self._mode = normalize_mode(mode)
+        self.resume_mode = "default" if self._mode == "plan" else self._mode
+        self.session: list[Rule] = []
+        self.interactive = interactive
+        self.label = label
+        self.requests: asyncio.Queue[ApprovalRequest] = asyncio.Queue()
+        self.noninteractive_reason = NONINTERACTIVE if interactive else BACKGROUND_REASON
+        self._mine: set[str] = set()
+
+    def __getattr__(self, name):
+        if name in PolicyView._SHARED:
+            return getattr(self.parent, name)
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        if name in PolicyView._SHARED:
+            setattr(self.parent, name, value)
+        else:
+            object.__setattr__(self, name, value)
+
+    async def _ask(self, request: ApprovalRequest) -> str:
+        request = replace(request, source=self.label)
+        self._mine.add(request.id)
+        try:
+            return await super()._ask(request)
+        finally:
+            self._mine.discard(request.id)
+
+    def to_background(self) -> None:
+        """B3/P7: no more approvals; one already waiting counts as refused."""
+        self.interactive = False
+        self.noninteractive_reason = BACKGROUND_REASON
+        for request_id in tuple(self._mine):
+            future = self.pending.get(request_id)
+            if future is not None and not future.done():
+                future.set_result("deny")

@@ -2,6 +2,7 @@
 
 import asyncio
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -10,8 +11,12 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..messages import ToolCall, ToolDefinition, ToolResult
-from ..permissions import PermissionPolicy
+from ..permissions import Decision, PermissionPolicy
 from ..security import SecurityError, project_path, resolve_path
+
+
+# Ch13: the call a tool is executing, for tools that need its id (the agent tool's row in the UI).
+CURRENT_CALL: ContextVar[ToolCall | None] = ContextVar("mosscode_current_call", default=None)
 
 
 class Params(BaseModel):
@@ -31,6 +36,35 @@ def bounded_output(output, details):
         return (encoded[:65536].decode("utf-8", errors="ignore") + "\n（结果已截断）",
                 {**details, "truncated": True})
     return output, details
+
+
+HOOK_NOTE_LIMIT = 8000  # Ch12 P5: hook text added to one tool result.
+
+
+def with_hook_notes(result: ToolResult, notes, modified_by: str | None) -> ToolResult:
+    """P4, P6: hook notes and the reformatting notice go after the result, into history and the transcript."""
+    if not notes and not modified_by:
+        return result
+    blocks, room = [], HOOK_NOTE_LIMIT
+    for hook_id, note in notes:
+        if room <= 0:
+            break
+        text = note if len(note) <= room else note[:room] + "\n（Hook 内容超出 8000 个字符，已截断）"
+        room -= len(note)
+        blocks.append(f'<hook-notification hook="{hook_id}">\n{text}\n</hook-notification>')
+    details = result.details
+    if modified_by:
+        blocks.append(f"文件已被 Hook {modified_by} 修改（如格式化）；再次编辑前请重新读取。")
+        details = {**details, "hook_modified": modified_by}  # The tool row shows it; the output may be cut there.
+    return replace(result, output=result.output + "\n\n" + "\n\n".join(blocks), details=details)
+
+
+def _stamp(path: Path | None):
+    try:
+        status = path.stat() if path is not None else None
+    except OSError:
+        return None
+    return (status.st_mtime_ns, status.st_size) if status is not None else None
 
 
 def reject_json_constant(value):
@@ -106,6 +140,12 @@ class ToolRegistry:
         self.permissions = permissions or PermissionPolicy(first.root if first else Path.cwd())
         # Set by the application; without it oversized results are cut to a preview, not stored.
         self.session = None
+        self.hooks = None  # Ch12: the HookEngine, set by the application.
+        self.agent = "main"  # "fork" or "subagent" in a sub-agent's view (E2, ch13 H1).
+        self.agent_type = ""  # Ch13 H1: the definition name, "fork" or "skill:<name>".
+        self.forbidden: frozenset[str] = frozenset()  # Ch13 L2: offered (fork cache) but refused when called.
+        self.nested = False  # Ch13 H5: started by a hook's agent action; its tool events run no agent action.
+        self.worktree = ""  # Ch14 H1: the worktree a sub-agent works in, relative to the repository.
         if any(tool.root != self.permissions.root for tool in self._tools.values()):
             raise ValueError("工具与权限策略必须使用同一个项目根目录。")
 
@@ -137,19 +177,35 @@ class ToolRegistry:
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
 
-    def subset(self, names=None, extra=()) -> "ToolRegistry":
-        """K3: a view for a sub-agent; the same tool instances, permission policy and session.
+    def for_agent(self, *, agent: str, agent_type: str, permissions: PermissionPolicy, state=None,
+                  keep=None, extra=(), forbidden=()) -> "ToolRegistry":
+        """Ch13 I2/P1: a sub-agent's registry.
 
-        names None keeps every tool; extra tools are added and replace same-named ones.
+        Tools holding a FileState are copied and share `state` (a new, empty one when None);
+        keep(name) filters the rest; extra tools are added; forbidden names stay offered but are refused.
         """
-        view = ToolRegistry(permissions=self.permissions)
-        view.session = self.session
-        view._tools = {name: tool for name, tool in self._tools.items() if names is None or name in names}
-        for tool in extra:
-            if tool.root != self.permissions.root:
+        from copy import copy
+        from .files import FileState
+        state = state if state is not None else FileState()
+        view = ToolRegistry(permissions=permissions)
+        view.session, view.hooks, view.agent, view.agent_type = self.session, self.hooks, agent, agent_type
+        view.forbidden = frozenset(forbidden)
+        for name, tool in self._tools.items():
+            if keep is not None and not keep(name):
+                continue
+            if getattr(tool, "state", None) is not None:
+                tool = copy(tool)
+                tool.state = state
+            view._tools[name] = tool
+        for tool in extra:  # Replace same-named ones.
+            if tool.root != permissions.root:
                 raise ValueError("工具与权限策略必须使用同一个项目根目录。")
             view._tools[tool.name] = tool
         return view
+
+    def file_state(self):
+        """The FileState the file tools share, if any."""
+        return next((tool.state for tool in self._tools.values() if getattr(tool, "state", None) is not None), None)
 
     def definitions(self, *, read_only: bool = False, plan: bool = False) -> tuple[ToolDefinition, ...]:
         # Plan mode offers read-only tools, read-only commands and the tool that submits the plan.
@@ -170,6 +226,7 @@ class ToolRegistry:
         return bound_result(call.name, call.id, output, details, self.session)
 
     async def _invoke(self, call: ToolCall, tool: Tool, params: Params) -> ToolResult:
+        CURRENT_CALL.set(call)  # Runs in its own task: the value never leaks to the caller.
         try:
             output, details = await tool.execute(params)
             output, details = self._bound(call, output, details)
@@ -194,6 +251,9 @@ class ToolRegistry:
         tool = self.get(call.name)
         if tool is None:
             return ToolResult(call.id, call.name, "未知工具。", True, "unknown_tool")
+        if call.name in self.forbidden:
+            return ToolResult(call.id, call.name, f"你是子 Agent，不能使用 {call.name}；请在自己的范围内完成任务并在报告中说明。",
+                              True, "subagent_forbidden", {"executed": False})
         if read_only and not tool.read_only:
             # Explicit caller restriction, separate from the approval-based plan mode.
             return ToolResult(call.id, call.name, "本次调用限定只读工具；此调用未执行。", True, "plan_blocked")
@@ -210,10 +270,59 @@ class ToolRegistry:
                       for e in exc.errors(include_input=False, include_context=False, include_url=False)]
             listed = "\n".join(f"- {issue['field'] or '(参数)'}：{issue['message']}" for issue in issues[:20])
             return ToolResult(call.id, call.name, "工具参数校验失败：\n" + listed, True, "invalid_arguments", {"issues": issues})
-        decision = await self.permissions.authorize(call.id, tool, params)
+        hooks, state = self.hooks, {}
+        gate = notify = None
+        if hooks is not None:
+            async def gate(operation):
+                state["operation"] = operation
+                if not hooks.wants("pre_tool_use"):
+                    return None
+                outcome = await hooks.fire(self._event("pre_tool_use", call.name, raw, operation, tool.root))
+                state["notes"] = list(outcome.notes)
+                if outcome.rejection is None:
+                    return None
+                state["hook"] = outcome.rejection[0]
+                return Decision("deny", "hook_rejected", outcome.rejection[1])
+
+            async def notify(request):
+                if hooks.wants("permission_request"):
+                    operation = request.operation if request.operation.tool == call.name else None
+                    await hooks.fire(self._event("permission_request", call.name, raw, operation, tool.root))
+
+        decision = await self.permissions.authorize(call.id, tool, params, gate=gate, notify=notify)
         if decision.action != "allow":
-            return ToolResult(call.id, call.name, decision.reason, True, decision.code,
-                              {"executed": False})
+            details = {"executed": False, **({"hook": state["hook"]} if decision.code == "hook_rejected" else {})}
+            return ToolResult(call.id, call.name, decision.reason, True, decision.code, details)
+        result = await self._run(call, tool, params)
+        if hooks is None:
+            return result
+        return await self._after(call, tool, raw, state, result)
+
+    async def _after(self, call: ToolCall, tool: Tool, raw, state, result: ToolResult) -> ToolResult:
+        """post_tool_use (P4, P6); a cancelled hook keeps the tool result (R8)."""
+        hooks, notes, modified = self.hooks, list(state.get("notes", ())), None
+        if hooks.wants("post_tool_use"):
+            event = self._event("post_tool_use", call.name, raw, state.get("operation"), tool.root, result)
+            watched = event.file_path if call.name in {"write_file", "edit_file"} and not result.is_error else None
+            before = _stamp(watched)
+            try:
+                outcome = await hooks.fire(event)
+            except asyncio.CancelledError:
+                raise ExecutionCancelled(with_hook_notes(result, notes, None)) from None
+            notes.extend(outcome.notes)
+            if before is not None and outcome.ran and _stamp(watched) != before:
+                modified = outcome.ran[-1]  # FileState keeps the tool's own stamp: the next edit must reread.
+        return with_hook_notes(result, notes, modified)
+
+    def _event(self, name, tool_name, raw, operation, root, result=None):
+        from ..hooks import tool_event
+        event = tool_event(name, self.agent, tool_name, raw, operation, root, result, agent_type=self.agent_type)
+        if self.worktree:
+            event = replace(event, fields={**event.fields, "worktree": self.worktree},
+                            payload={**event.payload, "worktree": self.worktree})
+        return replace(event, nested=True) if self.nested else event
+
+    async def _run(self, call: ToolCall, tool: Tool, params: Params) -> ToolResult:
         task = asyncio.create_task(self._invoke(call, tool, params))
         limit = getattr(params, "timeout", tool.timeout)
         try:

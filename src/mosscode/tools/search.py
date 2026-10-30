@@ -11,6 +11,7 @@ from .process import run_process
 
 
 SKIP_DIRS = (".git", ".venv", "venv", "node_modules", "__pycache__")
+WORKTREES = (".mosscode", "worktrees")  # Ch14 S1: skipped unless the search starts inside one.
 GLOB_LIMIT = 200
 
 
@@ -46,9 +47,17 @@ def stderr_hint(stderr: str) -> str:
     return f"\n{text}" if text else ""
 
 
-def skip_globs():
+def inside_worktrees(path: Path) -> bool:
+    parts = path.parts
+    return any(parts[i:i + 2] == WORKTREES for i in range(len(parts) - 1))
+
+
+def skip_globs(path: Path | None = None):
     # Later rg globs override earlier ones, so exclusions follow user filters.
-    return [arg for name in SKIP_DIRS for arg in ("-g", f"!**/{name}/**")]
+    globs = [arg for name in SKIP_DIRS for arg in ("-g", f"!**/{name}/**")]
+    if path is None or not inside_worktrees(path):
+        globs.extend(("-g", "!**/.mosscode/worktrees/**"))
+    return globs
 
 
 def newest_first(paths):
@@ -71,7 +80,7 @@ class SearchTool(Tool):
 class Glob(SearchTool):
     name = "glob"
     description = (f"按 glob 模式查找文件，例如 **/*.py，可指定搜索目录 path。遵守 .gitignore，并跳过 .git、.venv、node_modules "
-                   f"和缓存目录；结果按修改时间从新到旧排列，最多 {GLOB_LIMIT} 项。项目目录之外的路径需要用户确认。")
+                   f"和缓存目录（以及 .mosscode/worktrees，除非 path 指向其中）；结果按修改时间从新到旧排列，最多 {GLOB_LIMIT} 项。项目目录之外的路径需要用户确认。")
     prompt_summary = "按文件名或路径模式定位文件"
     prompt_guidelines = (
         "按文件名或路径找文件时优先 glob；pattern 是路径模式，不是内容正则。根据已知目录缩小范围，结果截断时细化模式。",
@@ -83,7 +92,7 @@ class Glob(SearchTool):
         if not path.is_dir():
             raise ToolFailure("invalid_path", "glob 的 path 必须是存在的目录。")
         if shutil.which("rg"):
-            args = [*rg_command(), "--files", "-g", params.pattern, *skip_globs(), "--", "."]
+            args = [*rg_command(), "--files", "-g", params.pattern, *skip_globs(path), "--", "."]
         else:
             args = fallback_command("glob", {"pattern": params.pattern, "path": str(path), "base": self.base(path)})
         details = await run_process(args, path, check=False, limit=262144)
@@ -126,7 +135,7 @@ class Grep(SearchTool):
             args.extend(["--count", "--with-filename", "--null"] if counting else ["--json", "-C", str(params.context)])
             if params.glob is not None:
                 args.extend(["-g", params.glob])
-            args.extend([*skip_globs(), "-e", params.pattern, "--", str(path)])
+            args.extend([*skip_globs(path), "-e", params.pattern, "--", str(path)])
         else:
             args = fallback_command("count" if counting else "grep", {
                 "pattern": params.pattern, "path": str(path), "base": self.base(path), "glob": params.glob,

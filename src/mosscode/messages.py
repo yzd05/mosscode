@@ -145,6 +145,15 @@ class UserInput:
 
 
 @dataclass(frozen=True)
+class TasksNotified:
+    """Ch13 B6: background task notifications merged into history at an iteration boundary."""
+    texts: tuple[str, ...]
+
+
+NOTIFICATION = "task-notification"  # Message.synthetic of a background task notification (B5).
+
+
+@dataclass(frozen=True)
 class Retrying:
     """A transient failure before any event of this request; nothing was executed."""
     attempt: int

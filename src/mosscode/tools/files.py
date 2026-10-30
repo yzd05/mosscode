@@ -50,6 +50,12 @@ class FileState:
     def clear(self) -> None:
         self._seen.clear()
 
+    def copy(self) -> "FileState":
+        """Ch13 I2: a fork starts from what its parent has read."""
+        state = FileState()
+        state._seen = dict(self._seen)
+        return state
+
     def record(self, path: Path, stamp: tuple[int, int] | None = None) -> None:
         self._seen[self._key(path)] = stamp if stamp is not None else self.stamp(path)
 
