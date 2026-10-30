@@ -62,7 +62,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`965 passed, 2 skipped`。跳过的两项分别需要创建文件符号链接的权限和安装 ripgrep。
+- **pytest**：`966 passed, 1 skipped`。跳过的一项需要创建文件符号链接的权限（开启 Windows 开发者模式后可运行）。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -89,7 +89,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 10 命令系统 | `tests\test_commands_stage10.py` | 28 passed |
 | 12 Hook | `tests\test_hooks_stage12.py` | 73 passed |
 | 13 子 Agent | `tests\test_subagents_stage13.py` | 32 passed |
-| 14 Git 工作树 | `tests\test_worktree_stage14.py` | 50 passed, 1 skipped（ripgrep 未安装） |
+| 14 Git 工作树 | `tests\test_worktree_stage14.py` | 51 passed |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 
@@ -478,7 +478,7 @@ tools: Read
 
 ## 已知限制
 
-- **ripgrep**：本机没有安装 ripgrep，搜索走 Python 实现。rg 路径只按文档实现，没有在本机运行过。
+- **ripgrep**：本机已安装 ripgrep 15.2.0，自动测试和人工验收的搜索都走 rg；Python 回退实现只在没有 rg 时使用，由单元测试覆盖。
 - **缓存命中**：取决于服务。非 Anthropic 官方端点默认不发送缓存标记（见 `prompt_cache`）。
 - **只能人工判断的行为**：模型是否并行调用、回复是否简洁，没有严格的通过标准。后台提取是否记录、记成哪个范围和类型由模型判断，同样的对话可能得到不同的笔记。
 - **工作树中的命令**：隔离的子 Agent 的 `execute_command` 在工作树中运行，但命令本身仍能访问主目录；路径检查只约束文件工具。

@@ -62,4 +62,4 @@
 | AC8（F10–F12） | `.gitignore` 中的目录和 `*.log` 被跳过，`!keep.log` 被保留，显式搜索被忽略目录仍可搜到；`grep` 三种输出模式、`ignore_case`、`context`、`head_limit`；`glob` 按修改时间倒序 |
 | 回归 | 全量 pytest、compileall、Windows 控制台烟测 |
 
-未验证风险：本机未安装 ripgrep，rg 路径（`--no-require-git`、`--count --null`、`--json` 上下文事件）只能按文档实现，不能在本机运行。
+未验证风险：本机未安装 ripgrep，rg 路径（`--no-require-git`、`--count --null`、`--json` 上下文事件）只能按文档实现，不能在本机运行。（2026-10-30 已安装 ripgrep 补跑通过，见 [validation.md](validation.md)。）

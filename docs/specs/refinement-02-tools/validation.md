@@ -43,7 +43,7 @@
 
 ## 未验证
 
-- **ripgrep 路径**：本机没有 rg，所有搜索测试都走 Python 回退实现。以下 rg 参数按 ripgrep 文档实现，没有实际运行，安装 rg 后应补跑 `tests/test_tools.py` 和 `tests/test_tools_stage2.py`：
+- **ripgrep 路径**（2026-10-30 已补跑）：当时本机没有 rg，下列参数只按 ripgrep 文档实现。2026-10-30 用 Scoop 安装 ripgrep 15.2.0 后，`tests/test_tools.py`、`tests/test_tools_stage2.py`、`tests/test_worktree_stage14.py` 走 rg 路径共 80 passed，全量测试 966 passed, 1 skipped：
   - `--hidden --no-require-git`（不用 `--no-ignore`）；
   - `--count --with-filename --null`；
   - `--json -C n` 的 context 事件；
