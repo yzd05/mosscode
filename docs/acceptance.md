@@ -62,7 +62,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`961 passed, 2 skipped`。跳过的两项分别需要创建文件符号链接的权限和安装 ripgrep。
+- **pytest**：`962 passed, 2 skipped`。跳过的两项分别需要创建文件符号链接的权限和安装 ripgrep。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -460,7 +460,7 @@ tools: Read
 
 | 编号 | 操作 | 预期 |
 | --- | --- | --- |
-| M102 隔离写入 | 让模型“用 general 子 Agent，isolation 设为 worktree，在 notes.txt 末尾加一行 hello” | 工具行标题为 `general · 工作树 · …`，进度行以“工作树 agent-xxxxxxxx · ”开头。主目录的 notes.txt 没有变化，`git status` 仍然干净（不显示 `.mosscode/worktrees`）。工具结果末尾是“[工作树] 已保留：.mosscode/worktrees/agent-xxxxxxxx”，下一行“分支 mosscode/agent-xxxxxxxx，基于 …；未提交 1 个文件。”，再下一行是合并、查看和删除的方法；`.mosscode\worktrees\agent-xxxxxxxx\notes.txt` 末尾有 hello |
+| M102 隔离写入 | 让模型“用 general 子 Agent，isolation 设为 worktree，在 notes.txt 末尾加一行 hello” | 工具行标题为 `general · 工作树 · …`，进度行以“工作树 agent-xxxxxxxx · ”开头。主目录的 notes.txt 没有变化，`git status` 与开始前相同（验收项目本来就有 ` M notes.txt` 和 `?? untracked.txt`），不显示 `.mosscode/worktrees`。工具结果末尾是“[工作树] 已保留：.mosscode/worktrees/agent-xxxxxxxx”，下一行“分支 mosscode/agent-xxxxxxxx，基于 …；未提交 1 个文件。”，再下一行是合并、查看和删除的方法；`.mosscode\worktrees\agent-xxxxxxxx\notes.txt` 为“笔记 / hello”：工作树基于最近一次提交，不含主目录未提交的“第二条笔记” |
 | M103 列表与详情 | 输入 `/worktree`；再输入 `/tasks tN`（M102 的任务）、`/agents general` | `/worktree` 列出 agent-xxxxxxxx：“临时  有改动（未提交 1 个文件）”，下一行是分支、基准提交、创建时间和路径。`/tasks tN` 有一行“工作树  .mosscode/worktrees/agent-xxxxxxxx（分支 mosscode/agent-xxxxxxxx）· 已保留”。`/agents general` 的“隔离”一行为“无” |
 | M104 无改动自动删除 | 让模型“用 general 子 Agent，isolation 设为 worktree，读 src/app.py 并总结，不要修改文件” | 结果末尾是“[工作树] 无改动，已删除。”；`/worktree` 中没有新的工作树，`git branch` 中没有新的 `mosscode/agent-…` 分支 |
 | M105 主目录写入被拒 | 让模型“用 general 子 Agent，isolation 设为 worktree，用 write_file 写入绝对路径 <验收项目的绝对路径>\build\main.txt” | 子 Agent 的写入返回 `path_blocked`（路径在项目之外），没有审批面板，主目录的 build\main.txt 不存在 |
@@ -468,13 +468,13 @@ tools: Read
 | M107 运行中的命令 | 让模型做一个较长的隔离任务（如“用 general 子 Agent，isolation 设为 worktree，逐个读取 src 和 docs 下的文件并各写一句总结”），运行中输入 `/worktree list`，再输入 `/worktree clean` | `/worktree list` 立即执行，新工作树显示“使用中（任务 tN）”。`/worktree clean` 不执行，状态栏提示“运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送”，输入保留 |
 | M108 手动创建与删除 | 输入 `/worktree create demo/a`；在另一个终端中运行 `"x" \| Set-Content .mosscode\worktrees\demo+a\new.txt`；再输入 `/worktree remove demo/a`，然后 `/worktree remove demo/a --discard` | create 显示“└ 已创建工作树 demo/a：.mosscode/worktrees/demo+a”、分支 `mosscode/demo+a` 和进入目录的 cd 命令。第一次 remove 显示“! 工作树 demo/a 有改动（未提交 1 个文件：new.txt），未删除；确认丢弃时加 --discard。”；加 `--discard` 后显示“└ 已删除工作树 demo/a 和它的分支（已丢弃：未提交 1 个文件）。”，目录和 `mosscode/demo+a` 分支都不存在 |
 | M109 名称与补全 | 输入 `/worktree create ../x`、`/worktree create con`；再输入 `/worktree ` 后按 Tab | 两个 create 都以“! 名称 … 不可用：…”拒绝，不创建目录。补全菜单列出 list、create、remove、clean 和“remove agent-xxxxxxxx”（M102 留下的） |
-| M110 合并与清理 | 在另一个终端中：`git -C .mosscode\worktrees\agent-xxxxxxxx commit -am hello`，然后 `git merge mosscode/agent-xxxxxxxx`；回到 MossCode 输入 `/worktree`，再 `/worktree remove agent-xxxxxxxx` | 合并后主目录 notes.txt 末尾有 hello。`/worktree` 中该工作树为“无改动”（提交已合并进主分支，不再算独有提交）；remove 直接删除，没有要求 `--discard` |
+| M110 合并与清理 | 在另一个终端中：`git -C .mosscode\worktrees\agent-xxxxxxxx commit -am hello`；主目录的 notes.txt 有未提交的改动，先 `git stash --include-untracked`，再 `git merge mosscode/agent-xxxxxxxx`；回到 MossCode 输入 `/worktree`，再 `/worktree remove agent-xxxxxxxx` | 合并后主目录 notes.txt 末尾有 hello。`/worktree` 中该工作树为“无改动”（提交已合并进主分支，不再算独有提交）；remove 直接删除，没有要求 `--discard` |
 | M111 显示 | 在 Windows Terminal 中检查 M102 的进度行、`/worktree` 和 `/tasks tN` 的输出 | 进度行原地更新，不留下重复行；中文与路径对齐正常，没有错位或残留 |
 | M112 并行隔离 | 让模型“同时启动两个 general 子 Agent，isolation 都设为 worktree：一个在 notes.txt 开头加一行 A，一个在末尾加一行 B” | 两个工具行同时更新进度，工作树名称不同。两个结果都“已保留”；各自工作树中的 notes.txt 只有自己的那一行，主目录不变 |
 | M113 链接依赖目录 | 退出 MossCode，在你的 `config.yaml` 顶层临时加入 `worktree_links: [node_modules]`；在验收项目中运行 `New-Item -ItemType Directory -Force node_modules\pkg \| Out-Null; "x" \| Set-Content node_modules\pkg\index.js`；重新启动后输入 `/worktree create links`，在另一个终端中运行 `(Get-Item .mosscode\worktrees\links\node_modules).LinkType`；然后 `/worktree`、`/worktree remove links` | LinkType 为 `SymbolicLink` 或 `Junction`。`/worktree` 中 links 为“无改动”（链接不算改动）；remove 直接删除，之后主目录的 `node_modules\pkg\index.js` 仍然存在。验收后删除 `node_modules` 和 `config.yaml` 中的这一行 |
 | M114 在工作树中启动 | 输入 `/worktree create demo`，按提示在另一个终端中 `cd` 进入，用 `--config "$moss\config.yaml"` 启动 MossCode，输入 `/memory`；退出后回到原来的界面，让模型“用 grep 搜索 old_name” | `/memory` 的“项目指令”中 AGENTS.md 只出现一次，路径在 `.mosscode\worktrees\demo` 中（MCP 状态不作为判断依据）。主界面的 grep 结果不含 `.mosscode/worktrees` 中的文件。最后 `/worktree remove demo` |
 
-验收完成后如果还有工作树，用 `/worktree` 查看并逐个 `/worktree remove <名称> --discard`；用 `git checkout notes.txt` 还原 M110 合并前的内容（或重新生成验收项目）。
+验收完成后如果还有工作树，用 `/worktree` 查看并逐个 `/worktree remove <名称> --discard`；M110 合并和 stash 改变了验收项目，之后的其他用例请用 `--force` 重新生成验收项目。
 
 ## 已知限制
 

@@ -43,7 +43,8 @@ def count_changes(path: Path, branch: str, skip=()) -> Changes:
         files = []
         for line in status.stdout.splitlines():
             name = line[3:].split(" -> ")[-1].strip().strip('"').rstrip("/")
-            if name and name not in skip:
+            # On Windows git walks into a junction, so the files under a link show up one by one.
+            if name and not any(name == item or name.startswith(item + "/") for item in skip):
                 files.append(name)
         # With --branches the exclude pattern is relative to refs/heads/.
         commits = git.run_git(["rev-list", "--count", "HEAD", "--not", f"--exclude={branch}",

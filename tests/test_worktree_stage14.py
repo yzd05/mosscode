@@ -194,6 +194,20 @@ async def test_ac5_local_files_include_and_links(tmp_path):
     assert not manager.changes(created.meta).any
 
 
+async def test_ac5_files_under_an_unignored_link_are_not_changes(tmp_path):
+    project = repo(tmp_path)
+    (project / ".gitignore").write_text("", encoding="utf-8")
+    git(project, "commit", "-q", "-am", "no ignores")
+    (project / "vendor" / "pkg").mkdir(parents=True)
+    (project / "vendor" / "pkg" / "index.js").write_text("x", encoding="utf-8")
+    manager = manager_of(project, links=["vendor"])
+    created = await manager.create("demo")
+    assert created.meta.links == ["vendor"]
+    assert not manager.changes(created.meta).any
+    await manager.remove("demo")
+    assert (project / "vendor" / "pkg" / "index.js").is_file()
+
+
 async def test_ac5_failed_step_is_a_warning(tmp_path, monkeypatch):
     project = repo(tmp_path)
     (project / ".worktreeinclude").write_text(".env\n", encoding="utf-8")
