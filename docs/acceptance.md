@@ -62,7 +62,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`962 passed, 2 skipped`。跳过的两项分别需要创建文件符号链接的权限和安装 ripgrep。
+- **pytest**：`965 passed, 2 skipped`。跳过的两项分别需要创建文件符号链接的权限和安装 ripgrep。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -75,7 +75,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 阶段 | 测试文件 | 预期 |
 | --- | --- | --- |
 | 1 模型侧 | `tests\test_model_side.py tests\test_prompt_cache.py tests\test_config.py tests\test_providers.py` | 86 passed |
-| 2 工具 | `tests\test_tools_stage2.py` | 18 passed |
+| 2 工具 | `tests\test_tools_stage2.py` | 20 passed |
 | 3 计划模式与危险命令 | `tests\test_plan_commands.py` | 52 passed |
 | 3b 权限 | `tests\test_permissions_stage3b.py` | 84 passed |
 | 4 交互 | `tests\test_interaction_stage4.py` | 22 passed |
@@ -89,7 +89,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 10 命令系统 | `tests\test_commands_stage10.py` | 28 passed |
 | 12 Hook | `tests\test_hooks_stage12.py` | 73 passed |
 | 13 子 Agent | `tests\test_subagents_stage13.py` | 32 passed |
-| 14 Git 工作树 | `tests\test_worktree_stage14.py` | 49 passed, 1 skipped（ripgrep 未安装） |
+| 14 Git 工作树 | `tests\test_worktree_stage14.py` | 50 passed, 1 skipped（ripgrep 未安装） |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 
@@ -472,7 +472,7 @@ tools: Read
 | M111 显示 | 在 Windows Terminal 中检查 M102 的进度行、`/worktree` 和 `/tasks tN` 的输出 | 进度行原地更新，不留下重复行；中文与路径对齐正常，没有错位或残留 |
 | M112 并行隔离 | 让模型“同时启动两个 general 子 Agent，isolation 都设为 worktree：一个在 notes.txt 开头加一行 A，一个在末尾加一行 B” | 两个工具行同时更新进度，工作树名称不同。两个结果都“已保留”；各自工作树中的 notes.txt 只有自己的那一行，主目录不变 |
 | M113 链接依赖目录 | 退出 MossCode，在你的 `config.yaml` 顶层临时加入 `worktree_links: [node_modules]`；在验收项目中运行 `New-Item -ItemType Directory -Force node_modules\pkg \| Out-Null; "x" \| Set-Content node_modules\pkg\index.js`；重新启动后输入 `/worktree create links`，在另一个终端中运行 `(Get-Item .mosscode\worktrees\links\node_modules).LinkType`；然后 `/worktree`、`/worktree remove links` | LinkType 为 `SymbolicLink` 或 `Junction`。`/worktree` 中 links 为“无改动”（链接不算改动）；remove 直接删除，之后主目录的 `node_modules\pkg\index.js` 仍然存在。验收后删除 `node_modules` 和 `config.yaml` 中的这一行 |
-| M114 在工作树中启动 | 输入 `/worktree create demo`，按提示在另一个终端中 `cd` 进入，用 `--config "$moss\config.yaml"` 启动 MossCode，输入 `/memory`；退出后回到原来的界面，让模型“用 grep 搜索 old_name” | `/memory` 的“项目指令”中 AGENTS.md 只出现一次，路径在 `.mosscode\worktrees\demo` 中（MCP 状态不作为判断依据）。主界面的 grep 结果不含 `.mosscode/worktrees` 中的文件。最后 `/worktree remove demo` |
+| M114 在工作树中启动 | 输入 `/worktree create demo`，按提示在另一个终端中 `cd` 进入，用 `--config "$moss\config.yaml"` 启动 MossCode，输入 `/memory`；退出后回到原来的界面，让模型“用 grep 搜索 old_name” | `/memory` 的“项目指令”中项目的 AGENTS.md 只出现一次，路径在 `.mosscode\worktrees\demo` 中；上级目录的 AGENTS.md（“青松”）仍然列出（MCP 状态不作为判断依据）。主界面的 grep 结果不含 `.mosscode/worktrees` 中的文件。最后 `/worktree remove demo` |
 
 验收完成后如果还有工作树，用 `/worktree` 查看并逐个 `/worktree remove <名称> --discard`；M110 合并和 stash 改变了验收项目，之后的其他用例请用 `--force` 重新生成验收项目。
 

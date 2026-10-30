@@ -17,6 +17,39 @@ SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 FOLD = os.name == "nt"  # Git for Windows matches ignore patterns case-insensitively.
 
 
+def expand_braces(pattern):
+    """Expand `{a,b}` alternatives (nested too) like rg globs; unbalanced braces stay literal."""
+    depth, start = 0, None
+    for index, char in enumerate(pattern):
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth:
+                continue
+            body, rest = pattern[start + 1:index], pattern[index + 1:]
+            alternatives, level, last = [], 0, 0
+            for position, inner in enumerate(body):
+                if inner == "{":
+                    level += 1
+                elif inner == "}":
+                    level -= 1
+                elif inner == "," and level == 0:
+                    alternatives.append(body[last:position])
+                    last = position + 1
+            if not alternatives:  # `{x}` has no alternatives: keep it, but expand inside and after it.
+                return [pattern[:start] + "{" + inner + "}" + tail
+                        for inner in expand_braces(body) for tail in expand_braces(rest)]
+            alternatives.append(body[last:])
+            return list(dict.fromkeys(expanded for alternative in alternatives
+                                      for expanded in expand_braces(pattern[:start] + alternative + rest)))
+    if depth:  # The first '{' never closed: literal, but later braces may still pair up.
+        return [pattern[:start + 1] + tail for tail in expand_braces(pattern[start + 1:])]
+    return [pattern]
+
+
 def matches(path, pattern):
     # Glob '*' matches a single path segment; '**' spans zero or more.
     parts = path.replace("\\", "/").split("/")
@@ -149,10 +182,13 @@ def main():
     base = Path(arguments["base"]) if arguments.get("base") else None
     flags = re.IGNORECASE if arguments.get("ignore_case") else 0
     expression = re.compile(arguments["pattern"], flags) if mode != "glob" else None
+    pattern = arguments["pattern"] if mode == "glob" else arguments.get("glob")
+    # Braces are expanded for user patterns only; .gitignore has no brace syntax.
+    patterns = expand_braces(pattern) if pattern else []
     for path in files(root, base):
         relative = path.name if root.is_file() else path.relative_to(root).as_posix()
-        pattern = arguments["pattern"] if mode == "glob" else arguments.get("glob")
-        if pattern and not matches(relative, pattern) and not ("/" not in pattern and fnmatch.fnmatchcase(path.name, pattern)):
+        if patterns and not any(matches(relative, item) or ("/" not in item and fnmatch.fnmatchcase(path.name, item))
+                                for item in patterns):
             continue
         if mode == "glob":
             print(relative, flush=True)

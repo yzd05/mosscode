@@ -564,6 +564,19 @@ def test_ac17_instructions_in_a_worktree_come_once(tmp_path):
     assert project / "AGENTS.md" in instruction_candidates(project, tmp_path / "home")
 
 
+def test_ac17_instructions_above_the_main_project_still_load_in_a_worktree(tmp_path):
+    project = tmp_path / "project"
+    worktree = project / ".mosscode" / "worktrees" / "demo"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: x\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("parent", encoding="utf-8")
+    (project / "AGENTS.md").write_text("main", encoding="utf-8")
+    (worktree / "AGENTS.md").write_text("copy", encoding="utf-8")
+    found = instruction_candidates(worktree, tmp_path / "home")
+    assert found == [tmp_path / "AGENTS.md", worktree / "AGENTS.md"]
+    assert instruction_candidates(project, tmp_path / "home") == [tmp_path / "AGENTS.md", project / "AGENTS.md"]
+
+
 # AC18: hooks ------------------------------------------------------------------------------------------------
 
 async def test_ac18_hook_fields(tmp_path):

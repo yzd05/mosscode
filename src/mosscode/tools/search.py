@@ -79,7 +79,7 @@ class SearchTool(Tool):
 
 class Glob(SearchTool):
     name = "glob"
-    description = (f"按 glob 模式查找文件，例如 **/*.py，可指定搜索目录 path。遵守 .gitignore，并跳过 .git、.venv、node_modules "
+    description = (f"按 glob 模式查找文件，例如 **/*.py，支持花括号多选如 *.{{py,md}}、{{src,docs}}/**/*，可指定搜索目录 path。遵守 .gitignore，并跳过 .git、.venv、node_modules "
                    f"和缓存目录（以及 .mosscode/worktrees，除非 path 指向其中）；结果按修改时间从新到旧排列，最多 {GLOB_LIMIT} 项。项目目录之外的路径需要用户确认。")
     prompt_summary = "按文件名或路径模式定位文件"
     prompt_guidelines = (

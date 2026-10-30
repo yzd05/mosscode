@@ -112,9 +112,10 @@ def instruction_candidates(root: Path, home: Path | None = None) -> list[Path]:
     home = Path.home() if home is None else home
     found = [home / ".mosscode" / "AGENTS.md"]
     top = worktree_top(root)
+    main = top.parents[2] if top is not None else None
     for directory in reversed((root, *root.parents)):
-        if top is not None and not directory.is_relative_to(top):
-            continue  # Ch14 S3: the main project's files would come twice.
+        if top is not None and directory.is_relative_to(main) and not directory.is_relative_to(top):
+            continue  # Ch14 S3: the main project's files would come twice; directories above it still count.
         found.extend(next(([directory / name] for name in INSTRUCTION_FILES if (directory / name).is_file()), []))
     found.append(root / ".mosscode" / "AGENTS.md")
     unique = {}

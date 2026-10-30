@@ -310,3 +310,33 @@ async def test_glob_and_grep_list_newest_first(tmp_path, monkeypatch):
     reg = registry(tmp_path)
     assert (await reg.execute(call("glob", pattern="*.txt"))).output.splitlines() == ["new.txt", "mid.txt", "old.txt"]
     assert (await reg.execute(call("grep", pattern="needle"))).output.splitlines() == ["new.txt", "mid.txt", "old.txt"]
+
+
+def test_fallback_brace_expansion():
+    from mosscode.tools.search_worker import expand_braces
+    assert expand_braces("{src,docs}/**/*") == ["src/**/*", "docs/**/*"]
+    assert expand_braces("*.{py,md}") == ["*.py", "*.md"]
+    assert expand_braces("a{b,c{d,e}}f") == ["abf", "acdf", "acef"]
+    assert expand_braces("{,a}b") == ["b", "ab"]
+    # Unbalanced or comma-free braces stay literal; later pairs still expand.
+    assert expand_braces("{a,b") == ["{a,b"] and expand_braces("a}") == ["a}"]
+    assert expand_braces("{a{b,c}") == ["{ab", "{ac"] and expand_braces("x{y}z") == ["x{y}z"]
+
+
+async def test_fallback_glob_and_grep_expand_braces(tmp_path, monkeypatch):
+    no_rg(monkeypatch)
+    for name in ["src/a.py", "src/deep/b.md", "docs/c.md", "other/d.py", "e.txt", "{f}.txt"]:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("needle", encoding="utf-8")
+    reg = registry(tmp_path)
+
+    async def glob(pattern):
+        return sorted((await reg.execute(call("glob", pattern=pattern))).output.splitlines())
+
+    assert await glob("{src,docs}/**/*") == ["docs/c.md", "src/a.py", "src/deep/b.md"]
+    assert await glob("*.{py,md}") == ["docs/c.md", "other/d.py", "src/a.py", "src/deep/b.md"]
+    assert await glob("{src/**/*.{py,md},e.txt}") == ["e.txt", "src/a.py", "src/deep/b.md"]
+    assert await glob("{f}.txt") == ["{f}.txt"]
+    found = await reg.execute(call("grep", pattern="needle", glob="*.{md,txt}"))
+    assert sorted(found.output.splitlines()) == ["docs/c.md", "e.txt", "src/deep/b.md", "{f}.txt"]

@@ -12,7 +12,7 @@
 | `write_file` | 创建或覆盖文件，自动创建父目录；覆盖已有文件前须先读取 |
 | `edit_file` | 原文精确替换，默认要求唯一匹配；`replace_all: true` 替换全部；须先读取；CRLF 文件可用 LF 原文匹配并保持 CRLF |
 | `execute_command` | 在 Git Bash / PowerShell / bash 中执行（见下文），返回 stdout/stderr/退出码；默认超时 120 秒、最大 600 秒 |
-| `glob` | 按文件模式查找文件，如 `**/*.py`；遵守 `.gitignore`，按修改时间从新到旧 |
+| `glob` | 按文件模式查找文件，如 `**/*.py`，支持花括号多选如 `*.{py,md}`、`{src,docs}/**/*`（`grep` 的 `glob` 参数同样支持）；遵守 `.gitignore`，按修改时间从新到旧 |
 | `grep` | 按正则搜索内容；`output_mode` 为 `files_with_matches`（默认）、`content` 或 `count`，支持 `glob`、`ignore_case`、`context`、`head_limit` |
 | `memory` | 保存或删除跨会话的记忆笔记，只写两个笔记目录，不接受路径；不需要审批，计划模式中也可用。见 [记忆笔记](memory.md#memory-工具) |
 
@@ -48,7 +48,7 @@
 
 ## 搜索与截断
 
-搜索优先使用 PATH 中的 ripgrep（rg），缺失时自动使用独立 Python 搜索进程，无需额外安装才能进行基本搜索。正则语法遵循实际引擎。两种实现都遵守 `.gitignore`（不要求是 git 仓库；回退实现支持注释、`!` 取反、`/` 锚定、目录模式和 `**`），并跳过 `.git`、`.venv`、`venv`、`node_modules` 和 `__pycache__`；明确指定被忽略的目录作为 path 时仍会搜索。`glob` 和 `grep` 的文件列表按修改时间从新到旧，`glob` 最多 200 项，`grep` 默认 `head_limit` 200 条。命令输出在 2 MiB 处保留开头和结尾、中间标注省略的字节数，这只是内存保护；超过约 12,500 Token 的工具结果（`read_file` 除外）完整存入会话目录，历史中保留开头和结尾的预览，见 [上下文管理](context.md#第一层大结果存盘)。`read_file` 自身分页，超长行有显式截断标记。
+搜索优先使用 PATH 中的 ripgrep（rg），缺失时自动使用独立 Python 搜索进程，无需额外安装才能进行基本搜索。正则语法遵循实际引擎。两种实现都遵守 `.gitignore`（不要求是 git 仓库；回退实现支持注释、`!` 取反、`/` 锚定、目录模式和 `**`）；回退实现的 `glob` 模式与 rg 一样展开花括号（可嵌套，不成对的花括号按字面匹配），`.gitignore` 规则不展开，并跳过 `.git`、`.venv`、`venv`、`node_modules` 和 `__pycache__`；明确指定被忽略的目录作为 path 时仍会搜索。`glob` 和 `grep` 的文件列表按修改时间从新到旧，`glob` 最多 200 项，`grep` 默认 `head_limit` 200 条。命令输出在 2 MiB 处保留开头和结尾、中间标注省略的字节数，这只是内存保护；超过约 12,500 Token 的工具结果（`read_file` 除外）完整存入会话目录，历史中保留开头和结尾的预览，见 [上下文管理](context.md#第一层大结果存盘)。`read_file` 自身分页，超长行有显式截断标记。
 
 ## 运行时事件
 
