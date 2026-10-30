@@ -417,7 +417,7 @@ class SubAgents:
         isolate, note = self._isolation(agent, isolation)
         manager = self._manager(ToolFailure) if isolate else None
         task = self.tasks.new(origin="agent", agent="subagent", agent_type=agent.name, description=description,
-                              prompt=prompt, call_id=call_id, background=background)
+                              prompt=prompt, call_id=call_id, background=background, isolated=isolate)
         loop = None
         try:
             if isolate:
@@ -494,7 +494,7 @@ class SubAgents:
             except WorktreeError as exc:
                 return ActionResult("failed", str(exc))
         task = self.tasks.new(origin="hook", agent="subagent", agent_type=agent.name, description=f"Hook {hook.id}",
-                              prompt=prompt, background=True)
+                              prompt=prompt, background=True, isolated=isolate)
         try:
             if isolate:
                 self._check_provider(agent.model, f"子 Agent {agent.name} ")

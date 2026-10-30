@@ -505,6 +505,12 @@ def shell_name(label: str | None) -> str:
     return "PowerShell" if label == "PowerShell" else "Bash"
 
 
+def agent_detail(args: dict, isolated: bool) -> str:
+    """Ch14 U1: an agent row names the worktree only when the sub-agent runs in one."""
+    parts = [args.get("agent_type") or "fork", *(["工作树"] if isolated else []), args.get("description", "")]
+    return " ".join(" · ".join(map(str, parts)).splitlines())[:100]
+
+
 def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, dict]:
     """(display name, main argument, parsed arguments) for one tool line."""
     names = {"read_file": "Read", "write_file": "Write", "edit_file": "Edit", "memory": "Memory",
@@ -520,9 +526,7 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
         elif call.name == "memory":
             detail = f"{args.get('action', '')} {args.get('name', '')}".strip()
         elif call.name == "agent":
-            detail = f"{args.get('agent_type') or 'fork'} · {args.get('description', '')}"
-            if args.get("isolation") == "worktree":
-                detail = f"{args.get('agent_type') or 'fork'} · 工作树 · {args.get('description', '')}"
+            detail = agent_detail(args, args.get("isolation") == "worktree")
         elif call.name in {"task_output", "task_stop"}:
             detail = args.get("task_id", "")
         else:
@@ -588,6 +592,8 @@ class ToolEntry(Static):
         call = event.call
         self.operation = call.name
         self.operation_name, self.detail, self.arguments = describe_call(call, shell)
+        if self.operation == "agent":  # The task says whether it really got a worktree (plan mode skips it).
+            self.detail = agent_detail(self.arguments, False)
         self.label = f"● {self.operation_name}({self.detail})"
         self.transcript = self._heading("running") + Text("\n  └ 执行中…", style=OPERATION_COLOR)
         self.update(self.transcript)
@@ -613,6 +619,9 @@ class ToolEntry(Static):
         """Ch13 U1: a sub-agent's tool calls are not rows of their own; its agent row counts them."""
         if self.elapsed is not None:
             return
+        if self.operation == "agent":
+            self.detail = agent_detail(self.arguments, task.isolated)
+            self.label = f"● {self.operation_name}({self.detail})"
         place = f"工作树 {task.worktree['name']} · " if task.worktree else ""  # Ch14 U1.
         if task.background:
             line = f"后台 · {place}任务 {task.id}"

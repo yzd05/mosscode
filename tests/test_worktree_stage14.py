@@ -194,6 +194,27 @@ async def test_ac5_local_files_include_and_links(tmp_path):
     assert not manager.changes(created.meta).any
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction 回退")
+async def test_ac5_links_fall_back_to_a_junction_without_the_symlink_privilege(tmp_path, monkeypatch):
+    project = repo(tmp_path)
+    (project / "node_modules" / "lib").mkdir(parents=True)
+    (project / "node_modules" / "lib" / "index.js").write_text("x", encoding="utf-8")
+    (project / "local.bin").write_text("x", encoding="utf-8")
+
+    def refuse(*args, **kwargs):  # What Windows says without Developer Mode or the privilege.
+        raise OSError(None, "客户端没有所需的特权。", None, 1314)
+    monkeypatch.setattr("mosscode.worktree.setup.os.symlink", refuse)
+    manager = manager_of(project, links=["node_modules", "local.bin"])
+    created = await manager.create("demo")
+    link = Path(created.meta.path) / "node_modules"
+    assert link.is_junction() and not link.is_symlink() and (link / "lib" / "index.js").is_file()
+    assert created.meta.links == ["node_modules"] and not (Path(created.meta.path) / "local.bin").exists()
+    assert any("未能链接 local.bin：Windows 上创建文件的符号链接需要特权" in item for item in created.warnings)
+    assert not manager.changes(created.meta).any
+    await manager.remove("demo")
+    assert (project / "node_modules" / "lib" / "index.js").is_file()
+
+
 async def test_ac5_files_under_an_unignored_link_are_not_changes(tmp_path):
     project = repo(tmp_path)
     (project / ".gitignore").write_text("", encoding="utf-8")
@@ -452,6 +473,7 @@ async def test_ac13_parameter_fork_plan_and_definition(tmp_path):
     await drain(conv.reply("开始"))
     result = tool_results_of(main_requests(provider)[1])[0]
     assert result.output.startswith("（计划模式下未创建工作树") and conv.tasks.get("t1").worktree is None
+    assert not conv.tasks.get("t1").isolated
     assert sorted((project / ".mosscode" / "worktrees").glob("agent-*")) == before
     await conv.close()
 
@@ -687,3 +709,21 @@ def test_ac21_tool_row_names_the_worktree():
                                          isolation="worktree"))
     assert (name, detail) == ("Agent", "general · 工作树 · 改")
     assert describe_call(call("agent", "a1", description="改", prompt="p"))[1] == "fork · 改"
+
+
+async def test_ac21_live_row_names_the_worktree_only_when_the_task_has_one():
+    from textual.app import App
+    from mosscode.agents.tasks import Task
+    from mosscode.messages import ToolProgress
+    from mosscode.tui import ToolEntry
+    async with App().run_test() as pilot:
+        for asked, isolated, expected in [(True, False, "writer · 改"),  # Plan mode skipped the worktree.
+                                          (False, True, "writer · 工作树 · 改"),  # The definition asked for it.
+                                          (True, True, "writer · 工作树 · 改")]:
+            extra = {"isolation": "worktree"} if asked else {}
+            row = ToolEntry(ToolProgress(call("agent", "a1", description="改", prompt="p", agent_type="writer",
+                                              **extra), "running"))
+            await pilot.app.mount(row)
+            assert row.detail == "writer · 改"  # Nothing is claimed before the task starts.
+            row.progress(Task("t1", "agent", "subagent", "writer", "改", "p", isolated=isolated))
+            assert row.detail == expected and row.transcript.plain.startswith(f"● Agent({expected})")

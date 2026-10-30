@@ -62,7 +62,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`967 passed`，无跳过（本机已开启 Windows 开发者模式并安装 ripgrep；缺少其一时，文件符号链接测试或 rg 路径测试会跳过）。
+- **pytest**：`969 passed`，无跳过（本机已开启 Windows 开发者模式并安装 ripgrep；缺少其一时，文件符号链接测试或 rg 路径测试会跳过）。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。
@@ -89,7 +89,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | 10 命令系统 | `tests\test_commands_stage10.py` | 28 passed |
 | 12 Hook | `tests\test_hooks_stage12.py` | 73 passed |
 | 13 子 Agent | `tests\test_subagents_stage13.py` | 32 passed |
-| 14 Git 工作树 | `tests\test_worktree_stage14.py` | 51 passed |
+| 14 Git 工作树 | `tests\test_worktree_stage14.py` | 53 passed |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 

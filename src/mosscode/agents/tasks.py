@@ -38,6 +38,7 @@ class Task:
     job: asyncio.Task | None = field(default=None, repr=False)
     detach: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     policy: object = field(default=None, repr=False)  # The PolicyView, switched to non-interactive on detach.
+    isolated: bool = False  # Ch14: runs in a worktree (asked for and not skipped by plan mode).
     root: Path | None = None  # Ch14: the worktree directory it works in; None for the project.
     # Ch14 M6: {"name", "path", "branch", "base", "outcome"}; outcome is 使用中 / 已保留 / 已删除 / 删除未完成.
     worktree: dict | None = None
