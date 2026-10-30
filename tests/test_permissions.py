@@ -321,13 +321,19 @@ async def test_symlink_file_search_fallback_does_not_leak(tmp_path, monkeypatch)
         (root / "link.txt").symlink_to(secret)
     except OSError:
         pytest.skip("当前 Windows 用户不能创建文件符号链接；目录 junction 另有实际测试。")
-    reg = registry(root, "bypassPermissions")
-    assert (await reg.execute(call("read_file", path="link.txt"))).code == "path_blocked"
+    reg = registry(root)
+    # The link's target is outside: reads need approval like any outside path, writes never pass.
+    assert (await reg.execute(call("read_file", path="link.txt"))).code == "approval_required"
     assert (await reg.execute(call("write_file", path="link.txt", content="bad"))).code == "path_blocked"
-    monkeypatch.setattr("mosscode.tools.search.shutil.which", lambda _: None)
-    result = await reg.execute(call("grep", pattern="private_marker"))
-    assert not result.is_error and result.details["count"] == 0
-    assert "private_marker" not in result.output
+    reg.permissions.set_mode("bypassPermissions")
+    assert (await reg.execute(call("write_file", path="link.txt", content="bad"))).code == "path_blocked"
+    assert secret.read_text() == "private_marker"
+    for fallback in (False, True):
+        if fallback:
+            monkeypatch.setattr("mosscode.tools.search.shutil.which", lambda _: None)
+        result = await reg.execute(call("grep", pattern="private_marker"))
+        assert not result.is_error and result.details["count"] == 0
+        assert "private_marker" not in result.output
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction 行为")

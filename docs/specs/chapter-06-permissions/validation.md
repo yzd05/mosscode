@@ -26,6 +26,8 @@
 
 最终结果：**242 passed, 1 skipped in 35.36s**。跳过的是文件符号链接测试：当前 Windows 用户没有创建文件符号链接的权限。Windows 目录 junction 的真实创建、解析、搜索与根目录替换测试已执行并通过；不把 junction 的通过视为文件符号链接测试也已执行。
 
+补跑（2026-10-30）：开启 Windows 开发者模式后，文件符号链接测试首次实际运行。它的第一条断言仍按早期设计要求 bypassPermissions 下经链接读取项目外文件返回 `path_blocked`，与现行规则（项目外读取需要审批，bypassPermissions 自动放行）不符；已改为与 junction 测试一致：默认档位经链接读取返回 `approval_required`，任何档位经链接写入返回 `path_blocked` 且目标不变，rg 与回退实现的搜索都不会经链接泄露内容。`tests/test_permissions.py` 61 passed，全量 967 passed。
+
 ```powershell
 .\.venv\Scripts\python.exe -m compileall -q src tests scripts
 .\.venv\Scripts\python.exe scripts/verify_inline_terminal.py
