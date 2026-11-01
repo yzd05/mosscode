@@ -72,6 +72,7 @@ class AgentLoop:
         self.git: dict | None = None
         self.skill_catalog = ""  # The model-visible list of skills (ch11 A1), after the instructions.
         self.agent_catalog = ""  # Ch13 G2: the sub-agent types, after the skills.
+        self.team_guide = ""  # Ch15 LD1: the lead's team section; never copied to forks or members.
         self.active_skills = ActiveSkills()  # Pinned SOPs, sent in the cached prefix (A6).
         self._announced = "normal"
         self.history: list[Message] = []
@@ -167,7 +168,8 @@ class AgentLoop:
         return self.registry.definitions(plan=self.mode == "plan") if self.registry else ()
 
     def _prompt(self, definitions):
-        instructions = "\n\n".join(part for part in (self.instructions, self.skill_catalog, self.agent_catalog) if part)
+        instructions = "\n\n".join(part for part in (self.instructions, self.skill_catalog, self.agent_catalog,
+                                                     self.team_guide) if part)
         return build_system_prompt(definitions, override=self.system, instructions=instructions)
 
     def _active(self) -> Supplement | None:

@@ -323,6 +323,17 @@ class WorktreeManager:
             return Finished(False, changes, str(exc))
         return Finished(False, changes)
 
+    async def mark_in_use(self, flat: str, task: str = "", pid: int | None = None) -> None:
+        """Ch15: a team member's worktree is in use while the member runs; "" clears it. Never deletes.
+
+        pid: the process running the member (a pane member's own), this one by default."""
+        async with self._lock:
+            meta_path = self.meta_path(flat)
+            meta = load_meta(meta_path)
+            if meta is not None:
+                meta.in_use = {"pid": pid or os.getpid(), "task": task} if task else None
+                await asyncio.to_thread(save_meta, meta, meta_path)
+
     def report(self, meta: WorktreeMeta, finished: Finished) -> str:
         """A6: the lines after a sub-agent's result."""
         if not finished.kept:

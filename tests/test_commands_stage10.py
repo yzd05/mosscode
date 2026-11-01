@@ -116,12 +116,12 @@ def test_ac1_malformed_commands_are_rejected(command):
         CommandRegistry([command])
 
 
-def test_ac1_builtin_registry_has_eighteen_visible_commands():
+def test_ac1_builtin_registry_has_nineteen_visible_commands():
     # Chapter 11 adds /skills and turns /review into a built-in skill; chapter 12 adds /hooks, chapter 13 /agents and /tasks,
-    # chapter 14 /worktree.
+    # chapter 14 /worktree, chapter 15 /team.
     assert [c.name for c in BUILTIN.visible()] == [
         "help", "clear", "compact", "resume", "session", "memory", "model", "plan", "do", "permissions",
-        "status", "mcp", "skills", "hooks", "agents", "tasks", "worktree", "exit"]
+        "status", "mcp", "skills", "hooks", "agents", "tasks", "worktree", "team", "exit"]
     assert BUILTIN.get("/PERMISSION").name == "permissions" and BUILTIN.get("quit").name == "exit"
 
 
@@ -151,9 +151,9 @@ def test_ac3_completion(tmp_path):
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
     conv = Conversation(FakeProvider(), registry=tools(tmp_path), memory=store)
     ctx = context(conv, Settings((ProviderConfig("only", "anthropic-messages", "m"),), "only"))
-    assert len(BUILTIN.matches(ctx, "/")) == 18
+    assert len(BUILTIN.matches(ctx, "/")) == 19
     hidden = CommandRegistry([*BUILTIN.visible(), Command("debug", "x", "/debug", "local", hidden=True, handler=noop)])
-    assert len(hidden.matches(ctx, "/")) == 18 and hidden.get("/debug") is not None
+    assert len(hidden.matches(ctx, "/")) == 19 and hidden.get("/debug") is not None
     assert [tuple(h) for h in BUILTIN.matches(ctx, "/q")] == [("/exit", "退出 MossCode（别名 /quit）", "/exit")]
     assert [h.value for h in BUILTIN.matches(ctx, "/permissions ")] == [
         "/permissions default", "/permissions acceptEdits", "/permissions plan", "/permissions bypassPermissions"]

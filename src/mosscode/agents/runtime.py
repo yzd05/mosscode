@@ -25,7 +25,10 @@ if TYPE_CHECKING:
 
 AGENT_TOOL = "agent"
 # L1: never for a sub-agent. Removed from a definition's tools; a fork keeps them offered (cache) but refused.
-GLOBAL_BAN = frozenset({AGENT_TOOL, "load_skill", "memory", "exit_plan_mode", "task_output", "task_stop"})
+# Ch15 TL3: the team tools too (tools/team.py TEAM_TOOLS); a member gets its own versions as extra tools.
+GLOBAL_BAN = frozenset({AGENT_TOOL, "load_skill", "memory", "exit_plan_mode", "task_output", "task_stop",
+                        "team_create", "team_spawn", "team_merge", "team_delete", "team_task_create", "team_task_get",
+                        "team_task_list", "team_task_update", "send_message"})
 # Ch14 I1: what an isolated sub-agent can have (create_default_registry, rooted in its worktree).
 WORKSPACE_TOOLS = frozenset({"read_file", "write_file", "edit_file", "execute_command", "glob", "grep",
                              "exit_plan_mode"})

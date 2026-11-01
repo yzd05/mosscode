@@ -56,7 +56,9 @@ class Conversation:
                  memory: MemoryStore | None = None, auto_memory: bool = False, memory_provider: Provider | None = None,
                  skills: SkillCatalog | None = None, provider_configs=(), provider_factory=None, hooks=None,
                  agents: AgentCatalog | None = None, agent_auto_background: float = AUTO_BACKGROUND,
-                 agent_max_background: int = MAX_BACKGROUND, worktree_links=(), worktree_stale_hours: float = 24.0):
+                 agent_max_background: int = MAX_BACKGROUND, worktree_links=(), worktree_stale_hours: float = 24.0,
+                 teams: bool = False, team_max_members: int = 4, teammate_mode: str = "in-process",
+                 team_launch: dict | None = None, coordinator: bool = False):
         self.provider, self.system, self.registry = provider, system, registry
         # Ch14: the worktree manager is built on first use; it needs a git repository.
         self.worktree_links, self.worktree_stale_hours = tuple(worktree_links), worktree_stale_hours
@@ -125,6 +127,28 @@ class Conversation:
         if hooks is not None:
             hooks.agent_runner = self.subagents.hook_agent
         self._notices.extend(self._offer_agents())
+        # Ch15 TL1: the lead's team tools from the start, in the interactive UI with tools and agents.
+        self.teams = None
+        self._team_context_due = False  # LD5: after /clear or /resume, once before the next message.
+        if teams and self.registry is not None and self.agents_enabled:
+            from .teams.runtime import TeamRuntime
+            from .tools.team import lead_tools
+            self.teams = TeamRuntime(self, home=sessions_home, max_members=team_max_members,
+                                     teammate_mode=teammate_mode, launch=team_launch)
+            for tool in lead_tools(self.registry.permissions.root, self.teams):
+                if self.registry.get(tool.name) is None:
+                    self.registry.register(tool)
+            self._agent.team_guide = self.teams.guide()  # LD1
+        # Ch15 CO1–CO7: decided at startup (the CLI checks both switches), fixed for the session.
+        self.coordinator = False
+        if coordinator:
+            from .coordinator import NO_AGENTS, SECTION, withheld
+            if self.teams is None:
+                self._notices.append(NO_AGENTS)
+            else:
+                self.coordinator = True
+                self.registry.withheld = withheld
+                self._agent.team_guide += "\n\n" + SECTION
 
     def _use_session(self, session) -> None:
         if self._transcript is not None:
@@ -312,6 +336,7 @@ class Conversation:
                 self._context_loaded = True
                 notices = await self._load_context()
         await self._session_start("clear")
+        self._team_context_due = self.teams is not None  # LD5: the team keeps running.
         return tuple(notices)
 
     async def set_provider(self, provider: Provider, budget: ContextBudget | None = None,
@@ -626,6 +651,7 @@ class Conversation:
         if restored.unanswered:
             notices.append(f"最后 {len(restored.unanswered)} 条消息没有得到回复，已放回输入框，可以修改后重新发送。")
         await self._session_start("resume")
+        self._team_context_due = self.teams is not None  # LD5
         notices.extend(self._raised)
         self._raised = []
         yield Resumed(restored, sum(1 for m in restored.history if m.role != "tool"), tuple(notices))
@@ -720,6 +746,8 @@ class Conversation:
             if self._worktree_cleanup is not None:
                 self._worktree_cleanup.cancel()
                 await asyncio.gather(self._worktree_cleanup, return_exceptions=True)
+            if self.teams is not None:
+                await self.teams.close()
             await self.tasks.cancel_all()
             if self.hooks is not None:
                 try:
@@ -749,6 +777,17 @@ class Conversation:
             if self._agent.notifications:  # Arrived after the last iteration boundary (B6).
                 self._tasks_ready()
 
+    async def _team_context(self, prompt: str, command: str | None) -> tuple[str, str | None]:
+        """LD5: the lead's next message after /clear or /resume carries the team it still leads; shown as typed."""
+        self._team_context_due = False
+        try:
+            context = await asyncio.to_thread(self.teams.context)
+        except Exception:  # A broken team record must not block the message.
+            return prompt, command
+        if not context:
+            return prompt, command
+        return f"{context}\n\n{prompt}", command or prompt
+
     async def _reply(self, prompt: str, command: str | None, fork: ForkRequest | None, synthetic: str | None):
         await self.start()
         command = command or (f"/{fork.skill.name}" if fork else None)
@@ -760,6 +799,8 @@ class Conversation:
             self._agent.turn_notes = await self._fire("turn_start", {"prompt": command or prompt})
             for notice in self._drain():
                 yield notice
+        if self._team_context_due and not fork and synthetic is None:
+            prompt, command = await self._team_context(prompt, command)
         run = self._fork(fork, command) if fork else self._agent.run(prompt, command=command, synthetic=synthetic)
         stopped = None
         try:

@@ -146,6 +146,8 @@ class ToolRegistry:
         self.forbidden: frozenset[str] = frozenset()  # Ch13 L2: offered (fork cache) but refused when called.
         self.nested = False  # Ch13 H5: started by a hook's agent action; its tool events run no agent action.
         self.worktree = ""  # Ch14 H1: the worktree a sub-agent works in, relative to the repository.
+        # Ch15 CO3: withheld(tool) -> True keeps a tool for sub-agents and members but neither offers nor runs it here.
+        self.withheld = None
         if any(tool.root != self.permissions.root for tool in self._tools.values()):
             raise ValueError("工具与权限策略必须使用同一个项目根目录。")
 
@@ -172,7 +174,10 @@ class ToolRegistry:
         return self._tools.get(name)
 
     def names(self) -> tuple[str, ...]:
-        return tuple(self._tools)
+        return tuple(name for name, tool in self._tools.items() if not self._withheld(tool))
+
+    def _withheld(self, tool: Tool) -> bool:
+        return self.withheld is not None and self.withheld(tool)
 
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
@@ -213,7 +218,7 @@ class ToolRegistry:
             if plan:
                 return tool.read_only or tool.plan_only or tool.plan_commands or tool.plan_allowed
             return not tool.plan_only and (not read_only or tool.read_only)
-        return tuple(tool.definition() for tool in self._tools.values() if offered(tool))
+        return tuple(tool.definition() for tool in self._tools.values() if offered(tool) and not self._withheld(tool))
 
     def is_read_only(self, name: str) -> bool:
         tool = self.get(name)
@@ -251,6 +256,10 @@ class ToolRegistry:
         tool = self.get(call.name)
         if tool is None:
             return ToolResult(call.id, call.name, "未知工具。", True, "unknown_tool")
+        if self._withheld(tool):
+            from ..coordinator import WITHHELD
+            return ToolResult(call.id, call.name, WITHHELD.format(name=call.name), True, "coordinator_withheld",
+                              {"executed": False})
         if call.name in self.forbidden:
             return ToolResult(call.id, call.name, f"你是子 Agent，不能使用 {call.name}；请在自己的范围内完成任务并在报告中说明。",
                               True, "subagent_forbidden", {"executed": False})

@@ -47,7 +47,8 @@ COMMAND_CHOICES = ("once", "session", "prefix", "permanent", "deny")  # prefix: 
 EDIT_CHOICES = ("once", "session", "accept_edits", "permanent", "deny")  # accept_edits: switch mode.
 RISKY_CHOICES = ("once", "deny")  # High-risk commands: never remembered.
 PLAN_CHOICES = ("execute", "accept_edits", "deny")  # deny = keep planning.
-ALL_CHOICES = frozenset((*COMMAND_CHOICES, *EDIT_CHOICES, *PLAN_CHOICES))
+MERGE_CHOICES = ("merge", "deny")  # Ch15 MG3: team_merge, asked whatever the mode or rules.
+ALL_CHOICES = frozenset((*COMMAND_CHOICES, *EDIT_CHOICES, *PLAN_CHOICES, *MERGE_CHOICES))
 EXIT_PLAN = "exit_plan_mode"
 PREFIX_SUFFIX = ":*"
 STRICTNESS = ("plan", "default", "acceptEdits", "bypassPermissions")  # Ch13 P3: strictest first.
@@ -302,6 +303,10 @@ class PermissionPolicy:
             # Ch13: starting or managing a sub-agent needs no approval; its own calls are checked one by one.
             target = args.get("agent_type") or args.get("task_id") or "fork"
             return Operation(tool.name, target, preview="子 Agent", notes=True)
+        if getattr(tool, "permission_kind", None) == "team":
+            # Ch15: team bookkeeping (messages, shared tasks, members) needs no approval; members' calls are checked.
+            target = args.get("name") or args.get("to") or args.get("id") or args.get("subject") or ""
+            return Operation(tool.name, str(target), preview="团队", notes=True)
         if getattr(tool, "permission_kind", None) == "skill":
             target = json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
             preview = (f"Skill {tool.skill_name} 的专属工具 {tool.short_name}\n命令：" + " ".join(tool.argv())
@@ -513,6 +518,18 @@ class PermissionPolicy:
                 return Decision("deny", "not_in_plan", "确认期间已离开计划模式；此调用未执行。")
             self.set_mode("acceptEdits" if choice == "accept_edits" else self.resume_mode)
             return Decision("allow")
+
+    async def confirm(self, call_id: str, operation: Operation, reason: str,
+                      choices: tuple[str, ...]) -> str | None:
+        """Ch15 MG3: the user decides, never a rule or mode; None when nobody can be asked."""
+        if not self.interactive:
+            return None
+        async with self._approval_lock:
+            request = ApprovalRequest(uuid4().hex, call_id, operation, reason, choices)
+            try:
+                return await self._ask(request)
+            finally:
+                self._settle(request)
 
     def respond(self, request_id: str, choice: str) -> bool:
         choices = self._choices.get(request_id)

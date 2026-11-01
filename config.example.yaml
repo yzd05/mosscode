@@ -21,6 +21,13 @@ default_provider: claude
 # auto_memory: true
 # 后台提取使用的 Provider 名称，可以指定较便宜的模型；未设置时用当前 Provider。
 # memory_provider: deepseek
+# Agent 团队的成员在哪里运行：auto（默认；在 tmux 中用 tmux 窗格，在 Windows Terminal 中用分屏窗格，否则进程内）、
+# in-process、windows-terminal、tmux。显式指定的窗格后端不可用时报错，不改用其他后端。
+# teammate_mode: auto
+# 每个团队的成员上限（默认 4，最多 8）。
+# team_max_members: 4
+# 协调者模式：Lead 不直接改文件，把实施交给成员。还需要环境变量 MOSSCODE_COORDINATOR_MODE=1；只用于交互界面。
+# coordinator_mode: false
 
 providers:
   - name: claude

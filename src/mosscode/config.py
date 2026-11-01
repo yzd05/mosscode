@@ -24,6 +24,7 @@ ALIASES = {
     "openai-compat": "openai-chat-completions",
 }
 PROTOCOLS = set(ALIASES.values())
+TEAMMATE_MODES = ("auto", "in-process", "windows-terminal", "tmux")  # Ch15 BE1.
 
 
 def _validate_env_name(value: str | None) -> None:
@@ -87,6 +88,9 @@ class Settings:
     agent_max_background: int = 4  # Ch13 G7: running background tasks at most.
     worktree_links: tuple[str, ...] = ()  # Ch14 W9: paths relative to the repository linked into each worktree.
     worktree_stale_hours: float = 24.0  # Ch14 W16: unused sub-agent worktrees older than this go; 0 never.
+    team_max_members: int = 4  # Ch15 TM5: members of one team at most (1–8).
+    teammate_mode: str = "auto"  # Ch15 BE1: auto / in-process / windows-terminal / tmux.
+    coordinator_mode: bool = False  # Ch15 CO1: also needs MOSSCODE_COORDINATOR_MODE.
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -226,7 +230,8 @@ def load_settings(path: str | Path) -> Settings:
         raise ConfigError("配置需包含非空 providers 列表。")
     if set(raw) - {"providers", "default_provider", "system_prompt", "max_iterations", "shell", "auto_compact",
                    "persist_sessions", "memory", "auto_memory", "memory_provider", "agent_auto_background",
-                   "agent_max_background", "worktree_links", "worktree_stale_hours"}:
+                   "agent_max_background", "worktree_links", "worktree_stale_hours", "team_max_members",
+                   "teammate_mode", "coordinator_mode"}:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
     if len({p.name for p in providers}) != len(providers):
@@ -258,9 +263,19 @@ def load_settings(path: str | Path) -> Settings:
     stale = raw.get("worktree_stale_hours", Settings.worktree_stale_hours)
     if type(stale) not in {int, float} or not 0 <= stale <= 8760:
         raise ConfigError("worktree_stale_hours 需为 0–8760 之间的小时数（0 表示不自动清理）。")
+    members = raw.get("team_max_members", Settings.team_max_members)
+    if type(members) is not int or not 1 <= members <= 8:
+        raise ConfigError("team_max_members 需为 1–8 之间的整数。")
+    teammate_mode = raw.get("teammate_mode", Settings.teammate_mode)
+    if teammate_mode not in TEAMMATE_MODES:
+        raise ConfigError("teammate_mode 需为 " + "、".join(TEAMMATE_MODES) + " 之一。")
+    coordinator = raw.get("coordinator_mode", Settings.coordinator_mode)
+    if type(coordinator) is not bool:
+        raise ConfigError("coordinator_mode 必须是布尔值。")
     settings = Settings(providers, default, stable_prompt(system), iterations, Path(path), shell.strip(),
                         memory_provider=memory_provider, agent_auto_background=float(auto_background),
                         agent_max_background=max_background, worktree_links=links,
-                        worktree_stale_hours=float(stale), **switches)
+                        worktree_stale_hours=float(stale), team_max_members=members,
+                        teammate_mode=teammate_mode, coordinator_mode=coordinator, **switches)
     settings.select()
     return settings

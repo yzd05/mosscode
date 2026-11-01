@@ -25,6 +25,7 @@ from .appearance import (COMMAND_HIGHLIGHT_COLOR, TERMINAL_CSS, USER_MESSAGE_BAC
                          TOOL_SUCCESS_COLOR, PARAMETER_COLOR, OPERATION_COLOR, ERROR_COLOR,
                          compact_notice, moss_themes, startup_banner)
 from .agents.tasks import Announcer
+from .coordinator import BADGE as COORDINATOR_BADGE
 from .builtin_commands import BUILTIN, clean_text, confirm_tasks, dispatch, offer_trust, open_sessions
 from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, Settings
@@ -69,12 +70,18 @@ CHOICE_LABELS = {
     "once": "本次允许 · 仅执行当前调用", "session": "本会话允许 · 同工具与目标，退出后失效",
     "permanent": "永久允许 · 保存到本项目本地配置", "deny": "拒绝 · 让模型调整策略",
     "execute": "批准计划并执行 · 恢复为进入计划前的权限", "accept_edits": "批准并自动接受编辑 · 切换为接受编辑档位",
+    "merge": "合并 · 把成员的提交合并到当前分支",
 }
+
+
+DECLINED_HINT = "└ 没有合并。想说明原因或改动要求，直接在输入框告诉 Lead。"
 
 
 def choice_label(request: ApprovalRequest, choice: str) -> str:
     if request.operation.tool == "exit_plan_mode" and choice == "deny":
         return "继续规划 · 拒绝并让模型修改计划"
+    if request.operation.tool == "team_merge" and choice == "deny":
+        return "不合并 · Lead 会停下来问你"
     if request.operation.risk and choice == "once":
         return "本次允许 · 高风险命令每次都需确认"
     if choice == "prefix":
@@ -786,6 +793,7 @@ class MossCodeApp(TerminalApp[None]):
         self._width: int | None = None
         self._redraw_timer = None
         self._approval_request: ApprovalRequest | None = None
+        self._approval_queue: list[ApprovalRequest] = []  # Ch15 PM2: shown one at a time, in arrival order.
         self._startup_task = None
         self._compacting: float | None = None  # Start time while a compaction runs.
         self._compact_row: CompactRow | None = None
@@ -829,6 +837,11 @@ class MossCodeApp(TerminalApp[None]):
         self.conversation.on_memory = self._on_memory
         self.conversation.on_tasks = self._schedule_notify
         self.conversation.tasks.on_change = self._on_task_change
+        teams = getattr(self.conversation, "teams", None)
+        if teams is not None:  # Ch15 PM2/LD4: members ask and report while the lead runs or waits.
+            teams.on_approval = self._member_approval
+            teams.on_note = lambda text: self._closing or self.call_later(self._local_note, "└ " + text)
+            teams.on_change = lambda: self._closing or self.call_later(self._status, self._status_note)  # UI1
         if self.conversation.context_root is not None:  # Ch14 W17.
             self.conversation.start_worktree_cleanup(
                 lambda report: self.conversation._hook_notice(clean_text(report, automatic=True)))
@@ -1074,6 +1087,8 @@ class MossCodeApp(TerminalApp[None]):
             mode = registry.permissions.mode
             color = {"acceptEdits": TOOL_SUCCESS_COLOR, "plan": OPERATION_COLOR, "bypassPermissions": ERROR_COLOR}.get(mode)
             text.append(MODE_BADGES[mode], style=f"bold {color}" if color else "bold")
+            if getattr(self.conversation, "coordinator", False):  # Ch15 CO5.
+                text.append(" " + COORDINATOR_BADGE, style=f"bold {OPERATION_COLOR}")
             if not self._generating and self.size.width >= 80:
                 text.append(" (Shift+Tab 切换)")
         if self.model:
@@ -1098,6 +1113,14 @@ class MossCodeApp(TerminalApp[None]):
             text.append(f" · 后台任务 {background}", style=OPERATION_COLOR)
         if any(not task.background and task.origin == "agent" for task in tasks.running()):
             text.append(" · Ctrl+B 转入后台", style=OPERATION_COLOR)
+        teams = getattr(self.conversation, "teams", None)
+        if teams is not None and teams.current is not None:  # Ch15 UI1.
+            running, idle = teams.counts()
+            text.append(f" · 团队 {teams.current.name} 运行 {running} / 空闲 {idle}")
+            asking = sum(1 for item in [self._approval_request, *self._approval_queue]
+                         if item is not None and item.source.startswith("成员") and self._waiting(item))
+            if asking:
+                text.append(f" · 成员审批 {asking}", style=OPERATION_COLOR)
         if self._usage.requests:
             def tokens(value, missing):
                 if missing == self._usage.requests:
@@ -1535,16 +1558,37 @@ class MossCodeApp(TerminalApp[None]):
         elif event.option_list.id == "approval-options" and self._approval_request:
             self._answer_approval(self._approval_request.choices[event.option_index])
 
+    def _waiting(self, request: ApprovalRequest) -> bool:
+        registry = self.conversation.registry
+        future = registry.permissions.pending.get(request.id) if registry is not None else None
+        return future is not None and not future.done()
+
+    def _member_approval(self, request: ApprovalRequest) -> None:
+        """PM2: a member's request; once the window is closing there is no card to show, so it is refused."""
+        if self._closing or not self.query("#approval-panel"):
+            if self.conversation.registry is not None:
+                self.conversation.registry.permissions.respond(request.id, "deny")
+            return
+        self._show_approval(request)
+
     def _show_approval(self, request: ApprovalRequest) -> None:
+        if self._approval_request is not None and self._approval_request.id != request.id:
+            if all(item.id != request.id for item in self._approval_queue):
+                self._approval_queue.append(request)  # PM2: after the one on screen.
+                self._status(self._status_note)
+            return
         self._approval_request = request
         operation = request.operation
         labels = {"read_file": "读取文件", "write_file": "写入文件", "edit_file": "修改文件",
                   "glob": "查找文件", "grep": "搜索内容", "exit_plan_mode": "审阅计划",
                   "execute_command": shell_name(shell_label(self.conversation.registry))}
         text = Text()
-        text.append("需要授权 · " + labels.get(operation.tool, operation.tool)
-                    + (f" · {request.source}" if request.source else "") + "\n", style=f"bold {OPERATION_COLOR}")
-        text.append(safe_display(operation.target), style=PARAMETER_COLOR)
+        if operation.tool == "team_merge":  # UI3
+            text.append(f"需要确认 · 合并成员 {safe_display(operation.target)} 的分支", style=f"bold {OPERATION_COLOR}")
+        else:
+            text.append("需要授权 · " + labels.get(operation.tool, operation.tool)
+                        + (f" · {request.source}" if request.source else "") + "\n", style=f"bold {OPERATION_COLOR}")
+            text.append(safe_display(operation.target), style=PARAMETER_COLOR)
         if operation.cwd is not None:
             text.append("\n工作目录：" + operation.cwd)
         text.append("\n" + request.reason)
@@ -1561,11 +1605,22 @@ class MossCodeApp(TerminalApp[None]):
         options.styles.height = len(request.choices)
         options.highlighted = 0
         options.focus()
+        if not self._generating:  # A member's request while the lead waits for input (PM2).
+            self._status("等待授权 · Esc 拒绝本次")
+        else:
+            self._status(self._status_note)  # UI1: the member approval count.
         self._tick()
         self.call_later(self._fit_chat)
 
     def _hide_approval(self) -> None:
+        """The next request still waiting stays or comes up (a member's outlives the lead's turn, PM2)."""
+        waiting = [item for item in ([self._approval_request] if self._approval_request else []) + self._approval_queue
+                   if self._waiting(item)]
         self._approval_request = None
+        self._approval_queue = waiting[1:]
+        if waiting and not self._closing:
+            self._show_approval(waiting[0])
+            return
         self.query_one("#approval-panel").display = False
         if not self._closing:
             # The prompt stays usable while the task runs, e.g. to queue a correction.
@@ -1574,8 +1629,13 @@ class MossCodeApp(TerminalApp[None]):
 
     def _answer_approval(self, choice: str) -> None:
         if self._approval_request and self.conversation.registry:
-            self.conversation.registry.permissions.respond(self._approval_request.id, choice)
+            request, self._approval_request = self._approval_request, None
+            self.conversation.registry.permissions.respond(request.id, choice)
             self._hide_approval()
+            if request.operation.tool == "team_merge" and choice == "deny":
+                self.call_later(self._local_note, DECLINED_HINT)  # MG4: the reason is the user's next message.
+            if self._approval_request is None and not self._generating:
+                self._status("")
             self._tick()
 
     async def _respond(self, prompt: str, reply: ChatEntry, command: str | None = None, fork=None,
@@ -1703,7 +1763,8 @@ class MossCodeApp(TerminalApp[None]):
                 await self._commit_ready_transcript()
                 field = self.query_one("#prompt", PromptArea)
                 field.disabled = False
-                field.focus()
+                if self._approval_request is None:  # A member's card still waiting keeps the keys (PM2).
+                    field.focus()
                 queued = self.conversation.take_queued()
                 if queued and completed:
                     # The model answered before the queue could join; send it as the next task.

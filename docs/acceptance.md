@@ -1,4 +1,4 @@
-# 完善阶段 1–6、上下文管理与第九至十四章（指令与记忆、命令系统、Skill、Hook、子 Agent、Git 工作树）验收指南
+# 完善阶段 1–6、上下文管理与第九至十五章（指令与记忆、命令系统、Skill、Hook、子 Agent、Git 工作树、Agent 团队）验收指南
 
 分三层验收，从快到慢：
 
@@ -6,7 +6,7 @@
 2. **离线检查**（约 5 分钟，不需要 API）：用不可达的 Provider 启动真实 CLI 和界面，检查重试、配置、MCP 启动、命令和按键。
 3. **真实模型用例**（约 70–90 分钟，消耗少量 Token）：在专用的验收项目里，用你配置的模型走完各阶段的主要场景。
 
-每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md`、`docs/specs/chapter-08-context/spec.md`、`docs/specs/chapter-09-memory/` 下的 `9a-instructions.md`、`9b-sessions.md`、`9c-auto-memory.md`，以及 `docs/specs/chapter-10-commands/spec.md`、`docs/specs/chapter-11-skills/spec.md`、`docs/specs/chapter-12-hooks/spec.md`、`docs/specs/chapter-13-subagents/spec.md`、`docs/specs/chapter-14-worktree/spec.md`。
+每条用例的“预期”只描述应用的行为（审批面板、工具结果、状态栏、文件变化）。模型的措辞每次不同，不作为判断依据。各阶段需求和验收的原始定义见 `docs/specs/refinement-0*/spec.md`、`docs/specs/chapter-08-context/spec.md`、`docs/specs/chapter-09-memory/` 下的 `9a-instructions.md`、`9b-sessions.md`、`9c-auto-memory.md`，以及 `docs/specs/chapter-10-commands/spec.md`、`docs/specs/chapter-11-skills/spec.md`、`docs/specs/chapter-12-hooks/spec.md`、`docs/specs/chapter-13-subagents/spec.md`、`docs/specs/chapter-14-worktree/spec.md`、`docs/specs/chapter-15-teams/spec.md`。
 
 ## 准备
 
@@ -476,11 +476,34 @@ tools: Read
 
 验收完成后如果还有工作树，用 `/worktree` 查看并逐个 `/worktree remove <名称> --discard`；M110 合并和 stash 改变了验收项目，之后的其他用例请用 `--force` 重新生成验收项目。
 
+### 第十五章：Agent 团队
+
+先回仓库根目录用 `--force` 重新生成验收项目（同时删除它在 `~\.mosscode\projects\` 下的团队），然后在验收项目中运行 `git commit -qam 基线`：合并要求主目录没有已跟踪文件的改动，未跟踪的 `untracked.txt` 不影响。在 Windows Terminal 中完成，权限档位为“接受编辑”（Shift+Tab）。
+
+M115–M119、M122 用进程内成员：退出 MossCode，在你的 `config.yaml` 顶层临时加入 `teammate_mode: in-process`，再用 `--config "$moss\config.yaml"` 启动。M120、M121、M123 各自说明要改的配置；全部做完后删除这些临时行。M115、M117 的团队留给 M118 使用；其他用例开始前可以用 `/team delete <名称>` 删掉不再需要的团队，免得界面中的说明行混在一起。
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M115 并行改不同文件 | 让模型“建团队 demo，两个成员：a 新建 docs/a.md 写一行 A，b 新建 docs/b.md 写一行 B，各自提交，完成后合并” | 工具行依次有 team_create、team_task_create、team_spawn；team_spawn 的结果写明“后端：in-process（teammate_mode: in-process；进程内运行，与 Lead 共用这个窗口）”。状态栏出现“团队 demo 运行 N / 空闲 M”，界面为成员的空闲和消息各显示一行。两个成员都完成后，每次合并弹出“需要确认 · 合并成员 a 的分支”卡片（列出提交和 `git diff --stat`），选“合并”。最后 `git log --oneline` 有两个合并提交，主目录有 docs/a.md 和 docs/b.md；`/team demo` 中两个成员的工作树仍在 |
+| M116 依赖门控 | 让模型“建团队 dep：任务 1 新建 docs/base.md 写一行 base；任务 2 在 docs/base.md 末尾加一行 next，依赖任务 1。成员 a 做任务 1，成员 b 做任务 2” | `/team dep` 的任务列表中任务 2 显示依赖 1。任务 1 完成前 b 不开始任务 2（它的消息说在等待，或保持空闲）；界面显示 a 完成任务 1 的空闲说明行之后，b 才开工（Lead 收到的团队更新写明“现在就绪的任务：2”）。合并时如果先合并 b，报 `merge_order`“先合并 a” |
+| M117 冲突与不合并 | 让模型“建团队 cf，成员 a 和 b 都把 src/util.py 的第一行改成不同的内容并提交，然后依次合并” | 第二次合并返回 `merge_conflict`，列出 src/util.py；`git status` 干净，没有进行中的合并。模型让该成员在工作树中合入主分支、解决冲突并提交，再次合并成功。之后再让一个成员改一处并提交，合并时选“不合并”：返回 `merge_declined`，`git rev-parse HEAD` 不变，对话中出现“没有合并。想说明原因或改动要求，直接在输入框告诉 Lead。”，模型停下来问你 |
+| M118 重启后恢复 | 在 M115 或 M117 之后退出 MossCode，重新启动；让模型“打开团队 demo（或 cf），让成员 a 说说它之前做了什么” | 退出时成员收到停止请求，`/team` 中全部为已停止。重新打开后 Lead 是新的持有者；send_message 的结果写明“a 原已停止，已从记录恢复（后端：in-process，…）”；a 的回复提到之前的工作 |
+| M119 计划被拒后重交 | 让模型“建团队 plan，成员 a 需要计划审批（require_plan_approval），任务是在 docs/plan.md 写三行说明；第一次计划请拒绝并要求加上标题，第二次再批准” | 界面显示“成员 a 提交了计划，等待 Lead 审批”。第一次被拒后 a 仍在计划模式，没有写文件；重交的计划带标题，批准后才写入 docs/plan.md（在 a 的工作树中） |
+| M120 Windows Terminal 分屏 | 把 `config.yaml` 中的 `teammate_mode` 改为 `auto`，在 Windows Terminal 中重新启动；让模型“建团队 wt，一个成员 a 在 docs/wt.md 写一行 hello 并提交，完成后告诉我” | 当前窗口分出一个新窗格，标题为“成员 a · 团队 wt”，显示它收到的消息和工具调用；在窗格输入框中输入文字只提示“成员只接受 Lead 的指令…”。team_spawn 的结果写明“后端：windows-terminal（auto：检测到 Windows Terminal）”；`/team wt` 显示按进程号判断的状态；成员运行时还显示最近的工具调用。a 汇报后退出 MossCode：窗格在约 10 秒内关闭。再启动、让模型给 a 发消息恢复它（新窗格出现），然后 `/team stop a`：窗格关闭；如果成员不答复，10 秒后提示“已强制停止（Windows Terminal 窗格）”，窗格同样关闭 |
+| M121 协调者模式 | 在 `config.yaml` 顶层加入 `coordinator_mode: true`（`teammate_mode` 用 `in-process`），先不设环境变量启动 | 启动提示“协调者模式未开启：配置中 coordinator_mode 为 true，但环境变量 MOSSCODE_COORDINATOR_MODE 没有设为 1、true 或 yes。”。退出，`$env:MOSSCODE_COORDINATOR_MODE = '1'` 后再启动：状态栏的档位后显示 `[协调]`，`/status` 有“角色  协调者模式（配置与环境变量均已开启）”。让模型“在 docs/c.md 写一行 c”：它不直接写文件，而是建团队、派成员完成并请你确认合并。用 `-p "你好"` 运行一次：stderr 提示“协调者模式只用于交互界面，本次运行按普通模式。”。验收后 `Remove-Item Env:MOSSCODE_COORDINATOR_MODE` 并删除配置行 |
+| M122 成员审批 | 权限档位切回“默认”；让模型“建团队 ap，成员 a 用 execute_command 运行 `python -c "print(1)"` 并汇报结果” | 审批卡片的来源写为“成员 a”，即使 Lead 这一轮已经结束、界面空闲也会出现；状态栏显示“成员审批 1”。批准后成员继续并汇报 |
+| M123 显式 tmux | 把 `teammate_mode` 改为 `tmux` 后启动，让模型“建团队 tm，一个成员 a 读 README” | team_spawn 返回 `backend_unavailable`：“teammate_mode 是 tmux，但 MossCode 不在 tmux 会话中（环境变量 TMUX 为空）；没有改用其他后端。…”；`/team tm` 中没有成员，没有进程内成员被创建 |
+
+tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中的替身用例，记为“未验证”。
+
+验收完成后用 `/team` 查看剩下的团队并逐个 `/team delete <名称>`；之后的其他用例请用 `--force` 重新生成验收项目。
+
 ## 已知限制
 
 - **ripgrep**：本机已安装 ripgrep 15.2.0，自动测试和人工验收的搜索都走 rg；Python 回退实现只在没有 rg 时使用，由单元测试覆盖。
 - **缓存命中**：取决于服务。非 Anthropic 官方端点默认不发送缓存标记（见 `prompt_cache`）。
 - **只能人工判断的行为**：模型是否并行调用、回复是否简洁，没有严格的通过标准。后台提取是否记录、记成哪个范围和类型由模型判断，同样的对话可能得到不同的笔记。
+- **团队成员**：协调者模式是角色约束，不是安全边界，Lead 的 `execute_command` 仍能写文件。窗格后端只在 Windows Terminal 上人工验证过；tmux 只有替身测试。窗格因 `closeOnExit: never` 等设置没有关闭时，确认成员已停止后手动关闭。
 - **工作树中的命令**：隔离的子 Agent 的 `execute_command` 在工作树中运行，但命令本身仍能访问主目录；路径检查只约束文件工具。
 - **Token 估算**：上下文比例是估算值（中文按 1 字 1 Token 偏保守），与服务的计费数字会有差异；压缩时机以估算为准，超限时由自救兜底。
 

@@ -52,6 +52,9 @@ providers:
 | `memory_provider` | 当前 Provider | 后台提取使用的 Provider 名称，可以指定较便宜的模型 |
 | `worktree_links` | `[]` | 链接进每个 git 工作树的路径（相对仓库根），如 `node_modules`、`.venv`，见 [Git 工作树](docs/reference/worktree.md#初始化) |
 | `worktree_stale_hours` | `24` | 子 Agent 留下的无改动工作树多少小时后自动清理；`0` 关闭 |
+| `teammate_mode` | `auto` | 团队成员在哪里运行：`auto`、`in-process`、`windows-terminal`、`tmux`，见 [Agent 团队](docs/reference/teams.md#后端) |
+| `team_max_members` | `4` | 每个团队的成员上限，1–8 |
+| `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE=1`，见 [Agent 团队](docs/reference/teams.md#协调者模式) |
 
 ### 权限、MCP、项目指令、Skill、Hook、子 Agent 与工作树
 
@@ -112,6 +115,7 @@ providers:
 | `/agents`（别名 `/agent`） | 列出子 Agent 定义及其来源和描述；`/agents 名称` 查看实际可用的工具和有效权限档位，`/agents reload` 重新扫描 |
 | `/tasks`（别名 `/task`） | 列出本会话的子 Agent 任务及其状态、用时和 Token；`/tasks id` 查看详情，`/tasks stop id` 停止 |
 | `/worktree`（别名 `/worktrees`） | 列出 MossCode 管理的 git 工作树及其状态；`/worktree create 名称` 创建，`/worktree remove 名称 [--discard]` 删除，`/worktree clean` 清理过期的临时工作树 |
+| `/team`（别名 `/teams`） | 列出本项目的 Agent 团队；`/team 名称` 查看成员和任务，`/team stop 成员` 停止成员，`/team delete 名称` 删除团队 |
 | `/<Skill 名> [参数]` | 运行 Skill，如内置的 `/commit`、`/review`（在独立上下文中审查未提交的改动）、`/test` |
 | `/exit`（别名 `/quit`） | 退出并清理资源 |
 
@@ -140,6 +144,8 @@ providers:
 
 **计划模式**：`/plan 任务` 或 Shift+Tab 进入。模型只能读取和运行只读命令，调查后用 `exit_plan_mode` 提交计划；批准后在同一任务内继续执行。见 [工具与 Agent Loop](docs/reference/tools.md#计划模式)。
 
+**Agent 团队**：较大的、能拆成几块并行改动的任务，模型可以作为 Lead 建团队：共享任务写明依赖，至多 4 个成员各在自己的 git 工作树中工作，通过消息汇报；全部完成后经你确认逐个合并。在 Windows Terminal 中运行时成员出现在分屏窗格里，否则在进程内运行。团队跨重启保留。见 [Agent 团队](docs/reference/teams.md)。
+
 ### 无界面模式
 
 ```powershell
@@ -166,7 +172,8 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
                                   ├──► skills/、tools/skill.py（Skill 与专属工具）
                                   ├──► hooks/（生命周期 Hook、工具调用拦截）
                                   └──► agents/、tools/agent.py（子 Agent 与后台任务）
-                                         └──► worktree/（git 工作树隔离）
+                                         ├──► worktree/（git 工作树隔离）
+                                         └──► teams/、tools/team.py（Agent 团队）
 ```
 
 一次任务：Agent Loop 用“稳定系统提示 + 历史 + 本次环境补充”请求模型，把流式事件交给界面；回复中的工具调用经校验和授权后执行（相邻只读调用最多 4 个并发），纯文本结果写回历史，再请求模型，直到回复不再调用工具或遇到停止条件（取消、轮数上限、连续未知工具等）。TUI 与 `-p` 共用 `Conversation`；在 Python 中可连续调用 `Conversation.ask()` 保持多轮历史，结束后 `await conversation.close()`。
@@ -186,6 +193,7 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 | `hooks/` | Hook 文件读取与信任、条件、四种动作、按事件执行与日志；接入工具执行、Agent Loop 和会话 |
 | `agents/`、`tools/agent.py` | 子 Agent 定义的加载与覆盖、定义式与 Fork 的运行时、后台任务管理与通知；`agent`、`task_output`、`task_stop` 工具；`agents/builtin/` 为内置定义 |
 | `worktree/` | git 工作树的命名、创建与初始化（链接、复制）、改动检查、安全删除、元数据与自动清理 |
+| `teams/`、`tools/team.py`、`coordinator.py` | Agent 团队：存储与锁、邮箱、共享任务、成员的一轮、Lead 侧运行时、合并、窗格后端与成员进程；团队工具；协调者模式 |
 | `tui.py`、`appearance.py`、`scrollback.py` | 界面、命令与提示、原生滚动历史 |
 | `config.py`、`cli.py` | 配置加载与命令行入口 |
 
@@ -193,7 +201,7 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[Git 工作树](docs/reference/worktree.md) |
+| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
 | 设计评审 | [对照 Claude Code 与 Pi 的完善建议](docs/research/claude-code-pi-gap-review.md) |
 | 各阶段规格与验证 | `docs/specs/`：`chapter-*` 为各章，`refinement-*` 为完善阶段 1–6，每个目录含 `spec.md` 与 `validation.md` |
 | 人工验收 | [完善阶段 1–6、上下文管理与第九至十四章验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |

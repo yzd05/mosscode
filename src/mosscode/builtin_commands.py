@@ -89,6 +89,8 @@ def help_text(registry: CommandRegistry, name: str = "", skills=None) -> str:
             kind = "本地命令：不经过模型"
         lines = [command.usage, command.description, kind,
                  "别名：" + ("、".join(f"/{alias}" for alias in command.aliases) or "无")]
+        if command.details:
+            lines.append(command.details)
         if command.kind == "prompt":
             lines.append("模板首行：" + command.template.strip().splitlines()[0])
         if skill is not None:
@@ -420,6 +422,9 @@ def status_report(ctx: CommandContext) -> str:
         rows.append(("已激活 Skill", "、".join(conversation.active_skills)))
     if registry is not None and getattr(conversation, "agents_enabled", False):
         rows.append(("子 Agent", agents_line(conversation)))
+    if getattr(conversation, "coordinator", False):  # Ch15 CO5.
+        from .coordinator import STATUS
+        rows.append(("角色", STATUS))
     width = max(12, *(cell_len(label) + 2 for label, _ in rows))
     return "状态\n" + "\n".join(f"  {label}{' ' * (width - cell_len(label))}{value}" for label, value in rows)
 
@@ -983,6 +988,76 @@ def _worktree_reads(argument: str) -> bool:
     return argument.strip() in ("", "list")
 
 
+# Teams (ch15) -------------------------------------------------------------------------------
+
+TEAM_USAGE = "用法：/team · /team <名称> · /team stop <成员> · /team delete <名称>"
+TEAM_DETAILS = ("子命令：\n"
+                "  /team                 列出本项目的团队：成员数、各状态人数、当前团队和持有者\n"
+                "  /team <名称>          团队详情：成员状态、后端、工作树、最近工具调用、用量、未读消息和任务\n"
+                "  /team stop <成员>     请当前团队的成员在这一轮结束后停止，超时强制停止\n"
+                "  /team delete <名称>   确认后停止成员、删除已合并且干净的工作树和团队目录")
+DELETE_OPTIONS = ("删除团队", "取消")
+
+
+async def _team(ctx: CommandContext, argument: str) -> None:
+    from .teams import TeamError
+    runtime = getattr(ctx.conversation, "teams", None)
+    if runtime is None:
+        await ctx.ui.note("当前会话不支持团队。")
+        return
+    words = argument.split()
+    try:
+        if not words:
+            await ctx.ui.note(await asyncio.to_thread(runtime.overview))
+        elif words[0] == "stop" and len(words) == 2:
+            await ctx.ui.note("└ " + await runtime.stop_member(words[1]))
+            ctx.ui.refresh_status()
+        elif words[0] == "delete" and len(words) == 2:
+            name = words[1]
+            await asyncio.to_thread(runtime.detail, name)  # unknown_team before asking.
+
+            async def picked(index: int) -> None:
+                if index != 0:
+                    await ctx.ui.note("已取消，团队保留。")
+                    return
+                try:
+                    text, _ = await runtime.delete(name, force=True)
+                except TeamError as exc:
+                    await ctx.ui.note(f"! {exc.message}")
+                    return
+                await ctx.ui.note("└ " + text)
+                ctx.ui.refresh_status()
+
+            async def cancelled() -> None:
+                await ctx.ui.note("已取消，团队保留。")
+
+            ctx.ui.choose(f"删除团队 {name}？会停止它的成员，删除已合并且干净的工作树和团队目录（任务、邮箱、对话记录）。",
+                          DELETE_OPTIONS, 1, picked, cancelled)
+        elif len(words) == 1 and words[0] not in ("stop", "delete"):
+            await ctx.ui.note(await asyncio.to_thread(runtime.detail, words[0]))
+        else:
+            await ctx.ui.note(TEAM_USAGE)
+    except TeamError as exc:
+        await ctx.ui.note(f"! {exc.message}")
+
+
+def _team_names(ctx: CommandContext):
+    runtime = getattr(ctx.conversation, "teams", None)
+    if runtime is None:
+        return []
+    choices = []
+    for store in runtime.teams():
+        choices += [(store.name, "团队详情"), (f"delete {store.name}", "删除团队")]
+    if runtime.current is not None:
+        choices += [(f"stop {name}", f"停止 · {runner.status}") for name, runner in runtime.runners.items()]
+    return choices
+
+
+def _team_reads(argument: str) -> bool:
+    """CM3: listing, details and stopping are safe during a run; deleting waits."""
+    return argument.split()[:1] != ["delete"]
+
+
 async def _exit(ctx: CommandContext, argument: str) -> None:
     async def leave() -> None:
         ctx.ui.exit()
@@ -1025,5 +1100,8 @@ BUILTIN = CommandRegistry((
     Command("worktree", "查看、创建、删除 git 工作树", "/worktree [子命令]", "local",
             aliases=("worktrees",), argument="optional", argument_hint="[子命令]",
             handler=_worktree, complete=_worktree_names, while_running=_worktree_reads),
+    Command("team", "查看、停止、删除 Agent 团队", "/team [子命令]", "local", aliases=("teams",),
+            argument="optional", argument_hint="[子命令]", handler=_team, complete=_team_names,
+            while_running=_team_reads, details=TEAM_DETAILS),
     Command("exit", "退出 MossCode", "/exit", "local", aliases=("quit",), handler=_exit),
 ))

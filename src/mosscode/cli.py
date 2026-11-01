@@ -2,6 +2,7 @@ import argparse
 import asyncio
 from contextlib import aclosing
 import json
+import os
 from time import monotonic
 import sys
 
@@ -16,6 +17,7 @@ from .memory import MemoryStore
 from .session import Session, prune_all
 from .skills import ForkRequest, SkillCatalog
 from .agents import AgentCatalog
+from .coordinator import decide as decide_coordinator
 from .agents.tasks import Announcer
 from .usage import request_usage_text
 from .tools import create_default_registry
@@ -331,7 +333,15 @@ def main() -> None:
     parser.add_argument("--no-hooks", action="store_true", help="本次运行不加载任何 Hook")
     parser.add_argument("--trust-project-hooks", action="store_true",
                         help="本次运行信任项目级 Hook 文件（不写入确认记录），用于无界面模式")
+    # Ch15 BE5: a team member in a pane of its own; started by the lead, not by hand.
+    parser.add_argument("--team-dir", help=argparse.SUPPRESS)
+    parser.add_argument("--team-member", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if (args.team_dir is None) != (args.team_member is None):
+        parser.error("--team-dir 和 --team-member 需要一起使用。")
+    if args.team_dir is not None:
+        from .teams.process import run_member
+        raise SystemExit(run_member(args.team_dir, args.team_member, args.config, args.provider))
     if args.output_format != "text" and args.prompt is None:
         parser.error("--output-format 只用于 -p/--prompt 无界面模式。")
     if args.continue_session and args.resume is not None:
@@ -363,6 +373,10 @@ def main() -> None:
         budget = config.budget()
         hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None)
         notices = skills.problems + skipped + hook_notices
+        coordinator, coordinator_notice = decide_coordinator(settings.coordinator_mode, os.environ,
+                                                             interactive=args.prompt is None)  # Ch15 CO1/CO7.
+        if coordinator_notice:
+            notices += (coordinator_notice,)
         if not budget.configured:
             notices += (f"{config.name} 未配置 context_window，按 128K 估算上下文。",)
         conversation = Conversation(create_provider(config), settings.system_prompt, registry, mcp_manager=manager,
@@ -377,6 +391,10 @@ def main() -> None:
                                     agent_max_background=settings.agent_max_background,
                                     worktree_links=settings.worktree_links,
                                     worktree_stale_hours=settings.worktree_stale_hours,
+                                    teams=args.prompt is None, team_max_members=settings.team_max_members,
+                                    teammate_mode=settings.teammate_mode,
+                                    team_launch={"config": settings.source, "provider": config.name},
+                                    coordinator=coordinator,
                                     **_memory_options(settings, interactive=args.prompt is None))
         resume = args.resume
         if args.continue_session or resume:

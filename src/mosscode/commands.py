@@ -84,6 +84,7 @@ class Command:
     skill: str = ""  # skill: the SkillDef it runs (E1).
     # Ch13: safe during a run (reads state or stops a task); others wait (P8). Ch14: or a test of the argument.
     while_running: bool | Callable[[str], bool] = False
+    details: str = ""  # Ch15 CM5: more lines for /help <command>, e.g. its subcommands.
 
     @property
     def names(self) -> tuple[str, ...]:
