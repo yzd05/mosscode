@@ -493,6 +493,17 @@ class PermissionPolicy:
         if future is not None and not future.done():
             future.cancel()
 
+    def hold(self, request: ApprovalRequest) -> asyncio.Future:
+        """Refinement 07 FA6: a request answered here on behalf of another process (a pane member)."""
+        future = asyncio.get_running_loop().create_future()
+        self.pending[request.id] = future
+        self._choices[request.id] = request.choices
+        return future
+
+    def release(self, request: ApprovalRequest) -> None:
+        """The end of hold(): answered, or withdrawn (the future is cancelled)."""
+        self._settle(request)
+
     async def _approve_plan(self, call_id: str, params, gate=None, notify=None) -> Decision:
         """The user, never a rule or mode, decides whether planning ends."""
         if self.mode != "plan":

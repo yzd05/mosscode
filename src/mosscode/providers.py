@@ -6,9 +6,7 @@ from copy import deepcopy
 import random
 from typing import Any, AsyncIterator, Sequence
 import json
-
-import anthropic
-import openai
+import sys
 
 from .config import ProviderConfig
 from .messages import (Completed, ContentBlock, Delta, Message, ProviderError, Retrying, StreamEvent, Usage, ToolCall,
@@ -66,6 +64,11 @@ def _valid_calls(calls: Sequence[ToolCall]) -> None:
         raise ProviderError("工具调用缺少名称/ID 或出现重复 ID；未执行工具。")
 
 
+def _errors(name: str) -> tuple[type, ...]:
+    """Refinement 08 ST2: the SDKs load only with a provider that needs them, and one never loaded raised nothing."""
+    return tuple(getattr(sys.modules[sdk], name) for sdk in ("anthropic", "openai") if sdk in sys.modules)
+
+
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
 RETRYABLE_BODY_TYPES = {"overloaded_error", "api_error", "rate_limit_error"}
 
@@ -77,14 +80,14 @@ def _body_type(exc) -> str | None:
 
 
 def _retry_reason(exc) -> str | None:
-    if isinstance(exc, (anthropic.APITimeoutError, openai.APITimeoutError)):
+    if isinstance(exc, _errors("APITimeoutError")):
         return "请求超时"
-    if isinstance(exc, (anthropic.APIConnectionError, openai.APIConnectionError)):
+    if isinstance(exc, _errors("APIConnectionError")):
         return "连接中断"
-    if isinstance(exc, (anthropic.APIStatusError, openai.APIStatusError)):
+    if isinstance(exc, _errors("APIStatusError")):
         if exc.status_code in RETRYABLE_STATUS or exc.status_code >= 500:
             return "服务限流" if exc.status_code == 429 else f"服务暂时不可用（HTTP {exc.status_code}）"
-    if isinstance(exc, (anthropic.APIError, openai.APIError)) and _body_type(exc) in RETRYABLE_BODY_TYPES:
+    if isinstance(exc, _errors("APIError")) and _body_type(exc) in RETRYABLE_BODY_TYPES:
         return "服务过载" if _body_type(exc) == "overloaded_error" else "服务流返回临时错误"
     return None
 
@@ -118,11 +121,11 @@ def _context_overflow(exc) -> bool:
 def _safe_error(exc) -> ProviderError:
     if isinstance(exc, ProviderError):
         return exc
-    if isinstance(exc, (anthropic.APIError, openai.APIError)) and _context_overflow(exc):
+    if isinstance(exc, _errors("APIError")) and _context_overflow(exc):
         status = getattr(exc, "status_code", None)
         suffix = f"（HTTP {status}）" if status else ""
         return ProviderError(f"请求超出模型的上下文窗口{suffix}。", code="context_overflow")
-    if isinstance(exc, (anthropic.APIStatusError, openai.APIStatusError)):
+    if isinstance(exc, _errors("APIStatusError")):
         status = exc.status_code
         if status in {401, 403}:
             detail = "认证或权限失败，请检查凭据与端点。"
@@ -133,11 +136,11 @@ def _safe_error(exc) -> ProviderError:
         else:
             detail = "服务请求失败，请稍后重新发送。"
         return ProviderError(f"{detail}（HTTP {status}）")
-    if isinstance(exc, (anthropic.APITimeoutError, openai.APITimeoutError)):
+    if isinstance(exc, _errors("APITimeoutError")):
         return ProviderError("请求超时，请检查网络或增大 timeout。")
-    if isinstance(exc, (anthropic.APIConnectionError, openai.APIConnectionError)):
+    if isinstance(exc, _errors("APIConnectionError")):
         return ProviderError("连接中断或无法连接，请检查网络与 base_url。")
-    if isinstance(exc, (anthropic.APIError, openai.APIError)):
+    if isinstance(exc, _errors("APIError")):
         return ProviderError("服务流返回错误或无法解析的响应，请检查协议和服务配置。")
     if isinstance(exc, (KeyError, TypeError, ValueError, AttributeError)):
         return ProviderError("服务流数据格式不合法；未执行不完整的工具调用。")
@@ -158,9 +161,11 @@ class SDKProvider:
             options["default_headers"] = config.headers
         key = config.credential()
         if config.protocol == "anthropic-messages":
+            import anthropic
             if config.auth_type == "bearer":
                 return anthropic.AsyncAnthropic(api_key=None, auth_token=key, **options)
             return anthropic.AsyncAnthropic(api_key=key, **options)
+        import openai
         return openai.AsyncOpenAI(api_key=key, **options)
 
     async def close(self) -> None:

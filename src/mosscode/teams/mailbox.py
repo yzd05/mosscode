@@ -12,16 +12,19 @@ from .lock import TeamError, atomic_write, file_lock, load_json, now
 LEAD = "lead"
 BROADCAST = "*"
 TYPES = ("text", "plan_approval_request", "plan_approval_response", "shutdown_request", "shutdown_response",
-         "idle_notification")
-LEAD_ONLY = frozenset({"plan_approval_response", "shutdown_request"})
+         "idle_notification", "permission_response")
+# permission_response (refinement 07 FA6): the user's answer, given in the lead's window, to a pane member's approval.
+LEAD_ONLY = frozenset({"plan_approval_response", "shutdown_request", "permission_response"})
 MEMBER_ONLY = frozenset({"shutdown_response", "plan_approval_request", "idle_notification"})
-RUNTIME_ONLY = frozenset({"plan_approval_request", "idle_notification"})  # Sent for the model, never by it (TL5).
+# Sent for the model, never by it (TL5).
+RUNTIME_ONLY = frozenset({"plan_approval_request", "idle_notification", "permission_response"})
 EXTRA_FIELDS = {
     "plan_approval_request": ("request_id", "plan"),
     "plan_approval_response": ("request_id", "approve", "feedback"),
     "shutdown_request": ("reason",),
     "shutdown_response": ("request_id", "approve", "reason"),
     "idle_notification": ("reason", "completed_tasks"),  # Its summary is the message's own (MB2).
+    "permission_response": ("request_id", "choice"),
 }
 BODY_LIMIT = 20000
 SUMMARY_LIMIT = 80
@@ -121,20 +124,24 @@ class Mailbox:
             atomic_write(path, _trim(messages))
         return [Message.from_dict(item) for item in unread]
 
-    def discard_unread(self, name: str, kinds: frozenset[str] | set[str]) -> int:
-        """Mark stale unread messages of these types read (ID4/LD6: an old shutdown request or answer)."""
+    def take(self, name: str, kinds: frozenset[str] | set[str]) -> list[Message]:
+        """The unread messages of these types only, marked read; the rest stay unread (FA6: answers mid-turn)."""
         path = self.path(name)
         if not path.exists():
-            return 0
+            return []
         with file_lock(path, busy="mailbox_busy"):
             messages = self._load(name)
-            stale = [item for item in messages if not item.get("read") and item.get("type") in kinds]
-            if not stale:
-                return 0
-            for item in stale:
+            taken = [item for item in messages if not item.get("read") and item.get("type") in kinds]
+            if not taken:
+                return []
+            for item in taken:
                 item["read"] = True
             atomic_write(path, _trim(messages))
-        return len(stale)
+        return [Message.from_dict(item) for item in taken]
+
+    def discard_unread(self, name: str, kinds: frozenset[str] | set[str]) -> int:
+        """Mark stale unread messages of these types read (ID4/LD6: an old shutdown request or answer)."""
+        return len(self.take(name, kinds))
 
     def peek(self, name: str) -> list[Message]:
         """Every kept message, read or not; for /team. No lock: a reader sees the old file or the new one."""

@@ -13,10 +13,10 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Input, OptionList, RichLog, Static
 
-from ..appearance import ERROR_COLOR, OPERATION_COLOR, PARAMETER_COLOR
-from ..messages import Completed, ProviderError, RunStopped, ToolProgress
+from ..appearance import OPERATION_COLOR, PARAMETER_COLOR
+from ..messages import RunStopped
 from ..permissions import ApprovalRequest, safe_display
-from .member import TYPE_LABELS
+from .view import Feed
 
 INPUT_HINT = "成员只接受 Lead 的指令，不接受新任务；需要调整它时告诉 Lead。审批出现时在这里输入序号回答。"
 
@@ -25,6 +25,7 @@ class MemberApp(App):
     CSS = """
     #title { height: 1; background: $primary-background; color: $text; text-style: bold; padding: 0 1; }
     #log { height: 1fr; padding: 0 1; }
+    #running { height: auto; max-height: 6; display: none; padding: 0 1; }
     #approval { height: auto; display: none; border-top: solid $warning; padding: 0 1; }
     #approval-options { height: auto; max-height: 6; }
     #state { height: 1; padding: 0 1; color: $text-muted; }
@@ -38,10 +39,12 @@ class MemberApp(App):
         self.heading = f"成员 {process.name} · 团队 {process.team}"
         self._requests: list[ApprovalRequest] = []
         self._job: asyncio.Task | None = None
+        self._feed = Feed()
 
     def compose(self) -> ComposeResult:
         yield Static(self.heading, id="title")
         yield RichLog(id="log", wrap=True, markup=False)
+        yield Static("", id="running", markup=False)
         with Vertical(id="approval"):
             yield Static(id="approval-detail")
             yield OptionList(id="approval-options")
@@ -52,6 +55,7 @@ class MemberApp(App):
         self.title = self.heading
         self.process.on_event = self._event
         self.process.on_approval = self._approval
+        self.process.on_settled = self._settled
         self._job = asyncio.get_running_loop().create_task(self._serve())
 
     async def _serve(self) -> None:
@@ -73,32 +77,15 @@ class MemberApp(App):
         self.query_one("#state", Static).update(text)
 
     def _event(self, event) -> None:
+        for line in self._feed.event(event):
+            self._log(line)
+        running = self.query_one("#running", Static)
+        running.update(self._feed.running_text())
+        running.display = bool(self._feed.waiting)
         if isinstance(event, list):  # The messages of a new turn.
-            for message in event:
-                line = Text(f"← {message.sender} · {TYPE_LABELS.get(message.type, message.type)}", style="bold")
-                summary = message.summary or (message.body.strip().splitlines() or [""])[0]
-                if summary:
-                    line.append(f"：{summary[:200]}")
-                self._log(line)
             self._state("运行中 · Esc 中断这一轮")
-        elif isinstance(event, ToolProgress):
-            if event.phase == "running":
-                line = Text("● ", style=OPERATION_COLOR)
-                line.append(event.call.name, style="bold")
-                line.append(" " + safe_display(event.call.arguments, 160), style=PARAMETER_COLOR)
-                self._log(line)
-            elif event.phase == "finished" and event.result is not None:
-                first = (event.result.output or "").strip().splitlines()[:1]
-                style = ERROR_COLOR if event.result.is_error else "dim"
-                self._log(Text("  └ " + safe_display(first[0] if first else "完成", 200), style=style))
-        elif isinstance(event, Completed) and event.message.text:
-            self._log(Text(event.message.text))
         elif isinstance(event, RunStopped):
-            if event.reason not in {"completed", "max_tokens"}:
-                self._log(Text(event.notice, style=ERROR_COLOR))
             self._state("空闲 · 等待 Lead 的消息")
-        elif isinstance(event, ProviderError):
-            self._log(Text(str(event), style=ERROR_COLOR))
 
     # Approvals --------------------------------------------------------------------------------------
 
@@ -135,9 +122,24 @@ class MemberApp(App):
             return
         request = self._requests.pop(0)
         self.process.conversation.registry.permissions.respond(request.id, choice)
+        self.process.answered_here()
         self._log(Text(f"  已回答：{choice}", style="dim"))
         self._state("运行中 · Esc 中断这一轮")
         self._show()
+
+    def _settled(self, request_id: str, choice: str | None) -> None:
+        """Refinement 07 FA2: answered in the lead's window (choice), or no longer waiting: the card goes."""
+        from ..tui import choice_label
+        request = next((item for item in self._requests if item.id == request_id), None)
+        if request is None:
+            return
+        shown = self._requests[0] is request
+        self._requests.remove(request)
+        if choice is not None:
+            self._log(Text(f"  已在 Lead 的窗口中回答：{choice_label(request, choice)}", style="dim"))
+        if shown:
+            self._state("运行中 · Esc 中断这一轮")
+            self._show()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "approval-options" and self._requests:

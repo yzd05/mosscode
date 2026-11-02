@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,12 +15,12 @@ from ..messages import ProviderError, UsageTotals
 from ..permissions import ApprovalRequest
 from ..worktree.meta import process_alive
 from . import LEAD, Member, TeamError, TeamStore, list_teams, teams_root, validate_member_name
-from .backends import (IN_PROCESS, IN_PROCESS_REASON, LABELS, START_TIMEOUT, Choice, PaneBackend, detect_backend,
-                       member_alive, member_arguments, pane_backend)
+from .backends import (IN_PROCESS, IN_PROCESS_REASON, LABELS, START_TIMEOUT, WINDOWS_TERMINAL, Choice, PaneBackend,
+                       detect_backend, member_alive, member_arguments, pane_backend, team_window)
 from .board import STATUS_LABELS
 from .lock import now
 from .mailbox import Message
-from .member import POLL, MemberPolicy, MemberRunner, TeamAccess, addendum, task_listing
+from .member import POLL, MemberPolicy, MemberRunner, TeamAccess, addendum, approval_from_record, task_listing
 
 if TYPE_CHECKING:
     from ..conversation import Conversation
@@ -104,6 +105,18 @@ def label_of(runner) -> str:
     return BACKEND_LABELS.get(getattr(runner, "backend_name", IN_PROCESS), IN_PROCESS)
 
 
+@dataclass(frozen=True)
+class MemberRow:
+    """Refinement 07 PL1: one line of the member panel. Waiting approvals are counted by the interface."""
+    name: str
+    status: str
+    pane: bool
+    since: float | None = None  # time.monotonic() when it entered its status; None when stopped.
+    last_tool: str = ""
+    task: str = ""  # The subject of its first in_progress task.
+    window: str = ""
+
+
 class PaneRunner:
     """BE4–BE7: the lead's view of a member in a pane of its own. It polls its mailbox itself; its
     record in config.json says how it is doing, and its process ending is the member stopping."""
@@ -114,7 +127,13 @@ class PaneRunner:
         self.backend_name = backend.name
         self.pid, self.pane, self.poll = pid, pane, poll
         self.status, self.last_tool = status, ""
+        self.since = time.monotonic()  # Refinement 07 PL1: when the lead saw it enter its status.
         self.on_status: Callable[[str, dict], None] | None = None
+        # Refinement 07 FA6: a request it published in its record, and one that left the record (or the member
+        # stopped with it still there).
+        self.on_request: Callable[[dict], None] | None = None
+        self.on_settled: Callable[[str, bool], None] | None = None  # (request id, the member ended)
+        self.asked: set[str] = set()
         self.job: asyncio.Task | None = None
 
     def wake(self) -> None:
@@ -125,6 +144,8 @@ class PaneRunner:
         return self.job
 
     def _report(self, status: str) -> None:
+        if status != self.status:
+            self.since = time.monotonic()
         self.status = status
         if self.on_status is not None:
             self.on_status(status, {})
@@ -141,10 +162,25 @@ class PaneRunner:
                 if member is None or member.status == "stopped" or (member.pid and member.pid != self.pid):
                     return
                 self.last_tool = member.last_tool if member.status == "running" else ""
+                self._approvals(member.approvals)
                 if member.status != self.status:
                     self._report(member.status)
         finally:
+            self._approvals([], ended=True)
             self._report("stopped")
+
+    def _approvals(self, items: list, *, ended: bool = False) -> None:
+        """FA6: new requests in the record go to the lead; the ones gone from it were answered or dropped."""
+        listed = {item.get("id") for item in items if isinstance(item, dict) and item.get("id")}
+        for item in items:
+            if isinstance(item, dict) and item.get("id") and item["id"] not in self.asked:
+                self.asked.add(item["id"])
+                if self.on_request is not None:
+                    self.on_request(item)
+        for request_id in self.asked - listed:
+            self.asked.discard(request_id)
+            if self.on_settled is not None:
+                self.on_settled(request_id, ended)
 
     async def stop(self) -> None:
         """BE7 step 3: end its process tree (and its tmux pane)."""
@@ -257,6 +293,11 @@ class TeamRuntime:
         self.on_approval: Callable[[ApprovalRequest], None] | None = None  # PM2: the TUI shows it.
         self.on_note: Callable[[str], None] | None = None  # LD4, PA6, UI2.
         self.on_change: Callable[[], None] | None = None  # UI1: a member's status changed.
+        self.on_withdraw: Callable[[str], None] | None = None  # Refinement 07 FA2: a card to take down.
+        self.on_commit: Callable[[str], None] | None = None  # MV3: an in-process member's transcript grew.
+        self.askers: dict[str, str] = {}  # PL1/FA5: approval request id -> the member asking.
+        self.forwarded: dict[str, tuple[ApprovalRequest, asyncio.Future]] = {}  # FA6: pane members' requests.
+        self._relays: set[asyncio.Task] = set()
         self.stop_wait = STOP_WAIT  # ID5/LD6.
         self._stops: set[asyncio.Task] = set()
         self.notices: list[str] = []  # Corrupt files kept aside (MB4) and the like.
@@ -367,7 +408,9 @@ class TeamRuntime:
         if keep_panes:
             for runner in [runner for runner in runners if isinstance(runner, PaneRunner)]:
                 runners.remove(runner)
-                runner.on_status = None
+                runner.on_status, runner.on_request = None, None
+                runner.on_settled = lambda request_id, ended, name=runner.name: self._withdraw(name, request_id,
+                                                                                              ended, note=False)
                 if runner.job is not None:
                     runner.job.cancel()
                     await asyncio.gather(runner.job, return_exceptions=True)
@@ -419,7 +462,46 @@ class TeamRuntime:
             except TeamError:
                 pass
         await self._leave()
+        for job in list(self._relays):
+            job.cancel()
+        await asyncio.gather(*self._relays, return_exceptions=True)
         await self.settle()
+
+    async def rows(self) -> list[MemberRow]:
+        """PL1: every member of the current team in its record's order; files are read off the loop."""
+        store = self.current
+        if store is None:
+            return []
+
+        def read():
+            team = store.load()
+            try:
+                tasks = store.board.list()
+            except TeamError:
+                tasks = []
+            return team, tasks
+        try:
+            team, tasks = await asyncio.to_thread(read)
+        except TeamError:
+            return []
+        if self.current is not store:
+            return []
+        rows = []
+        for member in team.members:
+            runner = self.runners.get(member.name)
+            status = runner.status if runner is not None else "stopped"
+            task = next((task.subject for task in tasks if task.owner == member.name and task.status == "in_progress"), "")
+            rows.append(MemberRow(member.name, status, member.backend != IN_PROCESS,
+                                  since=runner.since if runner is not None else None,
+                                  last_tool=runner.last_tool if runner is not None and status == "running" else "",
+                                  task=task, window=member.window))
+        return rows
+
+    def transcript(self, name: str) -> Path | None:
+        """MV1: where the member view reads; None without a current team."""
+        if self.current is None:
+            return None
+        return self.current.transcripts / f"{name}.jsonl"
 
     def counts(self) -> tuple[int, int]:
         """UI1: (running, idle) members of this process."""
@@ -604,6 +686,8 @@ class TeamRuntime:
             backend = BACKEND_LABELS.get(member.backend, member.backend)
             lines.append(f"  {member.name}  {STATUS_NAMES.get(state, state)}  {member.agent_type}  "
                          f"后端 {backend}（{member.backend_reason or '—'}）")
+            if member.window and member.backend == WINDOWS_TERMINAL:
+                lines.append(f"    在团队窗口 {member.window} 中")
             if member.worktree:
                 lines.append(f"    工作树 {member.worktree.get('name', '')}，分支 {member.worktree.get('branch', '')}")
             else:
@@ -731,7 +815,7 @@ class TeamRuntime:
         runner.wake()
         place = (f"工作树 {worktree['path']}，分支 {worktree['branch']}" if worktree else "在主项目目录中工作")
         plan = "；以计划模式开始，提交的计划会出现在团队更新中，由你审批" if require_plan_approval else ""
-        self._note(f"成员 {name} 已创建（{agent.name}，{BACKEND_LABELS[choice.backend]}）")
+        self._note(f"成员 {name} 已创建（{agent.name}，{BACKEND_LABELS[choice.backend]}{self._window(store, choice)}）")
         self._changed()
         return (f"已创建成员 {name}（{agent.name}，后端：{choice.backend}（{choice.reason}）），{place}{plan}。"
                 "它完成一轮后你会收到 <team-update>；在此之前不要轮询。"), {
@@ -750,23 +834,25 @@ class TeamRuntime:
             if record is not None:
                 record.backend, record.backend_reason = choice.backend, choice.reason
                 record.status, record.pid, record.heartbeat, record.pane, record.error = "stopped", None, None, None, ""
+                record.window, record.approvals = "", []
                 record.mode, record.last_tool = mode, ""  # PM3
         await asyncio.to_thread(store.modify, reset)
         self._synced_mode = mode
         cwd = root or self.project
         arguments = member_arguments(store.directory, name, self.launch.get("config"), self.launch.get("provider"))
+        window = team_window(store.directory) if choice.backend == WINDOWS_TERMINAL else ""  # WN1/WN3
         try:
-            pane = await asyncio.to_thread(backend.launch, cwd, arguments)
+            pane = await asyncio.to_thread(backend.launch, cwd, arguments, member=name, team=store.name,
+                                           window=window)
         except TeamError as exc:
             await self._mark_stopped(store, name, error=exc.message)
             await self._release(store, [name])
             raise
-        if pane:
-            def remember(team):
-                record = team.member(name)
-                if record is not None:
-                    record.pane = pane
-            await asyncio.to_thread(store.modify, remember)
+        def remember(team):
+            record = team.member(name)
+            if record is not None:
+                record.pane, record.window = pane, window
+        await asyncio.to_thread(store.modify, remember)
         end = asyncio.get_running_loop().time() + self.start_timeout
         while True:
             try:
@@ -790,6 +876,11 @@ class TeamRuntime:
         self._note(failure)
         raise TeamError("backend_failed", failure + "成员已标为停止，工作树保留；没有改用其他后端。")
 
+    @staticmethod
+    def _window(store: TeamStore, choice: Choice) -> str:
+        """WN3: where to find a Windows Terminal member."""
+        return f"，在团队窗口 {team_window(store.directory)} 中" if choice.backend == WINDOWS_TERMINAL else ""
+
     def _attach(self, store: TeamStore, member: Member) -> PaneRunner:
         """ID3: a pane member that kept running while no lead held the team."""
         backend = pane_backend(member.backend, self.run, self.which, self.python)
@@ -809,14 +900,81 @@ class TeamRuntime:
                 self._track(self._ended(store, runner))
             self._changed()
         runner.on_status = status
+        if isinstance(runner, PaneRunner):
+            runner.on_request = lambda item: self._forward(store, runner.name, item)
+            runner.on_settled = lambda request_id, ended: self._withdraw(runner.name, request_id, ended)
 
     async def _runner(self, store: TeamStore, member: Member, agent, root: Path | None, relative: str) -> MemberRunner:
-        return await build_runner(self.conversation, store, member, agent, root, relative, wake=self.wake,
-                                  on_approval=self._approval, poll=self.poll)
+        runner = await build_runner(self.conversation, store, member, agent, root, relative, wake=self.wake,
+                                    on_approval=lambda request: self._approval(request, member.name), poll=self.poll)
+        append = runner.loop.on_commit
 
-    def _approval(self, request: ApprovalRequest) -> None:
+        def commit(message) -> None:  # MV3: the member view reads the new lines at once.
+            append(message)
+            if self.on_commit is not None:
+                try:
+                    self.on_commit(member.name)
+                except Exception:
+                    pass
+        runner.loop.on_commit = commit
+        return runner
+
+    def _approval(self, request: ApprovalRequest, name: str = "") -> None:
+        pending = self.conversation._agent.registry.permissions.pending
+        for request_id in [key for key in self.askers if key not in pending]:
+            del self.askers[request_id]
+        if name:
+            self.askers[request.id] = name
         if self.on_approval is not None:
             self.on_approval(request)
+
+    def asker(self, request_id: str) -> str:
+        """PL1/FA5: the member whose approval this is; '' for the lead's own."""
+        return self.askers.get(request_id, "")
+
+    # Pane members' approvals (refinement 07 FA1–FA6) ------------------------------------------------
+
+    def _forward(self, store: TeamStore, name: str, item: dict) -> None:
+        """A pane member's request, shown in the lead's window and answered through the lead's policy."""
+        request = approval_from_record(item, f"成员 {name}（窗格）")
+        if request is None or request.id in self.forwarded:
+            return
+        policy = self.conversation._agent.registry.permissions
+        future = policy.hold(request)
+        self.forwarded[request.id] = (request, future)
+        job = asyncio.get_running_loop().create_task(self._relay(store, name, request, future))
+        self._relays.add(job)
+        job.add_done_callback(self._relays.discard)
+        self._approval(request, name)
+
+    async def _relay(self, store: TeamStore, name: str, request: ApprovalRequest, future: asyncio.Future) -> None:
+        """FA6: the answer given here goes to the member as a permission_response."""
+        try:
+            choice = await future
+        except asyncio.CancelledError:
+            return  # Withdrawn: answered in the member's window, or the member stopped.
+        finally:
+            self.conversation._agent.registry.permissions.release(request)
+            self.forwarded.pop(request.id, None)
+        try:
+            await TeamAccess(store, LEAD).asend(name, "permission_response", runtime=True, request_id=request.id,
+                                                choice=choice)
+        except TeamError as exc:
+            self._note(f"无法把审批答复发给成员 {name}：{exc.message}")
+
+    def _withdraw(self, name: str, request_id: str, ended: bool, *, note: bool = True) -> None:
+        """FA2/FA3: the request left the member's record (answered there) or the member stopped."""
+        entry = self.forwarded.get(request_id)
+        if entry is None or entry[1].done():
+            return  # Answered here; the record has caught up.
+        entry[1].cancel()
+        if self.on_withdraw is not None:
+            try:
+                self.on_withdraw(request_id)
+            except Exception:
+                pass
+        if note:
+            self._note(f"成员 {name} 已停止，它的审批已撤下" if ended else f"成员 {name} 的审批已在它的窗口中回答")
 
     def _member_status(self, store: TeamStore, name: str, state: str, fields: dict) -> None:
         def change(team):
@@ -940,6 +1098,7 @@ class TeamRuntime:
                     record = team.member(name)
                     if record is not None:
                         record.backend, record.backend_reason, record.pane = choice.backend, choice.reason, None
+                        record.window, record.approvals = "", []
                 await asyncio.to_thread(store.modify, moved)
         else:
             try:
@@ -952,7 +1111,7 @@ class TeamRuntime:
         self.runners[name] = runner
         runner.start()
         runner.wake()
-        self._note(f"成员 {name} 已恢复（{BACKEND_LABELS[choice.backend]}{changed}）")
+        self._note(f"成员 {name} 已恢复（{BACKEND_LABELS[choice.backend]}{self._window(store, choice)}{changed}）")
         self._changed()
 
     async def _watch(self) -> None:

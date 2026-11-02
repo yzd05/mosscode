@@ -14,7 +14,8 @@ import pytest
 from mosscode.config import ConfigError, load_settings
 from mosscode.teams import LEAD, Member, TeamError, TeamStore
 from mosscode.teams.backends import (IN_PROCESS, TMUX, WINDOWS_TERMINAL, TmuxBackend, WindowsTerminalBackend,
-                                     detect_backend, escape_wt, kill_tree, member_alive, member_arguments)
+                                     detect_backend, escape_wt, kill_tree, member_alive, member_arguments,
+                                     team_window)
 from mosscode.teams.lock import now
 from mosscode.teams.mailbox import Message
 from mosscode.teams.runtime import PaneRunner
@@ -104,10 +105,12 @@ def test_ac38_windows_terminal_command():
     backend = WindowsTerminalBackend(which=which("wt"), python="py")
     cwd = Path("work;tree")
     arguments = member_arguments(Path("teams") / "t", "alice", None, "deep;seek")
-    command = backend.command(cwd, arguments)
-    assert command[:6] == ["/bin/wt", "-w", "0", "split-pane", "-d", str(cwd).replace(";", "\\;")]
-    assert command[6:9] == ["--", "py", "-m"] and command[9] == "mosscode.teams.pane"
-    rest = command[10:]
+    command = backend.command(cwd, arguments, member="alice", team="t", window="mosscode-t-abc123")
+    # Refinement 07 WN1: a tab of the team's window, titled for the member; the lead's window is not split.
+    assert command[:9] == ["/bin/wt", "-w", "mosscode-t-abc123", "new-tab", "--title", "alice · t",
+                           "--suppressApplicationTitle", "-d", str(cwd).replace(";", "\\;")]
+    assert command[9:12] == ["--", "py", "-m"] and command[12] == "mosscode.teams.pane"
+    rest = command[13:]
     assert rest[:4] == ["--team-dir", str(Path("teams") / "t"), "--team-member", "alice"]
     assert rest[4:] == ["--provider", "deep\\;seek"]  # wt splits at a bare ;
     assert escape_wt("a;b;c") == "a\\;b\\;c"
@@ -127,10 +130,11 @@ def test_ac38_tmux_command_pane_and_kill():
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "%7 4242\n", "")
     backend = TmuxBackend(run, which("tmux"), python="py")
-    command = backend.command(Path("/w"), ["--team-dir", "/t", "--team-member", "bob"])
-    assert command[:8] == ["/bin/tmux", "split-window", "-h", "-P", "-F", "#{pane_id} #{pane_pid}", "-c",
-                           str(Path("/w"))]
-    assert command[8] == "py -m mosscode --team-dir /t --team-member bob"
+    command = backend.command(Path("/w"), ["--team-dir", "/t", "--team-member", "bob"], member="bob", team="t")
+    # WN2: a window of its own, not switched to.
+    assert command[:10] == ["/bin/tmux", "new-window", "-d", "-n", "bob", "-P", "-F", "#{pane_id} #{pane_pid}",
+                            "-c", str(Path("/w"))]
+    assert command[10] == "py -m mosscode --team-dir /t --team-member bob"
     assert backend.launch(Path("/w"), []) == "%7"
     backend.kill(None, "%7")
     assert calls[-1] == ["/bin/tmux", "kill-pane", "-t", "%7"]
@@ -161,7 +165,7 @@ class Terminal:
             return subprocess.run(command, **kwargs)
         if "kill-pane" in command:
             return subprocess.CompletedProcess(command, 0, "", "")
-        tmux = "split-window" in command
+        tmux = "new-window" in command
         if self.child is not None:
             words = shlex.split(command[-1]) if tmux else command
             arguments = words[words.index("--team-dir"):]
@@ -210,7 +214,7 @@ async def test_ac39_no_pid_is_backend_failed_and_stopped(tmp_path):
     member = conv.teams.current.load().member("alice")
     assert member.status == "stopped" and member.pid is None and member.backend == WINDOWS_TERMINAL
     assert Path(member.worktree["path"]).is_dir() and not conv.teams.runners  # Kept, nothing in-process.
-    assert "split-pane" in terminal.calls[0]
+    assert "new-tab" in terminal.calls[0] and "split-pane" not in terminal.calls[0]
     await conv.close()
 
 
@@ -242,13 +246,18 @@ async def test_be7_pane_member_forced_after_shutdown_request(tmp_path):
         assert details["backend"] == WINDOWS_TERMINAL and "teammate_mode: windows-terminal" in text
         runner = conv.teams.runners["alice"]
         assert isinstance(runner, PaneRunner) and runner.status == "idle"
-        assert "Windows Terminal 窗格" in conv.teams.detail("t")
+        detail = conv.teams.detail("t")
+        window = team_window(conv.teams.current.directory)
+        assert "Windows Terminal 标签页" in detail and f"在团队窗口 {window} 中" in detail  # WN3
+        assert conv.teams.current.load().member("alice").window == window
+        assert any(f"在团队窗口 {window} 中" in note for note in notes)
+        assert terminal.calls[0][terminal.calls[0].index("-w") + 1] == window
         store = conv.teams.current
         assert store.mailbox.peek("alice")[0].body == "做 A"  # BE4: it reads its own mailbox.
         process = terminal.processes[0]
         await conv.teams.stop_member("alice")  # The stand-in never answers.
         await until(lambda: process.poll() is not None, timeout=15)
-        await until(lambda: any("已强制停止（Windows Terminal 窗格）" in note for note in notes))  # The last step.
+        await until(lambda: any("已强制停止（Windows Terminal 标签页）" in note for note in notes))  # The last step.
         assert "alice" not in conv.teams.runners
         assert [m.type for m in store.mailbox.peek("alice")][-1] == "shutdown_request"
         member = store.load().member("alice")
@@ -478,6 +487,9 @@ class StubProcess:
         self.release = asyncio.Event()
         respond = lambda request_id, choice: self.answered.append((request_id, choice))  # noqa: E731
         self.conversation = SimpleNamespace(registry=SimpleNamespace(permissions=SimpleNamespace(respond=respond)))
+
+    def answered_here(self):
+        pass
 
     async def serve(self):
         from mosscode.permissions import ApprovalRequest, Operation

@@ -204,19 +204,30 @@ def _provider(raw: Any) -> ProviderConfig:
 
 
 def config_candidates(cwd: Path | None = None, home: Path | None = None) -> tuple[Path, ...]:
+    """Refinement 08 CF1: a config.yaml in the working directory is a project's own file, not ours."""
     cwd = Path.cwd() if cwd is None else cwd
     home = Path.home() if home is None else home
-    return cwd / ".mosscode" / "config.yaml", cwd / "config.yaml", home / ".mosscode" / "config.yaml"
+    project, user = cwd / ".mosscode" / "config.yaml", home / ".mosscode" / "config.yaml"
+    same = os.path.normcase(os.path.abspath(project)) == os.path.normcase(os.path.abspath(user))
+    return (user,) if same else (project, user)  # Started in the home folder, both are one file.
 
 
 def find_config(cwd: Path | None = None, home: Path | None = None) -> Path:
-    """Project file, legacy working-directory file, then the user file; the first one wins."""
+    """Project file, then the user file; the first one wins."""
     candidates = config_candidates(cwd, home)
     for path in candidates:
         if path.is_file():
             return path
     raise ConfigError("找不到配置文件，已查找：" + "、".join(str(p) for p in candidates)
-                      + "。可复制 config.example.yaml 到其中一个位置，或用 --config 指定。")
+                      + "。运行 moss setup 创建配置，或用 --config 指定。")
+
+
+def render_config(provider: dict[str, Any]) -> str:
+    """Refinement 08 SU2: the file `moss setup` writes, with one provider made the default."""
+    body = yaml.safe_dump({"default_provider": provider["name"], "providers": [provider]},
+                          sort_keys=False, allow_unicode=True)
+    return ("# MossCode 配置，由 moss setup 生成。\n"
+            "# 字段说明见 config.example.yaml；追加 Provider：在 providers 下再写一项。\n" + body)
 
 
 def load_settings(path: str | Path) -> Settings:

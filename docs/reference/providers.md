@@ -53,7 +53,7 @@ Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，�
 | `stream-json` | 每行一个 JSON 事件：`system`（init：cwd、model、permission_mode、tools）、`assistant`（text、tool_calls、stop_reason、usage）、`tool_result`、`retry`、`notice`、`compact`（subtype 为 started、finished、failed，见 [上下文管理](context.md#界面与无界面输出)），最后一行是与 json 格式相同的 `result` |
 
 ```powershell
-.\.venv\Scripts\python.exe -m mosscode -p "列出 src 下的模块" --output-format json
+moss -p "列出 src 下的模块" --output-format json
 ```
 
 JSON 输出始终为 UTF-8，与控制台代码页无关。`is_error` 为真时进程以退出码 1 结束，便于脚本判断；无界面模式不等待审批，需要确认的调用返回 approval_required。

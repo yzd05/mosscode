@@ -245,6 +245,8 @@ T5 开始时在 Windows Terminal 1.24.12741.0 中做的实验（2026-11-01）。
   工作目录为成员的工作树或主目录。`--team-dir` 和 `--team-member` 是隐藏参数，不出现在 `--help` 中。
   - Windows Terminal：`wt -w 0 split-pane -d <cwd> -- <python> -m mosscode.teams.pane <参数>`，参数中的 `;` 写成 `\;`（E3、E4：包装模块总以 0 退出，窗格随之关闭）；
   - tmux：`tmux split-window -h -P -F "#{pane_id} #{pane_pid}" -c <cwd> <命令>`。
+
+  已由[完善七](../refinement-07-team-views/spec.md)修改（WN1、WN2）：Windows Terminal 改为团队窗口中的 `new-tab`，tmux 改为 `new-window -d`，不再分割 Lead 的窗口。
 - **BE6** 子进程启动后，在 `config.json` 中写入自己的进程号，此后每 5 秒更新一次心跳。20 秒内没有写入时：
   - `team_spawn` 报 `backend_failed`，附上子进程写入的错误（如果有）；
   - 成员标为 `stopped`，工作树保留；
@@ -257,6 +259,8 @@ T5 开始时在 Windows Terminal 1.24.12741.0 中做的实验（2026-11-01）。
   - 窗格中运行成员模式的 MossCode 界面，标题为“成员 <name> · 团队 <team>”，显示它的对话和工具调用；
   - 输入框只用于回答审批；Esc 中断当前一轮；
   - 不接受用户直接输入新任务，界面中给出提示，见“取舍”。
+
+  已由[完善七](../refinement-07-team-views/spec.md)修改：界面在团队窗口的标签页中（WN1、WN4）；审批同时转发到 Lead，先回答的一方生效（FA1、FA2）。
 - **BE9** 窗格成员按 Lead 的配置路径重新加载配置。提供商密钥来自环境变量但子进程中没有时，子进程把错误写入 `config.json` 后退出，Lead 收到 `backend_failed`：“窗格中缺少环境变量 X：设为用户环境变量，或改用 in-process”。MossCode 不通过命令行或文件转交密钥。
 - **BE10** 进程内成员是 Lead 进程中的一个 asyncio 任务，等待时不轮询；收到投递时立即唤醒。来自其他进程的消息仍靠 0.5 秒的轮询发现。
 
@@ -307,7 +311,7 @@ T5 开始时在 Windows Terminal 1.24.12741.0 中做的实验（2026-11-01）。
   - 成员等待审批时状态仍为 `running`。
 
   需要调查 `_show_approval` 当前只保存一个请求的问题，见 T2。
-  窗格成员的审批显示在自己的窗格中。
+  窗格成员的审批显示在自己的窗格中。（已由[完善七](../refinement-07-team-views/spec.md) FA1 修改：同时出现在 Lead 的界面中。）
 - **PM3** 成员的权限模式在每一轮开始时，按第十三章的规则用当前会话模式重新计算：
   - 会话处于计划模式时，成员也是计划模式；
   - 项目定义不能放宽会话的模式；
@@ -451,7 +455,7 @@ T5 开始时在 Windows Terminal 1.24.12741.0 中做的实验（2026-11-01）。
 
 ### 界面
 
-- **UI1** 有当前团队时，状态栏显示“团队 <name> 运行 N / 空闲 M”；有成员等待审批时显示“成员审批 K”。
+- **UI1** 有当前团队时，状态栏显示“团队 <name> 运行 N / 空闲 M”；有成员等待审批时显示“成员审批 K”。（已由[完善七](../refinement-07-team-views/spec.md)修改：输入框下方另有成员面板 PL1–PL6；“成员审批 K”计入转发到 Lead 的窗格成员审批，FA5。）
 - **UI2** 成员的创建、空闲、停止、恢复、失败各显示一行说明，写明后端。
 - **UI3** 审批卡片的来源写为“成员 <name>”（PM2）。合并确认使用同样的卡片，标题为“合并成员 <name> 的分支”。
 - **UI4** 协调者徽标（CO5）。

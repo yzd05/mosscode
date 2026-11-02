@@ -22,15 +22,14 @@ from .agents.tasks import Announcer
 from .usage import request_usage_text
 from .tools import create_default_registry
 from .tools.shell import ShellNotFound
-from .permissions import PermissionConfigError, normalize_mode
+from .permissions import PermissionConfigError
 from .providers import create_provider
 from .tui import MossCodeApp, ProviderSelectApp, plan_text
 from .mcp_config import MCPConfigError, load_mcp_settings
 from .mcp_client import MCPManager
 from .hooks import HookEngine
+from .launcher import OUTPUT_FORMATS, is_terminal, parse_arguments
 from pathlib import Path
-
-OUTPUT_FORMATS = ("text", "json", "stream-json")
 
 
 def _headless_input(text: str, commands: CommandRegistry = BUILTIN,
@@ -69,13 +68,6 @@ def _skill_prompt(conversation: Conversation, skill: str | None, prompt: str, re
         return rendered, None
     report("notice", f"在独立上下文中运行 Skill {found.name}")
     return rendered, ForkRequest(found, rendered)
-
-
-def _permission_mode(value: str) -> str:
-    try:
-        return normalize_mode(value)
-    except PermissionConfigError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from None
 
 
 def _arguments(arguments: str):
@@ -316,44 +308,37 @@ def _memory_options(settings, *, interactive: bool) -> dict:
     return options
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="MossCode：Agent Loop、工具权限与流式对话（官方及兼容端点）")
-    parser.add_argument("--config", help="YAML 配置路径；默认依次查找 .mosscode/config.yaml、config.yaml、~/.mosscode/config.yaml")
-    parser.add_argument("--provider", help="指定命名 Provider，跳过启动选择；无界面模式默认使用 default_provider")
-    parser.add_argument("-p", "--prompt", help="无界面执行一次任务并输出结果")
-    parser.add_argument("--output-format", choices=OUTPUT_FORMATS, default="text",
-                        help="无界面输出格式：text（默认，流式正文）、json（结束时输出一个结果对象）、stream-json（每行一个 JSON 事件）")
-    parser.add_argument("--show-usage", action="store_true", help="text 格式在 stderr 显示逐次请求的 Token 与缓存用量")
-    parser.add_argument("--list-providers", action="store_true", help="列出配置，不发请求")
-    parser.add_argument("-c", "--continue", dest="continue_session", action="store_true",
-                        help="恢复本项目最近活动的会话")
-    parser.add_argument("--resume", nargs="?", const="", metavar="ID",
-                        help="恢复指定会话；不带 ID 时在交互界面中打开会话列表")
-    parser.add_argument("--permission-mode", type=_permission_mode, metavar="MODE", help="权限档位：default/acceptEdits/plan/bypassPermissions；仍遵守硬限制和显式拒绝")
-    parser.add_argument("--no-hooks", action="store_true", help="本次运行不加载任何 Hook")
-    parser.add_argument("--trust-project-hooks", action="store_true",
-                        help="本次运行信任项目级 Hook 文件（不写入确认记录），用于无界面模式")
-    # Ch15 BE5: a team member in a pane of its own; started by the lead, not by hand.
-    parser.add_argument("--team-dir", help=argparse.SUPPRESS)
-    parser.add_argument("--team-member", help=argparse.SUPPRESS)
-    args = parser.parse_args()
-    if (args.team_dir is None) != (args.team_member is None):
-        parser.error("--team-dir 和 --team-member 需要一起使用。")
+def _config_path(args) -> Path | None:
+    """Refinement 08 SU1: no configuration in an interactive terminal starts the setup; None when it was left."""
+    if args.config is not None:
+        return Path(args.config)
+    try:
+        return find_config()
+    except ConfigError:
+        if args.prompt is not None or args.list_providers or not (is_terminal(sys.stdin) and is_terminal(sys.stdout)):
+            raise
+    from .setup import run_setup
+    return run_setup()
+
+
+def main(argv: list[str] | None = None) -> None:
+    """The arguments as launcher.main parses them, without its terminal checks (tests call this)."""
+    run(parse_arguments(argv))
+
+
+def run(args: argparse.Namespace) -> None:
     if args.team_dir is not None:
         from .teams.process import run_member
         raise SystemExit(run_member(args.team_dir, args.team_member, args.config, args.provider))
-    if args.output_format != "text" and args.prompt is None:
-        parser.error("--output-format 只用于 -p/--prompt 无界面模式。")
-    if args.continue_session and args.resume is not None:
-        parser.error("--continue 和 --resume 只能选择一个。")
-    if args.resume == "" and args.prompt is not None:
-        parser.error("无界面模式中 --resume 需要会话 ID；恢复最近的会话请用 --continue。")
     # L5: skills are scanned first so that -p "/<name>" parses.
     skills = SkillCatalog.load(Path.cwd(), reserved=BUILTIN.names())
     commands, skipped = BUILTIN.with_skills(skills)
     prompt, command, skill = _headless_input(args.prompt, commands, skills.problems + skipped) if args.prompt is not None else (None, None, None)
     try:
-        settings = load_settings(args.config if args.config is not None else find_config())
+        path = _config_path(args)
+        if path is None:
+            return
+        settings = load_settings(path)
         if args.list_providers:
             for item in settings.providers:
                 print(f"{item.name}: {item.protocol} / {item.model}")
@@ -412,7 +397,7 @@ def main() -> None:
             if resume == "" and conversation.unavailable():
                 raise ProviderError(conversation.unavailable())
             MossCodeApp(conversation, config.name, settings=settings, model=config.model, resume=resume,
-                        commands=commands).run(
+                        commands=commands, initial_prompt=args.initial).run(
                 inline=True, inline_no_clear=True, mouse=False,
             )
     except (ConfigError, ProviderError, PermissionConfigError, MCPConfigError, ShellNotFound) as exc:

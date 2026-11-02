@@ -1211,6 +1211,7 @@ async def test_ui1_status_bar_counts_members_and_their_approvals(tmp_path):
         assert "团队 t 运行 0 / 空闲 1" in str(app.query_one("#status").render())
         pending = conv.registry.permissions.pending
         pending["r1"] = asyncio.get_running_loop().create_future()
+        conv.teams.askers["r1"] = "alice"  # Refinement 07 FA5: counted by asker, as TeamRuntime._approval records it.
         app._show_approval(ApprovalRequest("r1", "", Operation("write_file", "b.txt"), "写？", ("once", "deny"),
                                            source="成员 alice"))
         await pilot.pause()

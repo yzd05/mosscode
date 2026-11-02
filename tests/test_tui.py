@@ -229,10 +229,13 @@ async def test_exit_command_closes_provider_without_request():
 
 
 def terminal_background(segment) -> bool:
-    """Default background, or the one deliberate exception: the user-message bar."""
-    from mosscode.appearance import USER_MESSAGE_BACKGROUND
+    """Default background, or the deliberate exceptions: the user-message bar, and the mascot's pixels
+    (the lower half of a ▀ cell is its background)."""
+    from mosscode.appearance import MASCOT_COLORS, USER_MESSAGE_BACKGROUND
     bgcolor = segment.style.bgcolor if segment.style else None
-    return bgcolor is None or bgcolor.is_default or bgcolor.name.lower() == USER_MESSAGE_BACKGROUND
+    if bgcolor is None or bgcolor.is_default or bgcolor.name.lower() == USER_MESSAGE_BACKGROUND:
+        return True
+    return set(segment.text) == {"▀"} and bgcolor.name.lower() in MASCOT_COLORS.values()
 
 
 def assert_terminal_background(app):
@@ -375,7 +378,7 @@ async def test_hints_and_input_remain_visible_with_long_chat_in_narrow_terminal(
 
 
 async def test_normal_brightness_and_native_background_with_semantic_accents(monkeypatch):
-    from mosscode.appearance import COMMAND_HIGHLIGHT_COLOR, LOGO_COLOR, PARAMETER_COLOR
+    from mosscode.appearance import COMMAND_HIGHLIGHT_COLOR, MASCOT_COLORS, PARAMETER_COLOR, TOOL_SUCCESS_COLOR
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     app = MossCodeApp(Conversation(FakeProvider()), "test")
@@ -387,12 +390,12 @@ async def test_normal_brightness_and_native_background_with_semantic_accents(mon
         app.query_one("#prompt", PromptArea).value = "/"
         await pilot.pause()
         segments = [segment for strip in app.screen._compositor.render_strips() for segment in strip]
-        assert any(segment.style and segment.style.color and segment.style.color.name == LOGO_COLOR
+        assert any(segment.style and segment.style.color and segment.style.color.name == MASCOT_COLORS["w"]
                    for segment in segments)
         text_segments = [segment for segment in segments if any(char.isalnum() for char in segment.text)]
         assert text_segments
         assert all(segment.style and (not segment.style.color or segment.style.color.is_default
-                                     or segment.style.color.name in {COMMAND_HIGHLIGHT_COLOR, LOGO_COLOR, PARAMETER_COLOR})
+                                     or segment.style.color.name in {COMMAND_HIGHLIGHT_COLOR, TOOL_SUCCESS_COLOR, PARAMETER_COLOR})
                    and not segment.style.dim for segment in text_segments)
         code = [segment for segment in segments if segment.text == "code"]
         assert code and all(segment.style.color.name == PARAMETER_COLOR for segment in code)

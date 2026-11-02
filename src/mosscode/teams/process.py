@@ -17,7 +17,7 @@ from typing import Callable
 from . import Member, TeamError, TeamStore
 from .backends import HEARTBEAT
 from .lock import now
-from .member import POLL, MemberRunner
+from .member import POLL, MemberRunner, approval_record
 
 MISSING_ENV = "窗格中缺少环境变量 {name}：设为用户环境变量，或改用 in-process"
 
@@ -56,6 +56,11 @@ class MemberProcess:
         self.exit_code = 0
         self.on_event: Callable[[object], None] | None = None  # BE8: the pane's window.
         self.on_approval: Callable[[object], None] | None = None
+        # Refinement 07 FA2: a request settled elsewhere (answered in the lead's window: the choice; else None).
+        self.on_settled: Callable[[str, str | None], None] | None = None
+        self._asking: dict[str, object] = {}  # FA6: requests waiting for an answer, here or from the lead.
+        self._answers: asyncio.Task | None = None
+        self._nudge = asyncio.Event()
         self._writes: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
 
@@ -140,8 +145,59 @@ class MemberProcess:
         return runner
 
     def _approval(self, request) -> None:
+        """FA6: shown in this window, and published in the record for the lead to show too."""
+        self._asking[request.id] = request
+        item = approval_record(request)
+
+        def publish(member: Member) -> None:
+            if all(entry.get("id") != request.id for entry in member.approvals if isinstance(entry, dict)):
+                member.approvals.append(item)
+        self._write(publish)
+        if self._answers is None or self._answers.done():
+            self._answers = asyncio.get_running_loop().create_task(self._watch_answers())
         if self.on_approval is not None:
             self.on_approval(request)
+
+    def answered_here(self) -> None:
+        """This window answered a request: take it out of the record now rather than at the next poll."""
+        self._nudge.set()
+
+    async def _watch_answers(self) -> None:
+        """FA2/FA6: while a request waits, take the lead's answers (and only those) from the mailbox; a request
+        answered either way leaves the record, which tells the lead to withdraw its card."""
+        policy = self.conversation.registry.permissions
+        while self._asking:
+            try:
+                await asyncio.wait_for(self._nudge.wait(), self.poll)
+            except TimeoutError:
+                pass
+            self._nudge.clear()
+            try:
+                answers = await asyncio.to_thread(self.store.mailbox.take, self.name, {"permission_response"})
+            except TeamError:
+                answers = []
+            remote: dict[str, str] = {}
+            for message in answers:
+                request_id, choice = message.extra.get("request_id"), message.extra.get("choice")
+                if request_id in self._asking:
+                    try:
+                        if policy.respond(request_id, choice):
+                            remote[request_id] = choice
+                    except ValueError:
+                        pass
+            done = {request_id for request_id in self._asking
+                    if (future := policy.pending.get(request_id)) is None or future.done()}
+            if not done:
+                continue
+            for request_id in done:
+                del self._asking[request_id]
+                if self.on_settled is not None:
+                    self.on_settled(request_id, remote.get(request_id))
+
+            def drop(member: Member) -> None:
+                member.approvals = [entry for entry in member.approvals
+                                    if not isinstance(entry, dict) or entry.get("id") not in done]
+            self._write(drop)
 
     def _event(self, event) -> None:
         if self.on_event is not None:
@@ -170,7 +226,7 @@ class MemberProcess:
 
         def started(member: Member) -> None:
             member.pid, member.heartbeat, member.error = pid, now(), ""
-            member.status = "idle"
+            member.status, member.approvals = "idle", []  # FA6: none left from a process that died.
         self._write(started)
         await self.settle()
         beat = asyncio.get_running_loop().create_task(self._beat())
@@ -180,11 +236,13 @@ class MemberProcess:
             await runner.job
         finally:
             beat.cancel()
-            await asyncio.gather(beat, return_exceptions=True)
+            if self._answers is not None:
+                self._answers.cancel()
+            await asyncio.gather(beat, *([self._answers] if self._answers else []), return_exceptions=True)
             await runner.close()
 
             def stopped(member: Member) -> None:
-                member.status, member.pid, member.last_tool = "stopped", None, ""
+                member.status, member.pid, member.last_tool, member.approvals = "stopped", None, "", []
             self._write(stopped)
             await self.settle()
             try:

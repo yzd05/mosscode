@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+from dataclasses import asdict, fields
 import secrets
+import time
 from typing import TYPE_CHECKING, Callable
 
 from ..messages import Completed, ProviderError, RunStopped, ToolProgress
-from ..permissions import ApprovalRequest, Decision, PolicyView
+from ..permissions import ALL_CHOICES, ApprovalRequest, Decision, Operation, PolicyView
 from .board import STATUS_LABELS, TeamTask, blocks, is_ready
 from .lock import TeamError
 from .mailbox import BROADCAST, LEAD, RUNTIME_ONLY, Message
@@ -23,7 +25,8 @@ if TYPE_CHECKING:
 POLL = 0.5  # BE4/BE10: seconds between mailbox reads when nothing woke the reader.
 SUMMARY = 300  # MB2: characters of the last reply in an idle notification.
 TYPE_LABELS = {"text": "消息", "plan_approval_request": "计划审批请求", "plan_approval_response": "计划审批答复",
-               "shutdown_request": "停止请求", "shutdown_response": "停止答复", "idle_notification": "空闲通知"}
+               "shutdown_request": "停止请求", "shutdown_response": "停止答复", "idle_notification": "空闲通知",
+               "permission_response": "审批答复"}
 
 
 def addendum(team: str, name: str, worktree: dict | None) -> str:
@@ -173,6 +176,26 @@ def render_incoming(messages: list[Message]) -> str:
     return "<incoming-messages>\n" + "\n\n".join(parts) + "\n</incoming-messages>"
 
 
+def approval_record(request: ApprovalRequest) -> dict:
+    """Refinement 07 FA6: a pane member's waiting request, as its record keeps it for the lead."""
+    return {"id": request.id, "call_id": request.call_id, "operation": asdict(request.operation),
+            "reason": request.reason, "choices": list(request.choices)}
+
+
+def approval_from_record(item, source: str) -> ApprovalRequest | None:
+    """FA6, the lead's side: None when the record cannot be shown or answered."""
+    try:
+        known = {field.name for field in fields(Operation)}
+        operation = Operation(**{key: value for key, value in item["operation"].items() if key in known})
+        choices = tuple(item["choices"])
+        if not item["id"] or not choices or not all(choice in ALL_CHOICES for choice in choices):
+            return None
+        return ApprovalRequest(str(item["id"]), str(item.get("call_id", "")), operation, str(item.get("reason", "")),
+                               choices, source)
+    except (KeyError, TypeError, AttributeError):
+        return None
+
+
 class MemberRunner:
     """RT1: read the mailbox, run a turn, tell the lead, wait; until stopped."""
 
@@ -193,6 +216,7 @@ class MemberRunner:
         self.on_event = on_event  # BE8: a pane member's own window shows the turn.
         self.poll = poll
         self.status = "idle"
+        self.since = time.monotonic()  # Refinement 07 PL1: when it entered its status.
         self.last_tool = ""
         self.note = ""  # Why the mode is what it is after an approval (AC22).
         self.wakeup = asyncio.Event()
@@ -231,6 +255,8 @@ class MemberRunner:
             await self.loop.provider.close()
 
     def _status(self, status: str, **fields) -> None:
+        if status != self.status:
+            self.since = time.monotonic()
         self.status = status
         if self.on_status is not None:
             self.on_status(status, fields)
@@ -244,6 +270,8 @@ class MemberRunner:
                     pass
                 self.wakeup.clear()
                 messages = await asyncio.to_thread(self.access.store.mailbox.read_unread, self.name)
+                # FA6: an answer to an approval already settled in the member's own window; not for the model.
+                messages = [message for message in messages if message.type != "permission_response"]
                 if messages:
                     await self.turn(messages)
         finally:

@@ -68,6 +68,8 @@ class Member:
     created: str = field(default_factory=now)
     error: str = ""  # Written by a pane member that could not start (BE6, BE9).
     last_tool: str = ""  # CM2: written by a pane member while it runs.
+    window: str = ""  # Refinement 07 WN3: the Windows Terminal team window its tab is in.
+    approvals: list = field(default_factory=list)  # FA6: a pane member's requests waiting for an answer.
 
     def agent_id(self, team: str) -> str:
         return f"{self.name}@{team}"

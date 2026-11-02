@@ -13,7 +13,8 @@ dependencies = ["anthropic>=1.12,<2", "openai>=3.26,<4", "textual>=8.2,<9", "PyY
 dev = ["pytest>=8", "pytest-asyncio>=1", "httpx2>=2,<3"]
 
 [project.scripts]
-mosscode = "mosscode.cli:main"
+moss = "mosscode.launcher:main"
+mosscode = "mosscode.launcher:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -40,6 +40,10 @@ from .tool_budget import persisted_note
 from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
 from .usage import cache_summary
 from .permissions import EDIT_TOOLS, ApprovalRequest, CHOICES, MODE_BADGES, safe_display
+from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, MemberList, MemberPanel, MemberView
+from .teams import TeamError
+from .teams.runtime import MemberRow
+from .teams.view import TranscriptTail
 
 
 Result = TypeVar("Result")
@@ -741,6 +745,16 @@ class MossCodeApp(TerminalApp[None]):
     .local-note { height: auto; margin: 0 0 1 2; color: $text-muted; }
     .resumed-entry { height: auto; margin-bottom: 1; }
     .tool-entry { height: auto; margin-bottom: 1; }
+    #member-panel { height: auto; padding: 0 1; }
+    #member-compact { height: auto; }
+    #member-list { height: auto; max-height: 8; border: none; padding: 0; }
+    #member-list > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
+    #member-help { height: 1; color: $text-muted; }
+    #member-view { height: auto; padding: 0 1; }
+    #member-head { height: 1; }
+    #member-log { height: 1fr; scrollbar-size: 1 0; background: $background; }
+    #member-running { height: auto; max-height: 6; }
+    #member-view-help { height: 1; }
     OptionList { background: $background; }
     """.replace("COMMAND_HIGHLIGHT_COLOR", COMMAND_HIGHLIGHT_COLOR).replace("PARAMETER_COLOR", PARAMETER_COLOR) \
        .replace("USER_MESSAGE_BACKGROUND", USER_MESSAGE_BACKGROUND).replace("USER_MESSAGE_COLOR", USER_MESSAGE_COLOR)
@@ -753,16 +767,19 @@ class MossCodeApp(TerminalApp[None]):
         Binding("tab", "complete_hint", priority=True, show=False),
         Binding("shift+tab", "cycle_mode", priority=True, show=False),
         Binding("ctrl+b", "background", priority=True, show=False),
+        Binding("ctrl+t", "members", priority=True, show=False),  # Refinement 07 PL3.
         Binding("enter", "complete_hint(False)", priority=True, show=False),
     ]
 
     def __init__(self, conversation: Conversation, provider_name: str, *, settings: Settings | None = None,
                  model: str = "", provider_factory=None, resume: str | None = None,
-                 commands: CommandRegistry | None = None) -> None:
+                 commands: CommandRegistry | None = None, initial_prompt: str | None = None) -> None:
         super().__init__()
         self.conversation = conversation
         # --resume ID / --continue restore at startup; "" opens the session list once started.
         self._resume = resume
+        # Refinement 08 CL3: `moss "..."` sends this once startup is done, as if typed.
+        self._initial_prompt = initial_prompt
         self._panel_rows = 0
         self._pick = None  # The open picker's on_pick (CommandUI.choose).
         self._on_cancel = None  # Its on_cancel, run by Esc.
@@ -801,10 +818,20 @@ class MossCodeApp(TerminalApp[None]):
         self._agent_rows: dict[str, ToolEntry] = {}  # Ch13 U1: agent tool rows by call id.
         self._notify_waiting = False  # A notification turn waits for the running task (B6).
         self._announce = Announcer(self._task_note)
+        # Refinement 07: the member panel's rows, read off the loop (PL5), and the member view (MV3).
+        self._member_rows: list[MemberRow] = []
+        self._members_task: asyncio.Task | None = None
+        self._members_again = False
+        self._member_ticks = 0
+        self._stop_armed: tuple[str, float] | None = None  # PL3: the member the first x picked, until when.
+        self._view_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="chat"):
             yield SessionInfo(startup_banner(self.provider_name), id="banner")
+        view = MemberView(id="member-view")
+        view.display = False
+        yield view
         queue = Static("", id="queue", markup=False)
         queue.display = False
         yield queue
@@ -828,6 +855,9 @@ class MossCodeApp(TerminalApp[None]):
         help_line = Static("", id="command-help", markup=False)
         help_line.display = False
         yield help_line
+        members = MemberPanel(id="member-panel")
+        members.display = False
+        yield members
         yield SessionInfo(Text(""), id="status")
 
     def on_mount(self) -> None:
@@ -841,7 +871,9 @@ class MossCodeApp(TerminalApp[None]):
         if teams is not None:  # Ch15 PM2/LD4: members ask and report while the lead runs or waits.
             teams.on_approval = self._member_approval
             teams.on_note = lambda text: self._closing or self.call_later(self._local_note, "└ " + text)
-            teams.on_change = lambda: self._closing or self.call_later(self._status, self._status_note)  # UI1
+            teams.on_change = lambda: self._closing or self.call_later(self._members_changed)  # UI1, PL5
+            teams.on_withdraw = lambda request_id: self._closing or self.call_later(self._withdraw_approval, request_id)
+            teams.on_commit = self._member_committed  # MV3
         if self.conversation.context_root is not None:  # Ch14 W17.
             self.conversation.start_worktree_cleanup(
                 lambda report: self.conversation._hook_notice(clean_text(report, automatic=True)))
@@ -849,6 +881,7 @@ class MossCodeApp(TerminalApp[None]):
         self._width = self.size.width
         self._status("")
         self.set_interval(0.2, self._tick)
+        self.set_interval(0.5, self._member_tick)
         self.call_later(self._refresh_layout)
         self.call_after_refresh(self._commit_ready_transcript)
         # The prompt stays usable: a first task waits only for project context, and MCP
@@ -860,6 +893,14 @@ class MossCodeApp(TerminalApp[None]):
             self._startup_task = asyncio.create_task(self._initialize())
         elif self._resume == "":
             self.call_later(open_sessions, self._command_context())
+        elif self._initial_prompt:
+            self.call_later(self._send_initial)
+
+    async def _send_initial(self) -> None:
+        text, self._initial_prompt = self._initial_prompt, None
+        if text and text.strip() and not self._closing:
+            field = self.query_one("#prompt", PromptArea)
+            await self.on_prompt_area_submitted(PromptArea.Submitted(field, text))
 
     async def _confirm_hooks(self) -> None:
         """S3: untrusted project hook files are confirmed before the first session_start."""
@@ -886,6 +927,8 @@ class MossCodeApp(TerminalApp[None]):
         finally:
             if not self._closing and not self._generating:
                 self._status("")
+        if self._initial_prompt and not self._closing:
+            await self._send_initial()
         if self._resume == "" and not self._closing:
             self._resume = None
             await open_sessions(self._command_context())
@@ -1009,9 +1052,12 @@ class MossCodeApp(TerminalApp[None]):
         input_row = self.query_one("#input-row")
         # The prompt grows with its text; its region may still hold the previous height.
         prompt_rows = min(8, max(1, self.query_one("#prompt", PromptArea).wrapped_document.height))
-        reserved = (self.screen.styles.gutter.height
-                    + max(2 + prompt_rows, input_row.region.height) + input_row.styles.margin.height
-                    + max(1, self.query_one("#status").outer_size.height))
+        reserved = self.screen.styles.gutter.height + max(1, self.query_one("#status").outer_size.height)
+        if input_row.display:  # Hidden while a member view is open (MV5).
+            reserved += max(2 + prompt_rows, input_row.region.height) + input_row.styles.margin.height
+        members = self.query_one("#member-panel", MemberPanel)
+        if members.display:  # PL1
+            reserved += members.lines
         queue = self.query_one("#queue")
         if queue.display:
             reserved += 1 + min(4, len(self.conversation.queued))
@@ -1038,6 +1084,12 @@ class MossCodeApp(TerminalApp[None]):
             reserved += hint_rows + 1
         chat = self.query_one("#chat")
         available = max(1, self.size.height - reserved)
+        view = self.query_one("#member-view", MemberView)
+        if view.display:  # MV2: the whole height but the status line (and a card, MV6).
+            height = max(3, int(available * VIEW_SHARE))
+            if view.styles.height is None or view.styles.height.value != height:
+                view.styles.height = height
+            return
         if chat.styles.max_height is None or chat.styles.max_height.value != available:
             chat.styles.max_height = available
 
@@ -1117,10 +1169,12 @@ class MossCodeApp(TerminalApp[None]):
         if teams is not None and teams.current is not None:  # Ch15 UI1.
             running, idle = teams.counts()
             text.append(f" · 团队 {teams.current.name} 运行 {running} / 空闲 {idle}")
-            asking = sum(1 for item in [self._approval_request, *self._approval_queue]
-                         if item is not None and item.source.startswith("成员") and self._waiting(item))
+            asking = sum(self._asking().values())  # Refinement 07 FA5: pane members' too.
             if asking:
                 text.append(f" · 成员审批 {asking}", style=OPERATION_COLOR)
+            if self.query("#member-panel") and self.query_one("#member-panel").display \
+                    and not self.query_one("#member-panel", MemberPanel).expanded:
+                text.append(" · Ctrl+T 成员")  # PL6
         if self._usage.requests:
             def tokens(value, missing):
                 if missing == self._usage.requests:
@@ -1473,6 +1527,7 @@ class MossCodeApp(TerminalApp[None]):
         options.styles.height = min(8, rows)
         self.query_one("#model-panel").display = True
         options.focus()
+        self._show_members()  # PL4: hidden while the model panel is open.
         self.call_later(self._fit_chat)
 
     async def _command(self, typed: str, parsed: Parsed) -> None:
@@ -1547,6 +1602,7 @@ class MossCodeApp(TerminalApp[None]):
         self._pick = self._on_cancel = None
         self.query_one("#model-panel").display = False
         self.query_one("#prompt", PromptArea).focus()
+        self._show_members()
         self.call_later(self._fit_chat)
 
     async def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -1557,6 +1613,10 @@ class MossCodeApp(TerminalApp[None]):
                 await pick(event.option_index)
         elif event.option_list.id == "approval-options" and self._approval_request:
             self._answer_approval(self._approval_request.choices[event.option_index])
+        elif event.option_list.id == "member-list":  # PL3: Enter opens the member view.
+            rows = self.query_one("#member-panel", MemberPanel).rows
+            if event.option_index < len(rows):
+                await self._open_view(rows[event.option_index].name)
 
     def _waiting(self, request: ApprovalRequest) -> bool:
         registry = self.conversation.registry
@@ -1566,6 +1626,9 @@ class MossCodeApp(TerminalApp[None]):
     def _member_approval(self, request: ApprovalRequest) -> None:
         """PM2: a member's request; once the window is closing there is no card to show, so it is refused."""
         if self._closing or not self.query("#approval-panel"):
+            teams = getattr(self.conversation, "teams", None)
+            if teams is not None and request.id in teams.forwarded:
+                return  # FA1: a pane member still asks in its own window.
             if self.conversation.registry is not None:
                 self.conversation.registry.permissions.respond(request.id, "deny")
             return
@@ -1604,7 +1667,12 @@ class MossCodeApp(TerminalApp[None]):
         options.add_options([choice_label(request, choice) for choice in request.choices])
         options.styles.height = len(request.choices)
         options.highlighted = 0
+        members = self.query_one("#member-panel", MemberPanel)
+        if members.expanded:  # PL4: compact while a card waits.
+            self._stop_armed = None
+            members.collapse(monotonic())
         options.focus()
+        self._show_members()
         if not self._generating:  # A member's request while the lead waits for input (PM2).
             self._status("等待授权 · Esc 拒绝本次")
         else:
@@ -1624,8 +1692,22 @@ class MossCodeApp(TerminalApp[None]):
         self.query_one("#approval-panel").display = False
         if not self._closing:
             # The prompt stays usable while the task runs, e.g. to queue a correction.
-            self.query_one("#prompt", PromptArea).focus()
+            self._focus_home()
+            self._show_members()
         self.call_later(self._fit_chat)
+
+    def _withdraw_approval(self, request_id: str) -> None:
+        """Refinement 07 FA2/FA3: a pane member's request answered in its window, or no longer asked."""
+        if self._closing:
+            return
+        if self._approval_request is not None and self._approval_request.id == request_id:
+            self._hide_approval()  # Its future is cancelled: the next one still waiting comes up.
+            if self._approval_request is None and not self._generating:
+                self._status("")
+        else:
+            self._approval_queue = [item for item in self._approval_queue if item.id != request_id]
+            self._status(self._status_note)
+            self._show_members()
 
     def _answer_approval(self, choice: str) -> None:
         if self._approval_request and self.conversation.registry:
@@ -1764,7 +1846,7 @@ class MossCodeApp(TerminalApp[None]):
                 field = self.query_one("#prompt", PromptArea)
                 field.disabled = False
                 if self._approval_request is None:  # A member's card still waiting keeps the keys (PM2).
-                    field.focus()
+                    self._focus_home()  # Refinement 07: a member view or the open panel keeps them too.
                 queued = self.conversation.take_queued()
                 if queued and completed:
                     # The model answered before the queue could join; send it as the next task.
@@ -1776,6 +1858,253 @@ class MossCodeApp(TerminalApp[None]):
                 notices, self._mcp_notices = self._mcp_notices, []
                 for notice in notices:
                     await self._local_note("└ " + notice)
+
+    # Team members (refinement 07) -------------------------------------------------------
+
+    def _asking(self) -> dict[str, int]:
+        """FA5/PL1: waiting approvals by the member asking."""
+        teams = getattr(self.conversation, "teams", None)
+        counts: dict[str, int] = {}
+        if teams is None:
+            return counts
+        for item in [self._approval_request, *self._approval_queue]:
+            if item is not None and self._waiting(item):
+                name = teams.asker(item.id)
+                if name:
+                    counts[name] = counts.get(name, 0) + 1
+        return counts
+
+    def _members_changed(self) -> None:
+        self._status(self._status_note)
+        self._schedule_members()
+
+    def _schedule_members(self) -> None:
+        """PL5: the rows are read off the loop; a change during a read reads again."""
+        if self._closing:
+            return
+        if self._members_task is not None and not self._members_task.done():
+            self._members_again = True
+            return
+        self._members_task = asyncio.create_task(self._refresh_members())
+
+    async def _refresh_members(self) -> None:
+        teams = getattr(self.conversation, "teams", None)
+        while not self._closing:
+            self._members_again = False
+            try:
+                rows = await teams.rows() if teams is not None else []
+            except Exception:
+                rows = []
+            if self._closing:
+                return
+            self._member_rows = rows
+            self._show_members()
+            if not self._members_again:
+                return
+
+    def _show_members(self) -> None:
+        """PL1/PL2/PL4 from the rows already read; MV1/MV7 for the view."""
+        if self._closing or not self.query("#member-panel"):
+            return
+        teams = getattr(self.conversation, "teams", None)
+        current = teams.current if teams is not None else None
+        rows = self._member_rows if current is not None else []
+        asking, now = self._asking(), monotonic()
+        panel = self.query_one("#member-panel", MemberPanel)
+        view = self.query_one("#member-view", MemberView)
+        if view.display and (current is None or current.name != view.team):  # MV7
+            self._close_view(to_panel=False)
+            self.call_later(self._local_note, f"└ 团队 {view.team} 已不是当前团队，成员视图已关闭")
+        if panel.expanded and not rows:
+            panel.collapse(now)
+            self._focus_home()
+        panel.show(rows, asking, now)
+        shown = (not view.display and not self.query_one("#model-panel").display
+                 and (panel.expanded or panel.live))
+        if panel.display != shown:
+            panel.display = shown
+            if not shown and self.focused is self.query_one("#member-list"):
+                self._focus_home()
+        if view.display:
+            view.head(next((row for row in rows if row.name == view.name_shown), None), asking)
+        self._status(self._status_note)
+        self.call_later(self._fit_chat)
+
+    def _member_tick(self) -> None:
+        """MV3: a pane member's transcript every 0.5s; PL5: the rows every second while something moves."""
+        if self._closing or not self.query("#member-view"):
+            return
+        view = self.query_one("#member-view", MemberView)
+        if view.display:
+            view.seen()
+            self.call_later(self._pull_view)
+        self._member_ticks += 1
+        if self._member_ticks % 2:
+            return
+        panel = self.query_one("#member-panel", MemberPanel)
+        if view.display or panel.expanded or any(row.status == "running" for row in self._member_rows):
+            self._schedule_members()
+
+    def _focus_home(self) -> None:
+        """Where the keys go back to: the member view, the expanded panel, or the prompt."""
+        if self.query_one("#member-view").display:
+            self.query_one("#member-view", MemberView).member_log.focus()
+        elif self.query_one("#member-panel").display and self.query_one("#member-panel", MemberPanel).expanded:
+            self.query_one("#member-list", MemberList).focus()
+        else:
+            self.query_one("#prompt", PromptArea).focus()
+
+    def action_members(self) -> None:
+        """PL3: Ctrl+T opens the panel to pick from, and closes it (or the member view) again."""
+        if self._approval_request or self.query_one("#model-panel").display:
+            return
+        if self.query_one("#member-view").display:
+            self._close_view(to_panel=False)
+            return
+        panel = self.query_one("#member-panel", MemberPanel)
+        if panel.expanded:
+            self._collapse_members()
+            return
+        teams = getattr(self.conversation, "teams", None)
+        if teams is None or teams.current is None:
+            self._hint_until = monotonic() + 2
+            self._status("没有当前团队 · 让模型用 team_create 建一个")
+            return
+        if not self._member_rows:
+            self._hint_until = monotonic() + 2
+            self._status(f"团队 {teams.current.name} 还没有成员")
+            self._schedule_members()
+            return
+        panel.display = True
+        panel.expand(monotonic())
+        self._show_members()
+
+    def _collapse_members(self) -> None:
+        self._stop_armed = None
+        self.query_one("#member-panel", MemberPanel).collapse(monotonic())
+        self.query_one("#prompt", PromptArea).focus()
+        self._show_members()
+
+    def action_stop_member(self) -> None:
+        """PL3: x twice within STOP_CONFIRM seconds, as /team stop (CM3)."""
+        panel = self.query_one("#member-panel", MemberPanel)
+        name = panel.selected
+        row = next((row for row in panel.rows if row.name == name), None)
+        if row is None:
+            return
+        if row.status == "stopped":
+            panel.help(f"成员 {name} 已经停止 · " + PANEL_HELP)
+            return
+        armed = self._stop_armed
+        if armed is not None and armed[0] == name and monotonic() <= armed[1]:
+            self._stop_armed = None
+            panel.help(PANEL_HELP)
+            self.call_later(self._stop_member, name)
+            return
+        self._stop_armed = (name, monotonic() + STOP_CONFIRM)
+        panel.help(f"再按 x 停止成员 {name}")
+        self.set_timer(STOP_CONFIRM + 0.05, self._disarm_stop)
+
+    def _disarm_stop(self) -> None:
+        if self._closing or self._stop_armed is None or monotonic() <= self._stop_armed[1]:
+            return
+        self._stop_armed = None
+        self.query_one("#member-panel", MemberPanel).help(PANEL_HELP)
+
+    async def _stop_member(self, name: str) -> None:
+        try:
+            text = await self.conversation.teams.stop_member(name)
+        except TeamError as exc:
+            await self._local_note("! " + exc.message, OPERATION_COLOR)
+            return
+        await self._local_note("└ " + text)
+
+    async def _open_view(self, name: str) -> None:
+        """MV1/MV2: in place of the lead's running items, scrolled to the bottom."""
+        teams = getattr(self.conversation, "teams", None)
+        path = teams.transcript(name) if teams is not None else None
+        if path is None:
+            return
+        self._stop_armed = None
+        view = self.query_one("#member-view", MemberView)
+        view.reset(name, teams.current.name, TranscriptTail(path))
+        self.query_one("#chat").display = False
+        self.query_one("#input-row").display = False  # MV5: read-only.
+        self.query_one("#command-hints").display = self.query_one("#command-help").display = False
+        view.display = True
+        view.member_log.focus()
+        self._show_members()
+        self._fit_chat()
+        await self._pull_view(initial=True)
+
+    def _close_view(self, *, to_panel: bool = True) -> None:
+        """MV4: back to the panel (or the prompt); the lead's items come back."""
+        view = self.query_one("#member-view", MemberView)
+        if not view.display:
+            return
+        name = view.name_shown
+        view.display, view.tail = False, None
+        self.query_one("#chat").display = True
+        self.query_one("#input-row").display = True
+        panel = self.query_one("#member-panel", MemberPanel)
+        self._show_members()
+        if to_panel and self._member_rows:
+            panel.display = True
+            panel.expand(monotonic(), select=name)
+        else:
+            if panel.expanded:
+                panel.collapse(monotonic())
+            self.query_one("#prompt", PromptArea).focus()
+        self._refresh_hints(self.query_one("#prompt", PromptArea).value)
+        self._show_members()
+        self.call_later(self._fit_chat)
+
+    def action_member_step(self, step: int) -> None:
+        """MV4: ←/→ in the panel's order."""
+        view = self.query_one("#member-view", MemberView)
+        names = [row.name for row in self._member_rows]
+        if not view.display or len(names) < 2:
+            return
+        index = names.index(view.name_shown) if view.name_shown in names else 0
+        self.call_later(self._open_view, names[(index + step) % len(names)])
+
+    def _member_committed(self, name: str) -> None:
+        """MV3: an in-process member's transcript grew; read it now rather than at the next tick."""
+        if self._closing or not self.query("#member-view"):
+            return
+        view = self.query_one("#member-view", MemberView)
+        if view.display and view.name_shown == name:
+            self.call_later(self._pull_view)
+
+    async def _pull_view(self, initial: bool = False) -> None:
+        """MV3/MV8: the records added since the last read, as lines; reads never overlap."""
+        view = self.query_one("#member-view", MemberView)
+        async with self._view_lock:
+            tail = view.tail
+            if tail is None or not view.display:
+                return
+            name = view.name_shown
+            try:
+                records = await asyncio.to_thread(tail.read)
+            except OSError as exc:
+                if initial:
+                    view.write([Text(f"无法读取成员 {name} 的对话记录：{exc}", style=ERROR_COLOR)], follow=True)
+                return
+            if view.tail is not tail or self._closing:
+                return  # Switched to another member meanwhile.
+            lines = []
+            if initial:
+                messages = [index for index, record in enumerate(records) if record.get("type") == "message"]
+                if len(messages) > VIEW_MESSAGES:
+                    skipped = len(messages) - VIEW_MESSAGES
+                    records = records[messages[skipped]:]
+                    lines.append(Text(f"（更早的 {skipped} 条消息未显示）", style="dim"))
+                if not records and not await asyncio.to_thread(tail.path.exists):
+                    lines.append(Text(f"成员 {name} 还没有对话记录", style="dim"))
+            for record in records:
+                lines += view.feed.record(record)
+            view.write(lines, follow=True if initial else None)
+            view.show_running()
 
     def action_cycle_mode(self) -> None:
         registry = self.conversation.registry
@@ -1791,6 +2120,12 @@ class MossCodeApp(TerminalApp[None]):
     def action_cancel(self) -> None:
         if self._approval_request:
             self._answer_approval("deny")
+            return
+        if self.query_one("#member-view").display:  # MV4: back to the panel.
+            self._close_view()
+            return
+        if self.query_one("#member-panel", MemberPanel).expanded:  # PL3
+            self._collapse_members()
             return
         if self.query_one("#model-panel").display:
             cancel = self._on_cancel
@@ -1818,6 +2153,8 @@ class MossCodeApp(TerminalApp[None]):
 
     async def on_unmount(self) -> None:
         self._closing = True
+        if self._members_task is not None and not self._members_task.done():
+            self._members_task.cancel()
         if self.conversation.registry:
             self.conversation.registry.permissions.interactive = False
         if self._startup_task and not self._startup_task.done():

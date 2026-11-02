@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import os
 from pathlib import Path
 import shlex
@@ -21,7 +22,8 @@ from ..worktree.meta import process_alive
 from .lock import TeamError
 
 IN_PROCESS, WINDOWS_TERMINAL, TMUX = "in-process", "windows-terminal", "tmux"
-LABELS = {IN_PROCESS: "进程内", WINDOWS_TERMINAL: "Windows Terminal 窗格", TMUX: "tmux 窗格"}
+# Refinement 07 WN1/WN2: a pane member is a tab of its team's window, or a tmux window of its own.
+LABELS = {IN_PROCESS: "进程内", WINDOWS_TERMINAL: "Windows Terminal 标签页", TMUX: "tmux 窗口"}
 IN_PROCESS_REASON = "进程内运行，与 Lead 共用这个窗口"
 START_TIMEOUT = 20.0  # BE6: seconds for a pane member to write its pid.
 HEARTBEAT = 5.0  # BE6: seconds between a pane member's heartbeats.
@@ -93,6 +95,12 @@ def member_arguments(team_dir: Path, name: str, config: str | Path | None = None
     return arguments
 
 
+def team_window(team_dir: Path) -> str:
+    """WN1: one Windows Terminal window per team; the digest keeps same-named teams of other projects apart."""
+    digest = hashlib.sha1(os.path.normcase(str(Path(team_dir).resolve())).encode("utf-8")).hexdigest()[:6]
+    return f"mosscode-{Path(team_dir).name}-{digest}"
+
+
 def heartbeat_age(stamp: str | None) -> float | None:
     if not stamp:
         return None
@@ -135,12 +143,14 @@ class PaneBackend:
         self.run, self.which = run, which
         self.python = python or sys.executable
 
-    def command(self, cwd: Path, arguments: list[str]) -> list[str]:
+    def command(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
+                window: str = "") -> list[str]:
         raise NotImplementedError
 
-    def launch(self, cwd: Path, arguments: list[str]) -> str | None:
+    def launch(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
+               window: str = "") -> str | None:
         """Start the member's pane; the pane id when the terminal reports one."""
-        command = self.command(cwd, arguments)
+        command = self.command(cwd, arguments, member=member, team=team, window=window)
         try:
             done = self.run(command, capture_output=True, text=True, timeout=LAUNCH_TIMEOUT)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -163,14 +173,18 @@ class PaneBackend:
 
 
 class WindowsTerminalBackend(PaneBackend):
-    """E2: `-w 0` is the window MossCode runs in. E3/E4: the pane runs mosscode.teams.pane, which always
-    exits 0, so the pane closes after a normal exit and after taskkill alike."""
+    """Refinement 07 WN1: a tab of the team's own window (`-w <name>` makes it the first time, X1/X2), so
+    the lead's window is never split. E3/E4: the tab runs mosscode.teams.pane, which always exits 0, so it
+    closes after a normal exit and after taskkill alike; the window closes with its last tab (X4)."""
 
     name = WINDOWS_TERMINAL
 
-    def command(self, cwd: Path, arguments: list[str]) -> list[str]:
+    def command(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
+                window: str = "") -> list[str]:
         wt = self.which("wt") or "wt"
-        rest = ["-w", "0", "split-pane", "-d", str(cwd), "--", self.python, "-m", "mosscode.teams.pane", *arguments]
+        title = ["--title", f"{member} · {team}", "--suppressApplicationTitle"] if member else []  # X3
+        rest = ["-w", window or "0", "new-tab", *title, "-d", str(cwd), "--", self.python, "-m",
+                "mosscode.teams.pane", *arguments]
         return [wt, *(escape_wt(item) for item in rest)]
 
 
@@ -180,11 +194,15 @@ def escape_wt(argument: str) -> str:
 
 
 class TmuxBackend(PaneBackend):
+    """WN2: a window of its own in the current tmux session, not switched to; kill-pane closes it."""
+
     name = TMUX
 
-    def command(self, cwd: Path, arguments: list[str]) -> list[str]:
+    def command(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
+                window: str = "") -> list[str]:
         tmux = self.which("tmux") or "tmux"
-        return [tmux, "split-window", "-h", "-P", "-F", "#{pane_id} #{pane_pid}", "-c", str(cwd),
+        named = ["-n", member] if member else []
+        return [tmux, "new-window", "-d", *named, "-P", "-F", "#{pane_id} #{pane_pid}", "-c", str(cwd),
                 shlex.join([self.python, "-m", "mosscode", *arguments])]
 
     def pane(self, output: str) -> str | None:

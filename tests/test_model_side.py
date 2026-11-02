@@ -156,12 +156,14 @@ def test_config_lookup_order_and_missing_error(tmp_path):
     cwd.mkdir()
     with pytest.raises(ConfigError) as error:
         find_config(cwd, home)
-    for expected in (cwd / ".mosscode" / "config.yaml", cwd / "config.yaml", home / ".mosscode" / "config.yaml"):
+    for expected in (cwd / ".mosscode" / "config.yaml", home / ".mosscode" / "config.yaml"):
         assert str(expected) in str(error.value)
+    assert str(cwd / "config.yaml") not in str(error.value)
+    assert "moss setup" in str(error.value)
     user = write_yaml(home / ".mosscode" / "config.yaml")
     assert find_config(cwd, home) == user
-    legacy = write_yaml(cwd / "config.yaml")
-    assert find_config(cwd, home) == legacy
+    write_yaml(cwd / "config.yaml")  # Refinement 08 CF1: a project's own config.yaml is not ours.
+    assert find_config(cwd, home) == user
     project = write_yaml(cwd / ".mosscode" / "config.yaml")
     assert find_config(cwd, home) == project
     assert load_settings(project).source == project

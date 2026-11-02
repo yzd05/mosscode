@@ -1,5 +1,6 @@
 # 复制到 .mosscode/config.yaml（项目）或 ~/.mosscode/config.yaml（用户），填写服务实际接受的 model 和环境变量名。
-# 查找顺序：./.mosscode/config.yaml → ./config.yaml → ~/.mosscode/config.yaml，第一个存在的生效；--config 可直接指定。
+# 查找顺序：./.mosscode/config.yaml → ~/.mosscode/config.yaml，第一个存在的生效；--config 可直接指定。
+# 第一次使用可以运行 moss setup，按提示生成 ~/.mosscode/config.yaml。
 # 省略 base_url 时使用该协议官方 SDK 的默认地址。
 # 设置默认项后直接进入对话；删除或注释这一行，多配置启动时会显示选择列表。
 default_provider: claude

@@ -4,25 +4,33 @@
 
 ## 安装
 
-需要 Python 3.12。在 PowerShell 中：
+需要 Python 3.12 和 [uv](https://docs.astral.sh/uv/)。在仓库目录中（PowerShell）：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e '.[dev]'
+uv tool install --editable .
+moss --version
 ```
 
-需要复现锁定的依赖版本时，先安装 `requirements-lock.txt`，再执行 `pip install --no-deps -e .`。搜索优先使用 PATH 中的 ripgrep（`rg`），没有时自动退回内置实现；Windows 上建议安装 Git for Windows，命令工具会优先使用 Git Bash。
+安装后得到 `moss` 和 `mosscode` 两个相同的命令，在任意目录都能运行。`--editable` 让命令直接使用仓库中的源码，修改代码后不用重装。uv 若提示 `%USERPROFILE%\.local\bin` 不在 PATH 中，运行 `uv tool update-shell`，然后打开新的终端。`moss doctor` 检查安装、PATH、配置和依赖工具，不发送请求。
+
+也可以用 pipx：`pipx install --editable .`。依赖或命令入口（`pyproject.toml`）变化后重新安装：`uv tool install --editable . --reinstall`；卸载：`uv tool uninstall mosscode`。
+
+搜索优先使用 PATH 中的 ripgrep（`rg`），没有时自动退回内置实现；Windows 上建议安装 Git for Windows，命令工具会优先使用 Git Bash。开发用的虚拟环境见 [开发与测试](#开发与测试)。
 
 ## 配置
 
 ### 模型
 
+第一次运行 `moss` 时如果找不到配置，会在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认只写环境变量名；选择直接输入密钥时，密钥以明文保存在这个文件中。
+
+追加 Provider 或调整其他选项时手动编辑，字段说明见 [config.example.yaml](config.example.yaml)：
+
 ```powershell
-New-Item -ItemType Directory -Force .mosscode | Out-Null
-Copy-Item config.example.yaml .mosscode\config.yaml
+New-Item -ItemType Directory -Force $HOME\.mosscode | Out-Null
+Copy-Item config.example.yaml $HOME\.mosscode\config.yaml
 ```
 
-编辑 `.mosscode/config.yaml`，填写实际的模型名称、协议和可选的 `base_url`。未指定 `--config` 时依次查找 `./.mosscode/config.yaml`、`./config.yaml`（旧位置）、`~/.mosscode/config.yaml`，第一个存在的生效。用户级配置放在 `~/.mosscode/config.yaml`，就可以在任意项目目录启动。
+`~/.mosscode/config.yaml` 是用户级配置，在任意目录都生效；只给某个项目用的配置放在该项目的 `.mosscode/config.yaml`。未指定 `--config` 时依次查找 `./.mosscode/config.yaml`、`~/.mosscode/config.yaml`，第一个存在的生效；工作目录下的 `config.yaml` 不会被读取。
 
 ```yaml
 providers:
@@ -71,12 +79,15 @@ providers:
 ## 使用
 
 ```powershell
-.\.venv\Scripts\python.exe -m mosscode                    # 交互界面
-.\.venv\Scripts\python.exe -m mosscode --provider claude  # 指定 Provider
-.\.venv\Scripts\python.exe -m mosscode --list-providers
-.\.venv\Scripts\python.exe -m mosscode -c                 # 恢复本项目最近的会话
-.\.venv\Scripts\python.exe -m mosscode --resume           # 启动后从列表中选择会话
+moss                          # 在当前目录启动交互界面
+moss "解释这个项目的入口"       # 启动后立即发送这条消息
+moss --provider claude        # 指定 Provider
+moss --list-providers
+moss -c                       # 恢复本项目最近的会话
+moss --resume                 # 启动后从列表中选择会话
 ```
+
+完整的选项、子命令和退出码见 [命令行](docs/reference/cli.md)。
 
 用自然语言描述任务，例如“读取 README.md，说明项目入口”，模型自行选择工具。界面以内联方式显示在终端中，完成的内容进入终端原生滚动历史。
 
@@ -149,12 +160,13 @@ providers:
 ### 无界面模式
 
 ```powershell
-.\.venv\Scripts\python.exe -m mosscode -p "列出 src 下的模块"
-.\.venv\Scripts\python.exe -m mosscode -p "解释项目入口" --show-usage
-.\.venv\Scripts\python.exe -m mosscode -p "列出 src 下的模块" --output-format json
+moss -p "列出 src 下的模块"
+moss -p "解释项目入口" --show-usage
+moss -p "列出 src 下的模块" --output-format json
+Get-Content error.log | moss -p "解释这个错误"
 ```
 
-`-p`（`--prompt`）运行一个任务后退出，不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。未经确认的项目级 Hook 在 `-p` 中不启用（stderr 有提示），`--trust-project-hooks` 只在本次信任，`--no-hooks` 不加载任何 Hook。模型启动的后台子 Agent 在 `-p` 中照常运行：回复结束后等待它们完成，每个结果开启新的一轮，全部结束后才退出；stderr 提示任务的开始与结束。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
+`-p`（`--prompt`）运行一个任务后退出；管道输入附在任务之后，只有管道输入时它就是任务。不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。未经确认的项目级 Hook 在 `-p` 中不启用（stderr 有提示），`--trust-project-hooks` 只在本次信任，`--no-hooks` 不加载任何 Hook。模型启动的后台子 Agent 在 `-p` 中照常运行：回复结束后等待它们完成，每个结果开启新的一轮，全部结束后才退出；stderr 提示任务的开始与结束。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
 
 ## 架构
 
@@ -195,13 +207,14 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 | `worktree/` | git 工作树的命名、创建与初始化（链接、复制）、改动检查、安全删除、元数据与自动清理 |
 | `teams/`、`tools/team.py`、`coordinator.py` | Agent 团队：存储与锁、邮箱、共享任务、成员的一轮、Lead 侧运行时、合并、窗格后端与成员进程；团队工具；协调者模式 |
 | `tui.py`、`appearance.py`、`scrollback.py` | 界面、命令与提示、原生滚动历史 |
-| `config.py`、`cli.py` | 配置加载与命令行入口 |
+| `launcher.py`、`cli.py` | 命令入口：参数、`--version` 和子命令不加载界面与 SDK；会话由 `cli.run` 启动 |
+| `config.py`、`setup.py`、`doctor.py` | 配置加载、配置引导（`moss setup`）与诊断（`moss doctor`） |
 
 ### 文档
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
+| 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
 | 设计评审 | [对照 Claude Code 与 Pi 的完善建议](docs/research/claude-code-pi-gap-review.md) |
 | 各阶段规格与验证 | `docs/specs/`：`chapter-*` 为各章，`refinement-*` 为完善阶段 1–6，每个目录含 `spec.md` 与 `validation.md` |
 | 人工验收 | [完善阶段 1–6、上下文管理与第九至十四章验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |
@@ -209,11 +222,15 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 ### 开发与测试
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e '.[dev]'
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe scripts/verify_inline_terminal.py   # Windows 真实控制台烟测，需在交互式终端运行
 .\.venv\Scripts\python.exe scripts/verify_resize.py            # 窗口宽度变化后的重绘检查，会弹出并自动关闭一个控制台窗口
 .\.venv\Scripts\python.exe scripts/verify_keys.py              # 经控制台输入队列检查换行、历史和 /clear，同样弹出窗口
 ```
+
+需要复现锁定的依赖版本时，先安装 `requirements-lock.txt`，再执行 `pip install --no-deps -e .`。虚拟环境中也有 `moss` 命令（`.\.venv\Scripts\moss.exe`），`.\.venv\Scripts\python.exe -m mosscode` 同样可用。
 
 测试使用模拟模型、模拟 SSE 和无界面 TUI，不读取 API 配置，也不发送请求；真实服务的联调需要自行配置。界面预览脚本见 [终端界面](docs/reference/interface.md#预览与烟测脚本)。
 
