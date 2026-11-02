@@ -847,9 +847,13 @@ class TeamRuntime:
         job.add_done_callback(self._writes.discard)
 
     async def settle(self) -> None:
-        """Wait for the status writes already started."""
-        while self._writes:
-            await asyncio.gather(*list(self._writes), return_exceptions=True)
+        """Wait for the status writes already started.
+
+        Only unfinished jobs are awaited: a finished one leaves the set in a callback on the next loop
+        iteration, and gathering finished jobs alone never yields to it, so the loop would spin forever.
+        """
+        while pending := [job for job in self._writes if not job.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # Messages -------------------------------------------------------------------------------------
 

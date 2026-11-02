@@ -1135,6 +1135,29 @@ async def test_ac35_team_commands(tmp_path):
     await conv.close()
 
 
+@pytest.mark.parametrize("owner", ["runtime", "process"])
+async def test_settle_with_a_finished_write_still_in_the_set(owner, monkeypatch):
+    """A write that finished but has not yet left the set (its callback runs next iteration) must not spin."""
+    from types import SimpleNamespace
+    from mosscode.teams.process import MemberProcess
+    from mosscode.teams.runtime import TeamRuntime
+    settle = TeamRuntime.settle if owner == "runtime" else MemberProcess.settle
+    gather, calls = asyncio.gather, []
+
+    def counted(*jobs, **options):
+        calls.append(jobs)
+        assert len(calls) < 100, "settle() spun on a finished write"
+        return gather(*jobs, **options)
+    monkeypatch.setattr(asyncio, "gather", counted)
+    holder = SimpleNamespace(_writes=set())
+    job = asyncio.get_running_loop().create_future()
+    holder._writes.add(job)
+    job.add_done_callback(holder._writes.discard)
+    job.set_result(None)  # Done; the discard callback is only scheduled.
+    await settle(holder)
+    assert calls == []
+
+
 async def test_id5_member_that_does_not_stop_is_forced(tmp_path):
     gate = asyncio.Event()
 

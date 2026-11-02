@@ -25,3 +25,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+faulthandler_timeout = 300  # A test that hangs prints every thread's stack instead of stalling silently.

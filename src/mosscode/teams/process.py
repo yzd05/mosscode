@@ -93,8 +93,8 @@ class MemberProcess:
         job.add_done_callback(self._writes.discard)
 
     async def settle(self) -> None:
-        while self._writes:
-            await asyncio.gather(*list(self._writes), return_exceptions=True)
+        while pending := [job for job in self._writes if not job.done()]:  # See TeamRuntime.settle in runtime.py.
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def _status(self, state: str, fields: dict) -> None:
         def change(member: Member) -> None:
