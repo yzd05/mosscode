@@ -63,4 +63,4 @@ Server 级规则按配置中的 Server 名称匹配，名称被摘要缩短的�
 
 文本和 structuredContent 进入工具结果，isError 保持失败。其他类型明确标明未展示，不自动获取资源或保存图片 base64。参数最多 64 KiB，成功与失败正文超过 64 KiB 均截断。调用超时按 Server 的 `timeout`（默认 30 秒），审批等待不计入超时。断连、超时、取消不自动重连或重发，可能产生的外部效果不能回滚。退出关闭会话、HTTP 客户端和本程序启动的 stdio 子进程。
 
-HTTP 支持 POST 的 JSON/SSE 响应，不打开可选 GET 通知流，不恢复中断 SSE。目前不实现资源、提示词、采样、roots、OAuth、健康检查或工具变更订阅。见 [第七章规格](../specs/chapter-07-mcp/spec.md)、[验证记录](../specs/chapter-07-mcp/validation.md)，以及阶段 5 的 [规格](../specs/refinement-05-mcp/spec.md) 和 [验证](../specs/refinement-05-mcp/validation.md)。
+HTTP 支持 POST 的 JSON/SSE 响应，不打开可选 GET 通知流，不恢复中断 SSE。目前不实现资源、提示词、采样、roots、OAuth、健康检查或工具变更订阅。

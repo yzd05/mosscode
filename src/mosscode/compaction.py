@@ -70,7 +70,7 @@ def _only_boundary(messages: Sequence[Message]) -> bool:
 
 
 def split_point(history: Sequence[Message], threshold: int) -> int:
-    """Index where the kept tail starts (C3); 0 means nothing can be compacted."""
+    """Index where the kept tail starts; 0 means nothing can be compacted."""
     if not history:
         return 0
     start = _group_start(history, len(history) - 1)
@@ -99,7 +99,7 @@ def carried_quotes(message: Message) -> list[str]:
 
 
 def collect_quotes(removed: Sequence[Message]) -> list[str]:
-    """User input in time order, including quotes a previous compaction attached (C7)."""
+    """User input in time order, including quotes a previous compaction attached."""
     quotes = []
     for message in removed:
         if message.synthetic == BOUNDARY:
@@ -161,7 +161,7 @@ def summary_request(text: str, instructions: str = "") -> str:
 
 
 def parse_summary(response: Completed) -> str:
-    """C11: the <summary> body, or a failure reason."""
+    """The <summary> body, or a failure reason."""
     if response.message.tool_calls:
         raise CompactionError("摘要回复包含工具调用。")
     if response.stop_reason == "max_tokens":
@@ -179,7 +179,7 @@ def record_text(removed: Sequence[Message]) -> str:
 
 
 def boundary(summary: str, quotes: Sequence[str], omitted: int, record: Path | None) -> Message:
-    """C8: replaces the compacted messages; quotes stay separate blocks so the next compaction carries them."""
+    """Replaces the compacted messages; quotes stay separate blocks so the next compaction carries them."""
     blocks = [ContentBlock("text", "（上下文已压缩：较早的对话由下面的摘要代替，之后的消息保留原文。）"),
               ContentBlock("text", f"\n\n摘要：\n{summary}")]
     if quotes:
@@ -223,7 +223,7 @@ async def compact_history(provider, history: Sequence[Message], budget: ContextB
             break
         if step == SHRINK_STEPS:
             raise CompactionError(f"摘要请求缩减 {SHRINK_STEPS} 次后仍超出上下文窗口。")
-        # C10: shorten tool results first, then drop the earliest 20% of messages each time.
+        # Shorten tool results first, then drop the earliest 20% of messages each time.
         if not shrink:
             shrink = True
             continue

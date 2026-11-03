@@ -1,4 +1,4 @@
-"""Acceptance tests for refinement 02 (docs/specs/refinement-02-tools/spec.md, AC1–AC8)."""
+"""Tool contracts: reading, editing, commands and search."""
 
 import os
 from pathlib import Path
@@ -35,7 +35,7 @@ def no_rg(monkeypatch):
     monkeypatch.setattr("mosscode.tools.search.shutil.which", lambda name: None if name == "rg" else original(name))
 
 
-# AC1 read_file output
+# read_file output
 
 
 async def test_read_line_numbers_defaults_and_notes(tmp_path):
@@ -56,7 +56,7 @@ async def test_read_line_numbers_defaults_and_notes(tmp_path):
     assert many.details["next_offset"] == 2001 and "offset=2001" in many.output
 
 
-# AC2 reads outside the project
+# Reads outside the project
 
 
 async def test_outside_read_asks_and_writes_stay_blocked(tmp_path):
@@ -104,7 +104,7 @@ async def test_outside_read_permanent_rule_reloads(tmp_path):
         parse_rule("Read(../secret)", "allow")
 
 
-# AC3 / AC4 / AC5 editing
+# Editing
 
 
 async def test_replace_all_hint_and_crlf_multiline(tmp_path):
@@ -170,14 +170,14 @@ async def test_edit_summary_keeps_diff_local(tmp_path):
     assert overwrite.output == "已覆盖 a.txt：3 行 → 1 行。" and "-三" in overwrite.details["diff"]
 
 
-# AC6 command output and timeout
+# Command output and timeout
 
 
 async def test_command_keeps_head_and_tail(tmp_path):
     reg = registry(tmp_path)
     script = "import sys; sys.stdout.write('HEAD' + 'x' * 100000 + 'TAIL')"
     result = await reg.execute(call("execute_command", command=python_command(script), timeout=30))
-    # Without a session directory, layer 1 (chapter 8) keeps a head-and-tail preview.
+    # Without a session directory, layer 1 keeps a head-and-tail preview.
     assert not result.is_error and result.details["truncated"]
     assert "\nHEAD" in result.output and result.output.rstrip().endswith("TAIL")
     assert "中间省略" in result.output and len(result.output.encode("utf-8")) < 40000
@@ -190,7 +190,7 @@ def test_command_timeout_bounds():
         CommandParams(command="x", timeout=601)
 
 
-# AC7 shell selection
+# Shell selection
 
 
 @pytest.mark.skipif(SHELL.kind == "powershell", reason="需要 bash")
@@ -256,7 +256,7 @@ def test_config_shell_key(tmp_path):
         load_settings(path)
 
 
-# AC8 search
+# Search
 
 
 def ignore_tree(root):

@@ -46,14 +46,14 @@ def store(text: str, details: dict[str, Any], session: Session | None, call_id: 
 
 def bound_result(name: str, call_id: str, text: str, details: dict[str, Any],
                  session: Session | None) -> tuple[str, dict[str, Any]]:
-    """L1: one result over the threshold is stored."""
+    """One result over the threshold is stored."""
     if name in EXEMPT or estimate_text(text) <= RESULT_TOKENS:
         return text, details
     return store(text, details, session, call_id)
 
 
 def bound_message(message: Message, session: Session | None) -> Message:
-    """L2: results of one batch over the combined budget are stored, largest first."""
+    """Results of one batch over the combined budget are stored, largest first."""
     results = list(message.tool_results)
     sizes = [estimate_text(r.model_text()) for r in results]
     total = sum(sizes)

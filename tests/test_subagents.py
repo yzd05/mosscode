@@ -1,4 +1,4 @@
-"""Chapter 13: sub-agents (definitions, the agent tool, fork, tasks, notifications, hooks)."""
+"""Sub-agents (definitions, the agent tool, fork, tasks, notifications, hooks)."""
 
 import asyncio
 import json
@@ -17,7 +17,7 @@ from mosscode.tools import create_default_registry
 from mosscode.tools.execution import partition_calls
 from mosscode.tools.files import FileState
 from test_agent import call, response
-from test_sessions_stage9b import drain, make
+from test_sessions import drain, make
 
 
 # Helpers ------------------------------------------------------------------------------------------
@@ -91,9 +91,9 @@ def main_requests(provider, marker="SUB-"):
     return [r for r in provider.requests if marker not in r[1].stable and not is_fork(r[0])]
 
 
-# AC1/AC2: definitions --------------------------------------------------------------------------------
+# Definitions --------------------------------------------------------------------------------
 
-def test_ac1_three_places_override_and_problems(tmp_path, isolated_home):
+def test_three_places_override_and_problems(tmp_path, isolated_home):
     project = project_of(tmp_path)
     user = isolated_home / ".mosscode" / "agents"
     write_agent(user, "explore", body="USER-EXPLORE")
@@ -119,7 +119,7 @@ def test_ac1_three_places_override_and_problems(tmp_path, isolated_home):
     assert "disalowed_tools" in problems
 
 
-def test_ac2_tool_names_and_matching(tmp_path):
+def test_tool_names_and_matching(tmp_path):
     path = write_agent(tmp_path, "t", "tools: Read, mcp__github__*\ndisallowed_tools: mcp__github__delete\n")
     agent = parse_agent(path, "project")
     assert agent.tools == ("read_file", "mcp__github__*")
@@ -130,7 +130,7 @@ def test_ac2_tool_names_and_matching(tmp_path):
         parse_agent(write_agent(tmp_path, "m", "permission_mode: dontAsk\n"), "project")
 
 
-async def test_ac2_unknown_type_and_missing_provider(tmp_path):
+async def test_unknown_type_and_missing_provider(tmp_path):
     write_agent(agents_dir(tmp_path), "remote", "model: nowhere\n")
 
     def script(messages, system, tools):
@@ -148,9 +148,9 @@ async def test_ac2_unknown_type_and_missing_provider(tmp_path):
     await conv.close()
 
 
-# AC3: a definition sub-agent --------------------------------------------------------------------------
+# A definition sub-agent --------------------------------------------------------------------------
 
-async def test_ac3_definition_runs_in_a_blank_conversation(tmp_path):
+async def test_definition_runs_in_a_blank_conversation(tmp_path):
     write_agent(agents_dir(tmp_path), "worker", "tools: Read, Grep\n", "SUB-WORKER")
     (project_of(tmp_path) / "AGENTS.md").write_text("PROJECT-RULE", encoding="utf-8")
     (project_of(tmp_path) / "a.txt").write_text("hello", encoding="utf-8")
@@ -177,18 +177,18 @@ async def test_ac3_definition_runs_in_a_blank_conversation(tmp_path):
     assert {"agent", "task_output", "task_stop"} <= {tool.name for tool in main[0][2]}
     result = tool_results_of(main[1])[0]
     assert result.output.startswith("WORKER-DONE") and "工具调用 1 次" in result.output and not result.is_error
-    # AC11: usage counted in the task and the session; its own transcript.
+    # Usage counted in the task and the session; its own transcript.
     task = conv.tasks.get("t1")
     assert task.status == "completed" and task.usage.input_tokens == 30
     assert conv.total_usage.input_tokens == 40
     records = [json.loads(line) for line in task.transcript.read_text(encoding="utf-8").splitlines()]
     assert records[0]["type"] == "subagent" and records[0]["agent_type"] == "worker"
     assert [r["message"]["role"] for r in records[1:]] == ["user", "assistant", "tool", "assistant"]
-    assert all(m.role != "tool" or m.tool_results[0].name != "read_file" for m in conv.history)  # I5
+    assert all(m.role != "tool" or m.tool_results[0].name != "read_file" for m in conv.history)
     await conv.close()
 
 
-async def test_ac3_max_turns_and_global_limit(tmp_path):
+async def test_max_turns_and_global_limit(tmp_path):
     write_agent(agents_dir(tmp_path), "loop", "max_turns: 2\n", "SUB-LOOP")
     write_agent(agents_dir(tmp_path), "big", "max_turns: 999\n", "SUB-BIG")
 
@@ -209,9 +209,9 @@ async def test_ac3_max_turns_and_global_limit(tmp_path):
     await conv.close()
 
 
-# AC4: fork -------------------------------------------------------------------------------------------
+# Fork -------------------------------------------------------------------------------------------
 
-async def test_ac4_fork_shares_the_prefix_and_is_refused_nesting(tmp_path):
+async def test_fork_shares_the_prefix_and_is_refused_nesting(tmp_path):
     def script(messages, system, tools):
         if is_fork(messages):
             if "任务：嵌套" in messages[-1].text:
@@ -235,7 +235,7 @@ async def test_ac4_fork_shares_the_prefix_and_is_refused_nesting(tmp_path):
     forks = [r for r in provider.requests if is_fork(r[0])]
     first, second = forks[0], forks[1]
     parent_messages, parent_system, parent_tools = main[0]
-    # C1: the same system prompt, prefix supplements and tools; history up to the assistant message.
+    # The same system prompt, prefix supplements and tools; history up to the assistant message.
     for messages, system, tools in (first, second):
         assert system.stable == parent_system.stable and tools == parent_tools
         prefix = lambda s: [item for item in s.supplements if item.kind in PREFIX_KINDS]
@@ -249,9 +249,9 @@ async def test_ac4_fork_shares_the_prefix_and_is_refused_nesting(tmp_path):
     await conv.close()
 
 
-# AC5: file state -------------------------------------------------------------------------------------
+# File state -------------------------------------------------------------------------------------
 
-async def test_ac5_file_state_per_sub_agent(tmp_path):
+async def test_file_state_per_sub_agent(tmp_path):
     from test_agent import call as make_call
     project = project_of(tmp_path)
     (project / "a.txt").write_text("one", encoding="utf-8")
@@ -267,9 +267,9 @@ async def test_ac5_file_state_per_sub_agent(tmp_path):
     assert main.file_state() is not fork.file_state() and isinstance(fresh.file_state(), FileState)
 
 
-# AC6/AC7: permissions --------------------------------------------------------------------------------
+# Permissions --------------------------------------------------------------------------------
 
-def test_ac6_effective_mode():
+def test_effective_mode():
     from mosscode.agents import AgentDef
     def agent(source, mode):
         return AgentDef("x", "d", "p", Path("x.md"), source, permission_mode=mode)
@@ -282,7 +282,7 @@ def test_ac6_effective_mode():
     assert stricter("acceptEdits", "default") == "default"
 
 
-async def test_ac6_views_keep_their_own_grants_and_background_never_asks(tmp_path):
+async def test_views_keep_their_own_grants_and_background_never_asks(tmp_path):
     policy = PermissionPolicy(tmp_path, mode="default", load=False)
     policy.interactive = True
     background = policy.view("default", interactive=False, label="子 Agent x")
@@ -295,7 +295,7 @@ async def test_ac6_views_keep_their_own_grants_and_background_never_asks(tmp_pat
     assert policy.session == [] and background.session == []
 
 
-async def test_ac6_plan_session_blocks_general_writes(tmp_path):
+async def test_plan_session_blocks_general_writes(tmp_path):
     def script(messages, system, tools):
         if "你是通用" in system.stable or "general" in system.stable.lower() and len(messages) == 1 and messages[0].text == "写文件":
             pass
@@ -315,7 +315,7 @@ async def test_ac6_plan_session_blocks_general_writes(tmp_path):
     await conv.close()
 
 
-async def test_ac7_foreground_approval_goes_to_the_shared_queue_and_detach_denies(tmp_path):
+async def test_foreground_approval_goes_to_the_shared_queue_and_detach_denies(tmp_path):
     write_agent(agents_dir(tmp_path), "writer", "", "SUB-WRITER")
 
     def script(messages, system, tools):
@@ -336,8 +336,8 @@ async def test_ac7_foreground_approval_goes_to_the_shared_queue_and_detach_denie
             conv.registry.permissions.respond(event.id, "session")
     assert len(requests) == 1 and requests[0].source == "子 Agent writer · 写一个"
     assert (project_of(tmp_path) / "one.txt").exists()
-    assert conv.registry.permissions.session == []  # P1: its grant stays in the sub-agent.
-    # P7: moving to the background answers a waiting approval with "deny".
+    assert conv.registry.permissions.session == []  # Its grant stays in the sub-agent.
+    # Moving to the background answers a waiting approval with "deny".
     provider.requests.clear()
     stream = conv.reply("再来")
     async for event in stream:
@@ -349,16 +349,16 @@ async def test_ac7_foreground_approval_goes_to_the_shared_queue_and_detach_denie
     await conv.close()
 
 
-# AC8: parallel ---------------------------------------------------------------------------------------
+# Parallel ---------------------------------------------------------------------------------------
 
-def test_ac8_adjacent_agent_calls_group(tmp_path):
+def test_adjacent_agent_calls_group(tmp_path):
     conv = conversation(tmp_path, ScriptProvider(lambda *a: response("x")))
     calls = [call("agent", "a"), call("agent", "b"), call("read_file", "r"), call("glob", "g"), call("agent", "c"),
              call("write_file", "w"), call("agent", "d")]
     assert list(partition_calls(calls, conv.registry)) == [[0, 1], [2, 3], [4], [5], [6]]
 
 
-async def test_ac8_three_agents_run_at_once(tmp_path):
+async def test_three_agents_run_at_once(tmp_path):
     write_agent(agents_dir(tmp_path), "w", "", "SUB-W")
     arrived, gate = [], asyncio.Event()
 
@@ -384,9 +384,9 @@ async def test_ac8_three_agents_run_at_once(tmp_path):
     await conv.close()
 
 
-# AC9/AC10: background and notifications -------------------------------------------------------------
+# Background and notifications -------------------------------------------------------------
 
-async def test_ac9_background_limits_and_auto_background(tmp_path):
+async def test_background_limits_and_auto_background(tmp_path):
     write_agent(agents_dir(tmp_path), "slow", "", "SUB-SLOW")
     write_agent(agents_dir(tmp_path), "bg", "background: true\n", "SUB-BG")
     gate = asyncio.Event()
@@ -422,7 +422,7 @@ async def test_ac9_background_limits_and_auto_background(tmp_path):
     await conv.close()
 
 
-async def test_ac10_notifications_idle_and_busy(tmp_path):
+async def test_notifications_idle_and_busy(tmp_path):
     write_agent(agents_dir(tmp_path), "w", "", "SUB-W")
     gate = asyncio.Event()
 
@@ -476,7 +476,7 @@ async def test_ac10_notifications_idle_and_busy(tmp_path):
     await conv.close()
 
 
-async def test_ac10_stopped_tasks_never_notify(tmp_path):
+async def test_stopped_tasks_never_notify(tmp_path):
     write_agent(agents_dir(tmp_path), "w", "", "SUB-W")
 
     def script(messages, system, tools):
@@ -498,9 +498,9 @@ async def test_ac10_stopped_tasks_never_notify(tmp_path):
     await conv.close()
 
 
-# AC11/AC12: transcripts, cancellation and session switches -------------------------------------------
+# Transcripts, cancellation and session switches -------------------------------------------
 
-async def test_ac11_no_transcript_without_persistence_and_resume_ignores_tasks(tmp_path):
+async def test_no_transcript_without_persistence_and_resume_ignores_tasks(tmp_path):
     write_agent(agents_dir(tmp_path), "w", "", "SUB-W")
 
     def script(messages, system, tools):
@@ -526,7 +526,7 @@ async def test_ac11_no_transcript_without_persistence_and_resume_ignores_tasks(t
     await restored.close()
 
 
-async def test_ac12_cancel_foreground_and_clear_cancels_background(tmp_path):
+async def test_cancel_foreground_and_clear_cancels_background(tmp_path):
     write_agent(agents_dir(tmp_path), "w", "", "SUB-W")
     started = asyncio.Event()
 
@@ -561,7 +561,7 @@ async def test_ac12_cancel_foreground_and_clear_cancels_background(tmp_path):
     await conv.close()
 
 
-# AC13/AC14/AC15: hooks -------------------------------------------------------------------------------
+# Hooks -------------------------------------------------------------------------------
 
 def hook_engine(tmp_path, *hooks):
     import yaml
@@ -572,7 +572,7 @@ def hook_engine(tmp_path, *hooks):
     return HookEngine(project_of(tmp_path), home=home)
 
 
-async def test_ac14_hook_fields_and_subagent_events(tmp_path):
+async def test_hook_fields_and_subagent_events(tmp_path):
     write_agent(agents_dir(tmp_path), "explorer", "", "SUB-EXP")
     hooks = hook_engine(
         tmp_path,
@@ -617,7 +617,7 @@ async def test_ac14_hook_fields_and_subagent_events(tmp_path):
     await conv.close()
 
 
-async def test_ac15_agent_action_runs_in_the_background(tmp_path):
+async def test_agent_action_runs_in_the_background(tmp_path):
     write_agent(agents_dir(tmp_path), "checker", "", "SUB-CHECK")
     hooks = hook_engine(
         tmp_path,
@@ -642,13 +642,13 @@ async def test_ac15_agent_action_runs_in_the_background(tmp_path):
     assert all("检查通过" not in m.text for m in conv.history)
     log = [json.loads(line) for line in hooks.log_path.read_text(encoding="utf-8").splitlines()]
     outcomes = [(r["hook"], r["outcome"]) for r in log]
-    assert ("review", "ok") in outcomes and ("review", "skipped") in outcomes  # H5: the nested one.
+    assert ("review", "ok") in outcomes and ("review", "skipped") in outcomes  # The nested one.
     assert "检查通过" in next(r["detail"] for r in log if r["outcome"] == "ok")
     assert conv.tasks.get("t2") is None
     await conv.close()
 
 
-async def test_ac15_agent_action_timeout(tmp_path):
+async def test_agent_action_timeout(tmp_path):
     write_agent(agents_dir(tmp_path), "checker", "", "SUB-CHECK")
     hooks = hook_engine(
         tmp_path,
@@ -675,7 +675,7 @@ def test_task_label():
     assert task.label == "explore · 查找配置" and task.status == "running"
 
 
-# U4/M3/U5/B8: commands ---------------------------------------------------------------------------
+# Commands ---------------------------------------------------------------------------
 
 def hanging_conversation(tmp_path, gate=None):
     """The main agent starts one background sub-agent of type w, which waits for the gate."""
@@ -700,8 +700,8 @@ def hanging_conversation(tmp_path, gate=None):
     return conversation(tmp_path, provider), provider, gate
 
 
-async def test_u4_agents_command(tmp_path):
-    from test_commands_stage10 import FakeUI, context, run
+async def test_agents_command(tmp_path):
+    from test_commands import FakeUI, context, run
     write_agent(agents_dir(tmp_path), "worker", "tools: Read, mcp__x__y\nmodel: nowhere\ncolor: red\n", "第一行\n第二行")
     write_agent(agents_dir(tmp_path), "bad", "max_turns: 0\n")
     conv = conversation(tmp_path, ScriptProvider(lambda *a: response("x")))
@@ -727,8 +727,8 @@ async def test_u4_agents_command(tmp_path):
     await conv.close()
 
 
-async def test_m3_tasks_command_and_status(tmp_path):
-    from test_commands_stage10 import FakeUI, context, run
+async def test_tasks_command_and_status(tmp_path):
+    from test_commands import FakeUI, context, run
     conv, provider, gate = hanging_conversation(tmp_path)
     ui = FakeUI()
     ctx = context(conv, ui=ui)
@@ -751,7 +751,7 @@ async def test_m3_tasks_command_and_status(tmp_path):
     await conv.close()
 
 
-def test_u4_m3_commands_exit_2_in_headless_mode(capsys):
+def test_m3_commands_exit_2_in_headless_mode(capsys):
     from mosscode.cli import _headless_input
     for text in ("/agents", "/tasks stop t1"):
         with pytest.raises(SystemExit) as exc:
@@ -760,8 +760,8 @@ def test_u4_m3_commands_exit_2_in_headless_mode(capsys):
     assert "只能在交互界面中使用" in capsys.readouterr().err
 
 
-async def test_b8_clear_and_exit_ask_first(tmp_path):
-    from test_commands_stage10 import FakeUI, context, run
+async def test_clear_and_exit_ask_first(tmp_path):
+    from test_commands import FakeUI, context, run
     conv, provider, gate = hanging_conversation(tmp_path)
     ui = FakeUI()
     ctx = context(conv, ui=ui)
@@ -780,9 +780,9 @@ async def test_b8_clear_and_exit_ask_first(tmp_path):
     await conv.close()
 
 
-# B7: -p --------------------------------------------------------------------------------------------
+# -p --------------------------------------------------------------------------------------------
 
-async def test_b7_headless_waits_and_delivers_notifications(tmp_path):
+async def test_headless_waits_and_delivers_notifications(tmp_path):
     from mosscode.cli import _task_notices, _turns
     conv, provider, gate = hanging_conversation(tmp_path)
     said = []
@@ -798,7 +798,7 @@ async def test_b7_headless_waits_and_delivers_notifications(tmp_path):
     await conv.close()
 
 
-# B3/U1/U3/B6: the TUI ------------------------------------------------------------------------------
+# The TUI ------------------------------------------------------------------------------
 
 async def wait_until(pilot, check, limit=5.0):
     loop = asyncio.get_running_loop()
@@ -839,7 +839,7 @@ def test_resumed_rows_show_notifications_as_one_line():
     assert rows[0].plain == "└ 已收到后台任务通知：t2"
 
 
-def test_u1_latest_call_keeps_the_file_name(tmp_path, monkeypatch):
+def test_latest_call_keeps_the_file_name(tmp_path, monkeypatch):
     from mosscode.agents.runtime import describe_call
     monkeypatch.chdir(tmp_path)
     inside = str(tmp_path / "src" / ("a" * 70) / "util.py")
@@ -849,7 +849,7 @@ def test_u1_latest_call_keeps_the_file_name(tmp_path, monkeypatch):
     assert describe_call(call("execute_command", "c4", command="git status")) == "execute_command git status"
 
 
-async def test_b8_exit_after_cancelling_drops_late_notes(tmp_path):
+async def test_exit_after_cancelling_drops_late_notes(tmp_path):
     from mosscode.tui import MossCodeApp
     conv, provider, gate = hanging_conversation(tmp_path)
     app = MossCodeApp(conv, "test")
@@ -864,7 +864,7 @@ async def test_b8_exit_after_cancelling_drops_late_notes(tmp_path):
     assert conv.tasks.get("t1").status == "cancelled"
 
 
-async def test_m3_tasks_and_status_work_during_a_run(tmp_path):
+async def test_tasks_and_status_work_during_a_run(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
     conv, provider, gate = hanging_conversation(tmp_path)
     app = MossCodeApp(conv, "test")
@@ -872,7 +872,7 @@ async def test_m3_tasks_and_status_work_during_a_run(tmp_path):
         await app._start_request("前台")
         await wait_until(pilot, lambda: conv.tasks.get("t1") is not None)
         field = app.query_one("#prompt", PromptArea)
-        field.post_message(PromptArea.Submitted(field, "/help"))  # Other commands still wait (ch10 P8).
+        field.post_message(PromptArea.Submitted(field, "/help"))  # Other commands still wait.
         await pilot.pause()
         assert "其他命令请在完成后发送" in str(app.query_one("#status").render())
         for command in ("/status", "/tasks", "/tasks stop t1"):

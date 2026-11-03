@@ -1,5 +1,5 @@
-"""Refinement 07 MV1/MV3: a member's conversation as short lines — the same in the lead's member view
-(read from its transcript) and in the member's own window (from the events of its turns, BE8)."""
+"""A member's conversation as short lines — the same in the lead's member view
+(read from its transcript) and in the member's own window (from the events of its turns)."""
 
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ class Feed:
 
 
 class TranscriptTail:
-    """MV3: the records appended to a transcript since the last read. A line still being written stays
+    """The records appended to a transcript since the last read. A line still being written stays
     for the next read; a line that cannot be parsed is skipped."""
 
     def __init__(self, path: Path):

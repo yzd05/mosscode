@@ -1,4 +1,4 @@
-"""Chapter 15 T5: pane backends (AC36–AC40). wt and tmux are command doubles; the member process is real."""
+"""Pane backends. wt and tmux are command doubles; the member process is real."""
 
 import asyncio
 import json
@@ -20,17 +20,17 @@ from mosscode.teams.lock import now
 from mosscode.teams.mailbox import Message
 from mosscode.teams.runtime import PaneRunner
 from mosscode.worktree.meta import process_alive
-from test_teams_stage15 import Script, done, team_conversation, until
-from test_worktree_stage14 import repo
+from test_teams import Script, done, team_conversation, until
+from test_worktree import repo
 
 
 def which(*found):
     return lambda name: f"/bin/{name}" if name in found else None
 
 
-# AC36: auto --------------------------------------------------------------------------------------
+# Auto --------------------------------------------------------------------------------------
 
-def test_ac36_auto_order_and_reasons():
+def test_auto_order_and_reasons():
     choice = detect_backend("auto", {"TMUX": "/tmp/s,1,0", "WT_SESSION": "x"}, which("tmux", "wt"))
     assert (choice.backend, choice.reason) == (TMUX, "auto：检测到 tmux")  # tmux first.
     choice = detect_backend("auto", {"TMUX": "/tmp/s,1,0"}, which("tmux"))
@@ -44,7 +44,7 @@ def test_ac36_auto_order_and_reasons():
     assert detect_backend("in-process", {"TMUX": "x"}, which("tmux")).backend == IN_PROCESS
 
 
-async def test_ac36_auto_reason_in_the_result_and_team_detail(tmp_path):
+async def test_auto_reason_in_the_result_and_team_detail(tmp_path):
     provider, conv = team_conversation(tmp_path, Script(alice=done))
     conv.teams.teammate_mode, conv.teams.env, conv.teams.which = "auto", {}, which()
     await conv.teams.create("t")
@@ -56,7 +56,7 @@ async def test_ac36_auto_reason_in_the_result_and_team_detail(tmp_path):
     await conv.close()
 
 
-# AC37: explicit and missing ----------------------------------------------------------------------
+# Explicit and missing ----------------------------------------------------------------------
 
 @pytest.mark.parametrize("mode, env, found, missing", [
     ("tmux", {}, which("tmux"), "TMUX 为空"),
@@ -64,14 +64,14 @@ async def test_ac36_auto_reason_in_the_result_and_team_detail(tmp_path):
     ("windows-terminal", {}, which("wt"), "WT_SESSION 为空"),
     ("windows-terminal", {"WT_SESSION": "x"}, which(), "找不到 wt.exe"),
 ])
-def test_ac37_explicit_backend_unavailable(mode, env, found, missing):
+def test_explicit_backend_unavailable(mode, env, found, missing):
     with pytest.raises(TeamError) as caught:
         detect_backend(mode, env, found)
     assert caught.value.code == "backend_unavailable" and missing in caught.value.message
     assert "没有改用其他后端" in caught.value.message
 
 
-async def test_ac37_spawn_creates_nothing(tmp_path):
+async def test_spawn_creates_nothing(tmp_path):
     project = repo(tmp_path)
     provider, conv = team_conversation(tmp_path, Script(alice=done))
     conv.teams.teammate_mode, conv.teams.env, conv.teams.which = "tmux", {}, which()
@@ -84,7 +84,7 @@ async def test_ac37_spawn_creates_nothing(tmp_path):
     await conv.close()
 
 
-def test_cf1_config_values(tmp_path):
+def test_config_values(tmp_path):
     def config(extra):
         path = tmp_path / "c.yaml"
         path.write_text("providers:\n  - {name: p, protocol: openai-compat, model: m, api_key: k}\n" + extra,
@@ -99,14 +99,14 @@ def test_cf1_config_values(tmp_path):
             load_settings(config(bad))
 
 
-# AC38: command lines -----------------------------------------------------------------------------
+# Command lines -----------------------------------------------------------------------------
 
-def test_ac38_windows_terminal_command():
+def test_windows_terminal_command():
     backend = WindowsTerminalBackend(which=which("wt"), python="py")
     cwd = Path("work;tree")
     arguments = member_arguments(Path("teams") / "t", "alice", None, "deep;seek")
     command = backend.command(cwd, arguments, member="alice", team="t", window="mosscode-t-abc123")
-    # Refinement 07 WN1: a tab of the team's window, titled for the member; the lead's window is not split.
+    # A tab of the team's window, titled for the member; the lead's window is not split.
     assert command[:9] == ["/bin/wt", "-w", "mosscode-t-abc123", "new-tab", "--title", "alice · t",
                            "--suppressApplicationTitle", "-d", str(cwd).replace(";", "\\;")]
     assert command[9:12] == ["--", "py", "-m"] and command[12] == "mosscode.teams.pane"
@@ -116,14 +116,14 @@ def test_ac38_windows_terminal_command():
     assert escape_wt("a;b;c") == "a\\;b\\;c"
 
 
-def test_ac38_config_path_is_passed_never_a_key(tmp_path):
+def test_config_path_is_passed_never_a_key(tmp_path):
     config = tmp_path / "config.yaml"
     arguments = member_arguments(tmp_path / "t", "alice", config, "p")
     assert arguments == ["--team-dir", str(tmp_path / "t"), "--team-member", "alice", "--config",
                          str(config.resolve()), "--provider", "p"]
 
 
-def test_ac38_tmux_command_pane_and_kill():
+def test_tmux_command_pane_and_kill():
     calls = []
 
     def run(command, **kwargs):
@@ -131,7 +131,7 @@ def test_ac38_tmux_command_pane_and_kill():
         return subprocess.CompletedProcess(command, 0, "%7 4242\n", "")
     backend = TmuxBackend(run, which("tmux"), python="py")
     command = backend.command(Path("/w"), ["--team-dir", "/t", "--team-member", "bob"], member="bob", team="t")
-    # WN2: a window of its own, not switched to.
+    # A window of its own, not switched to.
     assert command[:10] == ["/bin/tmux", "new-window", "-d", "-n", "bob", "-P", "-F", "#{pane_id} #{pane_pid}",
                             "-c", str(Path("/w"))]
     assert command[10] == "py -m mosscode --team-dir /t --team-member bob"
@@ -140,7 +140,7 @@ def test_ac38_tmux_command_pane_and_kill():
     assert calls[-1] == ["/bin/tmux", "kill-pane", "-t", "%7"]
 
 
-def test_ac38_launch_failure_is_backend_failed():
+def test_launch_failure_is_backend_failed():
     def run(command, **kwargs):
         return subprocess.CompletedProcess(command, 1, "", "no server running")
     with pytest.raises(TeamError) as caught:
@@ -200,9 +200,9 @@ def pane_conversation(tmp_path, terminal, mode="windows-terminal"):
     return conv
 
 
-# AC39: no pid in time ----------------------------------------------------------------------------
+# No pid in time ----------------------------------------------------------------------------
 
-async def test_ac39_no_pid_is_backend_failed_and_stopped(tmp_path):
+async def test_no_pid_is_backend_failed_and_stopped(tmp_path):
     repo(tmp_path)
     terminal = Terminal()
     conv = pane_conversation(tmp_path, terminal)
@@ -218,7 +218,7 @@ async def test_ac39_no_pid_is_backend_failed_and_stopped(tmp_path):
     await conv.close()
 
 
-async def test_be9_child_error_is_reported(tmp_path):
+async def test_child_error_is_reported(tmp_path):
     def child(terminal, store, name):
         def write(team):
             team.member(name).error = "窗格中缺少环境变量 DEEPSEEK_API_KEY：设为用户环境变量，或改用 in-process"
@@ -235,7 +235,7 @@ async def test_be9_child_error_is_reported(tmp_path):
     await conv.close()
 
 
-async def test_be7_pane_member_forced_after_shutdown_request(tmp_path):
+async def test_pane_member_forced_after_shutdown_request(tmp_path):
     terminal = Terminal(lambda terminal, store, name: terminal.start(store, name))
     conv = pane_conversation(tmp_path, terminal)
     notes = []
@@ -248,12 +248,12 @@ async def test_be7_pane_member_forced_after_shutdown_request(tmp_path):
         assert isinstance(runner, PaneRunner) and runner.status == "idle"
         detail = conv.teams.detail("t")
         window = team_window(conv.teams.current.directory)
-        assert "Windows Terminal 标签页" in detail and f"在团队窗口 {window} 中" in detail  # WN3
+        assert "Windows Terminal 标签页" in detail and f"在团队窗口 {window} 中" in detail
         assert conv.teams.current.load().member("alice").window == window
         assert any(f"在团队窗口 {window} 中" in note for note in notes)
         assert terminal.calls[0][terminal.calls[0].index("-w") + 1] == window
         store = conv.teams.current
-        assert store.mailbox.peek("alice")[0].body == "做 A"  # BE4: it reads its own mailbox.
+        assert store.mailbox.peek("alice")[0].body == "做 A"  # It reads its own mailbox.
         process = terminal.processes[0]
         await conv.teams.stop_member("alice")  # The stand-in never answers.
         await until(lambda: process.poll() is not None, timeout=15)
@@ -269,7 +269,7 @@ async def test_be7_pane_member_forced_after_shutdown_request(tmp_path):
         await conv.close()
 
 
-async def test_ld6_lead_exit_ends_pane_processes(tmp_path):
+async def test_lead_exit_ends_pane_processes(tmp_path):
     terminal = Terminal(lambda terminal, store, name: terminal.start(store, name))
     conv = pane_conversation(tmp_path, terminal, mode="tmux")
     try:
@@ -283,12 +283,12 @@ async def test_ld6_lead_exit_ends_pane_processes(tmp_path):
         assert team.lead is None and team.member("alice").status == "stopped"
         member = team.member("alice")
         assert member.pid is None and store.mailbox.peek("alice")[-1].type == "shutdown_request"  # Asked first.
-        assert ["/bin/tmux", "kill-pane", "-t", "%1"] in terminal.calls  # BE7: tmux closes the pane too.
+        assert ["/bin/tmux", "kill-pane", "-t", "%1"] in terminal.calls  # Tmux closes the pane too.
     finally:
         terminal.cleanup()
 
 
-async def test_id3_live_pane_member_is_kept_on_reopen(tmp_path):
+async def test_live_pane_member_is_kept_on_reopen(tmp_path):
     terminal = Terminal()
     conv = pane_conversation(tmp_path, terminal)
     try:
@@ -313,7 +313,7 @@ async def test_id3_live_pane_member_is_kept_on_reopen(tmp_path):
         await conv.close()
 
 
-async def test_pm3_session_mode_is_written_for_pane_members(tmp_path):
+async def test_session_mode_is_written_for_pane_members(tmp_path):
     terminal = Terminal(lambda terminal, store, name: terminal.start(store, name))
     conv = pane_conversation(tmp_path, terminal)
     try:
@@ -328,7 +328,7 @@ async def test_pm3_session_mode_is_written_for_pane_members(tmp_path):
         await conv.close()
 
 
-# AC40: the member process itself -----------------------------------------------------------------
+# The member process itself -----------------------------------------------------------------
 
 DRIVER = '''
 import re, sys
@@ -406,7 +406,7 @@ def wait_for(predicate, timeout=30.0):
         time.sleep(0.1)
 
 
-def test_ac40_member_process_runs_a_turn_and_stops_on_request(tmp_path):
+def test_member_process_runs_a_turn_and_stops_on_request(tmp_path):
     project, store, command = member_setup(tmp_path)
     child = subprocess.Popen(command, cwd=project, env=child_env(tmp_path), stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -419,7 +419,7 @@ def test_ac40_member_process_runs_a_turn_and_stops_on_request(tmp_path):
         assert [(m.type, m.body) for m in lead if m.type == "text"] == [("text", "登录做完了")]
         assert store.mailbox.peek("alice")[0].read
         first = store.load().member("alice").heartbeat
-        wait_for(lambda: store.load().member("alice").heartbeat != first, timeout=10)  # BE6: heartbeat.
+        wait_for(lambda: store.load().member("alice").heartbeat != first, timeout=10)  # Heartbeat.
         member = store.load().member("alice")
         assert member.status == "idle" and member_alive(member.pid, member.heartbeat)
         assert (store.directory / "transcripts" / "alice.jsonl").is_file()
@@ -436,7 +436,7 @@ def test_ac40_member_process_runs_a_turn_and_stops_on_request(tmp_path):
         child.communicate()
 
 
-def test_be9_missing_environment_variable(tmp_path):
+def test_missing_environment_variable(tmp_path):
     project, store, command = member_setup(tmp_path, "api_key_env: MOSSCODE_TEST_MISSING_KEY")
     env = child_env(tmp_path)
     env.pop("MOSSCODE_TEST_MISSING_KEY", None)
@@ -451,7 +451,7 @@ def test_be9_missing_environment_variable(tmp_path):
 def test_pane_wrapper_always_exits_zero(tmp_path):
     done = subprocess.run([sys.executable, "-m", "mosscode.teams.pane", "--team-dir", str(tmp_path / "none"),
                            "--team-member", "alice"], capture_output=True, timeout=60, env=child_env(tmp_path))
-    assert done.returncode == 0  # The member failed (no team), the pane still closes (E3).
+    assert done.returncode == 0  # The member failed (no team), the pane still closes.
 
 
 def test_member_arguments_are_hidden_from_help():
@@ -460,7 +460,7 @@ def test_member_arguments_are_hidden_from_help():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="taskkill is Windows-only")
-def test_e4_kill_tree_ends_the_process_and_its_children(tmp_path):
+def test_kill_tree_ends_the_process_and_its_children(tmp_path):
     parent = subprocess.Popen([sys.executable, "-c",
                                "import subprocess, sys, time; "
                                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
@@ -475,7 +475,7 @@ def test_e4_kill_tree_ends_the_process_and_its_children(tmp_path):
             parent.kill()
 
 
-# BE8: the member's own window ----------------------------------------------------------------------
+# The member's own window ----------------------------------------------------------------------
 
 class StubProcess:
     name, team = "alice", "t"
@@ -500,7 +500,7 @@ class StubProcess:
         return 0
 
 
-async def test_be8_member_window_answers_approvals_and_refuses_new_tasks():
+async def test_member_window_answers_approvals_and_refuses_new_tasks():
     from textual.widgets import RichLog, Static
     from mosscode.teams.pane_app import INPUT_HINT, MemberApp
     process = StubProcess()
@@ -524,7 +524,7 @@ async def test_be8_member_window_answers_approvals_and_refuses_new_tasks():
     assert process.exit_code == 0
 
 
-async def test_be8_interrupt_ends_the_turn_and_tells_the_lead(tmp_path):
+async def test_interrupt_ends_the_turn_and_tells_the_lead(tmp_path):
     from test_agent import call, response
     command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
 

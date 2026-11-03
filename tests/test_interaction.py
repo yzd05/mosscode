@@ -1,4 +1,4 @@
-"""Stage 4 acceptance (docs/specs/refinement-04-interaction/spec.md AC1–AC7)."""
+"""Interaction: input, queueing and the status line."""
 
 import asyncio
 import json
@@ -53,9 +53,8 @@ async def wait_until(pilot, predicate, rounds=100):
     raise AssertionError("condition not reached")
 
 
-# AC1 -----------------------------------------------------------------------
 
-async def test_ac1_multiline_keys_backslash_paste_and_history():
+async def test_multiline_keys_backslash_paste_and_history():
     provider = FakeProvider()
     app = MossCodeApp(Conversation(provider), "test")
     async with app.run_test() as pilot:
@@ -96,7 +95,7 @@ async def test_ac1_multiline_keys_backslash_paste_and_history():
         assert field.value == "/"
 
 
-async def test_ac1_history_steps_through_recalled_commands_without_opening_hints():
+async def test_history_steps_through_recalled_commands_without_opening_hints():
     app = MossCodeApp(Conversation(FakeProvider()), "test")
     async with app.run_test(size=(100, 30)) as pilot:
         field = app.query_one("#prompt", PromptArea)
@@ -119,9 +118,8 @@ async def test_ac1_history_steps_through_recalled_commands_without_opening_hints
         assert field.value == "" and "/help" in [e.body for e in app.query(ChatEntry) if e.speaker == "You"][-1]
 
 
-# AC2 -----------------------------------------------------------------------
 
-async def test_ac2_queued_messages_join_at_the_next_iteration_boundary(tmp_path):
+async def test_queued_messages_join_at_the_next_iteration_boundary(tmp_path):
     gate, started = asyncio.Event(), asyncio.Event()
     provider = SequenceProvider(held(response("先写入", [call("write_file", path="a", content="one")]), gate, started),
                                 response("已按新要求完成"))
@@ -149,7 +147,7 @@ async def test_ac2_queued_messages_join_at_the_next_iteration_boundary(tmp_path)
         assert len(provider.requests) == 2
 
 
-async def test_ac2_up_takes_queued_messages_back_without_interrupting(tmp_path):
+async def test_up_takes_queued_messages_back_without_interrupting(tmp_path):
     gate, started = asyncio.Event(), asyncio.Event()
     provider = SequenceProvider(held(response("先写入", [call("write_file", path="a", content="one")]), gate, started),
                                 response("完成"))
@@ -182,7 +180,7 @@ async def test_ac2_up_takes_queued_messages_back_without_interrupting(tmp_path):
         assert len(provider.requests) == 2 and field.value == ""
 
 
-async def test_ac2_queue_during_final_reply_becomes_the_next_task(tmp_path):
+async def test_queue_during_final_reply_becomes_the_next_task(tmp_path):
     gate, started = asyncio.Event(), asyncio.Event()
     provider = SequenceProvider(held(response("回答"), gate, started), response("追问已回答"))
     app = MossCodeApp(Conversation(provider, registry=bypass(tmp_path)), "Demo")
@@ -198,7 +196,7 @@ async def test_ac2_queue_during_final_reply_becomes_the_next_task(tmp_path):
         assert [e.body for e in app.query(ChatEntry) if e.speaker == "You"] == ["问题", "追问"]
 
 
-async def test_ac2_cancel_returns_queue_to_input_and_commands_are_not_queued(tmp_path):
+async def test_cancel_returns_queue_to_input_and_commands_are_not_queued(tmp_path):
     gate, started = asyncio.Event(), asyncio.Event()
     provider = SequenceProvider(held(response("长回答"), gate, started))
     conv = Conversation(provider, registry=bypass(tmp_path))
@@ -229,7 +227,7 @@ async def test_ac2_cancel_returns_queue_to_input_and_commands_are_not_queued(tmp
         assert len(provider.requests) == 1
 
 
-async def test_ac2_ctrl_c_cancels_at_once_and_returns_the_queue(tmp_path):
+async def test_ctrl_c_cancels_at_once_and_returns_the_queue(tmp_path):
     gate, started = asyncio.Event(), asyncio.Event()
     provider = SequenceProvider(held(response("长回答"), gate, started))
     conv = Conversation(provider, registry=bypass(tmp_path))
@@ -248,9 +246,8 @@ async def test_ac2_ctrl_c_cancels_at_once_and_returns_the_queue(tmp_path):
         assert len(provider.requests) == 1
 
 
-# AC3 -----------------------------------------------------------------------
 
-def test_ac3_diff_rows_number_color_separate_hunks_and_truncate():
+def test_diff_rows_number_color_separate_hunks_and_truncate():
     before = "".join(f"line {i}\n" for i in range(1, 41))
     after = before.replace("line 3\n", "line three\n").replace("line 30\n", "line thirty\n")
     text = diff_rows(unified_diff(before, after, "f.txt"))
@@ -265,7 +262,7 @@ def test_ac3_diff_rows_number_color_separate_hunks_and_truncate():
     assert len(rows) == DIFF_ROWS + 1 and rows[-1].strip() == f"… 还有 {60 - DIFF_ROWS} 行 diff 未显示"
 
 
-async def test_ac3_tool_rows_show_diff_for_edit_and_content_for_new_file(tmp_path):
+async def test_tool_rows_show_diff_for_edit_and_content_for_new_file(tmp_path):
     (tmp_path / "old.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
     new_file = "".join(f"row {i}\n" for i in range(1, 11))
     provider = SequenceProvider(response(calls=[call("read_file", "r", path="old.py")]),
@@ -283,9 +280,8 @@ async def test_ac3_tool_rows_show_diff_for_edit_and_content_for_new_file(tmp_pat
         assert "… 还有 2 行未显示" in write
 
 
-# AC4 -----------------------------------------------------------------------
 
-async def test_ac4_status_shows_mode_badge_model_hint_and_tokens(tmp_path):
+async def test_status_shows_mode_badge_model_hint_and_tokens(tmp_path):
     conv = Conversation(FakeProvider(), registry=bypass(tmp_path, "default"))
     app = MossCodeApp(conv, "test", settings=TWO, model="model-a")
     async with app.run_test(size=(100, 30)) as pilot:
@@ -306,9 +302,8 @@ async def test_ac4_status_shows_mode_badge_model_hint_and_tokens(tmp_path):
         assert "Token 入" in status(app)
 
 
-# AC5 -----------------------------------------------------------------------
 
-async def test_ac5_clear_starts_fresh_context_and_keeps_mode(tmp_path):
+async def test_clear_starts_fresh_context_and_keeps_mode(tmp_path):
     reg = bypass(tmp_path, "acceptEdits")
     provider = SequenceProvider(response("一"), response("二"), response("三"))
     conv = Conversation(provider, registry=reg)
@@ -333,7 +328,7 @@ async def test_ac5_clear_starts_fresh_context_and_keeps_mode(tmp_path):
         assert reminders(2) == ["system-reminder"]  # The fresh context hears the plan rules again.
 
 
-async def test_ac5_clear_is_refused_while_the_loop_is_busy():
+async def test_clear_is_refused_while_the_loop_is_busy():
     conv = Conversation(FakeProvider())
     conv._agent.busy = True
     with pytest.raises(ProviderError):
@@ -342,7 +337,7 @@ async def test_ac5_clear_is_refused_while_the_loop_is_busy():
         await conv.set_provider(FakeProvider())
 
 
-async def test_ac5_model_switch_by_argument_and_panel_keeps_history():
+async def test_model_switch_by_argument_and_panel_keeps_history():
     first, created = FakeProvider(), []
     def factory(config):
         created.append((config.name, FakeProvider()))
@@ -370,7 +365,6 @@ async def test_ac5_model_switch_by_argument_and_panel_keeps_history():
         assert len(conv.history) == 4
 
 
-# AC6 -----------------------------------------------------------------------
 
 class Captured(Exception):
     pass
@@ -406,7 +400,7 @@ async def request_for(cls, protocol):
     return seen
 
 
-async def test_ac6_set_provider_strips_native_blocks_but_keeps_calls_and_results():
+async def test_set_provider_strips_native_blocks_but_keeps_calls_and_results():
     conv = Conversation(FakeProvider())
     native = Message("assistant", (ContentBlock("text", "先读"),), "openai-responses", ({"type": "reasoning", "id": "r"},),
                      tool_calls=(ToolCall("c1", "read_file", '{"path": "a"}'),))
@@ -415,7 +409,7 @@ async def test_ac6_set_provider_strips_native_blocks_but_keeps_calls_and_results
     assert list(conv.history) == PORTABLE_HISTORY
 
 
-async def test_ac6_anthropic_rebuilds_tool_use_and_merges_same_role_turns():
+async def test_anthropic_rebuilds_tool_use_and_merges_same_role_turns():
     turns = (await request_for(AnthropicProvider, "anthropic-messages"))["messages"]
     roles = [t["role"] for t in turns]
     assert roles == ["user", "assistant", "user", "assistant", "user"]
@@ -427,7 +421,7 @@ async def test_ac6_anthropic_rebuilds_tool_use_and_merges_same_role_turns():
     assert turns[4]["content"][0]["tool_use_id"] == "c2"
 
 
-async def test_ac6_responses_and_chat_pair_every_call_with_its_result():
+async def test_responses_and_chat_pair_every_call_with_its_result():
     items = (await request_for(ResponsesProvider, "openai-responses"))["input"]
     calls = [i["call_id"] for i in items if i.get("type") == "function_call"]
     outputs = [i["call_id"] for i in items if i.get("type") == "function_call_output"]
@@ -439,7 +433,6 @@ async def test_ac6_responses_and_chat_pair_every_call_with_its_result():
     assert called == answered == ["c1", "c2"]
 
 
-# AC7 -----------------------------------------------------------------------
 
 def run_cli(monkeypatch, capsys, args, provider=None):
     fake, _ = setup_cli(monkeypatch, args)
@@ -454,12 +447,12 @@ def run_cli(monkeypatch, capsys, args, provider=None):
     return code, captured.out, captured.err, provider or fake
 
 
-def test_ac7_short_flag_text_output_is_unchanged(monkeypatch, capsys):
+def test_short_flag_text_output_is_unchanged(monkeypatch, capsys):
     code, out, _, provider = run_cli(monkeypatch, capsys, ["-p", "hello"])
     assert code == 0 and out == "partial\n" and provider.closed
 
 
-def test_ac7_json_outputs_one_result_object(monkeypatch, capsys):
+def test_json_outputs_one_result_object(monkeypatch, capsys):
     code, out, _, provider = run_cli(monkeypatch, capsys, ["-p", "hello", "--output-format", "json"])
     result = json.loads(out)
     assert code == 0 and provider.closed
@@ -469,7 +462,7 @@ def test_ac7_json_outputs_one_result_object(monkeypatch, capsys):
     assert isinstance(result["duration_ms"], int)
 
 
-def test_ac7_stream_json_lines_include_tools_in_order(monkeypatch, capsys):
+def test_stream_json_lines_include_tools_in_order(monkeypatch, capsys):
     provider = SequenceProvider(response("先看文件", [call("read_file", "r", path="pyproject.toml")], Usage(5, 2)),
                                 response("读完了", usage=Usage(7, 3)))
     code, out, _, _ = run_cli(monkeypatch, capsys, ["-p", "看看", "--output-format", "stream-json"], provider)
@@ -487,7 +480,7 @@ def test_ac7_stream_json_lines_include_tools_in_order(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("fmt", ["json", "stream-json"])
-def test_ac7_errors_report_is_error_and_exit_one(monkeypatch, capsys, fmt):
+def test_errors_report_is_error_and_exit_one(monkeypatch, capsys, fmt):
     provider = FakeProvider()
     provider.fail = True
     code, out, _, _ = run_cli(monkeypatch, capsys, ["-p", "hello", "--output-format", fmt], provider)
@@ -496,6 +489,6 @@ def test_ac7_errors_report_is_error_and_exit_one(monkeypatch, capsys, fmt):
     assert result["result"] == "test failure" and provider.closed
 
 
-def test_ac7_output_format_requires_prompt(monkeypatch, capsys):
+def test_output_format_requires_prompt(monkeypatch, capsys):
     code, _, err, _ = run_cli(monkeypatch, capsys, ["--output-format", "json"])
     assert code == 2 and "--output-format" in err

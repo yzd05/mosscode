@@ -1,4 +1,4 @@
-"""Git plumbing for worktrees: run git without prompts, find the repository, read HEAD without git (W13)."""
+"""Git plumbing for worktrees: run git without prompts, find the repository, read HEAD without git."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class WorktreeError(Exception):
 
 
 def run_git(args, cwd: Path, *, timeout: float = GIT_TIMEOUT) -> subprocess.CompletedProcess:
-    """W7: no terminal prompt, no stdin; a missing git is a WorktreeError."""
+    """No terminal prompt, no stdin; a missing git is a WorktreeError."""
     executable = shutil.which("git")
     if executable is None:
         raise WorktreeError("找不到 git，无法使用工作树。", "worktree_unavailable")
@@ -42,7 +42,7 @@ def git_text(args, cwd: Path) -> str:
 
 
 def find_repo(start: Path) -> tuple[Path, Path]:
-    """W5: (top level of the work tree, common git directory)."""
+    """(top level of the work tree, common git directory)."""
     done = run_git(["rev-parse", "--is-bare-repository", "--show-toplevel", "--git-common-dir"], start)
     lines = done.stdout.strip().splitlines()
     if done.returncode != 0 or len(lines) < 3:
@@ -60,7 +60,7 @@ def find_repo(start: Path) -> tuple[Path, Path]:
 
 
 def ensure_excluded(common: Path) -> bool:
-    """W6: True when the line was added."""
+    """True when the line was added."""
     path = common / "info" / "exclude"
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -96,7 +96,7 @@ def _resolve_ref(ref: str, gitdir: Path, common: Path) -> str | None:
 
 
 def read_head(worktree: Path) -> tuple[str, str] | None:
-    """W13: (commit SHA, ref or "") from .git -> gitdir -> HEAD -> loose ref or packed-refs; no git process."""
+    """(commit SHA, ref or "") from .git -> gitdir -> HEAD -> loose ref or packed-refs; no git process."""
     pointer = _read(worktree / ".git")
     if not pointer or not pointer.startswith("gitdir:"):
         return None

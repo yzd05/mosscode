@@ -1,4 +1,4 @@
-"""A1–A12: run one hook action and report what happened; the engine decides what it means."""
+"""Run one hook action and report what happened; the engine decides what it means."""
 
 import asyncio
 from dataclasses import dataclass
@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from .config import TEMPLATE, Action
 
-STREAM_HALF = 16 * 1024  # Head and tail of stdout and stderr: 32 KB each (A5).
+STREAM_HALF = 16 * 1024  # Head and tail of stdout and stderr: 32 KB each.
 BODY_LIMIT = 64 * 1024
 DETAIL_LIMIT = 500
 FEEDBACK_LIMIT = 8000
@@ -34,7 +34,7 @@ def short(text: str, limit: int = DETAIL_LIMIT) -> str:
 
 
 def render(text: str, fields) -> str:
-    """A7: {{field}} becomes the field's value; only ever in text for the model or a JSON string."""
+    """{{field}} becomes the field's value; only ever in text for the model or a JSON string."""
     return TEMPLATE.sub(lambda match: str(fields.get(match[1], "")), text)
 
 
@@ -49,7 +49,7 @@ def render_json(value, fields):
 
 
 def public_url(url: str) -> str:
-    """O1: never log query strings (they often carry tokens)."""
+    """Never log query strings (they often carry tokens)."""
     return urlsplit(url)._replace(query="", fragment="").geturl()
 
 
@@ -60,7 +60,7 @@ def _executable(first: str) -> str | None:
 
 
 def argv(command: tuple[str, ...], values: dict[str, str]) -> list[str]:
-    """A1: each ${NAME} becomes one whole argument's text; nothing is re-split or interpreted."""
+    """Each ${NAME} becomes one whole argument's text; nothing is re-split or interpreted."""
     parts = []
     for part in command:
         for name, value in values.items():

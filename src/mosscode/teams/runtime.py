@@ -1,4 +1,4 @@
-"""Ch15: the lead's side of a team — the current team, its members (in-process or in panes) and the lead's mailbox."""
+"""The lead's side of a team — the current team, its members (in-process or in panes) and the lead's mailbox."""
 
 from __future__ import annotations
 
@@ -26,12 +26,12 @@ if TYPE_CHECKING:
     from ..conversation import Conversation
 
 MAX_MEMBERS = 4
-BODY_PREVIEW = 4000  # LD3: characters of a message body in a team update.
+BODY_PREVIEW = 4000  # Characters of a message body in a team update.
 REASON = IN_PROCESS_REASON
 BACKEND_LABELS = LABELS
 STATUS_NAMES = {"running": "运行中", "idle": "空闲", "stopped": "已停止"}
-STOP_WAIT = 10.0  # ID5/LD6: seconds a member has to stop after a shutdown_request.
-IDLE_STATES = {"failed": "失败", "interrupted": "被用户中断"}  # MB2: idle_notification reasons.
+STOP_WAIT = 10.0  # Seconds a member has to stop after a shutdown_request.
+IDLE_STATES = {"failed": "失败", "interrupted": "被用户中断"}  # idle_notification reasons.
 LEAD_GUIDE = """## Agent 团队
 
 你可以作为 lead 组建团队：成员是长期存在的 Agent，各自在独立的 git 工作树中工作，通过消息和共享任务协作。
@@ -58,7 +58,7 @@ def remove_tree(path: Path) -> None:
 
 
 def render_update(team: str, messages: list[Message], ready: list[str]) -> str:
-    """LD3: one notification for everything that arrived in the lead's mailbox."""
+    """One notification for everything that arrived in the lead's mailbox."""
     lines = [f"<team-update>\n团队 {team}："]
     for message in messages:
         extra, sender = message.extra, message.sender
@@ -86,7 +86,7 @@ def render_update(team: str, messages: list[Message], ready: list[str]) -> str:
 
 
 def note_for(message: Message) -> str:
-    """LD4: one line in the chat for each update."""
+    """One line in the chat for each update."""
     sender, extra = message.sender, message.extra
     if message.type == "text":
         return f"{sender} → lead：{message.summary}"
@@ -107,7 +107,7 @@ def label_of(runner) -> str:
 
 @dataclass(frozen=True)
 class MemberRow:
-    """Refinement 07 PL1: one line of the member panel. Waiting approvals are counted by the interface."""
+    """One line of the member panel. Waiting approvals are counted by the interface."""
     name: str
     status: str
     pane: bool
@@ -118,7 +118,7 @@ class MemberRow:
 
 
 class PaneRunner:
-    """BE4–BE7: the lead's view of a member in a pane of its own. It polls its mailbox itself; its
+    """The lead's view of a member in a pane of its own. It polls its mailbox itself; its
     record in config.json says how it is doing, and its process ending is the member stopping."""
 
     def __init__(self, store: TeamStore, name: str, backend: PaneBackend, pid: int, pane: str | None, *,
@@ -127,9 +127,9 @@ class PaneRunner:
         self.backend_name = backend.name
         self.pid, self.pane, self.poll = pid, pane, poll
         self.status, self.last_tool = status, ""
-        self.since = time.monotonic()  # Refinement 07 PL1: when the lead saw it enter its status.
+        self.since = time.monotonic()  # When the lead saw it enter its status.
         self.on_status: Callable[[str, dict], None] | None = None
-        # Refinement 07 FA6: a request it published in its record, and one that left the record (or the member
+        # A request it published in its record, and one that left the record (or the member
         # stopped with it still there).
         self.on_request: Callable[[dict], None] | None = None
         self.on_settled: Callable[[str, bool], None] | None = None  # (request id, the member ended)
@@ -137,7 +137,7 @@ class PaneRunner:
         self.job: asyncio.Task | None = None
 
     def wake(self) -> None:
-        """BE4: nothing to do; it reads its mailbox every POLL seconds."""
+        """Nothing to do; it reads its mailbox every POLL seconds."""
 
     def start(self) -> asyncio.Task:
         self.job = asyncio.get_running_loop().create_task(self.watch())
@@ -170,7 +170,7 @@ class PaneRunner:
             self._report("stopped")
 
     def _approvals(self, items: list, *, ended: bool = False) -> None:
-        """FA6: new requests in the record go to the lead; the ones gone from it were answered or dropped."""
+        """New requests in the record go to the lead; the ones gone from it were answered or dropped."""
         listed = {item.get("id") for item in items if isinstance(item, dict) and item.get("id")}
         for item in items:
             if isinstance(item, dict) and item.get("id") and item["id"] not in self.asked:
@@ -183,7 +183,7 @@ class PaneRunner:
                 self.on_settled(request_id, ended)
 
     async def stop(self) -> None:
-        """BE7 step 3: end its process tree (and its tmux pane)."""
+        """End its process tree (and its tmux pane)."""
         if self.job is not None and not self.job.done():
             self.job.cancel()
             await asyncio.gather(self.job, return_exceptions=True)
@@ -197,7 +197,7 @@ async def build_runner(conversation: Conversation, store: TeamStore, member: Mem
                        relative: str, *, wake: Callable[[str], None] | None = None,
                        on_approval: Callable[[ApprovalRequest], None] | None = None, poll: float = POLL,
                        session_mode: Callable[[], str] | None = None) -> MemberRunner:
-    """RT2: the definition's prompt plus the team addendum, tools rooted in its worktree. The lead builds
+    """The definition's prompt plus the team addendum, tools rooted in its worktree. The lead builds
     in-process members with it; a pane member's process builds itself with it (session_mode from its record)."""
     from ..agent import AgentLoop, add_usage
     from ..agents.runtime import GLOBAL_BAN, SubagentLog, effective_mode
@@ -234,7 +234,7 @@ async def build_runner(conversation: Conversation, store: TeamStore, member: Mem
     loop.instructions, loop.git = conversation.project_instructions, git
     loop.budget, loop.auto_compact, loop.session = budget, main.auto_compact, main.session
 
-    def counted(usage) -> None:  # RT4: the session total includes in-process members.
+    def counted(usage) -> None:  # The session total includes in-process members.
         main.total_usage = add_usage(main.total_usage, usage)
 
     loop.on_usage = counted
@@ -247,7 +247,7 @@ async def build_runner(conversation: Conversation, store: TeamStore, member: Mem
 
 
 def load_history(store: TeamStore, member: Member) -> list:
-    """ID4: the member's conversation from its transcript; revive_failed when it cannot be trusted. Blocking."""
+    """The member's conversation from its transcript; revive_failed when it cannot be trusted. Blocking."""
     from ..session import load_session
     path = store.directory / member.transcript if member.transcript else None
     if path is None or not path.exists():
@@ -262,9 +262,9 @@ def load_history(store: TeamStore, member: Member) -> list:
 
 
 def restore_member(runner: MemberRunner, member: Member, history: list) -> None:
-    """ID4: the old conversation, its token total and its plan approval."""
+    """The old conversation, its token total and its plan approval."""
     runner.loop.restore(history)
-    usage = member.usage or {}  # RT4: the record keeps the member's total across revivals.
+    usage = member.usage or {}  # The record keeps the member's total across revivals.
     runner.loop.total_usage = UsageTotals(**{key: int(usage.get(key, 0) or 0) for key in
                                              ("input_tokens", "output_tokens", "cached_input_tokens")})
     runner.approved = member.approved
@@ -277,30 +277,30 @@ class TeamRuntime:
         self.home = home
         self.max_members = max_members
         self.poll = poll
-        # BE1/BE5: where members run, and what a pane member needs to load the same configuration.
+        # Where members run, and what a pane member needs to load the same configuration.
         self.teammate_mode = teammate_mode
         self.launch = dict(launch or {})  # {"config": path, "provider": name}
         self.env: dict | None = None  # Tests replace these; None/defaults use the real environment.
         self.which = shutil.which
         self.run = subprocess.run
         self.python: str | None = None
-        self.start_timeout = START_TIMEOUT  # BE6
-        self._synced_mode = ""  # PM3: the session mode last written to pane members' records.
+        self.start_timeout = START_TIMEOUT
+        self._synced_mode = ""  # The session mode last written to pane members' records.
         self._revived: dict[str, str] = {}
         self.current: TeamStore | None = None
         self.runners: dict[str, MemberRunner | PaneRunner] = {}
-        self.plan_requests: dict[str, str] = {}  # TL5: member -> request_id the lead has not answered.
-        self.on_approval: Callable[[ApprovalRequest], None] | None = None  # PM2: the TUI shows it.
-        self.on_note: Callable[[str], None] | None = None  # LD4, PA6, UI2.
-        self.on_change: Callable[[], None] | None = None  # UI1: a member's status changed.
-        self.on_withdraw: Callable[[str], None] | None = None  # Refinement 07 FA2: a card to take down.
-        self.on_commit: Callable[[str], None] | None = None  # MV3: an in-process member's transcript grew.
-        self.askers: dict[str, str] = {}  # PL1/FA5: approval request id -> the member asking.
-        self.forwarded: dict[str, tuple[ApprovalRequest, asyncio.Future]] = {}  # FA6: pane members' requests.
+        self.plan_requests: dict[str, str] = {}  # Member -> request_id the lead has not answered.
+        self.on_approval: Callable[[ApprovalRequest], None] | None = None  # The TUI shows it.
+        self.on_note: Callable[[str], None] | None = None
+        self.on_change: Callable[[], None] | None = None  # A member's status changed.
+        self.on_withdraw: Callable[[str], None] | None = None  # A card to take down.
+        self.on_commit: Callable[[str], None] | None = None  # An in-process member's transcript grew.
+        self.askers: dict[str, str] = {}  # Approval request id -> the member asking.
+        self.forwarded: dict[str, tuple[ApprovalRequest, asyncio.Future]] = {}  # Pane members' requests.
         self._relays: set[asyncio.Task] = set()
-        self.stop_wait = STOP_WAIT  # ID5/LD6.
+        self.stop_wait = STOP_WAIT
         self._stops: set[asyncio.Task] = set()
-        self.notices: list[str] = []  # Corrupt files kept aside (MB4) and the like.
+        self.notices: list[str] = []  # Corrupt files kept aside and the like.
         self._lead_wake = asyncio.Event()
         self._watcher: asyncio.Task | None = None
         self._writes: set[asyncio.Task] = set()
@@ -308,7 +308,7 @@ class TeamRuntime:
         self._merge_lock = asyncio.Lock()  # One team_merge at a time, from the first check to the merge.
 
     def guide(self) -> str:
-        """LD1: the fixed team section of the lead's system prompt."""
+        """The fixed team section of the lead's system prompt."""
         return LEAD_GUIDE.format(max_members=self.max_members)
 
     # Places ---------------------------------------------------------------------------------------
@@ -346,7 +346,7 @@ class TeamRuntime:
     # Teams ----------------------------------------------------------------------------------------
 
     async def create(self, name: str, description: str = "") -> tuple[str, dict]:
-        """D13/TM4/ID6: new or reopened, then current."""
+        """New or reopened, then current."""
         store = TeamStore.at(self.root, name, self.notices.append)
         if self.current is not None and self.current.name == name:
             return f"团队 {name} 已经是当前团队。", {"team": name, "opened": True}
@@ -362,7 +362,7 @@ class TeamRuntime:
                                        str(self.project))
         await self._leave(keep_panes=True)
         live: list[Member] = []
-        if opened:  # ID3: a pane member that still runs and reports keeps going; everything else is stopped.
+        if opened:  # A pane member that still runs and reports keeps going; everything else is stopped.
             def refresh(team):
                 for member in team.members:
                     if member.backend != IN_PROCESS and member.status != "stopped" \
@@ -375,7 +375,7 @@ class TeamRuntime:
         for member in live:
             self._attach(store, member)
         self._start_watching()
-        self._changed()  # UI1
+        self._changed()
         if opened:
             states = "、".join(f"{m.name}（{m.agent_type}，{STATUS_NAMES.get(m.status, m.status)}）" for m in team.members
                               if m in live)
@@ -391,8 +391,8 @@ class TeamRuntime:
                 "再用 team_spawn 创建成员；owner 只能填已创建的成员，可以先留空，创建成员后再用 team_task_update 指派。"), {"team": name, "opened": False}
 
     async def _leave(self, *, keep_panes: bool = False) -> None:
-        """ID6: stop this process's members of the current team and let it go; pane members switched
-        away from keep running (keep_panes) and are found again by ID3."""
+        """Stop this process's members of the current team and let it go; pane members switched
+        away from keep running (keep_panes) and are found again when the team is reopened."""
         if self.current is None:
             return
         await self._stop_members(keep_panes=keep_panes)
@@ -436,7 +436,7 @@ class TeamRuntime:
             self._watcher = asyncio.get_running_loop().create_task(self._watch())
 
     async def close(self) -> None:
-        """LD6: ask every member to stop, wait up to stop_wait in all, cancel the rest; the team stays."""
+        """Ask every member to stop, wait up to stop_wait in all, cancel the rest; the team stays."""
         if self._watcher is not None:
             self._watcher.cancel()
             await asyncio.gather(self._watcher, return_exceptions=True)
@@ -468,7 +468,7 @@ class TeamRuntime:
         await self.settle()
 
     async def rows(self) -> list[MemberRow]:
-        """PL1: every member of the current team in its record's order; files are read off the loop."""
+        """Every member of the current team in its record's order; files are read off the loop."""
         store = self.current
         if store is None:
             return []
@@ -498,13 +498,13 @@ class TeamRuntime:
         return rows
 
     def transcript(self, name: str) -> Path | None:
-        """MV1: where the member view reads; None without a current team."""
+        """Where the member view reads; None without a current team."""
         if self.current is None:
             return None
         return self.current.transcripts / f"{name}.jsonl"
 
     def counts(self) -> tuple[int, int]:
-        """UI1: (running, idle) members of this process."""
+        """(running, idle) members of this process."""
         states = [runner.status for runner in self.runners.values()]
         return states.count("running"), states.count("idle")
 
@@ -516,7 +516,7 @@ class TeamRuntime:
                 pass
 
     async def _ended(self, store: TeamStore, runner: MemberRunner | PaneRunner) -> None:
-        """ID5: a member stopped by itself after its shutdown_response (a pane member: its process ended)."""
+        """A member stopped by itself after its shutdown_response (a pane member: its process ended)."""
         if self.runners.get(runner.name) is not runner:
             return  # Stopped by the runtime, which cleans up itself.
         del self.runners[runner.name]
@@ -541,7 +541,7 @@ class TeamRuntime:
             pass
 
     async def _release(self, store: TeamStore, names) -> None:
-        """TM6: the worktrees of stopped members are no longer in use."""
+        """The worktrees of stopped members are no longer in use."""
         try:
             team = await asyncio.to_thread(store.load)
         except TeamError:
@@ -556,7 +556,7 @@ class TeamRuntime:
             except Exception:
                 pass
 
-    # Stopping one member (ID5, CM3) ---------------------------------------------------------------
+    # Stopping one member ---------------------------------------------------------------
 
     async def stop_member(self, name: str) -> str:
         access = self.access()
@@ -574,7 +574,7 @@ class TeamRuntime:
         return f"已请求成员 {name} 停止：它在这一轮结束后停止；{self.stop_wait:g} 秒内没有停止时强制停止。"
 
     async def _stop_later(self, store: TeamStore, runner: MemberRunner | PaneRunner) -> None:
-        """BE7: cancel an in-process member, end a pane member's processes, when it has not stopped in time."""
+        """Cancel an in-process member, end a pane member's processes, when it has not stopped in time."""
         if runner.job is not None:
             await asyncio.wait([runner.job], timeout=self.stop_wait)
         if self.runners.get(runner.name) is not runner or (runner.job is not None and runner.job.done()):
@@ -590,7 +590,7 @@ class TeamRuntime:
         self._changed()
 
     async def delete(self, name: str | None = None, *, force: bool = False) -> tuple[str, dict]:
-        """CM4: stop the members, delete clean and merged worktrees, then the team. name: any team of
+        """Stop the members, delete clean and merged worktrees, then the team. name: any team of
         this project (/team delete), the current one by default (team_delete)."""
         if name is None or (self.current is not None and self.current.name == name):
             self.access()
@@ -634,7 +634,7 @@ class TeamRuntime:
         self._changed()
         return text, {"team": team.name, "removed": removed, "kept": kept}
 
-    # Reports (CM1, CM2, LD5) ----------------------------------------------------------------------
+    # Reports ----------------------------------------------------------------------
 
     def _holder(self, team) -> str:
         pid = int((team.lead or {}).get("pid") or 0)
@@ -645,7 +645,7 @@ class TeamRuntime:
         return f"PID {pid}（{'运行中' if process_alive(pid) else '已退出'}）"
 
     def _state(self, store: TeamStore, team, member: Member) -> str:
-        """In this process the runner knows best; a team no live lead holds has nothing running (ID3)."""
+        """In this process the runner knows best; a team no live lead holds has nothing running."""
         if self.current is not None and self.current.name == store.name:
             runner = self.runners.get(member.name)
             return runner.status if runner is not None else "stopped"
@@ -653,7 +653,7 @@ class TeamRuntime:
         return member.status if pid and process_alive(pid) else "stopped"
 
     def overview(self) -> str:
-        """CM1; blocking."""
+        """Blocking."""
         stores = self.teams()
         if not stores:
             return "本项目还没有团队。让模型用 team_create 建一个。"
@@ -674,7 +674,7 @@ class TeamRuntime:
         return "\n".join(lines)
 
     def detail(self, name: str) -> str:
-        """CM2; blocking."""
+        """Blocking."""
         store = TeamStore.at(self.root, name)
         if not store.exists():
             raise TeamError("unknown_team", f"本项目没有名为 {name} 的团队。")
@@ -707,7 +707,7 @@ class TeamRuntime:
         return "\n".join(lines)
 
     def context(self) -> str:
-        """LD5: what the lead needs to know again after /clear or /resume; blocking."""
+        """What the lead needs to know again after /clear or /resume; blocking."""
         store = self.current
         if store is None:
             return ""
@@ -725,7 +725,7 @@ class TeamRuntime:
     # Merging --------------------------------------------------------------------------------------
 
     async def merge(self, name: str) -> tuple[str, dict]:
-        """MG1–MG9: checks, the user's confirmation, the checks again, then git merge."""
+        """Checks, the user's confirmation, the checks again, then git merge."""
         from ..permissions import MERGE_CHOICES, Operation
         from ..worktree import WorktreeError
         from . import merge
@@ -754,7 +754,7 @@ class TeamRuntime:
     # Members --------------------------------------------------------------------------------------
 
     def _choose(self) -> Choice:
-        """BE2/BE3, ID4: from the current teammate_mode, every time a member starts."""
+        """From the current teammate_mode, every time a member starts."""
         return detect_backend(self.teammate_mode, self.env, self.which)
 
     async def spawn(self, name: str, agent_type: str, prompt: str, *, require_plan_approval: bool = False,
@@ -781,7 +781,7 @@ class TeamRuntime:
             subagents._check_provider(agent.model, f"成员 {name} ")
         except ProviderError as exc:
             raise TeamError("agent_unavailable", str(exc)) from None
-        choice = self._choose()  # BE3: before anything is created.
+        choice = self._choose()  # Before anything is created.
         worktree, root, relative = None, None, ""
         if isolation == "worktree":
             from ..worktree import WorktreeError
@@ -793,12 +793,12 @@ class TeamRuntime:
             except WorktreeError as exc:
                 raise TeamError(getattr(exc, "code", "") or "worktree_unavailable", str(exc)) from None
             meta = created.meta
-            await manager.mark_in_use(meta.flat, f"团队 {team.name} 成员 {name}")  # TM6, also when resumed.
+            await manager.mark_in_use(meta.flat, f"团队 {team.name} 成员 {name}")  # Also when resumed.
             root = manager.root_in(meta)
             relative = (WORKTREES / meta.flat).as_posix()
             from .merge import current_branch
             worktree = {"name": meta.name, "flat": meta.flat, "path": str(meta.path), "branch": meta.branch,
-                        "relative": relative, "main": await asyncio.to_thread(current_branch, manager.top)}  # RT3
+                        "relative": relative, "main": await asyncio.to_thread(current_branch, manager.top)}
         pane = choice.backend != IN_PROCESS
         member = Member(name, agent.name, choice.backend, choice.reason, "stopped" if pane else "idle",
                         require_plan_approval, model=agent.model or "", worktree=worktree,
@@ -823,7 +823,7 @@ class TeamRuntime:
                     "worktree": worktree["branch"] if worktree else None}
 
     async def _launch(self, store: TeamStore, member: Member, choice: Choice, root: Path | None) -> PaneRunner:
-        """BE5/BE6: open the pane, wait for the member to write its pid. backend_failed leaves the member
+        """Open the pane, wait for the member to write its pid. backend_failed leaves the member
         stopped and its worktree kept; nothing falls back to in-process."""
         backend = pane_backend(choice.backend, self.run, self.which, self.python)
         mode = self.conversation._agent.registry.permissions.mode
@@ -835,12 +835,12 @@ class TeamRuntime:
                 record.backend, record.backend_reason = choice.backend, choice.reason
                 record.status, record.pid, record.heartbeat, record.pane, record.error = "stopped", None, None, None, ""
                 record.window, record.approvals = "", []
-                record.mode, record.last_tool = mode, ""  # PM3
+                record.mode, record.last_tool = mode, ""
         await asyncio.to_thread(store.modify, reset)
         self._synced_mode = mode
         cwd = root or self.project
         arguments = member_arguments(store.directory, name, self.launch.get("config"), self.launch.get("provider"))
-        window = team_window(store.directory) if choice.backend == WINDOWS_TERMINAL else ""  # WN1/WN3
+        window = team_window(store.directory) if choice.backend == WINDOWS_TERMINAL else ""
         try:
             pane = await asyncio.to_thread(backend.launch, cwd, arguments, member=name, team=store.name,
                                            window=window)
@@ -878,11 +878,11 @@ class TeamRuntime:
 
     @staticmethod
     def _window(store: TeamStore, choice: Choice) -> str:
-        """WN3: where to find a Windows Terminal member."""
+        """Where to find a Windows Terminal member."""
         return f"，在团队窗口 {team_window(store.directory)} 中" if choice.backend == WINDOWS_TERMINAL else ""
 
     def _attach(self, store: TeamStore, member: Member) -> PaneRunner:
-        """ID3: a pane member that kept running while no lead held the team."""
+        """A pane member that kept running while no lead held the team."""
         backend = pane_backend(member.backend, self.run, self.which, self.python)
         runner = PaneRunner(store, member.name, backend, int(member.pid), member.pane, status=member.status,
                             poll=self.poll)
@@ -894,7 +894,7 @@ class TeamRuntime:
     def _own(self, store: TeamStore, runner: MemberRunner | PaneRunner) -> None:
         """Status changes: an in-process member's go into its record; a pane member writes its own."""
         def status(state: str, fields: dict) -> None:
-            if not isinstance(runner, PaneRunner) and "last_tool" not in fields:  # CM2 reads the runner.
+            if not isinstance(runner, PaneRunner) and "last_tool" not in fields:  # The status line reads the runner.
                 self._member_status(store, runner.name, state, fields)
             if state == "stopped" and self.runners.get(runner.name) is runner:
                 self._track(self._ended(store, runner))
@@ -909,7 +909,7 @@ class TeamRuntime:
                                     on_approval=lambda request: self._approval(request, member.name), poll=self.poll)
         append = runner.loop.on_commit
 
-        def commit(message) -> None:  # MV3: the member view reads the new lines at once.
+        def commit(message) -> None:  # The member view reads the new lines at once.
             append(message)
             if self.on_commit is not None:
                 try:
@@ -929,10 +929,10 @@ class TeamRuntime:
             self.on_approval(request)
 
     def asker(self, request_id: str) -> str:
-        """PL1/FA5: the member whose approval this is; '' for the lead's own."""
+        """The member whose approval this is; '' for the lead's own."""
         return self.askers.get(request_id, "")
 
-    # Pane members' approvals (refinement 07 FA1–FA6) ------------------------------------------------
+    # Pane members' approvals ------------------------------------------------
 
     def _forward(self, store: TeamStore, name: str, item: dict) -> None:
         """A pane member's request, shown in the lead's window and answered through the lead's policy."""
@@ -948,7 +948,7 @@ class TeamRuntime:
         self._approval(request, name)
 
     async def _relay(self, store: TeamStore, name: str, request: ApprovalRequest, future: asyncio.Future) -> None:
-        """FA6: the answer given here goes to the member as a permission_response."""
+        """The answer given here goes to the member as a permission_response."""
         try:
             choice = await future
         except asyncio.CancelledError:
@@ -963,7 +963,7 @@ class TeamRuntime:
             self._note(f"无法把审批答复发给成员 {name}：{exc.message}")
 
     def _withdraw(self, name: str, request_id: str, ended: bool, *, note: bool = True) -> None:
-        """FA2/FA3: the request left the member's record (answered there) or the member stopped."""
+        """The request left the member's record (answered there) or the member stopped."""
         entry = self.forwarded.get(request_id)
         if entry is None or entry[1].done():
             return  # Answered here; the record has caught up.
@@ -1019,7 +1019,7 @@ class TeamRuntime:
         return (await self.message(to, kind, body, summary, **extra))[0]
 
     async def message(self, to: str, kind: str, body: str = "", summary: str = "", **extra) -> tuple[list[str], list[str]]:
-        """TL5 for the lead: a plan answer must name the member's open request. ID4: a stopped
+        """For the lead, a plan answer must name the member's open request. A stopped
         recipient is revived after the message is in its mailbox. (targets, revived)."""
         access = self.access()
         if kind == "plan_approval_response":
@@ -1050,7 +1050,7 @@ class TeamRuntime:
         return targets, revived
 
     async def _revive(self, store: TeamStore, name: str) -> None:
-        """ID4: the backend from the current teammate_mode, the conversation from its transcript, the same
+        """The backend from the current teammate_mode, the conversation from its transcript, the same
         worktree, then a turn for the waiting messages. A pane member restores its conversation itself."""
         from ..agents import FORK
         team = await asyncio.to_thread(store.load)
@@ -1106,7 +1106,7 @@ class TeamRuntime:
             except TeamError as exc:
                 raise TeamError("revive_failed", exc.message) from None
         changed = "" if choice.backend == member.backend else f"，上次是{BACKEND_LABELS.get(member.backend, member.backend)}"
-        self._revived[name] = f"后端：{choice.backend}，{choice.reason}{changed}"  # ID4: said in the result.
+        self._revived[name] = f"后端：{choice.backend}，{choice.reason}{changed}"  # Said in the result.
         self._own(store, runner)
         self.runners[name] = runner
         runner.start()
@@ -1115,7 +1115,7 @@ class TeamRuntime:
         self._changed()
 
     async def _watch(self) -> None:
-        """LD2: read the lead's mailbox when woken or every poll; hand it to the conversation."""
+        """Read the lead's mailbox when woken or every poll; hand it to the conversation."""
         while True:
             try:
                 await asyncio.wait_for(self._lead_wake.wait(), self.poll)
@@ -1137,7 +1137,7 @@ class TeamRuntime:
         return self._revived.get(name, "")
 
     async def _sync_mode(self, store: TeamStore) -> None:
-        """PM3: a pane member reads the session mode from its record at the start of each turn."""
+        """A pane member reads the session mode from its record at the start of each turn."""
         mode = self.conversation._agent.registry.permissions.mode
         if mode == self._synced_mode or not any(isinstance(r, PaneRunner) for r in self.runners.values()):
             return
@@ -1162,13 +1162,13 @@ class TeamRuntime:
                 tasks = []
             index = {task.id: task for task in tasks}
             done = {key for m in messages if m.type == "idle_notification" for key in m.extra.get("completed_tasks") or []}
-            ready = [f"{task.id}（{task.owner or '未指派'}）" for task in tasks  # TK7: made ready by these.
+            ready = [f"{task.id}（{task.owner or '未指派'}）" for task in tasks  # Made ready by these.
                      if task.status == "pending" and done & set(task.blocked_by) and is_ready(task, index)]
         for message in messages:
             if message.type == "plan_approval_request":
                 self.plan_requests[message.sender] = str(message.extra.get("request_id", ""))
             note = note_for(message)
-            if message.type == "idle_notification":  # UI2: with its backend.
+            if message.type == "idle_notification":  # With its backend.
                 note += f"（{label_of(self.runners.get(message.sender))}）"
             self._note(f"团队 {store.name}：" + note)
         conversation = self.conversation

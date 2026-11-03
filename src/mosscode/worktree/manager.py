@@ -1,4 +1,4 @@
-"""W1–W18: create, resume, check, delete and clean the worktrees MossCode manages."""
+"""Create, resume, check, delete and clean the worktrees MossCode manages."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class Created:
     meta: WorktreeMeta
     warnings: tuple[str, ...] = ()
     resumed: bool = False
-    dirty: bool = False  # W12: the main directory had uncommitted changes.
+    dirty: bool = False  # The main directory had uncommitted changes.
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ def _now() -> str:
 
 
 def _writable(function, path, _exc):
-    """E5: git objects are read-only on Windows."""
+    """Git objects are read-only on Windows."""
     os.chmod(path, stat.S_IWRITE)
     function(path)
 
@@ -77,7 +77,7 @@ class WorktreeManager:
         self.project = (project or top).resolve()
         self.links = tuple(links)
         self.stale_hours = stale_hours
-        self._lock = asyncio.Lock()  # W7: creating and deleting run one at a time.
+        self._lock = asyncio.Lock()  # Creating and deleting run one at a time.
 
     @classmethod
     def discover(cls, project: Path, **options) -> WorktreeManager:
@@ -99,7 +99,7 @@ class WorktreeManager:
 
     @property
     def project_part(self) -> str:
-        """W4: where the project sits inside the repository ("" at the top level)."""
+        """Where the project sits inside the repository ("" at the top level)."""
         try:
             relative = self.project.relative_to(self.top).as_posix()
         except ValueError:
@@ -132,7 +132,7 @@ class WorktreeManager:
             return await asyncio.to_thread(self._create, name, manual, task)
 
     async def ephemeral(self, task: str) -> Created:
-        """W3: a name nobody chose, marked in use by this process (W16)."""
+        """A name nobody chose, marked in use by this process."""
         async with self._lock:
             for _ in range(5):
                 name = ephemeral_name()
@@ -170,7 +170,7 @@ class WorktreeManager:
         return Created(meta, tuple(warnings), False, dirty)
 
     def _check_case(self, flat: str) -> None:
-        """D15: Windows file names ignore case, so names must too."""
+        """Windows file names ignore case, so names must too."""
         folded = flat.casefold()
         names = {meta.flat for _, meta in self.metas()}
         try:
@@ -188,7 +188,7 @@ class WorktreeManager:
         git.run_git(["branch", "-D", branch], self.top)
 
     def _setup(self, meta: WorktreeMeta, meta_path: Path) -> list[str]:
-        """W8 in order; the record says when it is complete (W13)."""
+        """Links, copies and the setup command in order; the record says when it is complete."""
         warnings: list[str] = []
         path = Path(meta.path)
         def copied(items) -> None:
@@ -210,7 +210,7 @@ class WorktreeManager:
         return warnings
 
     def _resume(self, flat: str, path: Path, meta_path: Path) -> Created:
-        """W13: the filesystem only, no git process."""
+        """The filesystem only, no git process."""
         head = git.read_head(path)
         meta = load_meta(meta_path)
         if head is None or meta is None or meta.flat != flat:
@@ -246,7 +246,6 @@ class WorktreeManager:
             return await asyncio.to_thread(self._remove, name, discard)
 
     def _remove(self, name: str, discard: bool) -> Changes:
-        """M3."""
         problem = validate_name(name)
         if problem:
             raise WorktreeError(f"名称 {name} 不可用：{problem}。", "invalid_name")
@@ -276,7 +275,7 @@ class WorktreeManager:
         meta_path.unlink(missing_ok=True)
 
     def _delete(self, meta: WorktreeMeta, meta_path: Path) -> None:
-        """W14, after the change check passed or the user discarded. Never `git worktree remove` (E1)."""
+        """After the change check passed or the user discarded. Never `git worktree remove`."""
         path = Path(meta.path).resolve()
         if path.parent != self.base.resolve():
             raise WorktreeError(f"记录中的路径 {path} 不在 {self.display(self.base)} 中，拒绝删除。", "worktree_invalid")
@@ -305,7 +304,7 @@ class WorktreeManager:
     # Sub-agents ----------------------------------------------------------------------------
 
     async def finish(self, meta: WorktreeMeta) -> Finished:
-        """A6: no changes -> delete; changes -> keep. Always clears in_use."""
+        """No changes -> delete; changes -> keep. Always clears in_use."""
         async with self._lock:
             return await asyncio.to_thread(self._finish, meta)
 
@@ -324,7 +323,7 @@ class WorktreeManager:
         return Finished(False, changes)
 
     async def mark_in_use(self, flat: str, task: str = "", pid: int | None = None) -> None:
-        """Ch15: a team member's worktree is in use while the member runs; "" clears it. Never deletes.
+        """A team member's worktree is in use while the member runs; "" clears it. Never deletes.
 
         pid: the process running the member (a pane member's own), this one by default."""
         async with self._lock:
@@ -335,7 +334,7 @@ class WorktreeManager:
                 await asyncio.to_thread(save_meta, meta, meta_path)
 
     def report(self, meta: WorktreeMeta, finished: Finished) -> str:
-        """A6: the lines after a sub-agent's result."""
+        """The lines after a sub-agent's result."""
         if not finished.kept:
             if finished.error:
                 return f"[工作树] 无改动，但删除未完成：{finished.error}"
@@ -377,7 +376,7 @@ class WorktreeManager:
             return await asyncio.to_thread(self._clean, self.stale_hours if hours is None else hours)
 
     def _clean(self, hours: float) -> CleanReport:
-        """W16: only records MossCode made for sub-agents, not in use, old, and without changes."""
+        """Only records MossCode made for sub-agents, not in use, old, and without changes."""
         report = CleanReport()
         cutoff = time.time() - hours * 3600
         for meta_path, meta in self.metas():
@@ -414,7 +413,7 @@ class WorktreeManager:
         return report
 
     async def keep_clean(self, on_report, *, delay: float = 5.0, interval: float = CLEAN_INTERVAL) -> None:
-        """W17: in the background, after start and then every day; nothing when turned off."""
+        """In the background, after start and then every day; nothing when turned off."""
         if self.stale_hours <= 0:
             return
         await asyncio.sleep(delay)

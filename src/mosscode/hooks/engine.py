@@ -1,4 +1,4 @@
-"""R1–R9, I2–I5, O1–O3: match hooks to an event, run them in order, log and report."""
+"""Match hooks to an event, run them in order, log and report."""
 
 import asyncio
 from collections import deque
@@ -28,15 +28,15 @@ class HookEvent:
     payload: Mapping[str, Any] = field(default_factory=dict)  # The rest of the stdin JSON (args, result ...).
     file_path: Path | None = None  # MOSSCODE_FILE_PATH / ${FILE_PATH}
     tool: str = ""
-    agent_type: str = ""  # Ch13 H1: "" in the main conversation, the definition name, "fork" or "skill:<name>".
-    nested: bool = False  # Ch13 H5: a tool event of a sub-agent started by an agent action.
+    agent_type: str = ""  # "" in the main conversation, the definition name, "fork" or "skill:<name>".
+    nested: bool = False  # A tool event of a sub-agent started by an agent action.
 
 
 @dataclass(frozen=True)
 class HookOutcome:
     rejection: tuple[str, str] | None = None  # (hook id, message for the model)
     notes: tuple[tuple[str, str], ...] = ()  # (hook id, injected text)
-    ran: tuple[str, ...] = ()  # Synchronous hooks that ran, in order (P6 names the last one).
+    ran: tuple[str, ...] = ()  # Synchronous hooks that ran, in order.
 
 
 NOTHING = HookOutcome()
@@ -69,7 +69,7 @@ def _canonical(value) -> str:
 
 def tool_event(name: str, agent: str, tool: str, args: Mapping[str, Any], operation, root: Path,
                result=None, *, agent_type: str = "") -> HookEvent:
-    """Fields of the tool events: path and command are what the permission rules see (K5, K6)."""
+    """Fields of the tool events: path and command are what the permission rules see."""
     args = args if isinstance(args, Mapping) else {}
     path = command = ""
     file_path = None
@@ -103,17 +103,17 @@ class HookEngine:
         self.config = config if config is not None else (load_hooks(self.root, home, store=self.store,
                                                                      trust_project=trust_project)
                                                          if enabled else HookConfig())
-        self.declined: set[Path] = set()  # Files the user chose not to enable this run (S3).
+        self.declined: set[Path] = set()  # Files the user chose not to enable this run.
         self.recent: deque[HookRun] = deque(maxlen=RECENT)
         self.session = None
         self.session_id = ""
         self.on_notice: Callable[[str], None] | None = None
         self.notices: list[str] = []  # When nobody listens yet.
-        # Ch13 H4: runs an agent action; set by the Conversation.
+        # Runs an agent action; set by the Conversation.
         self.agent_runner: Callable[[Hook, HookEvent, Mapping[str, str]], Awaitable[ActionResult]] | None = None
         self._once: set[str] = set()
-        self._noticed: set[str] = set()  # Per turn (O3).
-        self._agent_noticed: set[str] = set()  # Per session (A12).
+        self._noticed: set[str] = set()  # Per turn.
+        self._agent_noticed: set[str] = set()  # Per session.
         self._background: set[asyncio.Task] = set()
 
     # Configuration ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ class HookEngine:
         return self.config.untrusted
 
     def pending_trust(self) -> tuple[HookFile, ...]:
-        """S3: untrusted files the user has not declined during this run."""
+        """Untrusted files the user has not declined during this run."""
         return tuple(file for file in self.untrusted if file.path not in self.declined)
 
     def wants(self, event: str) -> bool:
@@ -148,7 +148,7 @@ class HookEngine:
         self.declined.add(file.path)
 
     def reload(self) -> tuple[list[str], list[str]]:
-        """U3: reread the files; once state is kept by id. Returns (added, removed) ids."""
+        """Reread the files; once state is kept by id. Returns (added, removed) ids."""
         before = {hook.id for hook in self.hooks}
         self.declined.clear()
         self.config = load_hooks(self.root, self.home, store=self.store, trust_project=self.trust_project) \
@@ -174,7 +174,7 @@ class HookEngine:
         self.session_id = getattr(session, "id", "") or ""
 
     def new_session(self, session=None) -> None:
-        """R3: once resets with every new session (/clear, resume)."""
+        """Once resets with every new session (/clear, resume)."""
         self._once.clear()
         self._agent_noticed.clear()
         if session is not None:
@@ -190,7 +190,7 @@ class HookEngine:
     # Running ---------------------------------------------------------------------------------
 
     async def fire(self, event: HookEvent) -> HookOutcome:
-        """Run the matching hooks in order. Never raises, except CancelledError (R8)."""
+        """Run the matching hooks in order. Never raises, except CancelledError."""
         if not self.enabled:
             return NOTHING
         # subagent_start/stop carry the sub-agent's own agent_type in their fields.
@@ -202,11 +202,11 @@ class HookEngine:
             if hook.once:
                 if hook.id in self._once:
                     continue
-                self._once.add(hook.id)  # Consumed when it starts, also if it fails (R3).
+                self._once.add(hook.id)  # Consumed when it starts, also if it fails.
             if hook.background:
                 self.spawn(self._run(hook, event, fields))
                 continue
-            if hook.action is None:  # Static rejection without an action (H4).
+            if hook.action is None:  # Static rejection without an action.
                 self._log(hook, event, "reject", ActionResult("rejected", short(hook.reject)), 0)
                 return HookOutcome((hook.id, f"Hook {hook.id} 拒绝了此调用：{hook.reject}"), tuple(notes), (*ran, hook.id))
             blocking = hook.reject is None and hook.on_error == "block"
@@ -235,7 +235,7 @@ class HookEngine:
             task.exception()  # Retrieved; _run never raises anything else.
 
     async def drain(self, timeout: float) -> None:
-        """R7: wait for background hooks, then cancel the rest (their process trees are killed)."""
+        """Wait for background hooks, then cancel the rest (their process trees are killed)."""
         pending = set(self._background)
         if not pending:
             return
@@ -267,7 +267,7 @@ class HookEngine:
         if action.type == "prompt":
             return ActionResult("ok", output=render(action.message, fields).strip()[:8000])
         if action.type == "agent":
-            if event.nested:  # H5: no sub-agent starts another one.
+            if event.nested:  # No sub-agent starts another one.
                 return ActionResult("skipped", "由 Hook 启动的子 Agent 中不再运行 agent 动作")
             if self.agent_runner is None:
                 return ActionResult("skipped", "当前运行方式不支持子 Agent")

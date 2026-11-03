@@ -1,4 +1,4 @@
-"""Chapter 14: git worktrees, so a sub-agent can change files without touching the main directory."""
+"""Git worktrees, so a sub-agent can change files without touching the main directory."""
 
 from .changes import Changes, count_changes
 from .git import WorktreeError, find_repo, read_head

@@ -1,4 +1,4 @@
-"""Skills (chapter 11): reusable procedures in SKILL.md directories, optionally with tools in tool.json."""
+"""Skills: reusable procedures in SKILL.md directories, optionally with tools in tool.json."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ DEFAULT_TIMEOUT, MAX_TIMEOUT = 120.0, 600.0
 DESCRIPTION_LIMIT = 250
 CATALOG_LIMIT = 8000
 LOAD_SKILL = "load_skill"
-# W1: names known before MCP connects. load_skill is a system tool and always allowed.
+# Names known before MCP connects. load_skill is a system tool and always allowed.
 BUILTIN_TOOLS = frozenset({"read_file", "write_file", "edit_file", "execute_command", "glob", "grep", "memory",
                            "exit_plan_mode"})
 CLAUDE_TOOLS = {"Read": "read_file", "Write": "write_file", "Edit": "edit_file", "Bash": "execute_command",
@@ -68,7 +68,7 @@ class SkillDef:
         return self.path.parent
 
     def render(self, arguments: str = "", *, fork: bool = False) -> str:
-        """F5/F6/W5: where it comes from, the suggested tools (not for a fork child) and the body."""
+        """Where it comes from, the suggested tools (not for a fork child) and the body."""
         lines = [f"Skill {self.name}（目录：{self.directory}）"]
         if self.tools:
             lines.append("专属工具：" + "、".join(tool.full_name for tool in self.tools))
@@ -237,7 +237,7 @@ def _tools(directory: Path, skill: str) -> tuple[SkillToolDef, ...]:
 
 
 def parse_skill(directory: Path, source: Source) -> SkillDef:
-    """F1–F4, X1–X3 and the start-time whitelist check W1–W3."""
+    """Read and check one skill directory, its tool whitelist included."""
     path = directory / "SKILL.md"
     if not path.is_file():
         raise SkillError(f"{directory}：没有 SKILL.md。")
@@ -281,7 +281,7 @@ def builtin_dir() -> Path:
 
 
 def skill_dirs(root: Path, home: Path | None = None, builtin: Path | None = None) -> list[tuple[Source, Path]]:
-    """L1, lowest priority first."""
+    """Lowest priority first."""
     return [("builtin", builtin if builtin is not None else builtin_dir()),
             ("user", mosscode_home(home) / "skills"),
             ("project", root / ".mosscode" / "skills")]
@@ -297,7 +297,7 @@ class SkillCatalog:
     @classmethod
     def load(cls, root: Path, home: Path | None = None, *, reserved: Iterable[str] = (),
              builtin: Path | None = None) -> SkillCatalog:
-        """L1–L4: scan the three places; a later place replaces a same-named skill of an earlier one."""
+        """Scan the three places; a later place replaces a same-named skill of an earlier one."""
         reserved = set(reserved)
         skills: dict[str, SkillDef] = {}
         problems: list[str] = []
@@ -305,7 +305,7 @@ class SkillCatalog:
             try:
                 children = sorted(child for child in base.iterdir() if child.is_dir() and not child.name.startswith("."))
             except OSError:
-                continue  # L3: a missing place is not a problem.
+                continue  # A missing place is not a problem.
             for directory in children:
                 if directory.name == "__pycache__":
                     continue
@@ -324,7 +324,7 @@ class SkillCatalog:
         return cls(dict(sorted(skills.items())), tuple(problems), _origin=(root, home, tuple(reserved), builtin))
 
     def reload(self) -> SkillCatalog:
-        """C3: scan the same places again; a catalog that was not loaded from disk stays as it is."""
+        """Scan the same places again; a catalog that was not loaded from disk stays as it is."""
         if not self._origin:
             return self
         root, home, reserved, builtin = self._origin
@@ -334,7 +334,7 @@ class SkillCatalog:
         return self.skills.get(name)
 
     def fresh(self, name: str) -> tuple[SkillDef, str | None]:
-        """L6/X10: read the files again; on failure keep the last version that loaded."""
+        """Read the files again; on failure keep the last version that loaded."""
         cached = self._latest.get(name) or self.skills[name]
         try:
             skill = parse_skill(cached.directory, cached.source)
@@ -345,7 +345,7 @@ class SkillCatalog:
         return skill, None
 
     def catalog_section(self) -> tuple[str, str | None]:
-        """A1/A2: what the model sees before loading; returns the section and a notice when cut."""
+        """What the model sees before loading; returns the section and a notice when cut."""
         lines, size, left = [], 0, 0
         for skill in self.skills.values():
             if not skill.model_invocable:
@@ -369,19 +369,19 @@ class SkillCatalog:
 
 
 def missing_tools(skill: SkillDef, available: Iterable[str]) -> list[str]:
-    """W4: names that are not registered now; the skill's own tools count as available."""
+    """Names that are not registered now; the skill's own tools count as available."""
     available = set(available) | {tool.full_name for tool in skill.tools}
     return [name for name in skill.allowed_tools if name not in available]
 
 
 @dataclass(frozen=True)
 class ForkRequest:
-    """K1: an explicit /<name> of a fork skill; prompt is its rendered SOP."""
+    """An explicit /<name> of a fork skill; prompt is its rendered SOP."""
     skill: SkillDef
     prompt: str
 
 
-ACTIVE_LIMIT = 40000  # A7: characters of pinned SOPs in all.
+ACTIVE_LIMIT = 40000  # Characters of pinned SOPs in all.
 
 
 @dataclass(frozen=True)
@@ -392,7 +392,7 @@ class ActiveSkill:
 
 
 class ActiveSkills:
-    """A4/A6: skills the model loaded, in load order; loading one again refreshes it in place."""
+    """Skills the model loaded, in load order; loading one again refreshes it in place."""
 
     def __init__(self) -> None:
         self._items: dict[str, ActiveSkill] = {}

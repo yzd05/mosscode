@@ -1,4 +1,4 @@
-"""Stage 5 acceptance: background MCP startup, /mcp, server rules, read-only trust, .mcp.json, timeouts."""
+"""MCP: background MCP startup, /mcp, server rules, read-only trust, .mcp.json, timeouts."""
 
 import asyncio
 from dataclasses import replace
@@ -35,7 +35,7 @@ async def until(predicate, pilot=None, timeout=8.0):
     raise AssertionError("条件未满足")
 
 
-# AC1: the prompt is usable at once; tools join the next request; notices wait for the task.
+# The prompt is usable at once; tools join the next request; notices wait for the task.
 async def test_tui_background_startup_registers_between_requests(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
     from test_tui import send
@@ -98,7 +98,7 @@ async def test_conversation_start_still_waits_by_default(tmp_path):
         await conv.close()
 
 
-# AC2: /mcp status, failure reasons without secrets, tools, hints and completion.
+# /mcp status, failure reasons without secrets, tools, hints and completion.
 async def test_mcp_command_lists_status_reasons_and_tools(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
     from test_tui import send
@@ -149,7 +149,7 @@ async def test_mcp_command_without_servers_points_to_configuration():
         assert "未配置 MCP Server" in notes_text(app)[-1] and "mcp.yaml" in notes_text(app)[-1]
 
 
-# AC3: server rules, any-argument tool rules, deny over bypass, hashed names, bad syntax.
+# Server rules, any-argument tool rules, deny over bypass, hashed names, bad syntax.
 def test_server_and_tool_rules_parse_and_match(tmp_path):
     echo = Operation("mcp__notes__echo", '{"text":"A"}', server="notes")
     other = Operation("mcp__other__echo", '{"text":"A"}', server="other")
@@ -178,7 +178,7 @@ def test_server_rule_loads_from_permission_file(tmp_path):
     assert decide(Operation("mcp__web__echo", "{}", server="web"), read_only=False).action == "allow"
 
 
-# AC4: real stdio approval offers four choices worded as any-argument grants; session stays in session.
+# Real stdio approval offers four choices worded as any-argument grants; session stays in session.
 async def test_mcp_session_grant_covers_any_arguments_only_in_session(tmp_path):
     from mosscode.tui import choice_label
     reg = create_default_registry(tmp_path, load_permissions=False)
@@ -204,7 +204,7 @@ async def test_mcp_session_grant_covers_any_arguments_only_in_session(tmp_path):
         await manager.close()
 
 
-# AC5: trust_read_only_hint makes hinted tools read-only tools; deny still wins.
+# trust_read_only_hint makes hinted tools read-only tools; deny still wins.
 async def test_trusted_read_only_hint(tmp_path):
     reg = create_default_registry(tmp_path, load_permissions=False)
     config = replace(stdio_config("notes", tmp_path / "calls.log"), trust_read_only_hint=True)
@@ -225,7 +225,7 @@ async def test_trusted_read_only_hint(tmp_path):
         await manager.close()
 
 
-# AC6: .mcp.json is opt-in, converted, expanded and ranked between user and project yaml.
+# .mcp.json is opt-in, converted, expanded and ranked between user and project yaml.
 def test_mcp_json_import(tmp_path, monkeypatch):
     monkeypatch.delenv("MCP_S5_UNSET", raising=False)
     monkeypatch.setenv("MCP_S5_SET", "from-env")
@@ -255,7 +255,7 @@ async def test_model_cannot_write_mcp_json(tmp_path):
     assert result.code == "policy_protected" and not (tmp_path / ".mcp.json").exists()
 
 
-# AC7: per-server tool timeout and startup timeout; out-of-range values become notices.
+# Per-server tool timeout and startup timeout; out-of-range values become notices.
 async def test_per_server_timeouts(tmp_path):
     reg = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
     quick = replace(stdio_config("notes", tmp_path / "calls.log"), timeout=.3)

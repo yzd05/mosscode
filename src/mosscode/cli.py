@@ -34,7 +34,7 @@ from pathlib import Path
 
 def _headless_input(text: str, commands: CommandRegistry = BUILTIN,
                     notices: tuple[str, ...] = ()) -> tuple[str, str | None, str | None]:
-    """H1/H2/E4: -p sends messages, prompt commands and skills; returns (prompt, command, skill) or exits with 2.
+    """-p sends messages, prompt commands and skills; returns (prompt, command, skill) or exits with 2.
 
     For a skill the prompt is its argument: the request is rendered once the tools are known.
     """
@@ -48,7 +48,7 @@ def _headless_input(text: str, commands: CommandRegistry = BUILTIN,
     else:
         problem = argument_problem(parsed.command, parsed.argument)
     if problem:
-        for notice in notices:  # D8: say why a skill is missing before the run ends here.
+        for notice in notices:  # Say why a skill is missing before the run ends here.
             print(notice, file=sys.stderr)
         print(problem, file=sys.stderr)
         raise SystemExit(2)
@@ -58,7 +58,7 @@ def _headless_input(text: str, commands: CommandRegistry = BUILTIN,
 
 
 def _skill_prompt(conversation: Conversation, skill: str | None, prompt: str, report):
-    """E4: check the skill's tools once MCP is up, then send it like the TUI does; returns (prompt, fork)."""
+    """Check the skill's tools once MCP is up, then send it like the TUI does; returns (prompt, fork)."""
     if skill is None:
         return prompt, None
     found, rendered, notices = conversation.prepare_skill(skill, prompt)
@@ -117,7 +117,7 @@ async def _resume(conversation: Conversation, session_id: str | None, report) ->
                 for notice in event.notices:
                     report("notice", notice)
                 for text in restored.unanswered:
-                    # R8: never resent automatically; shown so the user can decide.
+                    # Never resent automatically; shown so the user can decide.
                     report("unanswered", text)
             elif isinstance(event, Notice):
                 report("notice", event.text)
@@ -126,17 +126,17 @@ async def _resume(conversation: Conversation, session_id: str | None, report) ->
 
 
 def _background_notices(conversation: Conversation, report) -> None:
-    """Ch12 O3: hook failures, background ones included, go to stderr (stream-json: a notice event)."""
+    """Hook failures, background ones included, go to stderr (stream-json: a notice event)."""
     conversation.on_memory = lambda event: report("notice", event.text) if isinstance(event, Notice) else None
 
 
 def _task_notices(conversation: Conversation, report) -> None:
-    """Ch13 B7: a line on stderr (stream-json: a notice event) when a background task starts or ends."""
+    """A line on stderr (stream-json: a notice event) when a background task starts or ends."""
     conversation.tasks.on_change = Announcer(lambda text: report("notice", text))
 
 
 async def _turns(conversation: Conversation, prompt: str, *, command: str | None, fork):
-    """B7: the task's turn, then one turn per batch of notifications until no task is left running."""
+    """The task's turn, then one turn per batch of notifications until no task is left running."""
     async with aclosing(conversation.reply(prompt, command=command, fork=fork)) as stream:
         async for event in stream:
             yield event
@@ -154,7 +154,7 @@ async def _turns(conversation: Conversation, prompt: str, *, command: str | None
 
 
 def _hook_engine(args, registry, *, interactive: bool):
-    """C7, S4: --no-hooks loads nothing; -p skips untrusted project files unless --trust-project-hooks."""
+    """--no-hooks loads nothing; -p skips untrusted project files unless --trust-project-hooks."""
     tool = registry.get("execute_command")
     engine = HookEngine(Path.cwd(), shell=getattr(tool, "shell", None), enabled=not args.no_hooks,
                         trust_project=args.trust_project_hooks)
@@ -299,7 +299,7 @@ async def _text_prompt(conversation: Conversation, prompt: str, *, show_usage: b
 
 
 def _memory_options(settings, *, interactive: bool) -> dict:
-    """9c: notes and the memory tool everywhere; background extraction only in the TUI (Q3)."""
+    """Notes and the memory tool everywhere; background extraction only in the TUI."""
     if not settings.memory:
         return {}
     options = {"memory": MemoryStore.for_project(Path.cwd()), "auto_memory": interactive and settings.auto_memory}
@@ -309,7 +309,7 @@ def _memory_options(settings, *, interactive: bool) -> dict:
 
 
 def _config_path(args) -> Path | None:
-    """Refinement 08 SU1: no configuration in an interactive terminal starts the setup; None when it was left."""
+    """No configuration in an interactive terminal starts the setup; None when it was left."""
     if args.config is not None:
         return Path(args.config)
     try:
@@ -330,7 +330,7 @@ def run(args: argparse.Namespace) -> None:
     if args.team_dir is not None:
         from .teams.process import run_member
         raise SystemExit(run_member(args.team_dir, args.team_member, args.config, args.provider))
-    # L5: skills are scanned first so that -p "/<name>" parses.
+    # Skills are scanned first so that -p "/<name>" parses.
     skills = SkillCatalog.load(Path.cwd(), reserved=BUILTIN.names())
     commands, skipped = BUILTIN.with_skills(skills)
     prompt, command, skill = _headless_input(args.prompt, commands, skills.problems + skipped) if args.prompt is not None else (None, None, None)
@@ -359,7 +359,7 @@ def run(args: argparse.Namespace) -> None:
         hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None)
         notices = skills.problems + skipped + hook_notices
         coordinator, coordinator_notice = decide_coordinator(settings.coordinator_mode, os.environ,
-                                                             interactive=args.prompt is None)  # Ch15 CO1/CO7.
+                                                             interactive=args.prompt is None)
         if coordinator_notice:
             notices += (coordinator_notice,)
         if not budget.configured:

@@ -517,7 +517,7 @@ def shell_name(label: str | None) -> str:
 
 
 def agent_detail(args: dict, isolated: bool) -> str:
-    """Ch14 U1: an agent row names the worktree only when the sub-agent runs in one."""
+    """An agent row names the worktree only when the sub-agent runs in one."""
     parts = [args.get("agent_type") or "fork", *(["工作树"] if isolated else []), args.get("description", "")]
     return " ".join(" · ".join(map(str, parts)).splitlines())[:100]
 
@@ -554,7 +554,7 @@ RESUMED_MESSAGES = 20
 
 
 def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGES) -> list:
-    """R14: the latest messages in brief, for the scrollback after a resume."""
+    """The latest messages in brief, for the scrollback after a resume."""
     shown = [m for m in history if m.role != "tool"][-limit:]
     rows = []
     for message in shown:
@@ -582,7 +582,7 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
 
 
 def memory_line(details: dict) -> Text:
-    """W5: what the memory tool did, in place of the usual result summary."""
+    """What the memory tool did, in place of the usual result summary."""
     text = Text("✎ ", style=TOOL_SUCCESS_COLOR)
     name = details.get("name", "")
     if details.get("action") == "delete":
@@ -599,7 +599,7 @@ class ToolEntry(Static):
         super().__init__(classes="tool-entry", markup=False)
         self.started = monotonic()
         self.elapsed: float | None = None
-        self.subagent = None  # Ch13: the task of an agent row, once it starts.
+        self.subagent = None  # The task of an agent row, once it starts.
         call = event.call
         self.operation = call.name
         self.operation_name, self.detail, self.arguments = describe_call(call, shell)
@@ -627,13 +627,13 @@ class ToolEntry(Static):
         return text
 
     def progress(self, task) -> None:
-        """Ch13 U1: a sub-agent's tool calls are not rows of their own; its agent row counts them."""
+        """A sub-agent's tool calls are not rows of their own; its agent row counts them."""
         if self.elapsed is not None:
             return
         if self.operation == "agent":
             self.detail = agent_detail(self.arguments, task.isolated)
             self.label = f"● {self.operation_name}({self.detail})"
-        place = f"工作树 {task.worktree['name']} · " if task.worktree else ""  # Ch14 U1.
+        place = f"工作树 {task.worktree['name']} · " if task.worktree else ""
         if task.background:
             line = f"后台 · {place}任务 {task.id}"
         else:
@@ -767,7 +767,7 @@ class MossCodeApp(TerminalApp[None]):
         Binding("tab", "complete_hint", priority=True, show=False),
         Binding("shift+tab", "cycle_mode", priority=True, show=False),
         Binding("ctrl+b", "background", priority=True, show=False),
-        Binding("ctrl+t", "members", priority=True, show=False),  # Refinement 07 PL3.
+        Binding("ctrl+t", "members", priority=True, show=False),
         Binding("enter", "complete_hint(False)", priority=True, show=False),
     ]
 
@@ -778,12 +778,12 @@ class MossCodeApp(TerminalApp[None]):
         self.conversation = conversation
         # --resume ID / --continue restore at startup; "" opens the session list once started.
         self._resume = resume
-        # Refinement 08 CL3: `moss "..."` sends this once startup is done, as if typed.
+        # `moss "..."` sends this once startup is done, as if typed.
         self._initial_prompt = initial_prompt
         self._panel_rows = 0
         self._pick = None  # The open picker's on_pick (CommandUI.choose).
         self._on_cancel = None  # Its on_cancel, run by Esc.
-        self._hooks_confirmed = False  # Ch12 S3: asked once at startup, before session_start.
+        self._hooks_confirmed = False  # Asked once at startup, before session_start.
         # A table of this run's own: skill commands are added here and replaced by /skills reload.
         self.commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
         self.provider_name = provider_name
@@ -810,20 +810,20 @@ class MossCodeApp(TerminalApp[None]):
         self._width: int | None = None
         self._redraw_timer = None
         self._approval_request: ApprovalRequest | None = None
-        self._approval_queue: list[ApprovalRequest] = []  # Ch15 PM2: shown one at a time, in arrival order.
+        self._approval_queue: list[ApprovalRequest] = []  # Shown one at a time, in arrival order.
         self._startup_task = None
         self._compacting: float | None = None  # Start time while a compaction runs.
         self._compact_row: CompactRow | None = None
         self._context_share: tuple[int, bool] | None = None  # (percent of the effective window, near threshold)
-        self._agent_rows: dict[str, ToolEntry] = {}  # Ch13 U1: agent tool rows by call id.
-        self._notify_waiting = False  # A notification turn waits for the running task (B6).
+        self._agent_rows: dict[str, ToolEntry] = {}  # Agent tool rows by call id.
+        self._notify_waiting = False  # A notification turn waits for the running task.
         self._announce = Announcer(self._task_note)
-        # Refinement 07: the member panel's rows, read off the loop (PL5), and the member view (MV3).
+        # The member panel's rows, read off the loop, and the member view.
         self._member_rows: list[MemberRow] = []
         self._members_task: asyncio.Task | None = None
         self._members_again = False
         self._member_ticks = 0
-        self._stop_armed: tuple[str, float] | None = None  # PL3: the member the first x picked, until when.
+        self._stop_armed: tuple[str, float] | None = None  # The member the first x picked, until when.
         self._view_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
@@ -868,13 +868,13 @@ class MossCodeApp(TerminalApp[None]):
         self.conversation.on_tasks = self._schedule_notify
         self.conversation.tasks.on_change = self._on_task_change
         teams = getattr(self.conversation, "teams", None)
-        if teams is not None:  # Ch15 PM2/LD4: members ask and report while the lead runs or waits.
+        if teams is not None:  # Members ask and report while the lead runs or waits.
             teams.on_approval = self._member_approval
             teams.on_note = lambda text: self._closing or self.call_later(self._local_note, "└ " + text)
-            teams.on_change = lambda: self._closing or self.call_later(self._members_changed)  # UI1, PL5
+            teams.on_change = lambda: self._closing or self.call_later(self._members_changed)
             teams.on_withdraw = lambda request_id: self._closing or self.call_later(self._withdraw_approval, request_id)
-            teams.on_commit = self._member_committed  # MV3
-        if self.conversation.context_root is not None:  # Ch14 W17.
+            teams.on_commit = self._member_committed
+        if self.conversation.context_root is not None:
             self.conversation.start_worktree_cleanup(
                 lambda report: self.conversation._hook_notice(clean_text(report, automatic=True)))
         self.query_one("#prompt", PromptArea).focus()
@@ -903,7 +903,7 @@ class MossCodeApp(TerminalApp[None]):
             await self.on_prompt_area_submitted(PromptArea.Submitted(field, text))
 
     async def _confirm_hooks(self) -> None:
-        """S3: untrusted project hook files are confirmed before the first session_start."""
+        """Untrusted project hook files are confirmed before the first session_start."""
         if self._hooks_confirmed:
             return
         self._hooks_confirmed = True
@@ -958,11 +958,11 @@ class MossCodeApp(TerminalApp[None]):
             self._reply_task.add_done_callback(lambda _: self._closing or self.call_later(self._local_note, text, style))
         else:
             self.call_later(self._local_note, text, style)
-        self._usage = self.conversation.total_usage  # A10: extraction requests are a real cost.
+        self._usage = self.conversation.total_usage  # Extraction requests are a real cost.
         if not self._generating:
             self._status(self._status_note)
 
-    # Sub-agents (ch13) -------------------------------------------------------------------
+    # Sub-agents -------------------------------------------------------------------
 
     def _on_task_change(self, task) -> None:
         if self._closing:
@@ -976,14 +976,14 @@ class MossCodeApp(TerminalApp[None]):
             self._status(self._status_note)
 
     def _task_note(self, text: str) -> None:
-        """U3; like memory notes, a running task's output stays contiguous."""
+        """Like memory notes, a running task's output stays contiguous."""
         if self._task_running:
             self._reply_task.add_done_callback(lambda _: self._closing or self.call_later(self._local_note, "└ " + text))
         else:
             self.call_later(self._local_note, "└ " + text)
 
     def _schedule_notify(self) -> None:
-        """B6: background results wait while the main agent is busy, then start a turn of their own."""
+        """Background results wait while the main agent is busy, then start a turn of their own."""
         if self._closing:
             return
         if not self._task_running:
@@ -1006,7 +1006,7 @@ class MossCodeApp(TerminalApp[None]):
         await self._start_request("", show_user=False, notify=True)
 
     def action_background(self) -> None:
-        """B3: Ctrl+B moves every foreground sub-agent to the background; Esc still cancels."""
+        """Ctrl+B moves every foreground sub-agent to the background; Esc still cancels."""
         count = self.conversation.tasks.detach_foreground()
         self._hint_until = monotonic() + 2
         self._status(f"已把 {count} 个子 Agent 转入后台" if count else "没有在前台运行的子 Agent")
@@ -1053,10 +1053,10 @@ class MossCodeApp(TerminalApp[None]):
         # The prompt grows with its text; its region may still hold the previous height.
         prompt_rows = min(8, max(1, self.query_one("#prompt", PromptArea).wrapped_document.height))
         reserved = self.screen.styles.gutter.height + max(1, self.query_one("#status").outer_size.height)
-        if input_row.display:  # Hidden while a member view is open (MV5).
+        if input_row.display:  # Hidden while a member view is open.
             reserved += max(2 + prompt_rows, input_row.region.height) + input_row.styles.margin.height
         members = self.query_one("#member-panel", MemberPanel)
-        if members.display:  # PL1
+        if members.display:
             reserved += members.lines
         queue = self.query_one("#queue")
         if queue.display:
@@ -1085,7 +1085,7 @@ class MossCodeApp(TerminalApp[None]):
         chat = self.query_one("#chat")
         available = max(1, self.size.height - reserved)
         view = self.query_one("#member-view", MemberView)
-        if view.display:  # MV2: the whole height but the status line (and a card, MV6).
+        if view.display:  # The whole height but the status line (and a card).
             height = max(3, int(available * VIEW_SHARE))
             if view.styles.height is None or view.styles.height.value != height:
                 view.styles.height = height
@@ -1139,7 +1139,7 @@ class MossCodeApp(TerminalApp[None]):
             mode = registry.permissions.mode
             color = {"acceptEdits": TOOL_SUCCESS_COLOR, "plan": OPERATION_COLOR, "bypassPermissions": ERROR_COLOR}.get(mode)
             text.append(MODE_BADGES[mode], style=f"bold {color}" if color else "bold")
-            if getattr(self.conversation, "coordinator", False):  # Ch15 CO5.
+            if getattr(self.conversation, "coordinator", False):
                 text.append(" " + COORDINATOR_BADGE, style=f"bold {OPERATION_COLOR}")
             if not self._generating and self.size.width >= 80:
                 text.append(" (Shift+Tab 切换)")
@@ -1166,15 +1166,15 @@ class MossCodeApp(TerminalApp[None]):
         if any(not task.background and task.origin == "agent" for task in tasks.running()):
             text.append(" · Ctrl+B 转入后台", style=OPERATION_COLOR)
         teams = getattr(self.conversation, "teams", None)
-        if teams is not None and teams.current is not None:  # Ch15 UI1.
+        if teams is not None and teams.current is not None:
             running, idle = teams.counts()
             text.append(f" · 团队 {teams.current.name} 运行 {running} / 空闲 {idle}")
-            asking = sum(self._asking().values())  # Refinement 07 FA5: pane members' too.
+            asking = sum(self._asking().values())  # Pane members' too.
             if asking:
                 text.append(f" · 成员审批 {asking}", style=OPERATION_COLOR)
             if self.query("#member-panel") and self.query_one("#member-panel").display \
                     and not self.query_one("#member-panel", MemberPanel).expanded:
-                text.append(" · Ctrl+T 成员")  # PL6
+                text.append(" · Ctrl+T 成员")
         if self._usage.requests:
             def tokens(value, missing):
                 if missing == self._usage.requests:
@@ -1284,7 +1284,7 @@ class MossCodeApp(TerminalApp[None]):
             if not isinstance(field, PromptArea) or field.id != "prompt" or field.disabled:
                 return False
             if not self._hint_choices:
-                # C3: after Esc closed the menu, Tab still completes a unique command prefix.
+                # After Esc closed the menu, Tab still completes a unique command prefix.
                 return action == "complete_hint" and parameters != (False,) and self._unique_hint() is not None
             if action == "complete_hint" and parameters == (False,):
                 hints = self.query_one("#command-hints", OptionList)
@@ -1316,7 +1316,7 @@ class MossCodeApp(TerminalApp[None]):
             return
         else:
             completion = self._hint_choices[hints.highlighted].value
-        # C4: Tab continues into the argument candidates of commands that have them.
+        # Tab continues into the argument candidates of commands that have them.
         if tab and self.commands.takes_completion(self._command_context(), completion):
             completion += " "
         self._dismissed_prompt = None if completion.endswith(" ") else completion
@@ -1380,7 +1380,7 @@ class MossCodeApp(TerminalApp[None]):
         return note
 
     async def _local_note(self, text: str, style: str | None = None) -> None:
-        if self._closing or self._exit:  # A note queued just before exit (e.g. a task cancelled by B8) is dropped.
+        if self._closing or self._exit:  # A note queued just before exit (e.g. a task cancelled on exit) is dropped.
             return
         try:
             chat = self.query_one("#chat", VerticalScroll)
@@ -1508,7 +1508,7 @@ class MossCodeApp(TerminalApp[None]):
             if not self._closing:
                 await self._commit_ready_transcript()
                 field = self.query_one("#prompt", PromptArea)
-                # R8: unanswered messages come back for the user to edit or resend.
+                # Unanswered messages come back for the user to edit or resend.
                 texts = [*unanswered, *self.conversation.take_queued()]
                 if texts:
                     field.value = "\n\n".join((*texts, field.value) if field.value.strip() else texts)
@@ -1527,11 +1527,11 @@ class MossCodeApp(TerminalApp[None]):
         options.styles.height = min(8, rows)
         self.query_one("#model-panel").display = True
         options.focus()
-        self._show_members()  # PL4: hidden while the model panel is open.
+        self._show_members()  # Hidden while the model panel is open.
         self.call_later(self._fit_chat)
 
     async def _command(self, typed: str, parsed: Parsed) -> None:
-        """P9: echo what was typed, then run it; prompt commands echo the command, not the template."""
+        """Echo what was typed, then run it; prompt commands echo the command, not the template."""
         chat = self.query_one("#chat", VerticalScroll)
         await chat.mount(ChatEntry("You", typed))
         chat.anchor()
@@ -1547,7 +1547,7 @@ class MossCodeApp(TerminalApp[None]):
     def _command_context(self) -> CommandContext:
         return CommandContext(self.conversation, self, self.commands, self.settings)
 
-    # CommandUI (chapter 10 U1/U2) -------------------------------------------------------
+    # CommandUI -------------------------------------------------------
 
     async def note(self, text: str, style: str | None = None) -> None:
         await self._local_note(text, style)
@@ -1613,7 +1613,7 @@ class MossCodeApp(TerminalApp[None]):
                 await pick(event.option_index)
         elif event.option_list.id == "approval-options" and self._approval_request:
             self._answer_approval(self._approval_request.choices[event.option_index])
-        elif event.option_list.id == "member-list":  # PL3: Enter opens the member view.
+        elif event.option_list.id == "member-list":  # Enter opens the member view.
             rows = self.query_one("#member-panel", MemberPanel).rows
             if event.option_index < len(rows):
                 await self._open_view(rows[event.option_index].name)
@@ -1624,11 +1624,11 @@ class MossCodeApp(TerminalApp[None]):
         return future is not None and not future.done()
 
     def _member_approval(self, request: ApprovalRequest) -> None:
-        """PM2: a member's request; once the window is closing there is no card to show, so it is refused."""
+        """A member's request; once the window is closing there is no card to show, so it is refused."""
         if self._closing or not self.query("#approval-panel"):
             teams = getattr(self.conversation, "teams", None)
             if teams is not None and request.id in teams.forwarded:
-                return  # FA1: a pane member still asks in its own window.
+                return  # A pane member still asks in its own window.
             if self.conversation.registry is not None:
                 self.conversation.registry.permissions.respond(request.id, "deny")
             return
@@ -1637,7 +1637,7 @@ class MossCodeApp(TerminalApp[None]):
     def _show_approval(self, request: ApprovalRequest) -> None:
         if self._approval_request is not None and self._approval_request.id != request.id:
             if all(item.id != request.id for item in self._approval_queue):
-                self._approval_queue.append(request)  # PM2: after the one on screen.
+                self._approval_queue.append(request)  # After the one on screen.
                 self._status(self._status_note)
             return
         self._approval_request = request
@@ -1646,7 +1646,7 @@ class MossCodeApp(TerminalApp[None]):
                   "glob": "查找文件", "grep": "搜索内容", "exit_plan_mode": "审阅计划",
                   "execute_command": shell_name(shell_label(self.conversation.registry))}
         text = Text()
-        if operation.tool == "team_merge":  # UI3
+        if operation.tool == "team_merge":
             text.append(f"需要确认 · 合并成员 {safe_display(operation.target)} 的分支", style=f"bold {OPERATION_COLOR}")
         else:
             text.append("需要授权 · " + labels.get(operation.tool, operation.tool)
@@ -1668,20 +1668,20 @@ class MossCodeApp(TerminalApp[None]):
         options.styles.height = len(request.choices)
         options.highlighted = 0
         members = self.query_one("#member-panel", MemberPanel)
-        if members.expanded:  # PL4: compact while a card waits.
+        if members.expanded:  # Compact while a card waits.
             self._stop_armed = None
             members.collapse(monotonic())
         options.focus()
         self._show_members()
-        if not self._generating:  # A member's request while the lead waits for input (PM2).
+        if not self._generating:  # A member's request while the lead waits for input.
             self._status("等待授权 · Esc 拒绝本次")
         else:
-            self._status(self._status_note)  # UI1: the member approval count.
+            self._status(self._status_note)  # The member approval count.
         self._tick()
         self.call_later(self._fit_chat)
 
     def _hide_approval(self) -> None:
-        """The next request still waiting stays or comes up (a member's outlives the lead's turn, PM2)."""
+        """The next request still waiting stays or comes up (a member's outlives the lead's turn)."""
         waiting = [item for item in ([self._approval_request] if self._approval_request else []) + self._approval_queue
                    if self._waiting(item)]
         self._approval_request = None
@@ -1697,7 +1697,7 @@ class MossCodeApp(TerminalApp[None]):
         self.call_later(self._fit_chat)
 
     def _withdraw_approval(self, request_id: str) -> None:
-        """Refinement 07 FA2/FA3: a pane member's request answered in its window, or no longer asked."""
+        """A pane member's request answered in its window, or no longer asked."""
         if self._closing:
             return
         if self._approval_request is not None and self._approval_request.id == request_id:
@@ -1715,7 +1715,7 @@ class MossCodeApp(TerminalApp[None]):
             self.conversation.registry.permissions.respond(request.id, choice)
             self._hide_approval()
             if request.operation.tool == "team_merge" and choice == "deny":
-                self.call_later(self._local_note, DECLINED_HINT)  # MG4: the reason is the user's next message.
+                self.call_later(self._local_note, DECLINED_HINT)  # The reason is the user's next message.
             if self._approval_request is None and not self._generating:
                 self._status("")
             self._tick()
@@ -1845,8 +1845,8 @@ class MossCodeApp(TerminalApp[None]):
                 await self._commit_ready_transcript()
                 field = self.query_one("#prompt", PromptArea)
                 field.disabled = False
-                if self._approval_request is None:  # A member's card still waiting keeps the keys (PM2).
-                    self._focus_home()  # Refinement 07: a member view or the open panel keeps them too.
+                if self._approval_request is None:  # A member's card still waiting keeps the keys.
+                    self._focus_home()  # A member view or the open panel keeps them too.
                 queued = self.conversation.take_queued()
                 if queued and completed:
                     # The model answered before the queue could join; send it as the next task.
@@ -1859,10 +1859,10 @@ class MossCodeApp(TerminalApp[None]):
                 for notice in notices:
                     await self._local_note("└ " + notice)
 
-    # Team members (refinement 07) -------------------------------------------------------
+    # Team members -------------------------------------------------------
 
     def _asking(self) -> dict[str, int]:
-        """FA5/PL1: waiting approvals by the member asking."""
+        """Waiting approvals by the member asking."""
         teams = getattr(self.conversation, "teams", None)
         counts: dict[str, int] = {}
         if teams is None:
@@ -1879,7 +1879,7 @@ class MossCodeApp(TerminalApp[None]):
         self._schedule_members()
 
     def _schedule_members(self) -> None:
-        """PL5: the rows are read off the loop; a change during a read reads again."""
+        """The rows are read off the loop; a change during a read reads again."""
         if self._closing:
             return
         if self._members_task is not None and not self._members_task.done():
@@ -1903,7 +1903,7 @@ class MossCodeApp(TerminalApp[None]):
                 return
 
     def _show_members(self) -> None:
-        """PL1/PL2/PL4 from the rows already read; MV1/MV7 for the view."""
+        """The member panel from the rows already read, and the member view."""
         if self._closing or not self.query("#member-panel"):
             return
         teams = getattr(self.conversation, "teams", None)
@@ -1912,7 +1912,7 @@ class MossCodeApp(TerminalApp[None]):
         asking, now = self._asking(), monotonic()
         panel = self.query_one("#member-panel", MemberPanel)
         view = self.query_one("#member-view", MemberView)
-        if view.display and (current is None or current.name != view.team):  # MV7
+        if view.display and (current is None or current.name != view.team):
             self._close_view(to_panel=False)
             self.call_later(self._local_note, f"└ 团队 {view.team} 已不是当前团队，成员视图已关闭")
         if panel.expanded and not rows:
@@ -1931,7 +1931,7 @@ class MossCodeApp(TerminalApp[None]):
         self.call_later(self._fit_chat)
 
     def _member_tick(self) -> None:
-        """MV3: a pane member's transcript every 0.5s; PL5: the rows every second while something moves."""
+        """A pane member's transcript every 0.5s; The rows every second while something moves."""
         if self._closing or not self.query("#member-view"):
             return
         view = self.query_one("#member-view", MemberView)
@@ -1955,7 +1955,7 @@ class MossCodeApp(TerminalApp[None]):
             self.query_one("#prompt", PromptArea).focus()
 
     def action_members(self) -> None:
-        """PL3: Ctrl+T opens the panel to pick from, and closes it (or the member view) again."""
+        """Ctrl+T opens the panel to pick from, and closes it (or the member view) again."""
         if self._approval_request or self.query_one("#model-panel").display:
             return
         if self.query_one("#member-view").display:
@@ -1986,7 +1986,7 @@ class MossCodeApp(TerminalApp[None]):
         self._show_members()
 
     def action_stop_member(self) -> None:
-        """PL3: x twice within STOP_CONFIRM seconds, as /team stop (CM3)."""
+        """X twice within STOP_CONFIRM seconds, as /team stop."""
         panel = self.query_one("#member-panel", MemberPanel)
         name = panel.selected
         row = next((row for row in panel.rows if row.name == name), None)
@@ -2020,7 +2020,7 @@ class MossCodeApp(TerminalApp[None]):
         await self._local_note("└ " + text)
 
     async def _open_view(self, name: str) -> None:
-        """MV1/MV2: in place of the lead's running items, scrolled to the bottom."""
+        """In place of the lead's running items, scrolled to the bottom."""
         teams = getattr(self.conversation, "teams", None)
         path = teams.transcript(name) if teams is not None else None
         if path is None:
@@ -2029,7 +2029,7 @@ class MossCodeApp(TerminalApp[None]):
         view = self.query_one("#member-view", MemberView)
         view.reset(name, teams.current.name, TranscriptTail(path))
         self.query_one("#chat").display = False
-        self.query_one("#input-row").display = False  # MV5: read-only.
+        self.query_one("#input-row").display = False  # Read-only.
         self.query_one("#command-hints").display = self.query_one("#command-help").display = False
         view.display = True
         view.member_log.focus()
@@ -2038,7 +2038,7 @@ class MossCodeApp(TerminalApp[None]):
         await self._pull_view(initial=True)
 
     def _close_view(self, *, to_panel: bool = True) -> None:
-        """MV4: back to the panel (or the prompt); the lead's items come back."""
+        """Back to the panel (or the prompt); the lead's items come back."""
         view = self.query_one("#member-view", MemberView)
         if not view.display:
             return
@@ -2060,7 +2060,7 @@ class MossCodeApp(TerminalApp[None]):
         self.call_later(self._fit_chat)
 
     def action_member_step(self, step: int) -> None:
-        """MV4: ←/→ in the panel's order."""
+        """←/→ in the panel's order."""
         view = self.query_one("#member-view", MemberView)
         names = [row.name for row in self._member_rows]
         if not view.display or len(names) < 2:
@@ -2069,7 +2069,7 @@ class MossCodeApp(TerminalApp[None]):
         self.call_later(self._open_view, names[(index + step) % len(names)])
 
     def _member_committed(self, name: str) -> None:
-        """MV3: an in-process member's transcript grew; read it now rather than at the next tick."""
+        """An in-process member's transcript grew; read it now rather than at the next tick."""
         if self._closing or not self.query("#member-view"):
             return
         view = self.query_one("#member-view", MemberView)
@@ -2077,7 +2077,7 @@ class MossCodeApp(TerminalApp[None]):
             self.call_later(self._pull_view)
 
     async def _pull_view(self, initial: bool = False) -> None:
-        """MV3/MV8: the records added since the last read, as lines; reads never overlap."""
+        """The records added since the last read, as lines; reads never overlap."""
         view = self.query_one("#member-view", MemberView)
         async with self._view_lock:
             tail = view.tail
@@ -2121,10 +2121,10 @@ class MossCodeApp(TerminalApp[None]):
         if self._approval_request:
             self._answer_approval("deny")
             return
-        if self.query_one("#member-view").display:  # MV4: back to the panel.
+        if self.query_one("#member-view").display:  # Back to the panel.
             self._close_view()
             return
-        if self.query_one("#member-panel", MemberPanel).expanded:  # PL3
+        if self.query_one("#member-panel", MemberPanel).expanded:
             self._collapse_members()
             return
         if self.query_one("#model-panel").display:

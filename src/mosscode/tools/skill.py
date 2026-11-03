@@ -1,4 +1,4 @@
-"""Skill tools (chapter 11): load_skill pins an SOP; a skill's own tools run its scripts."""
+"""Skill tools: load_skill pins an SOP; a skill's own tools run its scripts."""
 
 from copy import deepcopy
 import json
@@ -24,7 +24,7 @@ class LoadSkillParams(Params):
 
 class LoadSkill(Tool):
     name = "load_skill"
-    permission_kind = "load_skill"  # A3: no approval; it only reads the skill's own files.
+    permission_kind = "load_skill"  # No approval; it only reads the skill's own files.
     read_only = True  # Offered in plan mode as well.
     description = ("加载一个 Skill（可复用的操作规程）。系统提示的 Skill 一节列出了可加载的名称和描述；"
                    "用户的请求与某个描述相符时，先调用本工具，再按加载后的规程执行。"
@@ -49,7 +49,7 @@ def _tail(text: str) -> str:
 
 
 class SkillTool(Tool):
-    """X4–X7: a tool from tool.json; argv without a shell, arguments as JSON on stdin, approval every call."""
+    """A tool from tool.json; argv without a shell, arguments as JSON on stdin, approval every call."""
 
     permission_kind = "skill"
     read_only = False
@@ -75,7 +75,7 @@ class SkillTool(Tool):
         return json_arguments(self.validator, raw, "Skill 工具")
 
     def argv(self) -> list[str]:
-        """X4: ${SKILL_DIR} and ${PYTHON} substituted."""
+        """${SKILL_DIR} and ${PYTHON} substituted."""
         return [part.replace("${SKILL_DIR}", str(self.directory)).replace("${PYTHON}", sys.executable)
                 for part in self.command]
 

@@ -1,4 +1,4 @@
-"""Stage 3b acceptance: read-only commands, prefix rules, accept-edits choice, diff previews, removed modes."""
+"""Permissions: read-only commands, prefix rules, accept-edits choice, diff previews, removed modes."""
 
 import asyncio
 import io
@@ -22,7 +22,7 @@ from test_plan_commands import plan_registry, simulate
 from test_tui import send
 
 
-# AC1: read-only commands -------------------------------------------------------------------------
+# Read-only commands -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("command", [
     "git status", "git status --short", "git diff HEAD~1 -- src", "git log --oneline -5", "git show HEAD:src/a.py",
@@ -69,7 +69,7 @@ async def test_plan_mode_runs_read_only_commands_only(tmp_path):
     assert [e["command"] for e in executed] == ["git log -3"]
 
 
-# AC2: prefix rules -------------------------------------------------------------------------------
+# Prefix rules -------------------------------------------------------------------------------
 
 def test_prefix_rule_matching():
     allow = parse_rule("Bash(pytest:*)", "allow")
@@ -83,7 +83,7 @@ def test_prefix_rule_matching():
     assert matches(multi, "python -m pytest tests") and not matches(multi, "python -m pip install x")
 
 
-# AC3: prefix derivation and the prefix choice ----------------------------------------------------
+# Prefix derivation and the prefix choice ----------------------------------------------------
 
 @pytest.mark.parametrize("command,prefix", [
     ("pytest tests/a.py -q", "pytest"), ("python -m pytest -q", "python -m pytest"),
@@ -126,7 +126,7 @@ async def test_risky_and_underivable_commands_offer_no_prefix(tmp_path):
     await task
 
 
-# AC4: accept edits from an approval, Shift+Tab ---------------------------------------------------
+# Accept edits from an approval, Shift+Tab ---------------------------------------------------
 
 async def test_accept_edits_choice_switches_mode_for_later_edits_only(tmp_path):
     reg = registry(tmp_path)
@@ -166,7 +166,7 @@ async def test_shift_tab_cycles_modes_and_waits_while_running(tmp_path):
         await asyncio.wait_for(app._reply_task, 3)
 
 
-# AC5: diff previews ------------------------------------------------------------------------------
+# Diff previews ------------------------------------------------------------------------------
 
 async def test_edit_and_overwrite_previews_are_diffs(tmp_path):
     (tmp_path / "a.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
@@ -223,7 +223,7 @@ async def test_tui_approval_shows_colored_diff_and_five_choices(tmp_path):
         assert (tmp_path / "a.py").read_text() == "new\n" and policy.mode == "acceptEdits"
 
 
-# AC6: removed modes, single mode state -----------------------------------------------------------
+# Removed modes, single mode state -----------------------------------------------------------
 
 @pytest.mark.parametrize("removed,replacement", [("strict", "default"), ("permissive", "bypassPermissions")])
 def test_removed_modes_fail_with_replacement(tmp_path, removed, replacement):

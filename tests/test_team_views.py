@@ -1,4 +1,4 @@
-"""Refinement 07: member panel and view (PL, MV), team windows (WN) and pane approvals in the lead (FA)."""
+"""Member panel and view (PL, MV), team windows (WN) and pane approvals in the lead (FA)."""
 
 import asyncio
 import json
@@ -20,7 +20,7 @@ from mosscode.teams.process import MemberProcess
 from mosscode.teams.runtime import MemberRow, PaneRunner
 from mosscode.teams.view import COMPACTED, Feed, TranscriptTail, message_lines
 from test_agent import response
-from test_teams_stage15 import Script, team_conversation, until
+from test_teams import Script, team_conversation, until
 
 import pytest
 
@@ -44,9 +44,9 @@ def record(message: ChatMessage) -> str:
     return json.dumps({"type": "message", "message": message_to_json(message)}, ensure_ascii=False) + "\n"
 
 
-# T1: a member's conversation as lines (MV1, MV3) ------------------------------------------------------
+# A member's conversation as lines ------------------------------------------------------
 
-def test_t1_transcript_messages_as_lines():
+def test_transcript_messages_as_lines():
     incoming = render_incoming([Message(LEAD, "text", "实现登录\n细节", "初始任务"),
                                 Message("bob", "shutdown_request", extra={"reason": "收工"})])
     lines = plain(message_lines(chat("user", incoming)))
@@ -63,7 +63,7 @@ def test_t1_transcript_messages_as_lines():
     assert feed.record({"type": "teammate", "name": "a"}) == [] and feed.record({"type": "message"}) == []
 
 
-def test_t1_parallel_results_sit_under_their_calls():
+def test_parallel_results_sit_under_their_calls():
     calls = tuple(ToolCall(f"c{index}", "read_file", f'{{"path": "{name}"}}') for index, name in enumerate("abc"))
     feed = Feed()
     lines = feed.record(json.loads(record(chat("assistant", "我先看看", tool_calls=calls))))
@@ -80,7 +80,7 @@ def test_t1_parallel_results_sit_under_their_calls():
         '● read_file {"path": "a"}', "算了"]
 
 
-def test_t1_events_of_a_pane_member_pair_calls_and_results():
+def test_events_of_a_pane_member_pair_calls_and_results():
     feed = Feed()
     one, two = ToolCall("c1", "read_file", '{"path": "a"}'), ToolCall("c2", "read_file", '{"path": "b"}')
     assert feed.event([Message(LEAD, "text", "看看", "初始任务")])[0].plain == "← lead · 消息：初始任务"
@@ -92,10 +92,10 @@ def test_t1_events_of_a_pane_member_pair_calls_and_results():
     assert plain(lines).splitlines() == ['● read_file {"path": "a"}', "已中断"] and not feed.running
 
 
-def test_t1_tail_reads_what_was_added(tmp_path):
+def test_tail_reads_what_was_added(tmp_path):
     path = tmp_path / "a.jsonl"
     tail = TranscriptTail(path)
-    assert tail.read() == []  # MV8: not there yet.
+    assert tail.read() == []  # Not there yet.
     first = record(chat("assistant", "一"))
     path.write_text('{"type": "teammate"}\n' + first, encoding="utf-8")
     assert [item["type"] for item in tail.read()] == ["teammate", "message"]
@@ -111,13 +111,13 @@ def test_t1_tail_reads_what_was_added(tmp_path):
     assert [plain(Feed().record(item)) for item in tail.read()] == ["一"]
 
 
-# T2: panel rows (PL1, PL2) --------------------------------------------------------------------------
+# Panel rows --------------------------------------------------------------------------
 
 def row(name, status="idle", **fields) -> MemberRow:
     return MemberRow(name, status, fields.pop("pane", False), **fields)
 
 
-def test_t2_compact_panel_folds_to_four_lines():
+def test_compact_panel_folds_to_four_lines():
     rows = [row("a", "running", since=0.0, last_tool="edit_file a.py", task="登录"), row("b", "running", since=0.0),
             row("c"), row("d"), row("e"), row("f", "stopped")]
     grid, lines = compact_rows(rows, {}, 80.0)
@@ -134,7 +134,7 @@ def test_t2_compact_panel_folds_to_four_lines():
     assert (elapsed(5), elapsed(80), elapsed(3725)) == ("5s", "1m20s", "1h02m")
 
 
-async def test_t2_rows_of_both_backends(tmp_path):
+async def test_rows_of_both_backends(tmp_path):
     gate = asyncio.Event()
 
     async def alice(messages, tools):
@@ -164,18 +164,18 @@ async def test_t2_rows_of_both_backends(tmp_path):
     await conv.close()
 
 
-# T5: team windows (WN1, WN3) -----------------------------------------------------------------------
+# Team windows -----------------------------------------------------------------------
 
-def test_t5_team_window_names(tmp_path):
+def test_team_window_names(tmp_path):
     one, other = tmp_path / "p1" / "teams" / "demo", tmp_path / "p2" / "teams" / "demo"
     name = team_window(one)
     assert name.startswith("mosscode-demo-") and len(name) == len("mosscode-demo-") + 6
     assert team_window(one) == name and team_window(other) != name  # Same team name, other project.
 
 
-# T6: pane approvals in the lead (FA1–FA6) ------------------------------------------------------------
+# Pane approvals in the lead ------------------------------------------------------------
 
-def test_t6_take_only_the_kinds_asked_and_the_model_cannot_answer(tmp_path):
+def test_take_only_the_kinds_asked_and_the_model_cannot_answer(tmp_path):
     store = TeamStore(tmp_path / "t")
     store.create()
     store.modify(lambda team: team.members.append(Member("bob", "general")))
@@ -191,7 +191,7 @@ def test_t6_take_only_the_kinds_asked_and_the_model_cannot_answer(tmp_path):
     assert [m.type for m in store.mailbox.read_unread("bob")] == ["text"]
 
 
-def test_t6_record_round_trip():
+def test_record_round_trip():
     request = ApprovalRequest("r1", "c1", Operation("execute_command", "npm test", cwd="/w"), "需要确认",
                               ("once", "session", "deny"))
     back = approval_from_record(json.loads(json.dumps(approval_record(request))), "成员 bob（窗格）")
@@ -208,7 +208,7 @@ def pane_store(tmp_path, name="bob") -> TeamStore:
     return store
 
 
-async def test_t6_member_takes_the_leads_answer(tmp_path):
+async def test_member_takes_the_leads_answer(tmp_path):
     store = pane_store(tmp_path)
     policy = PermissionPolicy(tmp_path, load=False)
     process = MemberProcess(store, "bob", SimpleNamespace(registry=SimpleNamespace(permissions=policy)), poll=0.05)
@@ -266,7 +266,7 @@ async def stop_attached(conv, runner):
     await conv.close()
 
 
-async def test_t6_lead_shows_and_answers_a_pane_request(tmp_path):
+async def test_lead_shows_and_answers_a_pane_request(tmp_path):
     conv, store, runner = await attached(tmp_path)
     shown = []
     conv.teams.on_approval = shown.append
@@ -283,24 +283,24 @@ async def test_t6_lead_shows_and_answers_a_pane_request(tmp_path):
     await stop_attached(conv, runner)
 
 
-async def test_t6_answered_in_its_window_or_stopped_withdraws_the_card(tmp_path):
+async def test_answered_in_its_window_or_stopped_withdraws_the_card(tmp_path):
     conv, store, runner = await attached(tmp_path)
     shown, withdrawn, notes = [], [], []
     conv.teams.on_approval, conv.teams.on_withdraw, conv.teams.on_note = shown.append, withdrawn.append, notes.append
     publish(store, "bob", asking("r1"), asking("r2"))
     await until(lambda: len(shown) == 2)
-    publish(store, "bob", asking("r2"))  # r1 answered in the member's window (FA2).
+    publish(store, "bob", asking("r2"))  # r1 answered in the member's window.
     await until(lambda: withdrawn == ["r1"])
     assert "成员 bob 的审批已在它的窗口中回答" in notes and "r1" not in conv.registry.permissions.pending
     assert not store.mailbox.peek("bob")  # Nothing is sent for it.
-    store.modify(lambda team: setattr(team.member("bob"), "status", "stopped"))  # FA3: the member ends.
+    store.modify(lambda team: setattr(team.member("bob"), "status", "stopped"))  # The member ends.
     await until(lambda: withdrawn == ["r1", "r2"])
     assert any("已停止，它的审批已撤下" in note for note in notes)
     await until(lambda: not conv.registry.permissions.pending)  # The relay releases it as it ends.
     await stop_attached(conv, runner)
 
 
-def test_t6_turn_drops_left_over_answers(tmp_path):
+def test_turn_drops_left_over_answers(tmp_path):
     from mosscode.teams.member import MemberRunner
     store = pane_store(tmp_path)
     TeamAccess(store, LEAD).send("bob", "permission_response", runtime=True, request_id="old", choice="once")
@@ -322,7 +322,7 @@ def test_t6_turn_drops_left_over_answers(tmp_path):
     assert turns == [] and store.mailbox.unread_count("bob") == 0
 
 
-# T3/T4: the panel and the view in the lead's window ---------------------------------------------------
+# The panel and the view in the lead's window ---------------------------------------------------
 
 async def pause_until(pilot, predicate, steps=300):
     for _ in range(steps):
@@ -337,7 +337,7 @@ def view_text(app) -> str:
     return "".join(str(line.text) for line in log.lines).replace(" ", "")
 
 
-async def test_t3_t4_panel_and_view_of_an_in_process_member(tmp_path):
+async def test_t4_panel_and_view_of_an_in_process_member(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
     gate = asyncio.Event()
 
@@ -358,22 +358,22 @@ async def test_t3_t4_panel_and_view_of_an_in_process_member(tmp_path):
         await pause_until(pilot, lambda: panel.display and {row.name for row in panel.rows} == {"alice", "bob"}
                           and panel.rows[0].status == "running")
         text = rendered(app.query_one("#member-compact").content)
-        assert "alice" in text and "运行中" in text  # PL1
-        assert "Ctrl+T 成员" in str(app.query_one("#status").render())  # PL6
-        await pilot.press("ctrl+t")  # PL3
+        assert "alice" in text and "运行中" in text
+        assert "Ctrl+T 成员" in str(app.query_one("#status").render())
+        await pilot.press("ctrl+t")
         await pilot.pause()
         await pause_until(pilot, lambda: panel.expanded and app.focused is app.query_one("#member-list"))
         assert app.query_one("#prompt", PromptArea).value == "草稿"
-        await pilot.press("enter")  # MV1: alice, the first row.
+        await pilot.press("enter")  # Alice, the first row.
         view = app.query_one("#member-view")
         await pause_until(pilot, lambda: view.display and view.name_shown == "alice")
         assert not app.query_one("#chat").display and not app.query_one("#input-row").display
         assert not panel.display and "成员 alice · 团队 t · 运行中" in str(app.query_one("#member-head").render())
-        # The loop commits a turn's messages with its first reply (F4 in the spec's notes).
-        gate.set()  # MV3: alice's reply arrives while the view is open.
+        # The loop commits a turn's messages with its first reply.
+        gate.set()  # alice's reply arrives while the view is open.
         await pause_until(pilot, lambda: "登录做完了" in view_text(app))
         assert "←lead·消息：初始任务" in view_text(app)
-        await pilot.press("right")  # MV4: the next member.
+        await pilot.press("right")  # The next member.
         await pause_until(pilot, lambda: view.name_shown == "bob" and view_text(app).endswith("初始任务好"))
         await pilot.press("escape")  # Back to the panel.
         await pilot.pause()
@@ -386,7 +386,7 @@ async def test_t3_t4_panel_and_view_of_an_in_process_member(tmp_path):
         await conv.teams.close()
 
 
-async def test_t3_x_twice_stops_the_member(tmp_path):
+async def test_x_twice_stops_the_member(tmp_path):
     from mosscode.tui import MossCodeApp
 
     async def alice(messages, tools):
@@ -409,7 +409,7 @@ async def test_t3_x_twice_stops_the_member(tmp_path):
         await conv.teams.close()
 
 
-async def test_t4_view_of_a_pane_member_follows_its_transcript(tmp_path):
+async def test_view_of_a_pane_member_follows_its_transcript(tmp_path):
     from mosscode.tui import MossCodeApp
     conv, store, runner = await attached(tmp_path)
     app = MossCodeApp(conv, "Demo")
@@ -418,16 +418,16 @@ async def test_t4_view_of_a_pane_member_follows_its_transcript(tmp_path):
         app._schedule_members()
         await pause_until(pilot, lambda: panel.display and panel.rows)
         await app._open_view("bob")
-        await pause_until(pilot, lambda: "还没有对话记录" in view_text(app))  # MV8
+        await pause_until(pilot, lambda: "还没有对话记录" in view_text(app))
         path = store.transcripts / "bob.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(record(chat("assistant", "窗格成员的回复")), encoding="utf-8")
-        await pause_until(pilot, lambda: "窗格成员的回复" in view_text(app))  # MV3: polled.
+        await pause_until(pilot, lambda: "窗格成员的回复" in view_text(app))  # Polled.
         assert app.query_one("#member-view").display
         await stop_attached(conv, runner)
 
 
-async def test_t6_forwarded_card_in_the_view_and_withdrawn(tmp_path):
+async def test_forwarded_card_in_the_view_and_withdrawn(tmp_path):
     from mosscode.tui import MossCodeApp
     conv, store, runner = await attached(tmp_path, interactive=True)
     app = MossCodeApp(conv, "Demo")
@@ -439,9 +439,9 @@ async def test_t6_forwarded_card_in_the_view_and_withdrawn(tmp_path):
         await app._open_view("bob")
         publish(store, "bob", asking("r1"))
         await pause_until(pilot, lambda: app._approval_request is not None)
-        assert app.query_one("#approval-panel").display and app.query_one("#member-view").display  # MV6
+        assert app.query_one("#approval-panel").display and app.query_one("#member-view").display
         assert "成员 bob（窗格）" in str(app.query_one("#approval-detail").render())
-        assert "成员审批 1" in str(app.query_one("#status").render())  # FA5
+        assert "成员审批 1" in str(app.query_one("#status").render())
         await pilot.press("enter")  # Once: goes to the member.
         await pause_until(pilot, lambda: store.mailbox.peek("bob"))
         assert store.mailbox.peek("bob")[-1].extra == {"request_id": "r1", "choice": "once"}

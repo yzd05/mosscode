@@ -21,7 +21,7 @@ class Message:
     tool_results: tuple["ToolResult", ...] = ()
     # Written by the program, not typed by the user: "compact" marks a compaction boundary.
     synthetic: str | None = None
-    # A prompt command as typed ("/review 安全"); content holds the expanded template (chapter 10 K3).
+    # A prompt command as typed ("/review 安全"); content holds the expanded template.
     command: str | None = None
 
     @property
@@ -146,11 +146,11 @@ class UserInput:
 
 @dataclass(frozen=True)
 class TasksNotified:
-    """Ch13 B6: background task notifications merged into history at an iteration boundary."""
+    """Background task notifications merged into history at an iteration boundary."""
     texts: tuple[str, ...]
 
 
-NOTIFICATION = "task-notification"  # Message.synthetic of a background task notification (B5).
+NOTIFICATION = "task-notification"  # Message.synthetic of a background task notification.
 
 
 @dataclass(frozen=True)

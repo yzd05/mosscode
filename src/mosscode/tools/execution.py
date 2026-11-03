@@ -9,7 +9,7 @@ from ..tool_budget import bound_message
 from .base import ExecutionCancelled, ToolRegistry
 
 
-PARALLEL_AGENTS = "agent"  # Ch13 G6: adjacent agent calls run together like adjacent reads.
+PARALLEL_AGENTS = "agent"  # Adjacent agent calls run together like adjacent reads.
 
 
 def _group(call, registry: ToolRegistry) -> str | None:

@@ -1,4 +1,4 @@
-"""W1/W16: what MossCode records about each worktree it made; the record is what makes it safe to clean."""
+"""What MossCode records about each worktree it made; the record is what makes it safe to clean."""
 
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ class WorktreeMeta:
     created: str  # ISO time
     manual: bool  # /worktree create: never cleaned automatically
     links: list[str] = field(default_factory=list)  # Relative to the worktree's top level
-    copied: list[str] = field(default_factory=list)  # W8/W10 copies; not work of the sub-agent (W15)
+    copied: list[str] = field(default_factory=list)  # Copied files; not work of the sub-agent
     setup_done: bool = False
     in_use: dict | None = None  # {"pid": 1234, "task": "t3"} while a sub-agent works in it
-    removing: bool = False  # Deletion started and did not finish (W14)
+    removing: bool = False  # Deletion started and did not finish
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2)
@@ -49,7 +49,7 @@ def save_meta(meta: WorktreeMeta, path: Path) -> None:
 
 
 def process_alive(pid: int) -> bool:
-    """W16. Never os.kill(pid, 0) on Windows: there it terminates the process."""
+    """Never os.kill(pid, 0) on Windows: there it terminates the process."""
     if pid <= 0:
         return False
     if os.name == "nt":

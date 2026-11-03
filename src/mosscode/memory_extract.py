@@ -1,6 +1,6 @@
-"""9c background extraction: after a completed task, one tool-less request proposes note operations.
+"""Background memory extraction: after a completed task, one tool-less request proposes note operations.
 
-Only what the user and the model said reaches the request (A3): tool results become a one-line
+Only what the user and the model said reaches the request: tool results become a one-line
 placeholder, so text from files, web pages or MCP servers cannot plant notes in later sessions.
 """
 
@@ -68,7 +68,7 @@ class Extracted:
 def render(message: Message) -> str:
     """Like compaction.render, but tool results and call arguments are never included."""
     if message.role == "user":
-        # A prompt command's template is not the user's words (chapter 10 K3).
+        # A prompt command's template is not the user's words.
         return "[用户]\n" + message.shown
     if message.role == "assistant":
         parts = ["[助手]\n" + message.text] if message.text.strip() else []
@@ -137,7 +137,7 @@ def has_user_text(messages: Sequence[Message]) -> bool:
 
 
 class MemoryExtractor:
-    """A6/A7: one extraction at a time; a backlog that is consumed only when an extraction succeeds."""
+    """One extraction at a time; a backlog that is consumed only when an extraction succeeds."""
 
     def __init__(self, store: MemoryStore, provider: Callable[[], object], *,
                  on_result: Callable[[Extracted], None] | None = None,
@@ -216,7 +216,7 @@ class MemoryExtractor:
         raise ProviderError("提取回复在完成信号前中断。")
 
     async def close(self, timeout: float = EXIT_WAIT) -> None:
-        """A9: wait briefly for a running extraction, then cancel it; writes are atomic either way."""
+        """Wait briefly for a running extraction, then cancel it; writes are atomic either way."""
         task = self._task
         if task is None or task.done():
             return

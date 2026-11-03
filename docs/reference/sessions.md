@@ -1,6 +1,6 @@
 # 会话存档与恢复
 
-每个会话的消息实时追加到一个 JSONL 文件。程序退出、崩溃或断电后，可以选择一个会话接着对话。规格见 `docs/specs/chapter-09-memory/9b-sessions.md`。
+每个会话的消息实时追加到一个 JSONL 文件。程序退出、崩溃或断电后，可以选择一个会话接着对话。
 
 ## 存档位置
 
@@ -12,7 +12,7 @@
     <会话 ID>/          会话目录：tool-results/、compact-<n>.md、hooks.log、subagents/
 ```
 
-- **项目键**由启动目录的绝对路径生成：路径末尾的可读部分加上 8 位哈希，例如 Windows 上的 `f--code-storage-pycharm-mosscode-1a2b3c4d`。同一目录总是得到同一个键。
+- **项目键**由启动目录的绝对路径生成：路径末尾的可读部分加上 8 位哈希，例如 Windows 上 `C:\Users\me\projects\app` 得到 `c--users-me-projects-app-1a2b3c4d`。同一目录总是得到同一个键。
 - **会话 ID** 形如 `20261024-153000-a1b2`（启动时间加 4 位随机串）。
 - 第一条消息写入时才创建文件；没有任何消息的运行不留下文件。
 - 会话目录（存盘的大结果、压缩记录，见 [上下文管理](context.md#会话目录)）与 JSONL 同名。恢复后继续使用同一目录，历史中引用的路径仍然有效。
@@ -72,5 +72,5 @@ json 与 stream-json 的结果包含 `session_id`。stream-json 的第一条事�
 ## 清理与关闭
 
 - 启动时清理所有项目中 30 天前的存档：`<ID>.jsonl`、同名会话目录和锁文件一起删除。只处理文件名符合 ID 格式的文件；使用中的会话跳过；会话目录仍要求带标记文件 `.mosscode-session`。清理失败时静默跳过。
-- 第八章的旧位置 `~/.mosscode/sessions/` 不再写入，按原规则清理到全部过期为止。
+- 旧版本的位置 `~/.mosscode/sessions/` 不再写入，按原规则清理到全部过期为止。
 - 配置 `persist_sessions: false` 时不写存档、不加锁，`/resume`、`--continue`、`--resume` 不可用并说明原因。

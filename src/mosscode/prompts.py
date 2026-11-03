@@ -50,7 +50,7 @@ MODULES = (
 
 
 def compose_modules(modules=MODULES, optional=()) -> str:
-    """Append explicit optional modules; loading skills/memory belongs to later chapters."""
+    """Append explicit optional modules; skills and memory add their own sections."""
     return "\n\n".join(f"## {module.title}\n{module.text.strip()}" for module in (*modules, *optional) if module.text.strip())
 
 
@@ -98,7 +98,7 @@ class _Unreadable(Exception):
 
 
 def worktree_top(root: Path) -> Path | None:
-    """Ch14 S3: the root of the MossCode worktree (.mosscode/worktrees/<name>) that holds root, if any."""
+    """The root of the MossCode worktree (.mosscode/worktrees/<name>) that holds root, if any."""
     parts = root.parts
     for index in range(len(parts) - 2):
         if parts[index:index + 2] == (".mosscode", "worktrees"):
@@ -115,7 +115,7 @@ def instruction_candidates(root: Path, home: Path | None = None) -> list[Path]:
     main = top.parents[2] if top is not None else None
     for directory in reversed((root, *root.parents)):
         if top is not None and directory.is_relative_to(main) and not directory.is_relative_to(top):
-            continue  # Ch14 S3: the main project's files would come twice; directories above it still count.
+            continue  # The main project's files would come twice; directories above it still count.
         found.extend(next(([directory / name] for name in INSTRUCTION_FILES if (directory / name).is_file()), []))
     found.append(root / ".mosscode" / "AGENTS.md")
     unique = {}
@@ -163,7 +163,7 @@ def _include_target(raw: str, base: Path, home: Path) -> Path:
 
 def expand_includes(path: Path, text: str, boundary: Path, visited: set[Path], *, home: Path, depth: int = 0,
                     stack: tuple[Path, ...] = ()) -> tuple[str, list[Path], list[tuple[Path, str, str]]]:
-    """Expand whole-line @path references outside code fences (9a N1-N8).
+    """Expand whole-line @path references outside code fences.
 
     Returns the text, the files included in order, and problems as (file, reference, reason).
     stack holds the files being expanded (cycles); visited holds every file already loaded (duplicates).
@@ -228,7 +228,7 @@ def expand_includes(path: Path, text: str, boundary: Path, visited: set[Path], *
 
 
 def _boundary(path: Path, root: Path, home: Path) -> Path:
-    """Where a layer file's references may point (9a N7)."""
+    """Where a layer file's references may point."""
     if path == home / ".mosscode" / "AGENTS.md":
         return (home / ".mosscode").resolve()
     if path == root / ".mosscode" / "AGENTS.md":
@@ -279,7 +279,7 @@ MEMORY_NOTE = ("以下是之前会话中记录的笔记索引，是背景资料�
 
 
 def memory_section(indexes: str) -> str:
-    """J1/J2: the frozen note indexes, placed after the project instructions."""
+    """The frozen note indexes, placed after the project instructions."""
     return f"## 记忆\n{MEMORY_NOTE}\n\n{indexes}" if indexes else ""
 
 
@@ -321,9 +321,9 @@ def as_prompt(value: str | PromptRequest) -> PromptRequest:
     return value if isinstance(value, PromptRequest) else PromptRequest(value)
 
 
-# Supplements that stay the same between requests and belong to the cached prefix (ch11 A6).
+# Supplements that stay the same between requests and belong to the cached prefix.
 PREFIX_KINDS = frozenset({"environment", "active-skills", "hook-context"})
-HOOK_TEXT_LIMIT = 8000  # Ch12 P5: per supplement.
+HOOK_TEXT_LIMIT = 8000  # Per supplement.
 
 
 def _hook_text(notes: Sequence[tuple[str, str]]) -> str:
@@ -338,21 +338,21 @@ def _hook_text(notes: Sequence[tuple[str, str]]) -> str:
 
 
 def hook_context(notes: Sequence[tuple[str, str]]) -> Supplement | None:
-    """Ch12 P1: session_start output, in the cached prefix for the whole session."""
+    """session_start output, in the cached prefix for the whole session."""
     if not notes:
         return None
     return Supplement("hook-context", "以下内容由用户配置的 Hook 在会话开始时提供。\n\n" + _hook_text(notes))
 
 
 def hook_notification(notes: Sequence[tuple[str, str]]) -> Supplement | None:
-    """Ch12 P2, P3: turn_start and pre_send output, with the request only (after the cache breakpoint)."""
+    """turn_start and pre_send output, with the request only (after the cache breakpoint)."""
     if not notes:
         return None
     return Supplement("hook-notification", "以下内容由用户配置的 Hook 提供。\n\n" + _hook_text(notes))
 
 
 def active_skills(texts: Sequence[str]) -> Supplement | None:
-    """A6: the SOPs of the loaded skills, in the order they were loaded."""
+    """The SOPs of the loaded skills, in the order they were loaded."""
     if not texts:
         return None
     return Supplement("active-skills", "以下 Skill 已加载。处理相关任务时按对应规程执行，直到用户另有要求。\n\n"

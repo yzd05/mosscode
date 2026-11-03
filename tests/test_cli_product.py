@@ -1,4 +1,4 @@
-"""Refinement 08 (docs/specs/refinement-08-cli-product/spec.md): the moss command, setup and doctor."""
+"""The moss command, setup and doctor."""
 
 import asyncio
 from importlib.metadata import version
@@ -26,7 +26,6 @@ def modules_after(code: str) -> str:
     return result.stdout.strip()
 
 
-# CL1, CL2, ST1, ST2 --------------------------------------------------------
 
 @pytest.mark.parametrize("flag", ["--version", "-v"])
 def test_version_prints_the_installed_version(capsys, flag):
@@ -65,7 +64,6 @@ def test_a_provider_imports_only_its_sdk(protocol, loaded, absent):
     assert out == "True False"
 
 
-# CL3, CL4, CL5 -------------------------------------------------------------
 
 def test_arguments_positional_prompt_and_print_mode():
     args = launcher.parse_arguments(["解释入口"])

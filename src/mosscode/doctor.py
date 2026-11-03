@@ -1,4 +1,4 @@
-"""Refinement 08 DR: `moss doctor` reads the installation, the configuration and the tools it relies on.
+"""`moss doctor` reads the installation, the configuration and the tools it relies on.
 
 It starts no session and sends no request. Credentials are reported as set or not, never shown.
 """
@@ -243,4 +243,4 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
     except UnicodeEncodeError:  # A console that cannot show ✓ and ✗.
         print(text.encode(sys.stdout.encoding or "ascii", "replace").decode(sys.stdout.encoding or "ascii"))
-    return 1 if any(item.level == ERROR for item in items) else 0  # DR2
+    return 1 if any(item.level == ERROR for item in items) else 0

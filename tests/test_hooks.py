@@ -1,4 +1,4 @@
-"""Chapter 12: hooks (docs/specs/chapter-12-hooks/spec.md)."""
+"""Hooks."""
 
 import asyncio
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,10 +24,10 @@ from mosscode.tools import create_default_registry
 from mosscode.tools.base import ExecutionCancelled
 from test_agent import SequenceProvider, call, response
 from test_cli import setup_cli
-from test_commands_stage10 import FakeUI, context, run
-from test_context_stage8 import NO_SUMMARY_REPLY, summary_reply
-from test_sessions_stage9b import drain, make, write_session, user, assistant
-from test_skills_stage11 import places  # noqa: F401  (fixture)
+from test_commands import FakeUI, context, run
+from test_context import NO_SUMMARY_REPLY, summary_reply
+from test_sessions import drain, make, write_session, user, assistant
+from test_skills import places  # noqa: F401  (fixture)
 
 PY = "${PYTHON}"
 MARK = "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('x', encoding='utf-8')"
@@ -88,9 +88,9 @@ def names(seen):
     return [item[0] for item in seen]
 
 
-# AC1: configuration -------------------------------------------------------------------------------
+# Configuration -------------------------------------------------------------------------------
 
-def test_ac1_three_files_append_in_order(tmp_path):
+def test_three_files_append_in_order(tmp_path):
     root = project(tmp_path)
     for (source, path), hook_id in zip(hook_paths(root), ("u1", "p1", "l1")):
         write_hooks(path, {"id": hook_id, "event": "turn_end", "action": {"type": "command", "command": "x"}})
@@ -99,7 +99,7 @@ def test_ac1_three_files_append_in_order(tmp_path):
     assert [h.source for h in hooks.hooks] == ["user", "project", "local"]
 
 
-def test_ac1_a_broken_file_is_skipped_without_echoing_it(tmp_path):
+def test_a_broken_file_is_skipped_without_echoing_it(tmp_path):
     root = project(tmp_path)
     path = root / ".mosscode" / "hooks.yaml"
     path.parent.mkdir()
@@ -126,7 +126,7 @@ def test_ac1_a_broken_file_is_skipped_without_echoing_it(tmp_path):
     ({"id": "f", "event": "turn_end", "action": {"type": "command", "command": "x", "feedback": True}}, "feedback"),
     ({"id": "v", "event": "turn_end", "action": {"type": "command", "command": ["x", "${HOME}"]}}, "${HOME}"),
 ])
-def test_ac1_a_bad_hook_is_skipped_with_path_and_id(tmp_path, entry, message):
+def test_a_bad_hook_is_skipped_with_path_and_id(tmp_path, entry, message):
     root = project(tmp_path)
     good = {"id": "dup", "event": "turn_end", "action": {"type": "command", "command": "x"}}
     write_hooks(hook_paths(root)[0][1], good)
@@ -138,7 +138,7 @@ def test_ac1_a_bad_hook_is_skipped_with_path_and_id(tmp_path, entry, message):
     assert hooks.problems[0].startswith(f"{path} · {entry['id']} · ") and message in hooks.problems[0]
 
 
-def test_ac1_static_reject_needs_no_action_and_async_follows_the_event(tmp_path):
+def test_static_reject_needs_no_action_and_async_follows_the_event(tmp_path):
     path = tmp_path / "hooks.yaml"
     hook = parse_hook({"id": "prod", "event": "pre_tool_use", "if": "path ~= config/prod/**", "reject": " 生产配置 "},
                       "project", path)
@@ -149,7 +149,7 @@ def test_ac1_static_reject_needs_no_action_and_async_follows_the_event(tmp_path)
     assert not hook.background
 
 
-# AC2: condition parsing ---------------------------------------------------------------------------
+# Condition parsing ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("expression,event,message", [
     ("tool == a && path == b || tool == c", "pre_tool_use", "混用"),
@@ -163,12 +163,12 @@ def test_ac1_static_reject_needs_no_action_and_async_follows_the_event(tmp_path)
     ("tool == Bash && ", "pre_tool_use", "空的子条件"),
     ('args.command == "a', "pre_tool_use", "没有闭合"),
 ])
-def test_ac2_bad_conditions(expression, event, message):
+def test_bad_conditions(expression, event, message):
     with pytest.raises(HookConfigError, match=message.replace("*", r"\*").replace(".", r"\.")):
         parse_condition(expression, event)
 
 
-def test_ac2_quotes_keep_operators_and_templates_are_checked(tmp_path):
+def test_quotes_keep_operators_and_templates_are_checked(tmp_path):
     group = parse_condition('args.command == "a && b \\"c\\"" || tool == Read', "pre_tool_use")
     assert group.any and [item.value for item in group.items] == ['a && b "c"', "read_file"]
     with pytest.raises(HookConfigError, match="没有条件字段 path"):
@@ -176,20 +176,20 @@ def test_ac2_quotes_keep_operators_and_templates_are_checked(tmp_path):
                    "user", tmp_path)
 
 
-# AC3: condition evaluation ------------------------------------------------------------------------
+# Condition evaluation ------------------------------------------------------------------------
 
 def matches(expression, event="pre_tool_use", **fields):
     return parse_condition(expression, event).matches({key.replace("__", "."): value for key, value in fields.items()})
 
 
-def test_ac3_tool_aliases_and_globs():
+def test_tool_aliases_and_globs():
     assert matches("tool == Bash", tool="execute_command")
     assert matches("tool ~= mcp__x__*", tool="mcp__x__search")
     assert not matches("tool ~= mcp__x__*", tool="mcp__y__search")
     assert matches("tool != Bash", tool="read_file") and not matches("tool != Bash", tool="execute_command")
 
 
-def test_ac3_paths_follow_the_permission_rules(tmp_path):
+def test_paths_follow_the_permission_rules(tmp_path):
     assert not matches('path ~= "src/*.py"', path="src/a/b.py")
     assert matches("path ~= src/**/*.py", path="src/a/b.py")
     assert matches("path == src/a.py", path="src\\a.py")
@@ -201,7 +201,7 @@ def test_ac3_paths_follow_the_permission_rules(tmp_path):
     assert not matches("path ~= src/**", path="")
 
 
-def test_ac3_commands_and_args():
+def test_commands_and_args():
     assert matches('command ~= "git push:*"', command="cd x && git push -f")
     assert matches('command ~= "git push:*"', command="git push")
     assert not matches('command ~= "git push:*"', command="git pushx")
@@ -213,9 +213,9 @@ def test_ac3_commands_and_args():
     assert matches("tool == Bash || tool == Read", tool="read_file")
 
 
-# AC4: trust ---------------------------------------------------------------------------------------
+# Trust ---------------------------------------------------------------------------------------
 
-def test_ac4_project_files_need_trust_by_content(tmp_path):
+def test_project_files_need_trust_by_content(tmp_path):
     root = project(tmp_path)
     write_hooks(hook_paths(root)[0][1], {"id": "u", "event": "turn_end", "action": {"type": "command", "command": "x"}})
     path = write_hooks(root / ".mosscode" / "hooks.yaml",
@@ -232,7 +232,7 @@ def test_ac4_project_files_need_trust_by_content(tmp_path):
     assert [h.id for h in HookEngine(root).hooks] == ["u"]  # Changed content: asked again.
 
 
-def test_ac4_trust_flag_writes_no_record(tmp_path):
+def test_trust_flag_writes_no_record(tmp_path):
     root = project(tmp_path)
     write_hooks(root / ".mosscode" / "hooks.local.yaml",
                 {"id": "l", "event": "turn_end", "action": {"type": "command", "command": "x"}})
@@ -242,13 +242,13 @@ def test_ac4_trust_flag_writes_no_record(tmp_path):
 
 
 @pytest.mark.parametrize("name", ["hooks.yaml", "hooks.local.yaml"])
-async def test_ac4_the_model_cannot_write_hook_files(tmp_path, name):
+async def test_the_model_cannot_write_hook_files(tmp_path, name):
     tools = registry(engine(tmp_path))
     result = await execute(tools, "write_file", path=f".mosscode/{name}", content="hooks: []")
     assert result.code == "policy_protected" and "Hook" in result.output
 
 
-# AC5: command actions -----------------------------------------------------------------------------
+# Command actions -----------------------------------------------------------------------------
 
 PROBE = """import json, os, sys
 data = json.load(sys.stdin)
@@ -257,7 +257,7 @@ print(json.dumps({'stdin': data, 'env': env, 'cwd': os.getcwd(), 'argv': sys.arg
 """
 
 
-async def test_ac5_stdin_environment_cwd_and_argv(tmp_path):
+async def test_stdin_environment_cwd_and_argv(tmp_path):
     hooks = engine(tmp_path, {"id": "probe", "event": "pre_tool_use",
                               "action": {"type": "command", "command": py(PROBE, "${FILE_PATH}"), "feedback": True}})
     target = "dir x;y/a b.txt"
@@ -272,11 +272,11 @@ async def test_ac5_stdin_environment_cwd_and_argv(tmp_path):
     assert seen["stdin"]["path"] == target and seen["stdin"]["agent"] == "main"
     assert seen["env"] == {"MOSSCODE_HOOK_ID": "probe", "MOSSCODE_HOOK_EVENT": "pre_tool_use", "MOSSCODE_SESSION_ID": "",
                            "MOSSCODE_PROJECT_ROOT": str(hooks.root), "MOSSCODE_AGENT": "main",
-                           "MOSSCODE_AGENT_TYPE": "",  # Ch13 H1.
+                           "MOSSCODE_AGENT_TYPE": "",
                            "MOSSCODE_TOOL_NAME": "write_file", "MOSSCODE_FILE_PATH": str(hooks.root / target)}
 
 
-async def test_ac5_numeric_argv_parts_become_text(tmp_path):
+async def test_numeric_argv_parts_become_text(tmp_path):
     # YAML reads `[git, log, -3]` as a number in the last slot.
     hooks = engine(tmp_path, {"id": "nums", "event": "turn_start",
                               "action": {"type": "command", "command": [PY, "-c", "import sys; print(sys.argv[1:])", -3, 2.5],
@@ -285,7 +285,7 @@ async def test_ac5_numeric_argv_parts_become_text(tmp_path):
     assert outcome.notes == (("nums", "['-3', '2.5']"),)
 
 
-async def test_ac5_string_commands_use_the_configured_shell(tmp_path):
+async def test_string_commands_use_the_configured_shell(tmp_path):
     root = project(tmp_path)
     shell = create_default_registry(root, load_permissions=False).get("execute_command").shell
     hooks = engine(tmp_path, {"id": "say", "event": "turn_start",
@@ -295,7 +295,7 @@ async def test_ac5_string_commands_use_the_configured_shell(tmp_path):
     assert outcome.notes == (("say", "hello-shell"),)
 
 
-async def test_ac5_timeout_ends_the_process_tree(tmp_path):
+async def test_timeout_ends_the_process_tree(tmp_path):
     late = tmp_path / "late.txt"
     child = f"import pathlib, time; time.sleep(2); pathlib.Path({str(late)!r}).write_text('late')"
     parent = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(30)"
@@ -310,7 +310,7 @@ async def test_ac5_timeout_ends_the_process_tree(tmp_path):
     assert not late.exists()
 
 
-async def test_ac5_missing_command_and_nonzero_exit_fail(tmp_path):
+async def test_missing_command_and_nonzero_exit_fail(tmp_path):
     hooks = engine(tmp_path, {"id": "gone", "event": "turn_start",
                               "action": {"type": "command", "command": ["no-such-command-mosscode-xyz"]}},
                    {"id": "bad", "event": "turn_start",
@@ -323,7 +323,7 @@ async def test_ac5_missing_command_and_nonzero_exit_fail(tmp_path):
     assert len(hooks.take_notices()) == 2
 
 
-# AC6: http actions --------------------------------------------------------------------------------
+# Http actions --------------------------------------------------------------------------------
 
 @pytest.fixture
 def server(monkeypatch):
@@ -368,7 +368,7 @@ def post_tool(tool="execute_command", **args):
     return tool_event("post_tool_use", "main", tool, args, operation, Path.cwd())
 
 
-async def test_ac6_json_templates_context_and_env(tmp_path, server, monkeypatch):
+async def test_json_templates_context_and_env(tmp_path, server, monkeypatch):
     base, hits = server
     monkeypatch.setenv("HOOK_TEST_TOKEN", "t-123")
     hooks = engine(tmp_path, {"id": "j", "event": "post_tool_use", "action": {
@@ -385,7 +385,7 @@ async def test_ac6_json_templates_context_and_env(tmp_path, server, monkeypatch)
     assert [r.outcome for r in hooks.recent] == ["ok", "ok"] and hooks.recent[0].status == 200
 
 
-async def test_ac6_unset_variable_fails_the_hook_at_load(tmp_path, monkeypatch):
+async def test_unset_variable_fails_the_hook_at_load(tmp_path, monkeypatch):
     monkeypatch.delenv("HOOK_UNSET_VAR", raising=False)
     root = project(tmp_path)
     write_hooks(root / ".mosscode" / "hooks.yaml",
@@ -397,7 +397,7 @@ async def test_ac6_unset_variable_fails_the_hook_at_load(tmp_path, monkeypatch):
     assert "ASCII" in HookEngine(root, trust_project=True).problems[0]
 
 
-async def test_ac6_failures_and_no_redirects(tmp_path, server):
+async def test_failures_and_no_redirects(tmp_path, server):
     base, hits = server
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -415,15 +415,15 @@ async def test_ac6_failures_and_no_redirects(tmp_path, server):
     assert all("s3" not in r.detail for r in hooks.recent)
 
 
-# AC7: prompt and agent actions --------------------------------------------------------------------
+# Prompt and agent actions --------------------------------------------------------------------
 
-async def test_ac7_prompt_templates_and_agent_placeholder(tmp_path):
+async def test_prompt_templates_and_agent_placeholder(tmp_path):
     hooks = engine(tmp_path, {"id": "note", "event": "post_tool_use", "action": {"type": "prompt",
                                                                                  "message": "改了 {{path}}（{{tool}}）"}},
                    {"id": "helper", "event": "post_tool_use", "action": {"type": "agent", "prompt": "检查"}})
     event = tool_event("post_tool_use", "main", "write_file", {"path": "a.py"}, Operation("write_file", "a.py"), hooks.root)
     assert (await hooks.fire(event)).notes == (("note", "改了 a.py（write_file）"),)
-    await hooks.drain(1)  # Ch13 H4: agent actions always run in the background.
+    await hooks.drain(1)  # Agent actions always run in the background.
     await hooks.fire(event)
     await hooks.drain(1)
     assert [r.outcome for r in hooks.recent] == ["ok", "skipped", "ok", "skipped"]
@@ -434,9 +434,9 @@ async def test_ac7_prompt_templates_and_agent_placeholder(tmp_path):
     assert len(hooks.take_notices()) == 1
 
 
-# AC8: engine --------------------------------------------------------------------------------------
+# Engine --------------------------------------------------------------------------------------
 
-async def test_ac8_order_and_the_first_rejection_stops(tmp_path):
+async def test_order_and_the_first_rejection_stops(tmp_path):
     marker = tmp_path / "third.txt"
     hooks = engine(tmp_path, {"id": "first", "event": "pre_tool_use", "action": {"type": "prompt", "message": "一"}},
                    {"id": "second", "event": "pre_tool_use", "if": "tool == Bash", "reject": "不许执行命令"},
@@ -451,7 +451,7 @@ async def test_ac8_order_and_the_first_rejection_stops(tmp_path):
     assert outcome.rejection is None and marker.exists() and outcome.ran == ("first", "third")
 
 
-async def test_ac8_exit_code_2_rejects_with_stderr(tmp_path):
+async def test_exit_code_2_rejects_with_stderr(tmp_path):
     hooks = engine(tmp_path, {"id": "guard", "event": "pre_tool_use", "action": {
         "type": "command", "command": py("import sys; print('分支受保护', file=sys.stderr); sys.exit(2)")}})
     outcome = await hooks.fire(tool_event("pre_tool_use", "main", "read_file", {}, None, hooks.root))
@@ -459,7 +459,7 @@ async def test_ac8_exit_code_2_rejects_with_stderr(tmp_path):
     assert hooks.recent[-1].outcome == "rejected"
 
 
-async def test_ac8_once(tmp_path):
+async def test_once(tmp_path):
     hooks = engine(tmp_path, {"id": "first-time", "event": "turn_start", "once": True, "if": "prompt == go",
                               "action": {"type": "command", "command": py("import sys; sys.exit(1)")}})
     await hooks.fire(turn_start(prompt="wait"))
@@ -473,7 +473,7 @@ async def test_ac8_once(tmp_path):
     assert len(hooks.recent) == 2
 
 
-async def test_ac8_background_hooks_do_not_block_and_drain_cancels(tmp_path):
+async def test_background_hooks_do_not_block_and_drain_cancels(tmp_path):
     hooks = engine(tmp_path, {"id": "bg", "event": "turn_end", "async": True,
                               "action": {"type": "command", "command": py("import time; time.sleep(30)")}})
     started = time.monotonic()
@@ -485,9 +485,9 @@ async def test_ac8_background_hooks_do_not_block_and_drain_cancels(tmp_path):
     assert hooks.take_notices() == []
 
 
-# AC9: log and notices -----------------------------------------------------------------------------
+# Log and notices -----------------------------------------------------------------------------
 
-async def test_ac9_log_lines_and_one_notice_per_turn(tmp_path, server):
+async def test_log_lines_and_one_notice_per_turn(tmp_path, server):
     from mosscode.session import Session
     base, _ = server
     hooks = engine(tmp_path, {"id": "web", "event": "post_tool_use",
@@ -509,13 +509,13 @@ async def test_ac9_log_lines_and_one_notice_per_turn(tmp_path, server):
     assert "secret" not in text and "MOSSCODE_" not in text
 
 
-# AC10–AC12: tools and permissions -----------------------------------------------------------------
+# Tools and permissions -----------------------------------------------------------------
 
 def guard(**extra):
     return {"id": "guard", "event": "pre_tool_use", "if": "path ~= config/prod/**", "reject": "生产配置只读", **extra}
 
 
-async def test_ac10_static_rejection_even_when_bypassing(tmp_path):
+async def test_static_rejection_even_when_bypassing(tmp_path):
     marker = tmp_path / "post.txt"
     hooks = engine(tmp_path, guard(), {"id": "post", "event": "post_tool_use",
                                        "action": {"type": "command", "command": py(MARK, marker)}})
@@ -530,7 +530,7 @@ async def test_ac10_static_rejection_even_when_bypassing(tmp_path):
     assert not result.is_error and marker.exists()
 
 
-async def test_ac10_deny_rules_and_plan_mode_come_before_hooks(tmp_path):
+async def test_deny_rules_and_plan_mode_come_before_hooks(tmp_path):
     marker = tmp_path / "pre.txt"
     hooks = engine(tmp_path, {"id": "pre", "event": "pre_tool_use", "action": {"type": "command", "command": py(MARK, marker)}})
     tools = registry(hooks)
@@ -542,7 +542,7 @@ async def test_ac10_deny_rules_and_plan_mode_come_before_hooks(tmp_path):
     assert result.code == "plan_blocked" and not marker.exists()
 
 
-async def test_ac10_a_passing_hook_never_skips_approval(tmp_path):
+async def test_a_passing_hook_never_skips_approval(tmp_path):
     marker = tmp_path / "pre.txt"
     hooks = engine(tmp_path, {"id": "pre", "event": "pre_tool_use", "action": {"type": "command", "command": py(MARK, marker)}},
                    {"id": "asked", "event": "permission_request", "action": {"type": "command", "command": py(MARK, marker.with_suffix(".ask"))}})
@@ -558,7 +558,7 @@ async def test_ac10_a_passing_hook_never_skips_approval(tmp_path):
     assert marker.with_suffix(".ask").exists()
 
 
-async def test_ac11_failures_pass_unless_blocking(tmp_path):
+async def test_failures_pass_unless_blocking(tmp_path):
     failing = {"type": "command", "command": py("import sys; print('lint 崩了', file=sys.stderr); sys.exit(1)")}
     hooks = engine(tmp_path, {"id": "lint", "event": "pre_tool_use", "action": failing})
     result = await execute(registry(hooks), "write_file", path="a.txt", content="x")
@@ -572,7 +572,7 @@ async def test_ac11_failures_pass_unless_blocking(tmp_path):
 FORMAT = "import pathlib, sys; p = pathlib.Path(sys.argv[1]); p.write_text(p.read_text() + 'formatted\\n')"
 
 
-async def test_ac12_post_hooks_annotate_results_and_force_a_reread(tmp_path):
+async def test_post_hooks_annotate_results_and_force_a_reread(tmp_path):
     hooks = engine(tmp_path, {"id": "fmt", "event": "post_tool_use", "if": "tool == Write || tool == Edit",
                               "action": {"type": "command", "command": py(FORMAT, "${FILE_PATH}")}},
                    {"id": "missing", "event": "post_tool_use", "if": "error == true && code == not_found",
@@ -595,7 +595,7 @@ async def test_ac12_post_hooks_annotate_results_and_force_a_reread(tmp_path):
     assert result.output.endswith('<hook-notification hook="missing">\nnope.py 不存在，先 glob 一下\n</hook-notification>')
 
 
-async def test_ac12_tool_row_shows_the_hook_change(tmp_path):
+async def test_tool_row_shows_the_hook_change(tmp_path):
     # The row shows only the first output line and the diff, so the notice gets its own line.
     from mosscode.conversation import Conversation
     from mosscode.messages import ToolProgress, ToolResult
@@ -611,7 +611,7 @@ async def test_ac12_tool_row_shows_the_hook_change(tmp_path):
         assert row.transcript.plain.endswith("1 + x = 1\n    文件已被 Hook fmt 修改（如格式化），模型再次编辑前会重新读取。")
 
 
-async def test_ac12_no_notice_when_the_file_is_untouched(tmp_path):
+async def test_no_notice_when_the_file_is_untouched(tmp_path):
     hooks = engine(tmp_path, {"id": "look", "event": "post_tool_use", "action": {"type": "command", "command": py("pass")}})
     tools = registry(hooks)
     result = await execute(tools, "write_file", path="a.py", content="x = 1\n")
@@ -620,9 +620,9 @@ async def test_ac12_no_notice_when_the_file_is_untouched(tmp_path):
     assert not result.is_error
 
 
-# AC13: fork sub-agents ----------------------------------------------------------------------------
+# Fork sub-agents ----------------------------------------------------------------------------
 
-async def test_ac13_fork_views_report_their_agent(tmp_path):
+async def test_fork_views_report_their_agent(tmp_path):
     hooks = engine(tmp_path, {"id": "fork-no-bash", "event": "pre_tool_use", "if": "agent == fork && tool == Bash",
                               "reject": "审查子 Agent 不能执行命令"})
     tools = registry(hooks)
@@ -633,9 +633,9 @@ async def test_ac13_fork_views_report_their_agent(tmp_path):
     assert result.code != "hook_rejected"
 
 
-async def test_ac13_fork_skill_runs_fire_tool_events_only(tmp_path, places):
+async def test_fork_skill_runs_fire_tool_events_only(tmp_path, places):
     from mosscode.builtin_commands import BUILTIN
-    from test_skills_stage11 import fork_run, fork_skill, load
+    from test_skills import fork_run, fork_skill, load
     _, _, project_skills, _ = places
     fork_skill(project_skills)
     hooks = engine(tmp_path, {"id": "fork-no-bash", "event": "pre_tool_use", "if": "agent == fork && tool == Bash",
@@ -646,7 +646,7 @@ async def test_ac13_fork_skill_runs_fire_tool_events_only(tmp_path, places):
     tools = create_default_registry(hooks.root, permission_mode="bypassPermissions", load_permissions=False)
     conversation = make(tmp_path, provider, registry=tools, skills=load(places, reserved=BUILTIN.names()), hooks=hooks)
     await fork_run(conversation, "/rev a.py")
-    # Ch13 H3: subagent_start on the main side; subagent_stop runs in the background.
+    # subagent_start on the main side; subagent_stop runs in the background.
     assert [n for n in names(seen) if n != "subagent_stop"] == ["session_start", "turn_start", "subagent_start",
                                                                 "pre_tool_use", "turn_end"]
     assert seen[2][1] == "main" and seen[2][2]["agent_type"] == "skill:rev" and seen[3][1] == "fork"
@@ -657,7 +657,7 @@ async def test_ac13_fork_skill_runs_fire_tool_events_only(tmp_path, places):
     await conversation.close()
 
 
-# AC14: cancellation -------------------------------------------------------------------------------
+# Cancellation -------------------------------------------------------------------------------
 
 WAIT = "import pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text('started'); time.sleep(30)"
 
@@ -670,7 +670,7 @@ async def wait_for_file(path):
     raise AssertionError(f"{path} never appeared")
 
 
-async def test_ac14_cancelling_pre_hooks_skips_the_tool(tmp_path):
+async def test_cancelling_pre_hooks_skips_the_tool(tmp_path):
     started = tmp_path / "started.txt"
     hooks = engine(tmp_path, {"id": "slow", "event": "pre_tool_use", "action": {"type": "command", "command": py(WAIT, started)}})
     task = asyncio.create_task(execute(registry(hooks), "write_file", path="a.txt", content="x"))
@@ -681,7 +681,7 @@ async def test_ac14_cancelling_pre_hooks_skips_the_tool(tmp_path):
     assert not (hooks.root / "a.txt").exists() and hooks.recent[-1].outcome == "cancelled"
 
 
-async def test_ac14_cancelling_post_hooks_keeps_the_result(tmp_path):
+async def test_cancelling_post_hooks_keeps_the_result(tmp_path):
     started = tmp_path / "started.txt"
     hooks = engine(tmp_path, {"id": "note", "event": "pre_tool_use", "action": {"type": "prompt", "message": "先说一句"}},
                    {"id": "slow", "event": "post_tool_use", "action": {"type": "command", "command": py(WAIT, started)}})
@@ -695,13 +695,13 @@ async def test_ac14_cancelling_post_hooks_keeps_the_result(tmp_path):
     assert '<hook-notification hook="note">' in result.output
 
 
-# AC15: injection ----------------------------------------------------------------------------------
+# Injection ----------------------------------------------------------------------------------
 
 def supplements(request):
     return {item.kind: item.text for item in request[1].supplements}
 
 
-async def test_ac15_where_hook_text_goes(tmp_path):
+async def test_where_hook_text_goes(tmp_path):
     hooks = engine(tmp_path, {"id": "ss", "event": "session_start", "action": {"type": "prompt", "message": "SS {{source}}"}},
                    {"id": "ts", "event": "turn_start", "once": True, "action": {"type": "prompt", "message": "TS {{prompt}}"}},
                    {"id": "ps", "event": "pre_send", "action": {"type": "prompt", "message": "PS {{iteration}}"}},
@@ -731,7 +731,7 @@ async def test_ac15_where_hook_text_goes(tmp_path):
     await conversation.close()
 
 
-def test_ac15_hook_text_is_cut_at_8000_characters():
+def test_hook_text_is_cut_at_8000_characters():
     text = hook_notification([("big", "长" * 9000)]).text
     assert "=== Hook big" in text and len(text) < 8200 and "截断" in text
     assert hook_context([]) is None and hook_notification(()) is None
@@ -739,7 +739,7 @@ def test_ac15_hook_text_is_cut_at_8000_characters():
 
 
 @pytest.mark.parametrize("index", range(3))
-async def test_ac15_prefix_and_request_positions_for_every_protocol(index):
+async def test_prefix_and_request_positions_for_every_protocol(index):
     from mosscode.messages import ContentBlock, Message
     from mosscode.prompts import PromptRequest, Supplement
     from test_providers import CASES, SSEBody, adapter
@@ -764,9 +764,9 @@ async def test_ac15_prefix_and_request_positions_for_every_protocol(index):
         assert texts[-1].startswith("<hook-notification>")
 
 
-# AC16: event timing -------------------------------------------------------------------------------
+# Event timing -------------------------------------------------------------------------------
 
-async def test_ac16_one_turn_in_order(tmp_path):
+async def test_one_turn_in_order(tmp_path):
     hooks = engine(tmp_path)
     seen = record(hooks)
     (hooks.root / "a.txt").write_text("a", encoding="utf-8")
@@ -782,7 +782,7 @@ async def test_ac16_one_turn_in_order(tmp_path):
     await conversation.close()
 
 
-async def test_ac16_errors_and_compaction(tmp_path):
+async def test_errors_and_compaction(tmp_path):
     hooks = engine(tmp_path)
     seen = record(hooks)
     provider = SequenceProvider(ProviderError("服务暂时不可用"), response("好"), summary_reply(), NO_SUMMARY_REPLY)
@@ -801,9 +801,9 @@ async def test_ac16_errors_and_compaction(tmp_path):
     await conversation.close()
 
 
-# AC17: session events -----------------------------------------------------------------------------
+# Session events -----------------------------------------------------------------------------
 
-async def test_ac17_session_events(tmp_path):
+async def test_session_events(tmp_path):
     saved = write_session(tmp_path, [user("一"), assistant("二")])
     hooks = engine(tmp_path)
     seen = record(hooks)
@@ -817,7 +817,7 @@ async def test_ac17_session_events(tmp_path):
         ("session_end", {"reason": "resume"}), ("session_start", {"source": "resume"}), ("session_end", {"reason": "exit"})]
 
 
-async def test_ac17_continue_starts_with_resume_and_close_waits(tmp_path):
+async def test_continue_starts_with_resume_and_close_waits(tmp_path):
     saved = write_session(tmp_path, [user("一"), assistant("二")])
     marker = tmp_path / "bye.txt"
     hooks = engine(tmp_path, {"id": "bye", "event": "session_end", "async": True,
@@ -831,9 +831,9 @@ async def test_ac17_continue_starts_with_resume_and_close_waits(tmp_path):
     assert seen[0][2] == {"source": "resume"} and marker.exists()
 
 
-# AC18: /hooks -------------------------------------------------------------------------------------
+# /hooks -------------------------------------------------------------------------------------
 
-async def test_ac18_hooks_command(tmp_path, server):
+async def test_hooks_command(tmp_path, server):
     base, _ = server
     root = project(tmp_path)
     write_hooks(hook_paths(root)[0][1],
@@ -868,7 +868,7 @@ async def test_ac18_hooks_command(tmp_path, server):
     await conversation.close()
 
 
-async def test_ac18_trust_picker_cancel_declines_and_status_line(tmp_path):
+async def test_trust_picker_cancel_declines_and_status_line(tmp_path):
     from mosscode.builtin_commands import hooks_line, offer_trust
     root = project(tmp_path)
     write_hooks(root / ".mosscode" / "hooks.yaml", guard())
@@ -889,7 +889,7 @@ async def test_ac18_trust_picker_cancel_declines_and_status_line(tmp_path):
 
 
 @pytest.mark.parametrize("key,trusted", [("enter", True), ("escape", False)])
-async def test_ac18_tui_asks_before_session_start(tmp_path, key, trusted):
+async def test_tui_asks_before_session_start(tmp_path, key, trusted):
     from mosscode.tui import MossCodeApp
     hooks = engine(tmp_path, {"id": "ss", "event": "session_start", "action": {"type": "prompt", "message": "x"}},
                    trust=False)
@@ -911,14 +911,14 @@ async def test_ac18_tui_asks_before_session_start(tmp_path, key, trusted):
         assert TrustStore(hooks.root).path.exists() is trusted
 
 
-def test_ac18_headless_hooks_command_exits_with_code_2(monkeypatch, capsys):
+def test_headless_hooks_command_exits_with_code_2(monkeypatch, capsys):
     setup_cli(monkeypatch, ["-p", "/hooks"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 2 and capsys.readouterr().err.startswith("/hooks 只能在交互界面中使用。")
 
 
-# AC19: -p -----------------------------------------------------------------------------------------
+# -p -----------------------------------------------------------------------------------------
 
 def cli_project(tmp_path, monkeypatch, *hooks, user_hooks=()):
     root = project(tmp_path)
@@ -929,7 +929,7 @@ def cli_project(tmp_path, monkeypatch, *hooks, user_hooks=()):
     return root
 
 
-def test_ac19_untrusted_project_hooks_are_skipped_with_a_notice(tmp_path, monkeypatch, capsys):
+def test_untrusted_project_hooks_are_skipped_with_a_notice(tmp_path, monkeypatch, capsys):
     marker = tmp_path / "ran.txt"
     root = cli_project(tmp_path, monkeypatch, {"id": "p", "event": "turn_end", "action": {"type": "command", "command": py(MARK, marker)}})
     setup_cli(monkeypatch, ["-p", "你好"])
@@ -942,7 +942,7 @@ def test_ac19_untrusted_project_hooks_are_skipped_with_a_notice(tmp_path, monkey
     assert not TrustStore(root).path.exists()
 
 
-def test_ac19_failures_go_to_stderr_and_stream_json(tmp_path, monkeypatch, capsys):
+def test_failures_go_to_stderr_and_stream_json(tmp_path, monkeypatch, capsys):
     marker = tmp_path / "end.txt"
     cli_project(tmp_path, monkeypatch, user_hooks=(
         {"id": "boom", "event": "turn_start", "action": {"type": "command", "command": py("import sys; sys.exit(3)")}},

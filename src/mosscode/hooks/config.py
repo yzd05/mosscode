@@ -1,4 +1,4 @@
-"""C1–C7, H1–H9, A1–A12, R5/R6, S1–S4: read the three hook files, validate each hook, trust records."""
+"""Read the three hook files, validate each hook, trust records."""
 
 from dataclasses import dataclass, field, replace
 import hashlib
@@ -28,7 +28,7 @@ METHODS = ("POST", "GET", "PUT", "PATCH", "DELETE")
 ARGV_PLACEHOLDERS = ("FILE_PATH", "PROJECT_ROOT", "PYTHON", "TOOL_NAME", "EVENT")
 ARGV_PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
 AGENT_TYPE = re.compile(r"[a-z][a-z0-9-]{0,63}")
-AGENT_TIMEOUT = 300  # Ch13 H4: a sub-agent needs longer than a command.
+AGENT_TIMEOUT = 300  # A sub-agent needs longer than a command.
 TEMPLATE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}")
 REJECT_TYPE = "reject 需为拒绝原因；动态拒绝请让命令以退出码 2 结束。"
 SOURCES = ("user", "project", "local")
@@ -46,7 +46,7 @@ class Action:
     json_body: Any = None  # The json field; None also when absent (has_json tells them apart).
     has_json: bool = False
     prompt: str = ""  # agent
-    agent_type: str = "general"  # agent (ch13 H4): the definition to run.
+    agent_type: str = "general"  # agent: the definition to run.
     timeout: float = 30.0
     feedback: bool = False
 
@@ -67,11 +67,11 @@ class Hook:
     source: Literal["user", "project", "local"]
     path: Path
     condition: ConditionGroup | None
-    action: Action | None  # None only for a static rejection (H4).
+    action: Action | None  # None only for a static rejection.
     reject: str | None = None
     on_error: Literal["ignore", "block"] = "ignore"
     once: bool = False
-    background: bool = False  # async, or an R6 event
+    background: bool = False  # async, or an event that always runs in the background
     raw: dict = field(default_factory=dict, compare=False)  # For /hooks <id>.
 
     def summary(self) -> str:
@@ -106,7 +106,7 @@ class HookConfig:
 
     @property
     def hooks(self) -> tuple[Hook, ...]:
-        """Enabled hooks, in order: user, project, local; each file in written order (R1)."""
+        """Enabled hooks, in order: user, project, local; each file in written order."""
         return tuple(hook for file in self.files if file.trusted for hook in file.hooks)
 
     @property
@@ -121,7 +121,7 @@ def hook_paths(root: Path, home: Path | None = None) -> tuple[tuple[str, Path], 
 
 
 class TrustStore:
-    """S2: SHA-256 of each project hook file's content when the user trusted it."""
+    """SHA-256 of each project hook file's content when the user trusted it."""
 
     def __init__(self, root: Path, home: Path | None = None):
         self.path = project_dir(root, home) / "hooks-trust.json"
@@ -288,7 +288,7 @@ def parse_hook(raw, source: str, path: Path) -> Hook:
     if "action" in raw:
         action = _action(raw["action"], event)
     elif reject is not None:
-        action = None  # Q1: a static rejection needs no action.
+        action = None  # A static rejection needs no action.
     else:
         raise HookConfigError("缺少 action（只有写了 reject 的 Hook 可以省略）。")
     if reject is not None and action is not None and action.type == "prompt":
@@ -305,7 +305,7 @@ def parse_hook(raw, source: str, path: Path) -> Hook:
         raise HookConfigError(f"{event} 上的 {action.type} 动作总在后台执行，不能写 async: false。")
     agent = action is not None and action.type == "agent"
     if agent and ("async" in raw and not asynchronous or reject is not None or raw.get("on_error") == "block"):
-        # Ch13 H4: the sub-agent always runs in the background; it can neither reject nor block a call.
+        # The sub-agent always runs in the background; it can neither reject nor block a call.
         raise HookConfigError("agent 动作总在后台执行，不能写 async: false、reject 或 on_error: block。")
     background = asynchronous or agent or (spec.background and action is not None and action.type != "prompt")
     return Hook(hook_id, event, source, path, condition, action, reject, on_error, raw.get("once", False),
@@ -313,7 +313,7 @@ def parse_hook(raw, source: str, path: Path) -> Hook:
 
 
 def read_file(source: str, path: Path) -> tuple[HookFile, list[str]]:
-    """C2, C4, C5: a file-level error skips the file; a hook-level error skips that hook."""
+    """A file-level error skips the file; a hook-level error skips that hook."""
     try:
         if not path.is_file():
             return HookFile(source, path, None), []

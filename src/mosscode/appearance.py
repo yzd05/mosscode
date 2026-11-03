@@ -143,7 +143,7 @@ def compact_notice(event) -> str:
     return notice
 
 
-# The key half of /help; the command half comes from the registry (chapter 10 H1).
+# The key half of /help; the command half comes from the registry.
 KEY_HELP = """按键
 Enter                 发送消息或执行命令
 Shift+Enter / Ctrl+J  换行（也可在行尾输入 \\ 再按 Enter）

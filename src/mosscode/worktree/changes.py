@@ -1,4 +1,4 @@
-"""W15: does a worktree hold work that deleting it would lose? Any doubt counts as yes."""
+"""Does a worktree hold work that deleting it would lose? Any doubt counts as yes."""
 
 from __future__ import annotations
 

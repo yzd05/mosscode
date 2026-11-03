@@ -1,4 +1,4 @@
-"""Chapter 11: skills — parsing, places and overrides, re-reading, the model-visible catalog."""
+"""Skills — parsing, places and overrides, re-reading, the model-visible catalog."""
 
 import asyncio
 import json
@@ -41,7 +41,7 @@ def load(places, **kwargs):
     return SkillCatalog.load(project, builtin=builtin, **kwargs)
 
 
-# AC1: parsing ----------------------------------------------------------------------------------
+# Parsing ----------------------------------------------------------------------------------
 
 def test_parse_fields_and_claude_code_spelling(tmp_path):
     directory = write_skill(tmp_path, "check-api", (
@@ -154,7 +154,7 @@ def test_render(tmp_path):
     assert "建议使用的工具" not in skill.render("", fork=True)
 
 
-# AC2: places, overrides and start-time checks ------------------------------------------------
+# Places, overrides and start-time checks ------------------------------------------------
 
 def test_project_overrides_user_overrides_builtin(places):
     builtin, user, project_skills, _ = places
@@ -216,7 +216,7 @@ def test_missing_tools_counts_own_tools(tmp_path):
     assert missing_tools(skill, {"read_file", "grep"}) == ["mcp__x__y", "memory"]
 
 
-# AC3: re-reading ----------------------------------------------------------------------------
+# Re-reading ----------------------------------------------------------------------------
 
 def test_fresh_reads_again_and_falls_back(places):
     _, _, project_skills, _ = places
@@ -264,7 +264,7 @@ def test_empty_catalog_section():
     assert SkillCatalog().catalog_section() == ("", None)
 
 
-# AC4 / AC5: commands ---------------------------------------------------------------------------
+# Commands ---------------------------------------------------------------------------
 
 def commands_for(catalog):
     from mosscode.builtin_commands import BUILTIN
@@ -273,7 +273,7 @@ def commands_for(catalog):
 
 def conversation_for(tmp_path, places, provider=None):
     from test_conversation import FakeProvider
-    from test_sessions_stage9b import make
+    from test_sessions import make
     from mosscode.builtin_commands import BUILTIN
     return make(tmp_path, provider or FakeProvider(), skills=load(places, reserved=BUILTIN.names()))
 
@@ -281,7 +281,7 @@ def conversation_for(tmp_path, places, provider=None):
 async def run_command(conversation, text, ui=None):
     from mosscode.builtin_commands import dispatch
     from mosscode.commands import CommandContext, parse_input
-    from test_commands_stage10 import FakeUI
+    from test_commands import FakeUI
     if ui is None:
         ui = FakeUI()
         ui.registry = commands_for(conversation.skills)[0]
@@ -392,7 +392,7 @@ async def test_skills_without_any(tmp_path, places):
 async def test_skills_reload_updates_the_run_table(tmp_path, places):
     from mosscode.builtin_commands import BUILTIN
     from mosscode.commands import CommandContext
-    from test_commands_stage10 import FakeUI
+    from test_commands import FakeUI
     _, _, project_skills, _ = places
     write_skill(project_skills, "old")
     conversation = conversation_for(tmp_path, places)
@@ -417,7 +417,7 @@ async def test_skill_in_the_tui_is_shown_saved_and_replayed(tmp_path, places):
     from mosscode.session import load_session
     from mosscode.tui import ChatEntry, MossCodeApp, resumed_rows
     from test_conversation import FakeProvider
-    from test_sessions_stage9b import records
+    from test_sessions import records
     from test_tui import send
     _, _, project_skills, _ = places
     write_skill(project_skills, "foo", body="按接口规范检查。")
@@ -463,7 +463,7 @@ def test_headless_skills_command_and_missing_tool(monkeypatch, capsys, tmp_path)
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 2 and calls["created"] == []
-    err = capsys.readouterr().err  # Scan problems come first (D8), then the reason for exit code 2.
+    err = capsys.readouterr().err  # Scan problems come first, then the reason for exit code 2.
     assert err.index("与内置命令 /help 冲突") < err.index("/skills 只能在交互界面中使用。")
     provider, calls = setup_cli(monkeypatch, ["-p", "/docs"])
     with pytest.raises(SystemExit) as exc:
@@ -486,13 +486,13 @@ def test_headless_unknown_skill_reports_why_it_was_skipped(monkeypatch, capsys, 
     assert err.index("reed_file 不是已知工具") < err.index("未知命令 /docs")
 
 
-# AC6–AC8: two-stage loading ---------------------------------------------------------------------
+# Two-stage loading ---------------------------------------------------------------------
 
 def scripted(tmp_path, places, *responses, mode="bypassPermissions"):
     from mosscode.builtin_commands import BUILTIN
     from mosscode.tools import create_default_registry
     from test_agent import SequenceProvider
-    from test_sessions_stage9b import make
+    from test_sessions import make
     provider = SequenceProvider(*responses)
     project = tmp_path / "project"
     registry = create_default_registry(project, permission_mode=mode, load_permissions=False)
@@ -516,7 +516,7 @@ async def test_catalog_and_load_skill_pin_the_sop(tmp_path, places):
     from mosscode.builtin_commands import status_report
     from mosscode.commands import CommandContext
     from test_agent import response
-    from test_commands_stage10 import FakeUI
+    from test_commands import FakeUI
     _, _, project_skills, _ = places
     write_skill(project_skills, "api-check", body="按接口规范检查 $ARGUMENTS。", description="检查接口")
     write_skill(project_skills, "manual", "disable-model-invocation: true\n")
@@ -560,7 +560,7 @@ async def test_active_skills_keep_their_order_and_refresh_in_place(tmp_path, pla
     assert conversation.active_skills == ("a", "b")
     texts = conversation._agent.active_skills.texts()
     assert texts[0].endswith("规程 A 2") and texts[1].endswith("规程 B")
-    assert conversation._agent.estimate() > before  # A7: the pinned SOPs are part of the estimate.
+    assert conversation._agent.estimate() > before  # The pinned SOPs are part of the estimate.
     await conversation.close()
 
 
@@ -613,7 +613,7 @@ async def test_catalog_limit_is_a_startup_notice_and_no_tools_means_no_catalog(t
 
 async def test_compaction_keeps_active_skills(tmp_path, places):
     from test_agent import response
-    from test_context_stage8 import summary_reply
+    from test_context import summary_reply
     _, _, project_skills, _ = places
     write_skill(project_skills, "a", body="规程 A")
     provider, conversation = scripted(
@@ -658,7 +658,7 @@ async def test_permissions_for_load_skill_and_skill_files(tmp_path, places):
     conversation._load_skill("a", "")
     assert decide("read_file", path=str(user / "a" / "SKILL.md")) == "allow"
     assert decide("glob", pattern="*.py", path=str(user / "a")) == "allow"
-    assert decide("execute_command", command=f"python {script}") == "ask"  # S2
+    assert decide("execute_command", command=f"python {script}") == "ask"
     conversation.set_mode("plan")
     assert "load_skill" in [d.name for d in conversation.registry.definitions(plan=True)]
     assert decide("load_skill", name="a") == "allow"
@@ -694,7 +694,7 @@ async def test_active_skills_sit_in_the_prefix_for_every_protocol(index):
         assert texts[start + 2] == "问题" and texts[-1].startswith("<system-reminder>")
 
 
-# AC9–AC11: skill tools ---------------------------------------------------------------------------
+# Skill tools ---------------------------------------------------------------------------
 
 SCRIPT = '''import json, os, sys, time
 data = json.load(sys.stdin)
@@ -848,13 +848,13 @@ async def test_skill_tools_are_registered_on_use_and_removed(tmp_path, places):
     await conversation.close()
 
 
-# AC12: transcripts --------------------------------------------------------------------------------
+# Transcripts --------------------------------------------------------------------------------
 
 async def test_resume_restores_skills(tmp_path, places):
     import shutil
     from mosscode.conversation import Resumed
     from test_agent import response
-    from test_sessions_stage9b import records
+    from test_sessions import records
     _, _, project_skills, _ = places
     write_skill(project_skills, "pin", body="按规程 $ARGUMENTS", tools=[tool()])
     write_skill(project_skills, "inline", tools=[tool()])
@@ -885,7 +885,7 @@ async def test_resume_restores_skills(tmp_path, places):
 
 def test_skill_records_load_and_old_sessions_still_work(tmp_path):
     from mosscode.session import load_session, skill_record
-    from test_sessions_stage9b import assistant, user, write_session
+    from test_sessions import assistant, user, write_session
     messages = [user("问"), assistant("答")]
     old = load_session(write_session(tmp_path, messages).transcript_path)
     assert old.skills == () and old.skipped == 0 and len(old.history) == 2
@@ -896,7 +896,7 @@ def test_skill_records_load_and_old_sessions_still_work(tmp_path):
     assert restored.skills == (("a", "参数", True), ("b", "", False)) and restored.skipped == 1
 
 
-# AC13–AC15: fork skills ---------------------------------------------------------------------------
+# Fork skills ---------------------------------------------------------------------------
 
 def fork_skill(base, name="rev", front="", **kwargs):
     return write_skill(base, name, "mode: fork\n" + front, body="审查 $ARGUMENTS", **kwargs)
@@ -931,12 +931,12 @@ async def test_fork_runs_apart_and_adds_one_exchange(tmp_path, places):
     ui, fork, events = await fork_run(conversation, "/rev a.py")
     assert ui.notes == ["└ 在独立上下文中运行 Skill rev"] and fork.skill.name == "rev"
     messages, system, tools, _ = provider.requests[4]
-    assert texts_of(messages)[:-1] == ["二", "答1", "三", "答2", "四", "答3"]  # K2 recent: the last 3 turns.
+    assert texts_of(messages)[:-1] == ["二", "答1", "三", "答2", "四", "答3"]  # fork_context recent: the last 3 turns.
     assert messages[-1].text.startswith("Skill rev（目录：") and messages[-1].text.endswith("审查 a.py")
     assert "## Skill" not in system.stable and system.supplements[0].kind == "environment"
     names = [definition.name for definition in tools]
     assert "skill__rev__detect" in names and "load_skill" not in names and "read_file" in names
-    assert "skill__rev__detect" not in conversation.registry.names()  # X8: the sub-agent only.
+    assert "skill__rev__detect" not in conversation.registry.names()  # The sub-agent only.
     stops = [event for event in events if isinstance(event, RunStopped)]
     assert [stop.reason for stop in stops] == ["completed"] and events[-1] is stops[0]
     assert [event.message.text for event in events if isinstance(event, Completed)] == ["审查结果"]
@@ -1063,7 +1063,7 @@ async def test_fork_shares_the_permission_policy(tmp_path, places):
 async def test_fork_in_the_tui(tmp_path, places):
     from mosscode.tui import ChatEntry, MossCodeApp
     from test_conversation import FakeProvider
-    from test_mcp_stage5 import notes_text
+    from test_mcp_manager import notes_text
     from test_tui import send
     _, _, project_skills, _ = places
     fork_skill(project_skills)
@@ -1099,7 +1099,7 @@ def test_headless_fork_uses_its_model(monkeypatch, capsys, tmp_path):
     assert len(sent) == 1 and sent[0].text.endswith("审查 x") and sent[0].command is None
 
 
-# AC16: built-in skills ----------------------------------------------------------------------------
+# Built-in skills ----------------------------------------------------------------------------
 
 def test_builtin_skills(tmp_path, isolated_home):
     from mosscode.builtin_commands import BUILTIN, help_text

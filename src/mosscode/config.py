@@ -24,7 +24,7 @@ ALIASES = {
     "openai-compat": "openai-chat-completions",
 }
 PROTOCOLS = set(ALIASES.values())
-TEAMMATE_MODES = ("auto", "in-process", "windows-terminal", "tmux")  # Ch15 BE1.
+TEAMMATE_MODES = ("auto", "in-process", "windows-terminal", "tmux")
 
 
 def _validate_env_name(value: str | None) -> None:
@@ -84,13 +84,13 @@ class Settings:
     memory: bool = True
     auto_memory: bool = True
     memory_provider: str | None = None  # Background extraction; None uses the current provider.
-    agent_auto_background: float = 120.0  # Ch13 B3: seconds before a foreground sub-agent moves on; 0 never.
-    agent_max_background: int = 4  # Ch13 G7: running background tasks at most.
-    worktree_links: tuple[str, ...] = ()  # Ch14 W9: paths relative to the repository linked into each worktree.
-    worktree_stale_hours: float = 24.0  # Ch14 W16: unused sub-agent worktrees older than this go; 0 never.
-    team_max_members: int = 4  # Ch15 TM5: members of one team at most (1–8).
-    teammate_mode: str = "auto"  # Ch15 BE1: auto / in-process / windows-terminal / tmux.
-    coordinator_mode: bool = False  # Ch15 CO1: also needs MOSSCODE_COORDINATOR_MODE.
+    agent_auto_background: float = 120.0  # Seconds before a foreground sub-agent moves on; 0 never.
+    agent_max_background: int = 4  # Running background tasks at most.
+    worktree_links: tuple[str, ...] = ()  # Paths relative to the repository linked into each worktree.
+    worktree_stale_hours: float = 24.0  # Unused sub-agent worktrees older than this go; 0 never.
+    team_max_members: int = 4  # Members of one team at most (1–8).
+    teammate_mode: str = "auto"  # auto / in-process / windows-terminal / tmux.
+    coordinator_mode: bool = False  # Also needs MOSSCODE_COORDINATOR_MODE.
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -107,7 +107,7 @@ def _positive_int(value: Any, label: str) -> int:
 
 
 def _links(raw: Any) -> tuple[str, ...]:
-    """C1: relative paths inside the repository."""
+    """Relative paths inside the repository."""
     problem = "worktree_links 需为相对仓库根的路径列表（不能是绝对路径，不能含 ..）。"
     if not isinstance(raw, list):
         raise ConfigError(problem)
@@ -204,7 +204,7 @@ def _provider(raw: Any) -> ProviderConfig:
 
 
 def config_candidates(cwd: Path | None = None, home: Path | None = None) -> tuple[Path, ...]:
-    """Refinement 08 CF1: a config.yaml in the working directory is a project's own file, not ours."""
+    """A config.yaml in the working directory is a project's own file, not ours."""
     cwd = Path.cwd() if cwd is None else cwd
     home = Path.home() if home is None else home
     project, user = cwd / ".mosscode" / "config.yaml", home / ".mosscode" / "config.yaml"
@@ -223,7 +223,7 @@ def find_config(cwd: Path | None = None, home: Path | None = None) -> Path:
 
 
 def render_config(provider: dict[str, Any]) -> str:
-    """Refinement 08 SU2: the file `moss setup` writes, with one provider made the default."""
+    """The file `moss setup` writes, with one provider made the default."""
     body = yaml.safe_dump({"default_provider": provider["name"], "providers": [provider]},
                           sort_keys=False, allow_unicode=True)
     return ("# MossCode 配置，由 moss setup 生成。\n"

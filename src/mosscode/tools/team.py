@@ -1,4 +1,4 @@
-"""Ch15 TL1–TL5: the lead's team tools and a member's message, task and plan tools."""
+"""The lead's team tools and a member's message, task and plan tools."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 LEAD_TOOLS = ("team_create", "team_spawn", "team_delete", "team_merge", "team_task_create", "team_task_get",
               "team_task_list", "team_task_update", "send_message")
-TEAM_TOOLS = frozenset(LEAD_TOOLS)  # TL3: GLOBAL_BAN for sub-agents and forks.
+TEAM_TOOLS = frozenset(LEAD_TOOLS)  # GLOBAL_BAN for sub-agents and forks.
 
 MESSAGE_TYPES = Literal["text", "plan_approval_response", "shutdown_request", "shutdown_response"]
 
@@ -124,7 +124,7 @@ class TeamMergeParams(Params):
 class TeamMerge(TeamTool):
     name = "team_merge"
     plan_allowed = False
-    timeout = None  # MG3: it waits for the user's answer.
+    timeout = None  # It waits for the user's answer.
     description = ("把一个成员工作树分支上的提交合并到主目录的当前分支（git merge --no-ff）。合并前会检查主目录和成员的状态，"
                    "并请用户确认。有多个成员时按任务依赖的顺序逐个合并；冲突时合并会被放弃，按返回的下一步让成员处理后再合并。")
     prompt_summary = "合并成员的分支"
@@ -267,7 +267,7 @@ class SendParams(Params):
 
 
 def extra_fields(params: SendParams) -> dict:
-    """MB2: each type's own fields; a missing one is invalid_message."""
+    """Each type's own fields; a missing one is invalid_message."""
     if params.type == "plan_approval_response":
         if params.approve is None:
             raise ToolFailure("invalid_message", "plan_approval_response 需要 approve（true 或 false）。")
@@ -308,7 +308,7 @@ class SendMessage(TeamTool):
         except TeamError as exc:
             raise failure(exc) from None
         text = sent(targets, params.type)
-        if revived:  # ID4
+        if revived:
             text += "；".join(f"{name} 原已停止，已从记录恢复（{self.runtime.revived_with(name)}）"
                               for name in revived) + "，它会读到这条消息。"
         return text, {"to": targets, "type": params.type, "revived": revived}
@@ -326,7 +326,7 @@ class MemberSendMessage(SendMessage):
         except TeamError as exc:
             raise failure(exc) from None
         if params.type == "shutdown_response":
-            self.runner.shutdown = bool(params.approve)  # ID5: True stops it after this turn.
+            self.runner.shutdown = bool(params.approve)  # True stops it after this turn.
             if params.approve:
                 return sent(targets, params.type) + "这一轮结束后你将停止；现在收尾并结束这一轮。", {
                     "to": targets, "type": params.type}
@@ -338,7 +338,7 @@ class MemberPlanParams(Params):
 
 
 class MemberExitPlan(Tool):
-    """PA2: same parameters as the main agent's; the plan goes to the lead, not the user."""
+    """Same parameters as the main agent's; the plan goes to the lead, not the user."""
     name = "exit_plan_mode"
     plan_only = True
     description = ("计划模式下调查完成后调用，提交 Markdown 格式的实施计划给 lead 审批。提交后结束这一轮；"
@@ -364,7 +364,6 @@ class MemberExitPlan(Tool):
 
 
 def lead_tools(root, runtime: TeamRuntime) -> tuple[Tool, ...]:
-    """TL2."""
     access = runtime.access
     return (TeamCreate(root, runtime), TeamSpawn(root, runtime), TeamDelete(root, runtime), TeamMerge(root, runtime),
             TeamTaskCreate(root, access), TeamTaskGet(root, access), TeamTaskList(root, access),
@@ -372,7 +371,6 @@ def lead_tools(root, runtime: TeamRuntime) -> tuple[Tool, ...]:
 
 
 def member_tools(root, access: TeamAccess, runner: MemberRunner) -> tuple[Tool, ...]:
-    """TL4."""
     own = lambda: access  # noqa: E731
     tools: list[Tool] = [MemberSendMessage(root, access, runner), TeamTaskCreate(root, own), TeamTaskGet(root, own),
                          TeamTaskList(root, own), TeamTaskUpdate(root, own)]

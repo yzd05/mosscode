@@ -1,4 +1,4 @@
-"""Ch15: long-lived agent teams of one project, stored under ~/.mosscode/projects/<key>/teams/<team>/."""
+"""Long-lived agent teams of one project, stored under ~/.mosscode/projects/<key>/teams/<team>/."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ VERSION = 1
 
 
 def _validate(name: str, what: str) -> str | None:
-    """TM1: None when usable, otherwise the reason."""
+    """None when usable, otherwise the reason."""
     if not NAME.fullmatch(name or ""):
         return f"{what}只能含小写字母、数字和 -，1–32 个字符，以字母或数字开头"
     if name in RESERVED:
@@ -42,21 +42,20 @@ def validate_member_name(name: str) -> str | None:
 
 
 def teams_root(project: Path, home: Path | None = None) -> Path:
-    """TM2: next to the project's sessions, so the same key finds both."""
+    """Next to the project's sessions, so the same key finds both."""
     return project_dir(project, home) / "teams"
 
 
 @dataclass
 class Member:
-    """TM3."""
     name: str
     agent_type: str
     backend: Literal["in-process", "windows-terminal", "tmux"] = "in-process"
     backend_reason: str = ""
     status: Literal["running", "idle", "stopped"] = "stopped"
     require_plan_approval: bool = False
-    approved: bool = False  # PA4: its plan was approved; a revived member keeps it (ID4).
-    mode: str = "default"  # PM3: written by the lead, read by a pane member each turn.
+    approved: bool = False  # Its plan was approved; a revived member keeps it.
+    mode: str = "default"  # Written by the lead, read by a pane member each turn.
     model: str = ""
     worktree: dict | None = None  # {"name", "path", "branch"}; None works in the project directory.
     pid: int | None = None
@@ -66,10 +65,10 @@ class Member:
     prompt: str = ""
     usage: dict = field(default_factory=dict)
     created: str = field(default_factory=now)
-    error: str = ""  # Written by a pane member that could not start (BE6, BE9).
-    last_tool: str = ""  # CM2: written by a pane member while it runs.
-    window: str = ""  # Refinement 07 WN3: the Windows Terminal team window its tab is in.
-    approvals: list = field(default_factory=list)  # FA6: a pane member's requests waiting for an answer.
+    error: str = ""  # Written by a pane member that could not start.
+    last_tool: str = ""  # Written by a pane member while it runs.
+    window: str = ""  # The Windows Terminal team window its tab is in.
+    approvals: list = field(default_factory=list)  # A pane member's requests waiting for an answer.
 
     def agent_id(self, team: str) -> str:
         return f"{self.name}@{team}"
@@ -85,7 +84,7 @@ class Team:
     name: str
     description: str = ""
     created: str = field(default_factory=now)
-    lead: dict | None = None  # {"pid", "session", "since"} of the process holding it (TM4).
+    lead: dict | None = None  # {"pid", "session", "since"} of the process holding it.
     members: list[Member] = field(default_factory=list)
     project: str = ""  # The main project directory; a pane member loads its rules and agents there.
 
@@ -115,7 +114,7 @@ def _valid(data) -> bool:
 
 
 class TeamStore:
-    """One team directory: config.json, tasks.json, mailbox/, transcripts/ (TM2, TM7)."""
+    """One team directory: config.json, tasks.json, mailbox/, transcripts/."""
 
     def __init__(self, directory: Path, on_notice: Callable[[str], None] | None = None):
         self.directory = directory
@@ -137,7 +136,7 @@ class TeamStore:
         return self.config.exists()
 
     def create(self, description: str = "") -> Team:
-        """A new team; team_exists when the directory already has one (D13: the caller opens it instead)."""
+        """A new team; team_exists when the directory already has one (the caller opens it instead)."""
         with file_lock(self.config):
             if self.config.exists():
                 raise TeamError("team_exists", f"团队 {self.name} 已存在。")
@@ -163,7 +162,7 @@ class TeamStore:
         return self._read()
 
     def modify(self, change: Callable[[Team], object]) -> Team:
-        """TM7: re-read, change, write, all under the lock; another process's writes are never lost."""
+        """Re-read, change, write, all under the lock; another process's writes are never lost."""
         with file_lock(self.config):
             team = self._read()
             change(team)
@@ -171,7 +170,7 @@ class TeamStore:
         return team
 
     def acquire(self, pid: int, session: str = "", project: str = "") -> Team:
-        """TM4: the lead process takes the team; team_held while another live process has it."""
+        """The lead process takes the team; team_held while another live process has it."""
         def take(team: Team) -> None:
             holder = team.lead or {}
             other = int(holder.get("pid") or 0)
@@ -190,7 +189,7 @@ class TeamStore:
 
 
 def list_teams(root: Path) -> list[TeamStore]:
-    """CM1: every directory with a config.json, by name."""
+    """Every directory with a config.json, by name."""
     if not root.is_dir():
         return []
     return [TeamStore(path) for path in sorted(root.iterdir()) if (path / "config.json").is_file()]

@@ -38,18 +38,4 @@ Enter 发送；Shift+Enter 或 Ctrl+J 换行；Esc 或 Ctrl+C 取消生成（有
 
 `edit_file` 和覆盖已有文件的 `write_file` 成功后，工具行下方显示带行号的 diff：删除行以 `-` 标红、新增行以 `+` 标绿，不同修改块之间以 `⋯` 分隔，最多显示 20 行，其余注明省略行数；新建文件显示前 8 行内容。diff 只用于界面显示，不发送给模型。
 
-界面沿用原生背景。读取/搜索工具名称和成功勾号用绿色；工具参数及 Markdown 行内代码用蓝色；写入、修改、Shell 名称和执行中阶段用琥珀色；真正的失败工具及“失败”标签用红色。状态同时用 `● / ✓ / ×` 表示，取消、计划拦截和未启动调用用琥珀色 `!` 及中文说明，避免只靠颜色区分。工具行下方保留正常前景的结果摘要与耗时，不给整段回复着色。最终答复逐块输出，结束后渲染 Markdown。`--prompt` 使用相同工具流程，以纯文本显示结果。设计与实际界面预览见 `docs/ui/color-proposal.md`。
-
-## 预览与烟测脚本
-
-Agent Loop 界面预览：`docs/ui/previews/agent-plan.png`、`agent-loop.png` 与 `agent-loop-narrow.png`。运行 `python scripts/preview_agent.py` 可用固定模拟模型和临时演示文件重新生成实际 Textual 单元格/SVG 预览；`preview_tools.py` 保留基础工具预览。均不读取 API 配置。PNG 可在装有 Pillow 的开发环境中用 `scripts/render_terminal_preview.py` 从 JSON 绘制，模拟终端背景，不是应用绘制背景。
-
-模拟界面预览见 `docs/ui/previews/`。开发人员可运行 `python scripts/preview_tui.py` 从实际 Textual compositor 导出 SVG 和单元格数据；该脚本使用固定模拟模型，不读取 API 配置。这是开发验证入口，产品界面没有截图功能。
-
-Windows 真实控制台验证：`.\.venv\Scripts\python.exe scripts/verify_inline_terminal.py`。脚本自动使用模拟模型检查对话、命令补全、模型面板、退出和终端模式恢复；需在交互式终端运行，不读取 API 配置。
-
-窗口宽度变化验证：`.\.venv\Scripts\python.exe scripts/verify_resize.py`。脚本在新的 conhost 窗口中用模拟模型回答一个问题，通过控制台 API 把窗口依次变窄再变宽，读回屏幕内容，检查问题、回答段落和状态栏各只出现一次且中文段落完整，窗口会自动关闭。加 `--no-redraw` 可在关闭重绘的情况下运行同一流程，用于对照问题现象。
-
-按键验证：`.\.venv\Scripts\python.exe scripts/verify_keys.py`。pilot 测试直接把按键交给应用，绕过 Windows 控制台输入和驱动；该脚本在新的 conhost 窗口中用 `WriteConsoleInputW` 写入按键记录，经过控制台的 VT 转换和驱动，检查 Shift+Enter、Ctrl+J、行尾 `\` 换行、Enter 发送、含命令的历史浏览和 `/clear` 清屏。加 `--textual-input` 改用 Textual 原来的输入线程作对照。注入时 Enter 的松开记录与按下记录在同一批，脚本覆盖的是这条路径；真实键盘按键时查询 Shift 状态的路径需要手动确认。其他终端的按键记录可用 `scripts/dump_keys.py` 查看：它以与应用相同的控制台模式打印每条记录、读取时的 Shift 状态和交给解析器的文本，按 q 结束。
-
-审批界面的真实 Textual 预览可用 `python scripts/preview_permissions.py` 生成到 `docs/ui/previews/permission-approval.svg`；脚本使用假模型与临时文件。Windows 控制台烟测同时验证键盘审批与终端模式恢复。
+界面沿用原生背景。读取/搜索工具名称和成功勾号用绿色；工具参数及 Markdown 行内代码用蓝色；写入、修改、Shell 名称和执行中阶段用琥珀色；真正的失败工具及“失败”标签用红色。状态同时用 `● / ✓ / ×` 表示，取消、计划拦截和未启动调用用琥珀色 `!` 及中文说明，避免只靠颜色区分。工具行下方保留正常前景的结果摘要与耗时，不给整段回复着色。最终答复逐块输出，结束后渲染 Markdown。`--prompt` 使用相同工具流程，以纯文本显示结果。

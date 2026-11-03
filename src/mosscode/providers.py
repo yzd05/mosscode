@@ -65,7 +65,7 @@ def _valid_calls(calls: Sequence[ToolCall]) -> None:
 
 
 def _errors(name: str) -> tuple[type, ...]:
-    """Refinement 08 ST2: the SDKs load only with a provider that needs them, and one never loaded raised nothing."""
+    """The SDKs load only with a provider that needs them, and one never loaded raised nothing."""
     return tuple(getattr(sys.modules[sdk], name) for sdk in ("anthropic", "openai") if sdk in sys.modules)
 
 

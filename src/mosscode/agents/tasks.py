@@ -1,4 +1,4 @@
-"""Ch13 M1–M4: the sub-agents of one session, foreground or background."""
+"""The sub-agents of one session, foreground or background."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from ..messages import UsageTotals
 
 STATUS_LABELS = {"running": "运行中", "completed": "已完成", "failed": "失败", "cancelled": "已取消"}
 ORIGIN_LABELS = {"agent": "agent 工具", "skill": "Skill fork", "hook": "Hook"}
-CANCEL_WAIT = 5.0  # B8
+CANCEL_WAIT = 5.0
 
 
 @dataclass
@@ -38,9 +38,9 @@ class Task:
     job: asyncio.Task | None = field(default=None, repr=False)
     detach: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     policy: object = field(default=None, repr=False)  # The PolicyView, switched to non-interactive on detach.
-    isolated: bool = False  # Ch14: runs in a worktree (asked for and not skipped by plan mode).
-    root: Path | None = None  # Ch14: the worktree directory it works in; None for the project.
-    # Ch14 M6: {"name", "path", "branch", "base", "outcome"}; outcome is 使用中 / 已保留 / 已删除 / 删除未完成.
+    isolated: bool = False  # Runs in a worktree (asked for and not skipped by plan mode).
+    root: Path | None = None  # The worktree directory it works in; None for the project.
+    # {"name", "path", "branch", "base", "outcome"}; outcome is 使用中 / 已保留 / 已删除 / 删除未完成.
     worktree: dict | None = None
 
     @property
@@ -62,7 +62,7 @@ class Task:
 
 
 def task_line(task: Task) -> str:
-    """U3, B7: the line shown when a background task starts or ends."""
+    """The line shown when a background task starts or ends."""
     state = "已启动" if task.status == "running" else STATUS_LABELS[task.status]
     return f"后台任务 {task.id}（{task.label}）{state}"
 
@@ -70,7 +70,7 @@ def task_line(task: Task) -> str:
 class Announcer:
     """One line when a background task starts and one when it ends, however often on_change fires between.
 
-    Hook tasks are left out: the hook engine reports them (H4).
+    Hook tasks are left out: the hook engine reports them.
     """
 
     def __init__(self, say: Callable[[str], None]):
@@ -97,7 +97,7 @@ class TaskManager:
         self._next = 0
         self.on_finish: Callable[[Task], None] | None = None
         self.on_change: Callable[[Task], None] | None = None  # The UI refreshes a tool row or the status bar.
-        self.finished = asyncio.Event()  # Set whenever a task ends; -p waits on it (B7).
+        self.finished = asyncio.Event()  # Set whenever a task ends; -p waits on it.
 
     def new(self, **fields) -> Task:
         self._next += 1
@@ -142,7 +142,7 @@ class TaskManager:
         return text
 
     def settle(self, task: Task, text: str) -> None:
-        """The end of a task, also of one run outside launch (a Skill fork, S1)."""
+        """The end of a task, also of one run outside launch (a Skill fork)."""
         task.result = text
         task.ended = time.monotonic()
         if task.status == "running":
@@ -156,7 +156,7 @@ class TaskManager:
                 pass
 
     def detach_foreground(self) -> int:
-        """B3: ctrl+b moves every running foreground sub-agent of the agent tool to the background."""
+        """ctrl+b moves every running foreground sub-agent of the agent tool to the background."""
         count = 0
         for task in self.running():
             if not task.background and task.origin == "agent" and not task.detach.is_set():
@@ -165,7 +165,7 @@ class TaskManager:
         return count
 
     async def stop(self, task_id: str) -> bool:
-        """M2/M3: True when it was running; its notification is never sent."""
+        """True when it was running; its notification is never sent."""
         task = self.tasks.get(task_id)
         if task is None or task.status != "running" or task.job is None:
             return False
@@ -175,7 +175,7 @@ class TaskManager:
         return True
 
     async def cancel_all(self, wait: float = CANCEL_WAIT) -> int:
-        """B8 and close: cancel, wait a little, never notify."""
+        """On exit and when the user confirms: cancel, wait a little, never notify."""
         jobs = []
         for task in self.running():
             task.stopped = task.notified = True
@@ -187,6 +187,6 @@ class TaskManager:
         return len(jobs)
 
     async def reset(self) -> None:
-        """M4: /clear and resume start with an empty list."""
+        """/clear and resume start with an empty list."""
         await self.cancel_all()
         self.tasks.clear()

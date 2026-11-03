@@ -1,6 +1,6 @@
-"""Ch15 RT1–RT6, PA1–PA5: a member's long-lived conversation, and what any participant may do in a team.
+"""A member's long-lived conversation, and what any participant may do in a team.
 
-The same runner serves an in-process member and (T5) a member in its own terminal pane.
+The same runner serves an in-process member and a member in its own terminal pane.
 """
 
 from __future__ import annotations
@@ -22,15 +22,15 @@ if TYPE_CHECKING:
     from ..agent import AgentLoop
     from . import TeamStore
 
-POLL = 0.5  # BE4/BE10: seconds between mailbox reads when nothing woke the reader.
-SUMMARY = 300  # MB2: characters of the last reply in an idle notification.
+POLL = 0.5  # Seconds between mailbox reads when nothing woke the reader.
+SUMMARY = 300  # Characters of the last reply in an idle notification.
 TYPE_LABELS = {"text": "消息", "plan_approval_request": "计划审批请求", "plan_approval_response": "计划审批答复",
                "shutdown_request": "停止请求", "shutdown_response": "停止答复", "idle_notification": "空闲通知",
                "permission_response": "审批答复"}
 
 
 def addendum(team: str, name: str, worktree: dict | None) -> str:
-    """RT3: fixed text, only the names differ."""
+    """Fixed text, only the names differ."""
     lines = [f"<team-member>\n你是团队 {team} 的成员 {name}，Lead 的名称是 {LEAD}。",
              "- 你的文字回复不会被任何人看到：汇报、提问、交付结果都必须用 send_message（通常发给 lead）。",
              "- 工作流程：team_task_list 查看任务 → 领取就绪的任务（team_task_update 把 owner 设为自己、status 设为 in_progress）"
@@ -49,14 +49,14 @@ def addendum(team: str, name: str, worktree: dict | None) -> str:
 
 
 def member_mode(agent_mode: Callable[[str], str], session_mode: str, *, require: bool, approved: bool) -> str:
-    """PM3/PA1: plan until the lead approves; then the ch13 rules against the current session mode."""
+    """Plan until the lead approves; then the sub-agent rules against the current session mode."""
     if require and not approved:
         return "plan"
     return agent_mode(session_mode)
 
 
 class MemberPolicy(PolicyView):
-    """PA2: a member's exit_plan_mode goes to the lead, not to the user; the tool sends it."""
+    """A member's exit_plan_mode goes to the lead, not to the user; the tool sends it."""
 
     async def _approve_plan(self, call_id, params, gate=None, notify=None) -> Decision:
         if self.mode != "plan":
@@ -117,7 +117,7 @@ class TeamAccess:
         return self.store.load().names()
 
     def recipients(self, to: str, kind: str) -> list[str]:
-        """MB6/TL5: who a message goes to; TeamError when nobody or the wrong one."""
+        """Who a message goes to; TeamError when nobody or the wrong one."""
         names = self.participants()
         if to == BROADCAST:
             if kind != "text":
@@ -134,7 +134,7 @@ class TeamAccess:
 
     def send(self, to: str, kind: str, body: str = "", summary: str = "", *, runtime: bool = False,
              **extra) -> list[str]:
-        """TL5: the model never sends idle notifications or plan requests itself (runtime=False)."""
+        """The model never sends idle notifications or plan requests itself (runtime=False)."""
         if kind in RUNTIME_ONLY and not runtime:
             raise TeamError("invalid_message", f"{kind} 由系统自动发送，不能手动发送。")
         targets = self.recipients(to, kind)
@@ -147,7 +147,7 @@ class TeamAccess:
         self.wake(targets)
         return targets
 
-    # Shared tasks (TK1–TK7) -----------------------------------------------------------------------
+    # Shared tasks -----------------------------------------------------------------------
 
     def task_create(self, subject: str, description: str = "", blocked_by=(), owner: str = "") -> TeamTask:
         return self.store.board.create(subject, description, blocked_by, owner=owner, actor=self.actor,
@@ -158,7 +158,7 @@ class TeamAccess:
 
 
 def render_incoming(messages: list[Message]) -> str:
-    """RT1: one user message for every unread message of a turn."""
+    """One user message for every unread message of a turn."""
     parts = []
     for message in messages:
         head = f"[来自 {message.sender} · {TYPE_LABELS.get(message.type, message.type)} · id={message.id}]"
@@ -177,13 +177,13 @@ def render_incoming(messages: list[Message]) -> str:
 
 
 def approval_record(request: ApprovalRequest) -> dict:
-    """Refinement 07 FA6: a pane member's waiting request, as its record keeps it for the lead."""
+    """A pane member's waiting request, as its record keeps it for the lead."""
     return {"id": request.id, "call_id": request.call_id, "operation": asdict(request.operation),
             "reason": request.reason, "choices": list(request.choices)}
 
 
 def approval_from_record(item, source: str) -> ApprovalRequest | None:
-    """FA6, the lead's side: None when the record cannot be shown or answered."""
+    """The lead's side: None when the record cannot be shown or answered."""
     try:
         known = {field.name for field in fields(Operation)}
         operation = Operation(**{key: value for key, value in item["operation"].items() if key in known})
@@ -197,7 +197,7 @@ def approval_from_record(item, source: str) -> ApprovalRequest | None:
 
 
 class MemberRunner:
-    """RT1: read the mailbox, run a turn, tell the lead, wait; until stopped."""
+    """Read the mailbox, run a turn, tell the lead, wait; until stopped."""
 
     def __init__(self, access: TeamAccess, name: str, *, agent_mode: Callable[[str], str],
                  session_mode: Callable[[], str], require_plan_approval: bool = False,
@@ -210,18 +210,18 @@ class MemberRunner:
         self.agent_mode, self.session_mode = agent_mode, session_mode
         self.require_plan_approval = require_plan_approval
         self.approved = False
-        self.awaiting: str | None = None  # PA2: request_id of the plan waiting for the lead.
+        self.awaiting: str | None = None  # request_id of the plan waiting for the lead.
         self.shutdown: bool | None = None  # Set by its shutdown_response: True stops after this turn.
         self.on_approval, self.on_status = on_approval, on_status
-        self.on_event = on_event  # BE8: a pane member's own window shows the turn.
+        self.on_event = on_event  # A pane member's own window shows the turn.
         self.poll = poll
         self.status = "idle"
-        self.since = time.monotonic()  # Refinement 07 PL1: when it entered its status.
+        self.since = time.monotonic()  # When it entered its status.
         self.last_tool = ""
-        self.note = ""  # Why the mode is what it is after an approval (AC22).
+        self.note = ""  # Why the mode is what it is after an approval.
         self.wakeup = asyncio.Event()
         self.job: asyncio.Task | None = None
-        self._run: asyncio.Task | None = None  # The model run of the current turn (BE8: Esc stops it).
+        self._run: asyncio.Task | None = None  # The model run of the current turn (Esc stops it).
         self._interrupted = False
 
     @property
@@ -232,7 +232,7 @@ class MemberRunner:
         self.wakeup.set()
 
     def interrupt(self) -> bool:
-        """BE8: end the current turn early; the member still reports and goes idle."""
+        """End the current turn early; the member still reports and goes idle."""
         if self._run is None or self._run.done():
             return False
         self._interrupted = True
@@ -270,7 +270,7 @@ class MemberRunner:
                     pass
                 self.wakeup.clear()
                 messages = await asyncio.to_thread(self.access.store.mailbox.read_unread, self.name)
-                # FA6: an answer to an approval already settled in the member's own window; not for the model.
+                # An answer to an approval already settled in the member's own window; not for the model.
                 messages = [message for message in messages if message.type != "permission_response"]
                 if messages:
                     await self.turn(messages)
@@ -278,14 +278,14 @@ class MemberRunner:
             self._status("stopped")
 
     def submit_plan(self, plan: str) -> str:
-        """PA2, from the member's exit_plan_mode; blocking (run in a thread by the tool)."""
+        """From the member's exit_plan_mode; blocking (run in a thread by the tool)."""
         request_id = f"r-{secrets.token_hex(4)}"
         self.access.send(LEAD, "plan_approval_request", plan, runtime=True, request_id=request_id, plan=plan)
         self.awaiting = request_id
         return request_id
 
     def _absorb(self, messages: list[Message]) -> None:
-        """PA4/PA5: answers to this member's plan change its state before the turn starts."""
+        """Answers to this member's plan change its state before the turn starts."""
         for message in messages:
             if message.type != "plan_approval_response" or message.extra.get("request_id") != self.awaiting:
                 continue
@@ -323,7 +323,7 @@ class MemberRunner:
         self._absorb(messages)
         request = next((m for m in messages if m.type == "shutdown_request"), None)
         if request is not None:
-            self.shutdown = None  # Its shutdown_response this turn decides (ID5).
+            self.shutdown = None  # Its shutdown_response this turn decides.
         mode = member_mode(self.agent_mode, self.session_mode(), require=self.require_plan_approval,
                            approved=self.approved)
         prompt = render_incoming(messages)
@@ -352,14 +352,14 @@ class MemberRunner:
         done = sorted(await asyncio.to_thread(self._completed) - before, key=lambda key: int(key) if key.isdigit() else 0)
         self.last_tool = ""
         if request is not None and self.shutdown is None:
-            self.shutdown = True  # It never answered: the request stands (ID5).
+            self.shutdown = True  # It never answered: the request stands.
             try:
                 await asyncio.to_thread(self.access.send, LEAD, "shutdown_response", request_id=request.id,
                                         approve=True, reason="")
                 self.access.wake([LEAD])
             except TeamError:
                 pass
-        # PA2: the plan request itself tells the lead; a member that stops says so in its shutdown_response.
+        # The plan request itself tells the lead; a member that stops says so in its shutdown_response.
         if (self.awaiting is None or failure) and self.shutdown is not True:
             reason = "interrupted" if interrupted else "failed" if failure else "completed"
             summary = (failure or final.strip())[:SUMMARY]

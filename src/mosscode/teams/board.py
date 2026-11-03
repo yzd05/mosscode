@@ -1,4 +1,4 @@
-"""Ch15 TK1–TK7: the team's shared task list, tasks.json under its lock.
+"""The team's shared task list, tasks.json under its lock.
 
 Not agents/tasks.py: those are the one-shot sub-agents of a session (/tasks, task_output).
 """
@@ -39,7 +39,7 @@ class TeamTask:
 @dataclass(frozen=True)
 class Updated:
     task: TeamTask
-    ready: tuple[TeamTask, ...] = ()  # TK7: pending tasks this update made ready.
+    ready: tuple[TeamTask, ...] = ()  # Pending tasks this update made ready.
 
 
 def _valid(data) -> bool:
@@ -48,12 +48,12 @@ def _valid(data) -> bool:
 
 
 def is_ready(task: TeamTask, tasks: dict[str, TeamTask]) -> bool:
-    """TK2: every task it waits for is completed."""
+    """Every task it waits for is completed."""
     return all(tasks[dep].status == "completed" for dep in task.blocked_by if dep in tasks)
 
 
 def blocks(task_id: str, tasks: Iterable[TeamTask]) -> list[str]:
-    """TK1: derived, never stored."""
+    """Derived, never stored."""
     return [task.id for task in tasks if task_id in task.blocked_by]
 
 
@@ -127,7 +127,7 @@ class TaskBoard:
     def update(self, task_id: str, *, actor: str, participants: Iterable[str] = (), status: str | None = None,
                owner: str | None = None, subject: str | None = None, description: str | None = None,
                add_blocked_by: Iterable[str] = (), remove_blocked_by: Iterable[str] = ()) -> Updated:
-        """TK2–TK5; the result lists the tasks that became ready (TK7)."""
+        """The result lists the tasks that became ready."""
         add_blocked_by, remove_blocked_by = list(add_blocked_by), list(remove_blocked_by)
         with file_lock(self.path):
             tasks = self._load()
@@ -174,7 +174,7 @@ class TaskBoard:
 
     @staticmethod
     def _owner(owner: str, actor: str, participants: Iterable[str]) -> str:
-        """TK5: a member takes tasks for itself only; the lead assigns anyone on the roster."""
+        """A member takes tasks for itself only; the lead assigns anyone on the roster."""
         owner = owner.strip()
         if not owner:
             if actor != LEAD:
@@ -188,7 +188,7 @@ class TaskBoard:
 
     @staticmethod
     def _move(task: TeamTask, status: str, actor: str, tasks: dict[str, TeamTask]) -> None:
-        """TK2/TK4: forward only, and only once ready; the lead may send a task back to pending."""
+        """Forward only, and only once ready; the lead may send a task back to pending."""
         if status not in STATUSES:
             raise TeamError("invalid_task", f"状态只能是 {'、'.join(STATUSES)}。")
         old, new = STATUSES.index(task.status), STATUSES.index(status)

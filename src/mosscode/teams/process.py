@@ -1,9 +1,9 @@
-"""Ch15 BE4–BE9: a member in a pane of its own — another MossCode process, started by the lead with
+"""A member in a pane of its own — another MossCode process, started by the lead with
 `--team-dir <team> --team-member <name>`.
 
 It writes its pid into the team record, then a heartbeat every HEARTBEAT seconds; it reads its mailbox
-every POLL seconds, takes the session mode from its record each turn (PM3) and writes its status there.
-It never receives a key: the configuration is loaded again from the lead's path (BE9).
+every POLL seconds, takes the session mode from its record each turn and writes its status there.
+It never receives a key: the configuration is loaded again from the lead's path.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ MISSING_ENV = "窗格中缺少环境变量 {name}：设为用户环境变量，�
 
 
 def missing_key(config) -> str:
-    """BE9: a key that should come from the environment but does not."""
+    """A key that should come from the environment but does not."""
     env = getattr(config, "api_key_env", None)
     if env and not os.environ.get(env):
         return MISSING_ENV.format(name=env)
@@ -31,7 +31,7 @@ def missing_key(config) -> str:
 
 
 def fail(store: TeamStore, name: str, text: str) -> int:
-    """BE6/BE9: the lead reads the error from the record and reports backend_failed."""
+    """The lead reads the error from the record and reports backend_failed."""
     def write(team):
         member = team.member(name)
         if member is not None:
@@ -54,11 +54,11 @@ class MemberProcess:
         self.runner: MemberRunner | None = None
         self.mode = "default"
         self.exit_code = 0
-        self.on_event: Callable[[object], None] | None = None  # BE8: the pane's window.
+        self.on_event: Callable[[object], None] | None = None  # The pane's window.
         self.on_approval: Callable[[object], None] | None = None
-        # Refinement 07 FA2: a request settled elsewhere (answered in the lead's window: the choice; else None).
+        # A request settled elsewhere (answered in the lead's window: the choice; else None).
         self.on_settled: Callable[[str, str | None], None] | None = None
-        self._asking: dict[str, object] = {}  # FA6: requests waiting for an answer, here or from the lead.
+        self._asking: dict[str, object] = {}  # Requests waiting for an answer, here or from the lead.
         self._answers: asyncio.Task | None = None
         self._nudge = asyncio.Event()
         self._writes: set[asyncio.Task] = set()
@@ -75,7 +75,7 @@ class MemberProcess:
         return member
 
     def _session_mode(self) -> str:
-        """PM3: the lead writes the session mode into the record; read at the start of each turn."""
+        """The lead writes the session mode into the record; read at the start of each turn."""
         try:
             self.mode = self._record().mode or self.mode
         except TeamError:
@@ -112,7 +112,7 @@ class MemberProcess:
         self._write(change)
 
     async def prepare(self) -> MemberRunner:
-        """RT2 in this process: the same runner as an in-process member, restored from its transcript."""
+        """The same runner as an in-process member, restored from its transcript."""
         from ..agents import FORK
         from .runtime import build_runner, load_history, restore_member
         member = await asyncio.to_thread(self._record)
@@ -127,7 +127,7 @@ class MemberProcess:
             if problem:
                 raise TeamError("backend_failed", problem)
         history = await asyncio.to_thread(load_history, self.store, member)
-        if member.worktree:  # TM6: in use while this process lives, even after the lead has gone.
+        if member.worktree:  # In use while this process lives, even after the lead has gone.
             try:
                 await conversation.worktree_manager().mark_in_use(
                     member.worktree["flat"], f"团队 {self.team} 成员 {self.name}", pid=os.getpid())
@@ -145,7 +145,7 @@ class MemberProcess:
         return runner
 
     def _approval(self, request) -> None:
-        """FA6: shown in this window, and published in the record for the lead to show too."""
+        """Shown in this window, and published in the record for the lead to show too."""
         self._asking[request.id] = request
         item = approval_record(request)
 
@@ -163,7 +163,7 @@ class MemberProcess:
         self._nudge.set()
 
     async def _watch_answers(self) -> None:
-        """FA2/FA6: while a request waits, take the lead's answers (and only those) from the mailbox; a request
+        """While a request waits, take the lead's answers (and only those) from the mailbox; a request
         answered either way leaves the record, which tells the lead to withdraw its card."""
         policy = self.conversation.registry.permissions
         while self._asking:
@@ -204,7 +204,7 @@ class MemberProcess:
             self.on_event(event)
 
     async def _beat(self) -> None:
-        """BE6: every HEARTBEAT seconds while it runs."""
+        """Every HEARTBEAT seconds while it runs."""
         while True:
             await asyncio.sleep(self.heartbeat)
             pid = os.getpid()
@@ -217,7 +217,7 @@ class MemberProcess:
         """Prepare, announce the pid, run until a shutdown_request ends it; the record says stopped after."""
         try:
             runner = await self.prepare()
-        except (TeamError, Exception) as exc:  # Whatever stops it from starting goes to the lead (BE6).
+        except (TeamError, Exception) as exc:  # Whatever stops it from starting goes to the lead.
             message = exc.message if isinstance(exc, TeamError) else f"{type(exc).__name__}: {exc}"
             await asyncio.to_thread(fail, self.store, self.name, message)
             self.exit_code = 1
@@ -226,7 +226,7 @@ class MemberProcess:
 
         def started(member: Member) -> None:
             member.pid, member.heartbeat, member.error = pid, now(), ""
-            member.status, member.approvals = "idle", []  # FA6: none left from a process that died.
+            member.status, member.approvals = "idle", []  # None left from a process that died.
         self._write(started)
         await self.settle()
         beat = asyncio.get_running_loop().create_task(self._beat())
@@ -253,7 +253,7 @@ class MemberProcess:
 
 
 def member_conversation(settings, config, project: Path, *, interactive: bool):
-    """Like the CLI's, without teams, MCP or memory extraction; hooks as in -p (HK1)."""
+    """Like the CLI's, without teams, MCP or memory extraction; hooks as in -p."""
     from ..agents import AgentCatalog
     from ..conversation import Conversation
     from ..hooks import HookEngine

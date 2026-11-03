@@ -1,4 +1,4 @@
-"""Ch13 G1, M2: the agent tool and the two task tools of the main conversation."""
+"""The agent tool and the two task tools of the main conversation."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ class AgentParams(Params):
 class AgentTool(Tool):
     name = "agent"
     permission_kind = "agent"  # No approval: every call the sub-agent makes is checked on its own.
-    plan_allowed = True  # G8: in plan mode its sub-agents are in plan mode too.
-    timeout = None  # Foreground sub-agents end on their own, or move to the background (B3).
+    plan_allowed = True  # In plan mode its sub-agents are in plan mode too.
+    timeout = None  # Foreground sub-agents end on their own, or move to the background.
     description = ("把一段可以独立完成的工作交给子 Agent，你只收到它的结论。系统提示的“子 Agent”一节列出了可用的类型。"
                    "agent_type 写类型名时，子 Agent 从空白对话开始，prompt 必须写清楚完整的任务、背景和期望的结果；"
                    "省略 agent_type 时为 Fork：它继承当前对话的全部内容，总在后台运行，完成后你会收到 <task-notification>。"

@@ -34,13 +34,13 @@ class Notice:
 
 @dataclass(frozen=True)
 class MemoryUpdated:
-    """The background extractor wrote or deleted notes (9c A8)."""
+    """The background extractor wrote or deleted notes."""
     names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class Resumed:
-    """A session was restored; shown before any compaction it needs (R14)."""
+    """A session was restored; shown before any compaction it needs."""
     restored: Restored
     messages: int
     notices: tuple[str, ...]
@@ -60,17 +60,17 @@ class Conversation:
                  teams: bool = False, team_max_members: int = 4, teammate_mode: str = "in-process",
                  team_launch: dict | None = None, coordinator: bool = False):
         self.provider, self.system, self.registry = provider, system, registry
-        # Ch14: the worktree manager is built on first use; it needs a git repository.
+        # The worktree manager is built on first use; it needs a git repository.
         self.worktree_links, self.worktree_stale_hours = tuple(worktree_links), worktree_stale_hours
         self._worktrees = None
         self._worktree_cleanup: asyncio.Task | None = None
-        # Ch12: the HookEngine; None runs no hooks at all.
+        # The HookEngine; None runs no hooks at all.
         self.hooks = hooks
         self._session_started = False
         self.mcp_manager = mcp_manager
-        self.skills = skills if skills is not None else SkillCatalog()  # L7: empty without a scan.
-        self._skill_tools: dict[str, tuple[str, ...]] = {}  # Skill name -> its tools registered here (X8).
-        # K6: a fork skill's model names one of these; the factory builds it (create_provider by default).
+        self.skills = skills if skills is not None else SkillCatalog()  # Empty without a scan.
+        self._skill_tools: dict[str, tuple[str, ...]] = {}  # Skill name -> its tools registered here.
+        # A fork skill's model names one of these; the factory builds it (create_provider by default).
         self.provider_configs, self.provider_factory = tuple(provider_configs), provider_factory
         # Project files and git are product-level context; None keeps the core hermetic.
         self.context_root, self.instructions_home = context_root, instructions_home
@@ -98,12 +98,12 @@ class Conversation:
             if registry is not None:
                 registry.hooks = hooks
         self._use_session(session)
-        # 9c: notes are injected only when context is loaded (context_root); None turns memory off.
+        # Notes are injected only when context is loaded (context_root); None turns memory off.
         self.memory = memory
         self.memory_provider = memory_provider
         self.on_memory = None  # Set by the TUI: receives MemoryUpdated and Notice from the background.
         self.extractor: MemoryExtractor | None = None
-        self._cursor = 0  # History index up to which messages went to the extractor (A2).
+        self._cursor = 0  # History index up to which messages went to the extractor.
         self._cut: int | None = None  # Cut of the compaction in progress, once its messages were handed over.
         if memory is not None:
             if registry is not None:
@@ -117,19 +117,19 @@ class Conversation:
                                                  on_usage=self._agent._usage)
                 self._agent.on_compact = self._handover
         self._notices.extend(self._offer_skills())
-        # Ch13: sub-agents. The agent tools are offered only with a catalog (None keeps the core hermetic);
-        # the runtime itself always exists, Skill fork runs on it (S1).
-        self.project_instructions = ""  # G3: the project files only, for definition sub-agents.
-        self.on_tasks = None  # Set by the UI: background results wait while the main agent is idle (B6).
+        # Sub-agents. The agent tools are offered only with a catalog (None keeps the core hermetic);
+        # the runtime itself always exists, Skill fork runs on it.
+        self.project_instructions = ""  # The project files only, for definition sub-agents.
+        self.on_tasks = None  # Set by the UI: background results wait while the main agent is idle.
         self.subagents = SubAgents(self, agents, auto_background=agent_auto_background,
                                    max_background=agent_max_background)
         self.agents_enabled = agents is not None
         if hooks is not None:
             hooks.agent_runner = self.subagents.hook_agent
         self._notices.extend(self._offer_agents())
-        # Ch15 TL1: the lead's team tools from the start, in the interactive UI with tools and agents.
+        # The lead's team tools from the start, in the interactive UI with tools and agents.
         self.teams = None
-        self._team_context_due = False  # LD5: after /clear or /resume, once before the next message.
+        self._team_context_due = False  # After /clear or /resume, once before the next message.
         if teams and self.registry is not None and self.agents_enabled:
             from .teams.runtime import TeamRuntime
             from .tools.team import lead_tools
@@ -138,8 +138,8 @@ class Conversation:
             for tool in lead_tools(self.registry.permissions.root, self.teams):
                 if self.registry.get(tool.name) is None:
                     self.registry.register(tool)
-            self._agent.team_guide = self.teams.guide()  # LD1
-        # Ch15 CO1–CO7: decided at startup (the CLI checks both switches), fixed for the session.
+            self._agent.team_guide = self.teams.guide()
+        # Decided at startup (the CLI checks both switches), fixed for the session.
         self.coordinator = False
         if coordinator:
             from .coordinator import NO_AGENTS, SECTION, withheld
@@ -173,10 +173,10 @@ class Conversation:
         if self.on_memory is not None:
             self.on_memory(event)
 
-    # Hooks (ch12) --------------------------------------------------------------------------------
+    # Hooks --------------------------------------------------------------------------------
 
     def _hook_notice(self, text: str) -> None:
-        """O3: background failures go out at once; without a listener they join the next events."""
+        """Background failures go out at once; without a listener they join the next events."""
         if self.on_memory is not None:
             self._emit(Notice(text))
         else:
@@ -189,7 +189,7 @@ class Conversation:
         return (await self.hooks.fire(HookEvent(name, fields=fields))).notes
 
     async def _session_start(self, source: str) -> None:
-        """P1: its output is the hook-context prefix of the whole session."""
+        """Its output is the hook-context prefix of the whole session."""
         self._session_started = True
         if self.hooks is not None:
             self._agent.hook_context = hook_context(await self._fire("session_start", {"source": source}))
@@ -201,7 +201,7 @@ class Conversation:
 
     async def _turn_end(self, reason: str, notice: str) -> None:
         if reason == "error":
-            await self._fire("error", {"error": notice})  # Before turn_end (E1); hook failures never fire it (E5).
+            await self._fire("error", {"error": notice})  # Before turn_end; hook failures never fire it.
         await self._fire("turn_end", {"reason": reason})
 
     def _turn_end_later(self, reason: str) -> None:
@@ -209,7 +209,7 @@ class Conversation:
         if self.hooks is not None and self.hooks.wants("turn_end"):
             self.hooks.spawn(self._fire("turn_end", {"reason": reason}))
 
-    # Background extraction (9c A1, A2) ---------------------------------------------------------
+    # Background extraction ---------------------------------------------------------
 
     def _extract(self) -> None:
         """After a completed task: everything since the cursor goes to the extractor."""
@@ -322,21 +322,21 @@ class Conversation:
         """New session: empty model context and usage; permissions and MCP stay."""
         if self._busy:
             raise ProviderError("当前任务正在运行，不能清空会话。")
-        await self.tasks.reset()  # M4: tasks belong to the session.
+        await self.tasks.reset()  # Tasks belong to the session.
         await self._session_end("clear")
-        self._agent.clear()  # A8: active skills too.
+        self._agent.clear()  # Active skills too.
         self._drop_skills()
         self._next_session()
         self._rewind()
         if self.hooks is not None:
-            self.hooks.new_session(self.session)  # R3: once resets before the new session_start.
+            self.hooks.new_session(self.session)  # Once resets before the new session_start.
         notices = []
         if self.context_root is not None:
             async with self._start_lock:
                 self._context_loaded = True
                 notices = await self._load_context()
         await self._session_start("clear")
-        self._team_context_due = self.teams is not None  # LD5: the team keeps running.
+        self._team_context_due = self.teams is not None  # The team keeps running.
         return tuple(notices)
 
     async def set_provider(self, provider: Provider, budget: ContextBudget | None = None,
@@ -365,7 +365,7 @@ class Conversation:
         return self._agent.active_skills.names
 
     def _offer_skills(self) -> list[str]:
-        """A1/A3: the catalog section and load_skill, when tools are on and the model may load a skill."""
+        """The catalog section and load_skill, when tools are on and the model may load a skill."""
         if self.registry is None:
             return []
         section, notice = self.skills.catalog_section()
@@ -377,11 +377,11 @@ class Conversation:
         return [notice] if notice else []
 
     def _missing(self, skill: SkillDef) -> list[str]:
-        """W4: the tools it lists must be registered now."""
+        """The tools it lists must be registered now."""
         return missing_tools(skill, self.registry.names() if self.registry is not None else ())
 
     def _use_skill_dir(self, skill: SkillDef) -> None:
-        """S1: its files can be read without approval once it is in use."""
+        """Its files can be read without approval once it is in use."""
         if self.registry is None:
             return
         policy = self.registry.permissions
@@ -390,7 +390,7 @@ class Conversation:
             policy.skill_dirs += (directory,)
 
     def _register_skill_tools(self, skill: SkillDef) -> None:
-        """X8/X10: the version just read replaces whatever this skill registered before."""
+        """The version just read replaces whatever this skill registered before."""
         self._remove_skill_tools(skill.name)
         if self.registry is None or not skill.tools:
             return
@@ -413,9 +413,9 @@ class Conversation:
                 self.registry.unregister(full_name)
 
     def prepare_skill(self, name: str, arguments: str = "") -> tuple[SkillDef, str, tuple[str, ...]]:
-        """E2/W4: read the skill again and check its tools; returns the skill, the request and notices.
+        """Read the skill again and check its tools; returns the skill, the request and notices.
 
-        A fork skill's tools go to its sub-agent only (X8); the caller sends a ForkRequest.
+        A fork skill's tools go to its sub-agent only; the caller sends a ForkRequest.
         """
         if self.skills.get(name) is None:
             raise ProviderError(f"未找到 Skill {name}。输入 /skills 查看。")
@@ -435,7 +435,7 @@ class Conversation:
         return skill, skill.render(arguments), (notice,) if notice else ()
 
     def _load_skill(self, name: str, arguments: str) -> tuple[str, dict]:
-        """A4/A5/A7/A10: the load_skill tool; failures are tool errors and the run goes on."""
+        """The load_skill tool; failures are tool errors and the run goes on."""
         visible = [item.name for item in self.skills.skills.values() if item.model_invocable]
         if self.skills.get(name) is None:
             close = difflib.get_close_matches(name, visible, n=3, cutoff=0.5)
@@ -469,7 +469,7 @@ class Conversation:
         return "\n".join(lines), {"skill": name, "arguments": arguments, "refreshed": refreshed}
 
     def use_skills(self, catalog: SkillCatalog) -> tuple[str, ...]:
-        """C3/X9: the catalog after /skills reload; removed skills leave the active list and take their tools."""
+        """The catalog after /skills reload; removed skills leave the active list and take their tools."""
         self.skills = catalog
         active = self._agent.active_skills
         for name in active.names:
@@ -483,7 +483,7 @@ class Conversation:
         return tuple(self._offer_skills())
 
     def _restore_skills(self, records: tuple[tuple[str, str, bool], ...]) -> list[str]:
-        """A9: tools of every skill the session used, SOPs of the pinned ones; the rest is reported."""
+        """Tools of every skill the session used, SOPs of the pinned ones; the rest is reported."""
         used, pinned = {}, {}
         for name, arguments, is_pinned in records:
             used[name] = None
@@ -512,7 +512,7 @@ class Conversation:
             notices.append("未恢复的 Skill：" + "、".join(lost) + "。")
         return notices
 
-    # Sub-agents (ch13) --------------------------------------------------------------------------
+    # Sub-agents --------------------------------------------------------------------------
 
     @property
     def agents(self) -> AgentCatalog:
@@ -523,7 +523,7 @@ class Conversation:
         return self.subagents.tasks
 
     def _offer_agents(self) -> list[str]:
-        """G1/G2/M2: the catalog section and the three tools, when tools are on."""
+        """The catalog section and the three tools, when tools are on."""
         if self.registry is None or not self.agents_enabled:
             return []
         self._agent.agent_catalog = self.agents.catalog_section()
@@ -535,12 +535,12 @@ class Conversation:
         return [f"{len(problems)} 个 Agent 定义有问题，已跳过；输入 /agents 查看。"] if problems else []
 
     def use_agents(self, catalog: AgentCatalog) -> tuple[str, ...]:
-        """F7: /agents reload; the next request sees the new catalog."""
+        """/agents reload; the next request sees the new catalog."""
         self.subagents.catalog = catalog
         return tuple(self._offer_agents())
 
     def _tasks_ready(self) -> None:
-        """B6: a background result waits in notifications; an idle main agent starts a turn for it."""
+        """A background result waits in notifications; an idle main agent starts a turn for it."""
         if not self._busy and self.on_tasks is not None:
             self.on_tasks()
 
@@ -553,7 +553,7 @@ class Conversation:
         return tuple(self._agent.notifications)
 
     async def notify(self):
-        """B6: a turn whose first message is the waiting notifications, merged into one."""
+        """A turn whose first message is the waiting notifications, merged into one."""
         texts = self.take_notifications()
         if not texts:
             return
@@ -562,7 +562,7 @@ class Conversation:
                 yield event
 
     async def cancel_tasks(self, wait: float | None = None) -> int:
-        """B8: cancel every running task; their notifications are never sent."""
+        """Cancel every running task; their notifications are never sent."""
         from .agents.tasks import CANCEL_WAIT
         count = await self.tasks.cancel_all(CANCEL_WAIT if wait is None else wait)
         self._agent.notifications = []
@@ -598,7 +598,7 @@ class Conversation:
         return recent[0].id
 
     async def resume(self, session_id: str):
-        """R5-R13: restore a saved session, then compact it if it no longer fits. Yields Resumed first."""
+        """Restore a saved session, then compact it if it no longer fits. Yields Resumed first."""
         if self._busy:
             raise ProviderError("当前任务正在运行，不能恢复会话。")
         reason = self.unavailable()
@@ -623,7 +623,7 @@ class Conversation:
         except OSError as exc:
             transcript.close()
             raise ProviderError(f"无法读取会话存档：{exc.strerror or exc}") from None
-        await self.tasks.reset()  # M4; their end records go to the session being left.
+        await self.tasks.reset()  # Their end records go to the session being left.
         await self._session_end("resume")
         if self._transcript is not None:
             self._transcript.close()
@@ -651,7 +651,7 @@ class Conversation:
         if restored.unanswered:
             notices.append(f"最后 {len(restored.unanswered)} 条消息没有得到回复，已放回输入框，可以修改后重新发送。")
         await self._session_start("resume")
-        self._team_context_due = self.teams is not None  # LD5
+        self._team_context_due = self.teams is not None
         notices.extend(self._raised)
         self._raised = []
         yield Resumed(restored, sum(1 for m in restored.history if m.role != "tool"), tuple(notices))
@@ -684,12 +684,12 @@ class Conversation:
         return problems + ([f"项目指令过长，已截断：{'、'.join(cut)}；可用 /memory 查看已加载的文件。"] if cut else [])
 
     def _memory_section(self) -> str:
-        """J1: indexes regenerated from the notes, then frozen for the session."""
+        """Indexes regenerated from the notes, then frozen for the session."""
         try:
             self.memory.refresh()
         except OSError:
             pass  # A read-only home still gets the notes it can read.
-        # J3 bounds the whole injected section, the fixed explanation included.
+        # The limit bounds the whole injected section, the fixed explanation included.
         limit = INDEX_TOKENS - estimate_text(memory_section("-"))
         return memory_section(self.memory.index_section(limit))
 
@@ -717,7 +717,7 @@ class Conversation:
         return tuple(notices)
 
     def worktree_manager(self):
-        """Ch14: the git repository of the project; WorktreeError outside one."""
+        """The git repository of the project; WorktreeError outside one."""
         if self._worktrees is None:
             from .worktree import WorktreeManager
             root = self.registry.permissions.root if self.registry is not None else (self.context_root or Path.cwd())
@@ -726,7 +726,7 @@ class Conversation:
         return self._worktrees
 
     def start_worktree_cleanup(self, on_report) -> bool:
-        """W17: in the background; nothing outside a repository or when turned off."""
+        """In the background; nothing outside a repository or when turned off."""
         if self._worktree_cleanup is not None or self.worktree_stale_hours <= 0:
             return False
 
@@ -751,7 +751,7 @@ class Conversation:
             await self.tasks.cancel_all()
             if self.hooks is not None:
                 try:
-                    # R7: session_end's synchronous hooks get 10 seconds, background ones 3 more.
+                    # session_end's synchronous hooks get 10 seconds, background ones 3 more.
                     await asyncio.wait_for(self._session_end("exit"), 10)
                 except TimeoutError:
                     pass
@@ -774,11 +774,11 @@ class Conversation:
                 async for event in stream:
                     yield event
         finally:
-            if self._agent.notifications:  # Arrived after the last iteration boundary (B6).
+            if self._agent.notifications:  # Arrived after the last iteration boundary.
                 self._tasks_ready()
 
     async def _team_context(self, prompt: str, command: str | None) -> tuple[str, str | None]:
-        """LD5: the lead's next message after /clear or /resume carries the team it still leads; shown as typed."""
+        """The lead's next message after /clear or /resume carries the team it still leads; shown as typed."""
         self._team_context_due = False
         try:
             context = await asyncio.to_thread(self.teams.context)
@@ -795,7 +795,7 @@ class Conversation:
             if self._busy:
                 raise ProviderError("已有请求正在运行，请等待或取消。")
             self.hooks.begin_turn()
-            # P2: with every request of this turn; a fork's sub-agent never sees it (E3).
+            # With every request of this turn; a fork's sub-agent never sees it.
             self._agent.turn_notes = await self._fire("turn_start", {"prompt": command or prompt})
             for notice in self._drain():
                 yield notice
@@ -826,7 +826,7 @@ class Conversation:
             for notice in self._drain():
                 yield notice
 
-    # Fork skills (K1-K11) ------------------------------------------------------------------------
+    # Fork skills ------------------------------------------------------------------------
 
     def _is_current(self, name: str) -> bool:
         return self.provider_info is not None and self.provider_info[0] == name
@@ -835,7 +835,7 @@ class Conversation:
         return next((config for config in self.provider_configs if config.name == name), None)
 
     def _fork_history(self, context: str) -> list[Message]:
-        """K2: none, the last 3 turns (from a real user message, calls kept with their results), or all."""
+        """None, the last 3 turns (from a real user message, calls kept with their results), or all."""
         history = deepcopy(self._agent.history)
         if context == "full":
             return history
@@ -845,9 +845,9 @@ class Conversation:
         return []
 
     def _fork_registry(self, skill: SkillDef, task) -> ToolRegistry | None:
-        """K3: the main tools and its own, or only those it lists; never load_skill or another L1 tool (ch13).
+        """The main tools and its own, or only those it lists; never load_skill or another skill tool.
 
-        S1: its own file tools (a copy of the main reads when it sees some history) and permission view.
+        Its own file tools (a copy of the main reads when it sees some history) and permission view.
         """
         if self.registry is None:
             return None
@@ -863,7 +863,7 @@ class Conversation:
             extra=[tool for tool in own if listed is None or tool.name in listed])
 
     def _fork_provider(self, skill: SkillDef):
-        """K6: (provider, budget, owned); owned providers are closed after the run."""
+        """(provider, budget, owned); owned providers are closed after the run."""
         if not skill.model or self._is_current(skill.model):
             return self.provider, self._agent.budget, False
         config = self._fork_provider_config(skill.model)
@@ -878,13 +878,13 @@ class Conversation:
             raise ProviderError(f"Skill {skill.name} 未运行：无法创建提供商 {skill.model}：{exc}") from None
 
     def _fork_result(self, skill: SkillDef, command: str, text: str) -> None:
-        """K8/K9: a user message (the command) and the assistant's answer, as one exchange."""
+        """A user message (the command) and the assistant's answer, as one exchange."""
         note = f"{command}\n\n（以上命令在独立上下文中运行了 Skill {skill.name}，结果见下一条回复。）"
         self._agent._append(Message("user", (ContentBlock("text", note),), command=command))
         self._agent._append(Message("assistant", (ContentBlock("text", text),)))
 
     async def _fork(self, fork: ForkRequest, command: str):
-        """K1-K11: run the SOP in a sub-agent with its own history; only the result joins this one."""
+        """Run the SOP in a sub-agent with its own history; only the result joins this one."""
         main, skill = self._agent, fork.skill
         if main.busy:
             raise ProviderError("已有请求正在运行，请等待或取消。")
@@ -894,10 +894,10 @@ class Conversation:
                          prompt=fork.prompt)
         child = AgentLoop(provider, "", self._fork_registry(skill, task), max_iterations=main.max_iterations,
                           unknown_limit=main.unknown_limit)
-        child.system, child.instructions, child.git = main.system, main.instructions, main.git  # K4: no catalog.
-        child.budget, child.auto_compact, child.session = budget, main.auto_compact, self.session  # K11
+        child.system, child.instructions, child.git = main.system, main.instructions, main.git  # No catalog.
+        child.budget, child.auto_compact, child.session = budget, main.auto_compact, self.session
         child.history = self._fork_history(skill.fork_context)
-        self.subagents.attach(task, child)  # K10/I4: usage to the task and this conversation; M5 transcript.
+        self.subagents.attach(task, child)  # Usage to the task and this conversation; the task keeps a transcript.
         main.busy = True
         stopped, final, ended = None, None, False
 
@@ -916,7 +916,7 @@ class Conversation:
                 async with aclosing(child.run(prompt)) as events:
                     async for event in events:
                         if isinstance(event, RunStopped):
-                            stopped = event  # K7: the one RunStopped comes after the exchange is added.
+                            stopped = event  # The one RunStopped comes after the exchange is added.
                             continue
                         if isinstance(event, Completed):
                             final = event.message.text

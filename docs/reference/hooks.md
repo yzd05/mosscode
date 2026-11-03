@@ -1,6 +1,6 @@
 # Hook
 
-Hook 是挂在 Agent 生命周期上的自动化：在会话开始、每轮开始结束、每次请求模型前后、工具调用前后等时机，执行命令、注入一段提示、发送 HTTP 请求，或拦截一次工具调用。Hook 写在 YAML 文件里，改动后 `/hooks reload` 即可生效，不需要改代码。规格见 `docs/specs/chapter-12-hooks/spec.md`，子 Agent 相关的事件和 agent 动作见 `docs/specs/chapter-13-subagents/spec.md`。
+Hook 是挂在 Agent 生命周期上的自动化：在会话开始、每轮开始结束、每次请求模型前后、工具调用前后等时机，执行命令、注入一段提示、发送 HTTP 请求，或拦截一次工具调用。Hook 写在 YAML 文件里，改动后 `/hooks reload` 即可生效，不需要改代码。子 Agent 相关的事件和 agent 动作见 [子 Agent](subagents.md)。
 
 > Hook 以 MossCode 进程的权限运行，**不经过工具审批**。它是你自己的自动化：项目里带来的 Hook 文件需要先读一遍再信任（见 [信任](#信任)）。
 

@@ -1,4 +1,4 @@
-"""The built-in slash commands (chapter 10). Handlers reach the screen only through ctx.ui."""
+"""The built-in slash commands. Handlers reach the screen only through ctx.ui."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ MODE_CHOICES = (
 )
 
 async def dispatch(ctx: CommandContext, parsed: Parsed) -> None:
-    """P7 and K1/K2: check the argument, then run the handler or send the expanded template."""
+    """Check the argument, then run the handler or send the expanded template."""
     command, argument = parsed.command, parsed.argument
     problem = argument_problem(command, argument)
     if problem:
@@ -58,7 +58,7 @@ def typed(command: Command, argument: str) -> str:
 
 
 async def run_skill(ctx: CommandContext, command: Command, argument: str) -> None:
-    """E2: read the skill again, check its tools, then send the rendered SOP as the user's message."""
+    """Read the skill again, check its tools, then send the rendered SOP as the user's message."""
     try:
         skill, prompt, notices = ctx.conversation.prepare_skill(command.skill, argument)
     except ProviderError as exc:
@@ -67,7 +67,7 @@ async def run_skill(ctx: CommandContext, command: Command, argument: str) -> Non
     for notice in notices:
         await ctx.ui.note("└ " + notice)
     if skill.mode == "fork":
-        await ctx.ui.note(f"└ 在独立上下文中运行 Skill {skill.name}")  # K7
+        await ctx.ui.note(f"└ 在独立上下文中运行 Skill {skill.name}")
         await ctx.ui.submit(prompt, command=typed(command, argument), fork=ForkRequest(skill, prompt))
         return
     await ctx.ui.submit(prompt, command=typed(command, argument))
@@ -115,7 +115,7 @@ TASK_OPTIONS = ("取消这些任务并继续", "返回")
 
 
 async def confirm_tasks(ui, conversation, proceed) -> None:
-    """Ch13 B8: running background tasks are cancelled only once the user says so; Esc means 返回."""
+    """Running background tasks are cancelled only once the user says so; Esc means 返回."""
     tasks = getattr(conversation, "tasks", None)
     running = tasks.background() if tasks is not None else []
     if not running:
@@ -323,7 +323,7 @@ async def _plan(ctx: CommandContext, argument: str) -> None:
 
 
 async def _do(ctx: CommandContext, argument: str) -> None:
-    """D4: leave plan mode for the mode it was entered from; Q2: a task outside plan mode is not sent."""
+    """Leave plan mode for the mode it was entered from; A task outside plan mode is not sent."""
     registry = ctx.conversation.registry
     if registry is None:
         await ctx.ui.note("当前会话未启用工具。")
@@ -422,7 +422,7 @@ def status_report(ctx: CommandContext) -> str:
         rows.append(("已激活 Skill", "、".join(conversation.active_skills)))
     if registry is not None and getattr(conversation, "agents_enabled", False):
         rows.append(("子 Agent", agents_line(conversation)))
-    if getattr(conversation, "coordinator", False):  # Ch15 CO5.
+    if getattr(conversation, "coordinator", False):
         from .coordinator import STATUS
         rows.append(("角色", STATUS))
     width = max(12, *(cell_len(label) + 2 for label, _ in rows))
@@ -480,7 +480,6 @@ def _first_line(text: str) -> str:
 
 
 def skills_report(catalog, name: str = "", active=()) -> str:
-    """C1/C2."""
     if name:
         skill = catalog.get(name)
         if skill is None:
@@ -539,7 +538,7 @@ def _skill_names(ctx: CommandContext):
             *((skill.name, skill.description) for skill in ctx.conversation.skills.skills.values())]
 
 
-# Hooks (ch12) ------------------------------------------------------------------------------
+# Hooks ------------------------------------------------------------------------------
 
 TRUST_OPTIONS = ("信任并启用", "本次不启用")
 OUTCOME_LABELS = {"ok": "成功", "failed": "失败", "rejected": "拒绝", "timeout": "超时", "cancelled": "已取消",
@@ -547,7 +546,6 @@ OUTCOME_LABELS = {"ok": "成功", "failed": "失败", "rejected": "拒绝", "tim
 
 
 def hooks_line(engine) -> str:
-    """O6."""
     if not engine.enabled:
         return "已关闭（--no-hooks）"
     waiting = sum(len(file.hooks) for file in engine.untrusted)
@@ -596,7 +594,7 @@ def _run_row(run) -> str:
 
 
 def _masked(raw: dict) -> dict:
-    """U2: header values are secrets more often than not."""
+    """Header values are secrets more often than not."""
     action = raw.get("action")
     if isinstance(action, dict) and isinstance(action.get("headers"), dict):
         raw = {**raw, "action": {**action, "headers": {key: "***" for key in action["headers"]}}}
@@ -604,7 +602,6 @@ def _masked(raw: dict) -> dict:
 
 
 def hooks_report(engine, name: str = "") -> str:
-    """U1, U2."""
     import yaml
     if engine is None or not engine.enabled:
         return "Hook 已关闭（本次运行使用了 --no-hooks）。"
@@ -652,7 +649,7 @@ def trust_text(file, root: Path) -> str:
 
 
 async def offer_trust(ui, engine, on_done=None) -> None:
-    """S3: one picker per untrusted project file; Esc means 本次不启用. Returns at once (callbacks chain)."""
+    """One picker per untrusted project file; Esc means 本次不启用. Returns at once (callbacks chain)."""
     pending = list(engine.pending_trust()) if engine is not None and engine.enabled else []
 
     async def next_file() -> None:
@@ -705,10 +702,9 @@ def _hook_names(ctx: CommandContext):
     return [("reload", "重新加载 Hook 文件"), *((hook.id, f"{hook.event} · {hook.summary()}") for hook in hooks)]
 
 
-# Sub-agents (ch13) ---------------------------------------------------------------------------
+# Sub-agents ---------------------------------------------------------------------------
 
 def agents_line(conversation) -> str:
-    """U5."""
     catalog, tasks = conversation.agents, conversation.tasks
     running = tasks.background()
     line = f"{len(catalog.agents)} 个定义" + (f"（{len(catalog.problems)} 个有问题）" if catalog.problems else "")
@@ -721,14 +717,13 @@ def _model_missing(conversation, agent) -> bool:
 
 
 def _agent_model(conversation, agent) -> str:
-    """F6: a missing provider is shown here, and the call fails; it never falls back to the current model."""
+    """A missing provider is shown here, and the call fails; it never falls back to the current model."""
     if not agent.model:
         return "继承当前模型"
     return f"{agent.model}（没有该提供商，调用时报错）" if _model_missing(conversation, agent) else agent.model
 
 
 def agents_report(conversation, name: str = "") -> str:
-    """U4."""
     if conversation.registry is None or not getattr(conversation, "agents_enabled", False):
         return "当前会话未启用工具，子 Agent 不可用。"
     catalog = conversation.agents
@@ -813,7 +808,6 @@ def _preview(text: str, lines: int = 12, size: int = 1500) -> list[str]:
 
 
 def tasks_report(conversation, task_id: str = "") -> str:
-    """M3."""
     tasks = conversation.tasks
     if task_id:
         task = tasks.get(task_id)
@@ -830,7 +824,7 @@ def tasks_report(conversation, task_id: str = "") -> str:
             ("对话记录", str(task.transcript) if task.transcript is not None else "未保存"),
         ]
         worktree = task.worktree
-        if worktree:  # Ch14 M6.
+        if worktree:
             rows.append(("工作树", f"{worktree['relative']}（分支 {worktree['branch']}）· {worktree['outcome']}"))
         lines = [f"任务 {task.id}", *(f"  {label}{' ' * (10 - cell_len(label))}{value}" for label, value in rows)]
         lines.append("  任务内容")
@@ -880,7 +874,7 @@ def _task_names(ctx: CommandContext):
             *((f"stop {task.id}", f"停止 · {task.label}") for task in tasks.running())]
 
 
-# Worktrees (ch14) ---------------------------------------------------------------------------
+# Worktrees ---------------------------------------------------------------------------
 
 WORKTREE_USAGE = ("用法：/worktree [list] · /worktree create <名称> · /worktree remove <名称> [--discard] · "
                   "/worktree clean")
@@ -906,7 +900,6 @@ def _when(stamp: str) -> str:
 
 
 async def worktree_report(manager) -> str:
-    """M1."""
     entries = await manager.entries()
     if not entries:
         return "没有 MossCode 管理的工作树。/worktree create <名称> 创建一个；子 Agent 隔离运行时会自动创建。"
@@ -924,7 +917,6 @@ async def worktree_report(manager) -> str:
 
 
 def clean_text(report, *, automatic: bool = False) -> str:
-    """M4 and W17."""
     if automatic:
         return f"└ 已自动清理 {len(report.removed)} 个过期的临时工作树：{'、'.join(report.removed)}"
     lines = [f"└ 已删除 {len(report.removed)} 个，跳过 {len(report.skipped)} 个"
@@ -984,11 +976,11 @@ def _worktree_names(ctx: CommandContext):
 
 
 def _worktree_reads(argument: str) -> bool:
-    """M5: listing is safe during a run."""
+    """Listing is safe during a run."""
     return argument.strip() in ("", "list")
 
 
-# Teams (ch15) -------------------------------------------------------------------------------
+# Teams -------------------------------------------------------------------------------
 
 TEAM_USAGE = "用法：/team · /team <名称> · /team stop <成员> · /team delete <名称>"
 TEAM_DETAILS = ("子命令：\n"
@@ -1054,7 +1046,7 @@ def _team_names(ctx: CommandContext):
 
 
 def _team_reads(argument: str) -> bool:
-    """CM3: listing, details and stopping are safe during a run; deleting waits."""
+    """Listing, details and stopping are safe during a run; deleting waits."""
     return argument.split()[:1] != ["delete"]
 
 

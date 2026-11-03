@@ -1,4 +1,4 @@
-"""Ch15 BE8: the window of a member in its own pane — its turns and tool calls, and its approvals.
+"""The window of a member in its own pane — its turns and tool calls, and its approvals.
 
 The input box only answers approvals: a member takes its work from the lead, never from the user.
 """
@@ -128,7 +128,7 @@ class MemberApp(App):
         self._show()
 
     def _settled(self, request_id: str, choice: str | None) -> None:
-        """Refinement 07 FA2: answered in the lead's window (choice), or no longer waiting: the card goes."""
+        """Answered in the lead's window (choice), or no longer waiting: the card goes."""
         from ..tui import choice_label
         request = next((item for item in self._requests if item.id == request_id), None)
         if request is None:
@@ -155,7 +155,7 @@ class MemberApp(App):
             self._log(Text(INPUT_HINT, style=OPERATION_COLOR))
 
     def action_interrupt(self) -> None:
-        """BE8: Esc refuses the approval on screen, otherwise ends the current turn."""
+        """Esc refuses the approval on screen, otherwise ends the current turn."""
         if self._requests:
             self._answer("deny")
             return

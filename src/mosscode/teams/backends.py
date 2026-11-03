@@ -1,4 +1,4 @@
-"""Ch15 BE1–BE7: where a member runs — in the lead's process, or in a terminal pane of its own.
+"""Where a member runs — in the lead's process, or in a terminal pane of its own.
 
 A pane member is another MossCode process (`--team-dir/--team-member`). The lead starts it, waits for
 it to write its pid into the team record, and later reads its status and heartbeat from there.
@@ -22,12 +22,12 @@ from ..worktree.meta import process_alive
 from .lock import TeamError
 
 IN_PROCESS, WINDOWS_TERMINAL, TMUX = "in-process", "windows-terminal", "tmux"
-# Refinement 07 WN1/WN2: a pane member is a tab of its team's window, or a tmux window of its own.
+# A pane member is a tab of its team's window, or a tmux window of its own.
 LABELS = {IN_PROCESS: "进程内", WINDOWS_TERMINAL: "Windows Terminal 标签页", TMUX: "tmux 窗口"}
 IN_PROCESS_REASON = "进程内运行，与 Lead 共用这个窗口"
-START_TIMEOUT = 20.0  # BE6: seconds for a pane member to write its pid.
-HEARTBEAT = 5.0  # BE6: seconds between a pane member's heartbeats.
-FRESH = 15.0  # ID3: a heartbeat at most this old means the member is still at work.
+START_TIMEOUT = 20.0  # Seconds for a pane member to write its pid.
+HEARTBEAT = 5.0  # Seconds between a pane member's heartbeats.
+FRESH = 15.0  # A heartbeat at most this old means the member is still at work.
 LAUNCH_TIMEOUT = 15.0  # Seconds for wt/tmux itself to return.
 
 Run = Callable[..., subprocess.CompletedProcess]
@@ -60,7 +60,7 @@ def _but(missing: str) -> str:
 
 
 def detect_backend(mode: str, env: Mapping[str, str] | None = None, which=shutil.which) -> Choice:
-    """BE2/BE3: auto picks tmux, then Windows Terminal, then in-process; an explicit pane backend that
+    """Auto picks tmux, then Windows Terminal, then in-process; an explicit pane backend that
     cannot run is an error, never a quiet fallback."""
     env = os.environ if env is None else env
     if mode == IN_PROCESS:
@@ -86,7 +86,7 @@ def detect_backend(mode: str, env: Mapping[str, str] | None = None, which=shutil
 
 def member_arguments(team_dir: Path, name: str, config: str | Path | None = None,
                      provider: str | None = None) -> list[str]:
-    """BE5: what follows `python -m mosscode`; the configuration by path, never a key."""
+    """What follows `python -m mosscode`; the configuration by path, never a key."""
     arguments = ["--team-dir", str(team_dir), "--team-member", name]
     if config:
         arguments += ["--config", str(Path(config).resolve())]
@@ -96,7 +96,7 @@ def member_arguments(team_dir: Path, name: str, config: str | Path | None = None
 
 
 def team_window(team_dir: Path) -> str:
-    """WN1: one Windows Terminal window per team; the digest keeps same-named teams of other projects apart."""
+    """One Windows Terminal window per team; the digest keeps same-named teams of other projects apart."""
     digest = hashlib.sha1(os.path.normcase(str(Path(team_dir).resolve())).encode("utf-8")).hexdigest()[:6]
     return f"mosscode-{Path(team_dir).name}-{digest}"
 
@@ -111,13 +111,13 @@ def heartbeat_age(stamp: str | None) -> float | None:
 
 
 def member_alive(pid: int | None, heartbeat: str | None, fresh: float = FRESH) -> bool:
-    """ID3: its process runs and it reported recently."""
+    """Its process runs and it reported recently."""
     age = heartbeat_age(heartbeat)
     return bool(pid) and process_alive(int(pid)) and age is not None and age <= fresh
 
 
 def kill_tree(pid: int, run: Run = subprocess.run) -> None:
-    """BE7: the member and whatever it started."""
+    """The member and whatever it started."""
     if not pid or pid == os.getpid():
         return
     if os.name == "nt":
@@ -173,16 +173,16 @@ class PaneBackend:
 
 
 class WindowsTerminalBackend(PaneBackend):
-    """Refinement 07 WN1: a tab of the team's own window (`-w <name>` makes it the first time, X1/X2), so
-    the lead's window is never split. E3/E4: the tab runs mosscode.teams.pane, which always exits 0, so it
-    closes after a normal exit and after taskkill alike; the window closes with its last tab (X4)."""
+    """A tab of the team's own window (`-w <name>` makes it the first time), so
+    the lead's window is never split. The tab runs mosscode.teams.pane, which always exits 0, so it
+    closes after a normal exit and after taskkill alike; the window closes with its last tab."""
 
     name = WINDOWS_TERMINAL
 
     def command(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
                 window: str = "") -> list[str]:
         wt = self.which("wt") or "wt"
-        title = ["--title", f"{member} · {team}", "--suppressApplicationTitle"] if member else []  # X3
+        title = ["--title", f"{member} · {team}", "--suppressApplicationTitle"] if member else []
         rest = ["-w", window or "0", "new-tab", *title, "-d", str(cwd), "--", self.python, "-m",
                 "mosscode.teams.pane", *arguments]
         return [wt, *(escape_wt(item) for item in rest)]
@@ -194,7 +194,7 @@ def escape_wt(argument: str) -> str:
 
 
 class TmuxBackend(PaneBackend):
-    """WN2: a window of its own in the current tmux session, not switched to; kill-pane closes it."""
+    """A window of its own in the current tmux session, not switched to; kill-pane closes it."""
 
     name = TMUX
 

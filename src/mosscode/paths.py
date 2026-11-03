@@ -1,4 +1,4 @@
-"""Per-project storage under ~/.mosscode, shared by session transcripts (9b) and memory notes (9c)."""
+"""Per-project storage under ~/.mosscode, shared by session transcripts and memory notes."""
 
 from datetime import datetime
 import hashlib

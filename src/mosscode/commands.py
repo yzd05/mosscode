@@ -1,4 +1,4 @@
-"""Slash commands: one registry for parsing, dispatch, completion and /help (chapter 10)."""
+"""Slash commands: one registry for parsing, dispatch, completion and /help."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ SUGGEST_CUTOFF = 0.6
 
 
 class CommandConflict(ValueError):
-    """A built-in command is malformed or reuses a name; raised at import, so startup fails (R2)."""
+    """A built-in command is malformed or reuses a name; raised at import, so startup fails."""
 
 
 class Hint(NamedTuple):
@@ -29,7 +29,7 @@ class Hint(NamedTuple):
 
 
 class CommandUI(Protocol):
-    """What a command may do to the interface (U1). State lives on Conversation, not here."""
+    """What a command may do to the interface. State lives on Conversation, not here."""
 
     provider_name: str
     model: str
@@ -81,10 +81,10 @@ class Command:
     handler: Handler | None = None  # local
     template: str = ""  # prompt
     complete: Completer | None = None  # Argument candidates as (value, description).
-    skill: str = ""  # skill: the SkillDef it runs (E1).
-    # Ch13: safe during a run (reads state or stops a task); others wait (P8). Ch14: or a test of the argument.
+    skill: str = ""  # skill: the SkillDef it runs.
+    # Safe during a run (reads state or stops a task); others wait. Or a test of the argument.
     while_running: bool | Callable[[str], bool] = False
-    details: str = ""  # Ch15 CM5: more lines for /help <command>, e.g. its subcommands.
+    details: str = ""  # More lines for /help <command>, e.g. its subcommands.
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -94,7 +94,7 @@ class Command:
         return self.while_running(argument) if callable(self.while_running) else self.while_running
 
     def expand(self, argument: str) -> str:
-        """K2: the template, with the argument appended as an extra requirement."""
+        """The template, with the argument appended as an extra requirement."""
         return self.template + (f"\n\n补充要求：{argument}" if argument else "")
 
 
@@ -134,16 +134,16 @@ class CommandRegistry:
         self._index.update((name, command) for name in folded)
 
     def names(self) -> tuple[str, ...]:
-        """Every name and alias, for L4."""
+        """Every name and alias, for completion."""
         return tuple(self._index)
 
     def with_skills(self, catalog: SkillCatalog) -> tuple[CommandRegistry, tuple[str, ...]]:
-        """A copy for one run with a command per skill (E1); the built-in table is never changed."""
+        """A copy for one run with a command per skill; the built-in table is never changed."""
         registry = CommandRegistry(command for command in self._commands if command.kind != "skill")
         return registry, registry.set_skills(catalog)
 
     def set_skills(self, catalog: SkillCatalog) -> tuple[str, ...]:
-        """Replace the skill commands (C3); a skill whose name is taken is skipped with a problem."""
+        """Replace the skill commands; a skill whose name is taken is skipped with a problem."""
         self._commands = [command for command in self._commands if command.kind != "skill"]
         self._index = {name: command for name, command in self._index.items() if command.kind != "skill"}
         problems = []
@@ -170,7 +170,7 @@ class CommandRegistry:
         return f"/{self._index[close[0]].name}" if close else None
 
     def matches(self, ctx: CommandContext, value: str) -> list[Hint]:
-        """C1-C4: commands by prefix (aliases point at their command), then argument candidates."""
+        """Commands by prefix (aliases point at their command), then argument candidates."""
         if "\n" in value:
             return []
         value = value.lstrip()
@@ -201,7 +201,7 @@ class CommandRegistry:
 
 
 def parse_input(text: str, registry: CommandRegistry) -> Parsed:
-    """P1-P5: commands are one slash word; anything else (paths, "//" escapes) is a message."""
+    """Commands are one slash word; anything else (paths, "//" escapes) is a message."""
     if not text.strip():
         return Parsed("empty")
     stripped = text.lstrip()
@@ -220,7 +220,6 @@ def parse_input(text: str, registry: CommandRegistry) -> Parsed:
 
 
 def unknown_note(parsed: Parsed, registry: CommandRegistry) -> str:
-    """P3/P6."""
     if parsed.word == "/":
         return "输入 /help 查看命令。"
     suggestion = registry.suggest(parsed.word)
@@ -229,7 +228,7 @@ def unknown_note(parsed: Parsed, registry: CommandRegistry) -> str:
 
 
 def argument_problem(command: Command, argument: str) -> str | None:
-    """P7: None when the argument fits the command."""
+    """None when the argument fits the command."""
     if command.argument == "none" and argument:
         return f"/{command.name} 不接受参数。用法：{command.usage}"
     if command.argument == "required" and not argument:

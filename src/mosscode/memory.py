@@ -1,4 +1,4 @@
-"""9c memory notes: two scopes, one Markdown file per note, and a program-generated MEMORY.md.
+"""Memory notes: two scopes, one Markdown file per note, and a program-generated MEMORY.md.
 
 The memory tool and the background extractor share every check here, so neither can write
 outside the two note directories, store a credential, or leave an index out of step with its notes.
@@ -22,12 +22,12 @@ SCOPE_LABELS = {"user": "用户级", "project": "项目级"}
 INDEX_FILE = "MEMORY.md"
 DESCRIPTION_LIMIT = 150
 BODY_LIMIT = 4096  # UTF-8 bytes.
-INDEX_TOKENS = 3000  # Both indexes together, as injected into the system prompt (J3).
+INDEX_TOKENS = 3000  # Both indexes together, as injected into the system prompt.
 INDEX_LINES = 200  # Per index.
 MAX_OPERATIONS = 5
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
-# X1: an aid, not a guarantee; the tool description and extraction prompt carry the rule as well.
+# An aid, not a guarantee; the tool description and extraction prompt carry the rule as well.
 SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -106,7 +106,7 @@ def find_secret(*texts: str) -> bool:
 
 
 def validate(scope, name, type_, description, body) -> None:
-    """W3, shared by the tool and the extractor; raises MemoryFailure with a code the model can act on."""
+    """Shared by the tool and the extractor; raises MemoryFailure with a code the model can act on."""
     if scope not in SCOPES:
         raise MemoryFailure("invalid_scope", "scope 只能是 user 或 project。")
     if not isinstance(name, str) or not SLUG.fullmatch(name):
@@ -186,7 +186,7 @@ class MemoryStore:
         return "\n".join(lines) + ("\n" if lines else "")
 
     def refresh(self) -> None:
-        """M4: regenerate both indexes from the notes, e.g. after the user edited one by hand."""
+        """Regenerate both indexes from the notes, e.g. after the user edited one by hand."""
         with self._lock:
             for scope in SCOPES:
                 self._write_index(scope)
@@ -203,7 +203,7 @@ class MemoryStore:
         atomic_write(path, text)
 
     def index_section(self, limit: int = INDEX_TOKENS, lines: int = INDEX_LINES) -> str:
-        """J1-J3: both indexes for the system prompt, oldest entries dropped first beyond the limits."""
+        """Both indexes for the system prompt, oldest entries dropped first beyond the limits."""
         entries = {scope: [n for n in self.load(scope) if not n.error] for scope in SCOPES}
         shown = {scope: notes[:lines] for scope, notes in entries.items()}
 
@@ -254,7 +254,7 @@ class MemoryStore:
         return path
 
     def apply(self, operations) -> tuple[list[tuple[str, Note | Path, str]], list[tuple[object, str]]]:
-        """A5: at most five operations, each checked on its own; returns (applied, rejected).
+        """At most five operations, each checked on its own; returns (applied, rejected).
 
         applied items are (op, note or deleted path, name); rejected items are (operation, reason)."""
         applied, rejected = [], []

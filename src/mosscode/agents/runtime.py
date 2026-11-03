@@ -1,4 +1,4 @@
-"""Ch13: build, run and report sub-agents; the agent tool, Skill fork and the hook agent action share it."""
+"""Build, run and report sub-agents; the agent tool, Skill fork and the hook agent action share it."""
 
 from __future__ import annotations
 
@@ -24,17 +24,17 @@ if TYPE_CHECKING:
     from ..worktree import Created, WorktreeManager
 
 AGENT_TOOL = "agent"
-# L1: never for a sub-agent. Removed from a definition's tools; a fork keeps them offered (cache) but refused.
-# Ch15 TL3: the team tools too (tools/team.py TEAM_TOOLS); a member gets its own versions as extra tools.
+# Never for a sub-agent. Removed from a definition's tools; a fork keeps them offered (cache) but refused.
+# The team tools too (tools/team.py TEAM_TOOLS); a member gets its own versions as extra tools.
 GLOBAL_BAN = frozenset({AGENT_TOOL, "load_skill", "memory", "exit_plan_mode", "task_output", "task_stop",
                         "team_create", "team_spawn", "team_merge", "team_delete", "team_task_create", "team_task_get",
                         "team_task_list", "team_task_update", "send_message"})
-# Ch14 I1: what an isolated sub-agent can have (create_default_registry, rooted in its worktree).
+# What an isolated sub-agent can have (create_default_registry, rooted in its worktree).
 WORKSPACE_TOOLS = frozenset({"read_file", "write_file", "edit_file", "execute_command", "glob", "grep",
                              "exit_plan_mode"})
 AUTO_BACKGROUND = 120.0
 MAX_BACKGROUND = 4
-FORK_PLACEHOLDER = "已在后台分出 Fork 处理。"  # C2: the same for every call, so sibling forks share a prefix.
+FORK_PLACEHOLDER = "已在后台分出 Fork 处理。"  # The same for every call, so sibling forks share a prefix.
 FORK_DIRECTIVE = """<fork-directive>
 你是从上面的对话中分出的 Fork 子 Agent，在后台独立完成下面的任务，你的回复不会直接给用户看。
 - 不要再创建子 Agent（agent 工具对你不可用），不要调用 memory、load_skill；
@@ -47,7 +47,7 @@ FORK_DIRECTIVE = """<fork-directive>
 
 
 def effective_mode(agent: AgentDef | None, session_mode: str) -> str:
-    """P2/P3: plan always wins; a project definition never loosens the session; user and built-in ones may."""
+    """Plan always wins; a project definition never loosens the session; user and built-in ones may."""
     if session_mode == "plan" or agent is None or agent.permission_mode is None:
         return session_mode
     if agent.source == "project":
@@ -60,7 +60,7 @@ def _now() -> str:
 
 
 class SubagentLog:
-    """M5: subagents/<task id>.jsonl, the same message records as the main transcript."""
+    """subagents/<task id>.jsonl, the same message records as the main transcript."""
 
     def __init__(self, path: Path, header: dict):
         self.path = path
@@ -82,7 +82,7 @@ class SubagentLog:
 
 
 def describe_call(call, root: Path | None = None) -> str:
-    """The latest tool call of a sub-agent, for its tool row (U1); paths relative to its root (ch14)."""
+    """The latest tool call of a sub-agent, for its tool row; paths relative to its root."""
     try:
         args = json.loads(call.arguments)
     except (ValueError, TypeError):
@@ -111,7 +111,7 @@ PLAN_NO_WORKTREE = "（计划模式下未创建工作树：子 Agent 在主目�
 
 
 def worktree_context(manager: WorktreeManager, created: Created, root: Path) -> str:
-    """Ch14 A3: where the sub-agent is and what that means, before its first message."""
+    """Where the sub-agent is and what that means, before its first message."""
     meta = created.meta
     lines = ["你在独立的 git 工作树中工作，与主目录隔离：",
              f"- 你的工作目录：{root}",
@@ -125,7 +125,6 @@ def worktree_context(manager: WorktreeManager, created: Created, root: Path) -> 
 
 
 def worktree_fields(task: Task, *, stop: bool) -> dict:
-    """Ch14 H1/H2."""
     worktree = task.worktree or {}
     fields = {"worktree": worktree.get("relative", "")}
     if stop:
@@ -134,13 +133,13 @@ def worktree_fields(task: Task, *, stop: bool) -> dict:
 
 
 async def noted(note: str, run) -> str:
-    """A5: the plan-mode note first."""
+    """The plan-mode note first."""
     text = await run
     return f"{note}\n\n{text}" if note else text
 
 
 def unfinished(reason: str, loop: AgentLoop | None = None) -> str:
-    """G4: the reason, then the last reply the sub-agent wrote, if any."""
+    """The reason, then the last reply the sub-agent wrote, if any."""
     text = f"[子 Agent 未完成：{reason.rstrip('。')}]"
     last = next((m.text for m in reversed(loop.history) if m.role == "assistant" and m.text.strip()), "") \
         if loop is not None else ""
@@ -164,7 +163,7 @@ class SubAgents:
     # Building ------------------------------------------------------------------------------
 
     def _provider(self, model: str | None, what: str):
-        """(provider, budget, owned); owned providers are closed when the sub-agent ends (D1)."""
+        """(provider, budget, owned); owned providers are closed when the sub-agent ends."""
         conversation = self.conversation
         if not model or conversation._is_current(model):
             return conversation.provider, self.main.budget, False
@@ -181,7 +180,7 @@ class SubAgents:
             raise ProviderError(f"{what}未运行：无法创建提供商 {model}：{exc}") from None
 
     def _check_provider(self, model: str | None, what: str) -> None:
-        """Ch14: an isolated sub-agent builds its loop inside the task; a wrong model is still a tool error."""
+        """An isolated sub-agent builds its loop inside the task; a wrong model is still a tool error."""
         conversation = self.conversation
         if model and not conversation._is_current(model) and conversation._fork_provider_config(model) is None:
             names = "、".join(c.name for c in conversation.provider_configs) or "无"
@@ -196,7 +195,7 @@ class SubAgents:
         return policy
 
     def attach(self, task: Task, loop: AgentLoop) -> None:
-        """I4 and M5: usage goes to the task and the session; messages to the sub-agent's own transcript."""
+        """Usage goes to the task and the session; messages to the sub-agent's own transcript."""
         main = self.main
 
         def counted(usage) -> None:
@@ -221,9 +220,9 @@ class SubAgents:
 
     def definition_loop(self, agent: AgentDef, task: Task, *, nested: bool = False, root: Path | None = None,
                         git: dict | None = None, worktree: str = "") -> tuple[AgentLoop, bool]:
-        """G3, L1, L3: a blank conversation with the role's prompt; returns the loop and whether it owns its provider.
+        """A blank conversation with the role's prompt; returns the loop and whether it owns its provider.
 
-        Ch14 I1–I3: with root (a worktree), fresh workspace tools and a policy view rooted there; no MCP or
+        With root (a worktree), fresh workspace tools and a policy view rooted there; no MCP or
         Skill script tools, which would act on the main directory.
         """
         main = self.main
@@ -248,7 +247,7 @@ class SubAgents:
         return loop, owned
 
     def fork_loop(self, task: Task) -> AgentLoop:
-        """C1/C2: the parent's prompt, tools and history, up to the assistant message making this call."""
+        """The parent's prompt, tools and history, up to the assistant message making this call."""
         main = self.main
         policy = self.policy(None, task)
         state = main.registry.file_state()
@@ -271,7 +270,7 @@ class SubAgents:
     # Running -------------------------------------------------------------------------------
 
     async def start_hooks(self, task: Task, prompt: str) -> str:
-        """H3: subagent_start; its prompt and feedback go before the sub-agent's first message."""
+        """subagent_start; its prompt and feedback go before the sub-agent's first message."""
         hooks = self.conversation.hooks
         if hooks is None or not hooks.wants("subagent_start"):
             return prompt
@@ -291,7 +290,7 @@ class SubAgents:
             async with aclosing(loop.run(prompt)) as events:
                 async for event in events:
                     if isinstance(event, ApprovalRequest):
-                        parent.requests.put_nowait(event)  # P6: the main tool batch shows it.
+                        parent.requests.put_nowait(event)  # The main tool batch shows it.
                     elif isinstance(event, ToolProgress) and event.phase == "running":
                         task.tool_calls += 1
                         task.last_tool = describe_call(event.call, task.root)
@@ -319,7 +318,7 @@ class SubAgents:
 
     async def run_isolated(self, task: Task, agent: AgentDef, prompt: str, manager: WorktreeManager, *,
                            nested: bool = False) -> str:
-        """Ch14 A3/A6: create the worktree, run in it, then delete or keep it; the report ends the result."""
+        """Create the worktree, run in it, then delete or keep it; the report ends the result."""
         from ..worktree import WorktreeError
         from ..worktree.manager import WORKTREES
         task.last_tool = "创建工作树…"
@@ -368,7 +367,7 @@ class SubAgents:
         return text + "\n\n" + report
 
     def _finished(self, task: Task) -> None:
-        """subagent_stop (H3), the end record, and the notification of a background task (B5/B6)."""
+        """subagent_stop, the end record, and the notification of a background task."""
         conversation = self.conversation
         conversation._record({"type": "task", "time": _now(), "id": task.id, "event": "end", "status": task.status})
         hooks = conversation.hooks
@@ -395,7 +394,7 @@ class SubAgents:
 
     async def call(self, description: str, prompt: str, agent_type: str = "", background: bool = False,
                    call_id: str = "", isolation: str = "none") -> tuple[str, dict]:
-        """G1–G7, B1–B3: the agent tool; ch14 A2–A5: isolation."""
+        """The agent tool; Isolation."""
         from ..tools.base import ToolFailure
         kind = agent_type.strip() or FORK
         if kind == FORK and isolation == "worktree":
@@ -442,7 +441,7 @@ class SubAgents:
             await asyncio.wait({job, detached}, timeout=self.auto_background or None,
                                return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
-            job.cancel()  # B4: cancelling the turn cancels its foreground sub-agents.
+            job.cancel()  # Cancelling the turn cancels its foreground sub-agents.
             await asyncio.gather(job, return_exceptions=True)
             return task.result or unfinished("已取消", loop), {"task": task.id, "cancelled": True}
         finally:
@@ -452,13 +451,13 @@ class SubAgents:
             if task.worktree:
                 details["worktree"] = task.worktree["outcome"]
             return job.result(), details
-        task.to_background()  # B3: ctrl+b or the timer.
+        task.to_background()  # ctrl+b or the timer.
         self.tasks.changed(task)
         return (f"已转入后台：任务 {task.id}，子 Agent {agent.name} 继续运行，完成后你会收到 <task-notification>；"
                 "在此之前可以继续其他工作，不要重复做同一件事。"), {"task": task.id, "background": True, "detached": True}
 
     def _isolation(self, agent: AgentDef, isolation: str) -> tuple[bool, str]:
-        """A2/A5: (run in a worktree, note for the result)."""
+        """(run in a worktree, note for the result)."""
         if isolation != "worktree" and agent.isolation != "worktree":
             return False, ""
         if effective_mode(agent, self.main.registry.permissions.mode) == "plan":
@@ -477,7 +476,7 @@ class SubAgents:
                 "或停止其中一个（task_stop）后再启动。")
 
     async def hook_agent(self, hook, event, fields):
-        """H4–H6: a background definition sub-agent for an agent action; its result is only logged."""
+        """A background definition sub-agent for an agent action; its result is only logged."""
         from ..hooks.actions import ActionResult, render, short
         action = hook.action
         if self.main.registry is None:
@@ -525,7 +524,7 @@ class SubAgents:
 
 
 def fork_history(history: list[Message]) -> list[Message]:
-    """C2: the history up to the last assistant message, then the same placeholder for each of its calls."""
+    """The history up to the last assistant message, then the same placeholder for each of its calls."""
     history = deepcopy(history)
     index = next((i for i in range(len(history) - 1, -1, -1) if history[i].role == "assistant"), None)
     if index is None:

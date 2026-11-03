@@ -1,4 +1,4 @@
-"""Chapter 8 acceptance: context management (docs/specs/chapter-08-context/spec.md)."""
+"""Context management."""
 
 import asyncio
 from datetime import datetime, timedelta
@@ -27,7 +27,7 @@ def text(role, value):
     return Message(role, (ContentBlock("text", value),))
 
 
-# T1 / AC4: estimation and budget
+# Estimation and budget
 
 def test_estimate_counts_ascii_by_four_and_every_cjk_character_as_a_token():
     assert estimate_text("") == 0
@@ -82,7 +82,7 @@ def test_context_fields_are_validated_when_loading(tmp_path):
         load_settings(path)
 
 
-# T2 / AC1–AC3: layer 1
+# Layer 1
 
 class DumpParams(Params):
     size: int
@@ -185,7 +185,7 @@ def test_old_marked_session_directories_are_pruned(tmp_path):
     assert not old.directory.exists() and recent.directory.exists() and foreign.exists()
 
 
-# T3: context overflow is recognized, other 400s are not
+# Context overflow is recognized, other 400s are not
 
 def status_error(module, status, message, body):
     request = httpx.Request("POST", "https://gateway.example/v1")
@@ -211,7 +211,7 @@ def test_other_bad_requests_are_not_overflow():
     assert error.code is None and "请求不被服务接受" in str(error)
 
 
-# T4 / AC5–AC7: layer 2 building blocks
+# Layer 2 building blocks
 
 from mosscode.compaction import (BOUNDARY, CLIPPED, CompactionError, collect_quotes, compact_history, cut_point,
                                  fit_quotes, split_point)
@@ -341,7 +341,7 @@ async def test_user_words_are_carried_across_compactions_within_the_budget():
     assert fit_quotes(["x"] * 3, budget=0) == ([], 3)
 
 
-# T5 / AC5, AC8–AC10: the agent compacts before requests, rescues overflows and trips a breaker
+# The agent compacts before requests, rescues overflows and trips a breaker
 
 from mosscode.conversation import Conversation
 from mosscode.messages import CompactFailed, CompactFinished, CompactStarted, RunStopped
@@ -468,7 +468,7 @@ def test_clear_and_model_switch_reset_the_breaker():
     assert not conv.auto_compact_paused and conv.budget.window == 1_000_000
 
 
-# T6 / AC11: application wiring — TUI, headless output, startup notices, lazy session directory
+# Application wiring — TUI, headless output, startup notices, lazy session directory
 
 from textual.widgets import Static
 
@@ -609,7 +609,7 @@ async def test_startup_notices_are_reported_once_and_the_session_directory_is_la
     assert session.write_record("一").name == "compact-1.md" and session.write_record("二").name == "compact-2.md"
 
 
-# AC5: a compacted history is a valid request in all three protocols; compaction also happens mid-task
+# A compacted history is a valid request in all three protocols; compaction also happens mid-task
 
 from test_providers import CASES, SSEBody, adapter
 
@@ -657,8 +657,8 @@ async def test_compaction_also_happens_between_iterations_of_one_task(tmp_path):
     assert provider.requests[2][0][0].synthetic == "compact" and provider.requests[2][0][-1].role == "tool"
 
 
-# AC1: stored results keep later requests byte-identical prefixes; AC9: a failed rescue reports the overflow;
-# AC10: cancelling a compaction leaves the history unchanged
+# Stored results keep later requests byte-identical prefixes; A failed rescue reports the overflow;
+# Cancelling a compaction leaves the history unchanged
 
 async def test_requests_keep_the_previous_request_as_a_prefix(tmp_path):
     (tmp_path / "project").mkdir()

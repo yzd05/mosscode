@@ -1,4 +1,4 @@
-"""W8–W10: make a fresh worktree usable. Every step is best effort; failures become warnings."""
+"""Make a fresh worktree usable. Every step is best effort; failures become warnings."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ import shutil
 from . import git
 from .git import WorktreeError
 
-# D6: MossCode's own local files; nothing with secrets unless .worktreeinclude lists it.
+# MossCode's own local files; nothing with secrets unless .worktreeinclude lists it.
 LOCAL_FILES = (".mosscode/permissions.local.yaml", ".mosscode/hooks.local.yaml")
 INCLUDE_FILE = ".worktreeinclude"
 WORKTREES = ".mosscode/worktrees/"
 
 
 def copy_local(top: Path, worktree: Path, project: str, warnings: list[str]) -> list[str]:
-    """Relative to the project directory (MossCode may run in a subdirectory of the repository, W4)."""
+    """Relative to the project directory (MossCode may run in a subdirectory of the repository)."""
     copied = []
     for name in LOCAL_FILES:
         relative = str(PurePosixPath(project) / name) if project else name
@@ -43,7 +43,7 @@ def _junction(source: Path, target: Path) -> None:
 
 
 def create_links(top: Path, worktree: Path, links, warnings: list[str]) -> list[str]:
-    """W9: symbolic link first; a directory falls back to a junction where Windows refuses the privilege."""
+    """Symbolic link first; a directory falls back to a junction where Windows refuses the privilege."""
     made = []
     for relative in links:
         source, target = top / relative, worktree / relative
@@ -81,7 +81,7 @@ def is_link(path: Path) -> bool:
 
 
 def copy_included(top: Path, worktree: Path, skip, warnings: list[str]) -> list[str]:
-    """W10: git itself matches the gitignore-style patterns of .worktreeinclude against untracked files."""
+    """Git itself matches the gitignore-style patterns of .worktreeinclude against untracked files."""
     include = top / INCLUDE_FILE
     if not include.is_file():
         return []

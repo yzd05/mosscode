@@ -1,7 +1,7 @@
-"""Ch15 CO1–CO7: coordinator mode, a role for the lead — it plans and delegates, members implement.
+"""Coordinator mode, a role for the lead — it plans and delegates, members implement.
 
 A role constraint, not a security boundary: execute_command can still write files, and the permission
-rules apply as always (CO6).
+rules apply as always.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def env_on(env: Mapping[str, str]) -> bool:
 
 
 def decide(configured: bool, env: Mapping[str, str], *, interactive: bool) -> tuple[bool, str]:
-    """CO1/CO2/CO7: on only with both switches, in the interactive UI; the notice says why not."""
+    """On only with both switches, in the interactive UI; the notice says why not."""
     environment = env_on(env)
     if configured and not environment:
         return False, NO_ENV
@@ -47,7 +47,7 @@ def decide(configured: bool, env: Mapping[str, str], *, interactive: bool) -> tu
 
 
 def withheld(tool) -> bool:
-    """CO3: kept in the registry for sub-agents and members, but not offered to the lead."""
+    """Kept in the registry for sub-agents and members, but not offered to the lead."""
     from .mcp_client import MCPTool
     from .tools.skill import SkillTool
     return tool.name in WRITE_TOOLS or isinstance(tool, (MCPTool, SkillTool))

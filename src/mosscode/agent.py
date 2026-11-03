@@ -70,19 +70,19 @@ class AgentLoop:
         # Assembled by the application layer (project files, git); the loop never reads them itself.
         self.instructions = ""
         self.git: dict | None = None
-        self.skill_catalog = ""  # The model-visible list of skills (ch11 A1), after the instructions.
-        self.agent_catalog = ""  # Ch13 G2: the sub-agent types, after the skills.
-        self.team_guide = ""  # Ch15 LD1: the lead's team section; never copied to forks or members.
-        self.active_skills = ActiveSkills()  # Pinned SOPs, sent in the cached prefix (A6).
+        self.skill_catalog = ""  # The model-visible list of skills, after the instructions.
+        self.agent_catalog = ""  # The sub-agent types, after the skills.
+        self.team_guide = ""  # The lead's team section; never copied to forks or members.
+        self.active_skills = ActiveSkills()  # Pinned SOPs, sent in the cached prefix.
         self._announced = "normal"
         self.history: list[Message] = []
         self.busy = False
         self.total_usage = UsageTotals()
         # Steering: text queued while running, merged before the next model request.
         self.pending: list[str] = []
-        # Ch13 B6: background task notifications, merged the same way as their own message.
+        # Background task notifications, merged the same way as their own message.
         self.notifications: list[str] = []
-        self.on_usage = None  # Ch13 I4: a sub-agent reports each request's usage to its task and the session.
+        self.on_usage = None  # A sub-agent reports each request's usage to its task and the session.
         # Context management: thresholds of the current provider, set by the application.
         self.budget = ContextBudget.for_provider(None, 0)
         self.session = None
@@ -93,13 +93,13 @@ class AgentLoop:
         self._reannounce = False
         # Set by the application (the session transcript): receives each record as history changes.
         self.on_commit = None
-        # Set by the memory extractor (9c): messages a compaction is about to replace with a summary.
+        # Set by the memory extractor: messages a compaction is about to replace with a summary.
         self.on_compact = None
         self._gap: Supplement | None = None  # One-time reminder after resuming an old session.
-        # Ch12: the main conversation's HookEngine (a fork sub-agent has none, E3).
+        # The main conversation's HookEngine (a fork sub-agent has none).
         self.hooks = None
-        self.hook_context: Supplement | None = None  # session_start output, cached prefix (P1).
-        self.turn_notes: tuple[tuple[str, str], ...] = ()  # turn_start output, every request this turn (P2).
+        self.hook_context: Supplement | None = None  # session_start output, cached prefix.
+        self.turn_notes: tuple[tuple[str, str], ...] = ()  # turn_start output, every request this turn.
 
     def _commit(self, record: dict) -> None:
         if self.on_commit is not None:
@@ -150,7 +150,7 @@ class AgentLoop:
         self.compact_failures = 0
         self._gap = None
         self.active_skills.clear()
-        self.hook_context, self.turn_notes = None, ()  # The next session_start regenerates it (P1).
+        self.hook_context, self.turn_notes = None, ()  # The next session_start regenerates it.
 
     def set_provider(self, provider: Provider, budget: ContextBudget | None = None):
         if self.busy:
@@ -196,7 +196,7 @@ class AgentLoop:
     def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
         active = self._active()
         env_text += active.render() if active else ""
-        env_text += self.hook_context.render() if self.hook_context else ""  # Ch12 P7.
+        env_text += self.hook_context.render() if self.hook_context else ""
         return self.meter.estimate(list(self.history) + list(extra), env_text, self._fixed_text)
 
     async def _compact(self, instructions: str = "", *, manual: bool = False, failure: str | None = None):
@@ -251,7 +251,7 @@ class AgentLoop:
             self.busy = False
 
     async def compact_restored(self):
-        """R10: a resumed session over the threshold is compacted before the first input, even with
+        """A resumed session over the threshold is compacted before the first input, even with
         auto_compact off; like /compact it never trips the breaker."""
         if self.busy:
             raise ProviderError("当前任务正在运行，不能压缩上下文。")
@@ -327,7 +327,7 @@ class AgentLoop:
                             async for event in events:
                                 yield event
                     except ProviderError as exc:
-                        # C13: over the window despite the estimate. Compact once, retry once, never loop.
+                        # Over the window despite the estimate. Compact once, retry once, never loop.
                         if exc.code != "context_overflow" or rescued or not self._may_compact():
                             raise
                         rescued, compacted = True, False

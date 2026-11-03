@@ -1,6 +1,6 @@
 # Skill
 
-Skill 是写在 Markdown 文件里的可复用操作规程（SOP），可以带上自己的脚本工具。增删改 Skill 不需要改代码或重装。规格见 `docs/specs/chapter-11-skills/spec.md`。
+Skill 是写在 Markdown 文件里的可复用操作规程（SOP），可以带上自己的脚本工具。增删改 Skill 不需要改代码或重装。
 
 ## 存放位置
 

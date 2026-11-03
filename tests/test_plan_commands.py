@@ -1,4 +1,4 @@
-"""Stage 3 acceptance: read-only plan mode, exit_plan_mode approval, command risk tiers."""
+"""Read-only plan mode, exit_plan_mode approval, command risk tiers."""
 
 import asyncio
 
@@ -33,7 +33,6 @@ def plan_registry(tmp_path, entered_from="default"):
     return reg
 
 
-# AC1 ---------------------------------------------------------------------------------------------
 
 def test_plan_definitions_are_read_only_plus_exit_plan_mode(tmp_path):
     reg = registry(tmp_path)
@@ -64,7 +63,6 @@ async def test_plan_blocks_non_read_tools_from_bypass_and_with_allow_rules(tmp_p
     assert not (await reg.execute(call("read_file", path="a"))).is_error
 
 
-# AC2 ---------------------------------------------------------------------------------------------
 
 async def test_exit_plan_mode_outside_plan_is_not_in_plan(tmp_path):
     reg = registry(tmp_path)
@@ -142,7 +140,6 @@ async def test_headless_cli_prints_plan(tmp_path, capsys):
     assert reg.permissions.mode == "plan"
 
 
-# AC4 ---------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions"])
 @pytest.mark.parametrize("command", CATASTROPHIC)
@@ -156,7 +153,6 @@ async def test_catastrophic_commands_are_hard_denied_in_every_mode(tmp_path, mod
     assert result.code == "dangerous_command" and not executed and reg.permissions.requests.empty()
 
 
-# AC5 ---------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions"])
 @pytest.mark.parametrize("command", RISKY)
@@ -215,7 +211,6 @@ async def test_command_choices_offer_a_prefix_only_when_one_can_be_derived(tmp_p
     assert request.choices == CHOICES and not request.operation.risk
 
 
-# AC6 ---------------------------------------------------------------------------------------------
 
 def test_plan_reminder_points_to_exit_plan_mode():
     text = mode_reminder("plan", "normal").text

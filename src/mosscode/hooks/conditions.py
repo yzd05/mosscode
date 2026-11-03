@@ -1,4 +1,4 @@
-"""K1–K10: `field op value` conditions, joined by && or ||, with the permission rules' matching."""
+"""`field op value` conditions, joined by && or ||, with the permission rules' matching."""
 
 from dataclasses import dataclass
 import fnmatch
@@ -121,7 +121,7 @@ def _unquote(value: str) -> str:
 
 
 def check_field(name: str, event: str) -> None:
-    """K9: a field this event has; args.<name> on tool events only, one level."""
+    """A field this event has; args.<name> on tool events only, one level."""
     if name.startswith("args."):
         if not EVENTS[event].tool:
             raise HookConfigError(f"事件 {event} 没有条件字段 {name}（args.* 只用于工具事件）。")

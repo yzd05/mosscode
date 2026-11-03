@@ -1,6 +1,6 @@
-"""Refinement 08: the `moss` / `mosscode` command.
+"""The `moss` / `mosscode` command.
 
-Arguments, --help, --version and the subcommands are handled with nothing heavy imported (ST1); a session
+Arguments, --help, --version and the subcommands are handled with nothing heavy imported; a session
 imports the rest through cli.run.
 """
 
@@ -76,7 +76,7 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-hooks", action="store_true", help="本次运行不加载任何 Hook")
     parser.add_argument("--trust-project-hooks", action="store_true",
                         help="本次运行信任项目级 Hook 文件（不写入确认记录），用于无界面模式")
-    # Ch15 BE5: a team member in a pane of its own; started by the lead, not by hand.
+    # A team member in a pane of its own; started by the lead, not by hand.
     parser.add_argument("--team-dir", help=argparse.SUPPRESS)
     parser.add_argument("--team-member", help=argparse.SUPPRESS)
     return parser
@@ -88,7 +88,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     args = command.parse_args(argv)
     if (args.team_dir is None) != (args.team_member is None):
         command.error("--team-dir 和 --team-member 需要一起使用。")
-    if args.prompt is not None:  # CL4: the task is the value of -p or the positional prompt, not both.
+    if args.prompt is not None:  # The task is the value of -p or the positional prompt, not both.
         if args.prompt and args.initial is not None:
             command.error("无界面任务只能给一个：-p 的值或位置参数 PROMPT。")
         if not args.prompt and args.initial is not None:
@@ -113,7 +113,7 @@ def is_terminal(stream) -> bool:
 
 
 def with_stdin(prompt: str, stdin=None) -> str:
-    """CL4: piped input follows the task after a blank line; alone, it is the task."""
+    """Piped input follows the task after a blank line; alone, it is the task."""
     stdin = sys.stdin if stdin is None else stdin
     if is_terminal(stdin) or stdin is None:
         return prompt
@@ -137,7 +137,7 @@ def _subcommand(name: str, argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else list(argv)
-    if argv and argv[0] in SUBCOMMANDS:  # CL5
+    if argv and argv[0] in SUBCOMMANDS:
         raise SystemExit(_subcommand(argv[0], argv[1:]))
     args = parse_arguments(argv)
     if args.team_dir is None and not args.list_providers:

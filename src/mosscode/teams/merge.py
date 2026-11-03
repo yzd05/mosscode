@@ -1,7 +1,7 @@
-"""Ch15 MG1–MG9: merging a member's branch into the main directory's current branch.
+"""Merging a member's branch into the main directory's current branch.
 
-Blocking git work; the runtime runs it in a thread and asks the user in between (MG3).
-Nothing here ever resets, checks out or cleans files (MG7).
+Blocking git work; the runtime runs it in a thread and asks the user in between.
+Nothing here ever resets, checks out or cleans files.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def unmerged(top: Path, branch: str) -> int:
 
 
 def _main_state(top: Path) -> tuple[str, list[str]]:
-    """MG1 rows 1–2: the target branch and the untracked files; TeamError otherwise."""
+    """The target branch and the untracked files; TeamError otherwise."""
     target = current_branch(top)
     if not target:
         raise TeamError("main_not_ready", "主目录的 HEAD 不在分支上（分离 HEAD）；先切换到要合并进去的分支。")
@@ -96,7 +96,7 @@ def _main_state(top: Path) -> tuple[str, list[str]]:
 
 
 def check(manager: WorktreeManager, store: TeamStore, name: str, busy: bool) -> MergePlan:
-    """MG1–MG2, in order; the first failing check is the error."""
+    """In order; the first failing check is the error."""
     top = manager.top
     target, untracked = _main_state(top)
     team = store.load()
@@ -124,7 +124,7 @@ def check(manager: WorktreeManager, store: TeamStore, name: str, busy: bool) -> 
 
 
 def _check_order(top: Path, store: TeamStore, team, name: str) -> None:
-    """MG2: what this member finished waits on another member's work still outside HEAD."""
+    """What this member finished waits on another member's work still outside HEAD."""
     tasks = {task.id: task for task in store.board.list()}
     for task in tasks.values():
         if task.owner != name or task.status != "completed":
@@ -142,7 +142,7 @@ def _check_order(top: Path, store: TeamStore, team, name: str) -> None:
 
 
 def preview(plan: MergePlan) -> str:
-    """MG3: the confirmation card."""
+    """The confirmation card."""
     more = f"（共 {plan.count} 个，只列前 {COMMIT_LIMIT} 个）" if plan.count > len(plan.commits) else ""
     lines = [f"成员：{plan.member}", f"分支：{plan.branch} → {plan.target}", f"提交{more}："]
     lines += [f"  {line}" for line in plan.commits]
@@ -162,7 +162,6 @@ def _abort(top: Path) -> None:
 
 
 def merge(plan: MergePlan) -> tuple[str, dict]:
-    """MG5–MG8."""
     top = plan.top
     done = _git(["merge", "--no-ff", "--no-edit", plan.branch], top)
     if done.returncode == 0:

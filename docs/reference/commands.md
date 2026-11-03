@@ -1,6 +1,6 @@
 # 命令
 
-以 `/` 开头的输入不经过模型，直接执行本地操作，或者把一段规程作为一条消息发给模型。内置命令登记在 `src/mosscode/builtin_commands.py` 的 `BUILTIN` 注册表中；启动时再为每个 Skill 加一条命令（见 [Skill](skills.md)）。解析、补全菜单、`/help` 和无界面模式都读这一份登记。规格见 `docs/specs/chapter-10-commands/spec.md` 和 `docs/specs/chapter-11-skills/spec.md`。
+以 `/` 开头的输入不经过模型，直接执行本地操作，或者把一段规程作为一条消息发给模型。内置命令登记在 `src/mosscode/builtin_commands.py` 的 `BUILTIN` 注册表中；启动时再为每个 Skill 加一条命令（见 [Skill](skills.md)）。解析、补全菜单、`/help` 和无界面模式都读这一份登记。
 
 ## 内置命令
 

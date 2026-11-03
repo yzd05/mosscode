@@ -1,4 +1,4 @@
-"""Chapter 14: git worktrees and isolated sub-agents."""
+"""Git worktrees and isolated sub-agents."""
 
 import asyncio
 import json
@@ -25,9 +25,9 @@ from mosscode.worktree import (WorktreeChanged, WorktreeError, WorktreeManager, 
 from mosscode.worktree import git as worktree_git
 from mosscode.worktree import manager as manager_module
 from test_agent import call, response
-from test_commands_stage10 import context, run
-from test_sessions_stage9b import drain
-from test_subagents_stage13 import (ScriptProvider, agents_dir, conversation, hook_engine, main_requests, project_of,
+from test_commands import context, run
+from test_sessions import drain
+from test_subagents import (ScriptProvider, agents_dir, conversation, hook_engine, main_requests, project_of,
                                     settle, tool_results_of, write_agent)
 
 
@@ -59,20 +59,20 @@ def branches(project) -> list[str]:
     return git(project, "branch", "--list", "mosscode/*", "--format=%(refname:short)").split()
 
 
-# AC1: names ----------------------------------------------------------------------------------------
+# Names ----------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", ["feature/a", "agent-1a2b3c4d", "v1.2", "a_b"])
-def test_ac1_valid_names(name):
+def test_valid_names(name):
     assert validate_name(name) is None
 
 
 @pytest.mark.parametrize("name", ["", "x" * 65, "..", "a/../b", "a..b", "a//b", "/a", "a/", ".hidden", "-x", "a.lock", "a.",
                                   "nul", "COM1.txt", "a b", "中文"])
-def test_ac1_invalid_names(name):
+def test_invalid_names(name):
     assert validate_name(name)
 
 
-async def test_ac1_flat_names_and_case_clash(tmp_path):
+async def test_flat_names_and_case_clash(tmp_path):
     project = repo(tmp_path)
     manager = manager_of(project)
     created = await manager.create("team/alice")
@@ -84,9 +84,9 @@ async def test_ac1_flat_names_and_case_clash(tmp_path):
     assert caught.value.code == "invalid_name"
 
 
-# AC2/AC3: creating -------------------------------------------------------------------------------------
+# Creating -------------------------------------------------------------------------------------
 
-async def test_ac2_create_records_everything_and_keeps_the_main_status_clean(tmp_path):
+async def test_create_records_everything_and_keeps_the_main_status_clean(tmp_path):
     project = repo(tmp_path)
     manager = manager_of(project)
     created = await manager.create("demo")
@@ -106,7 +106,7 @@ async def test_ac2_create_records_everything_and_keeps_the_main_status_clean(tmp
     assert caught.value.code == "branch_exists" and not (manager.base / "taken").exists()
 
 
-def test_ac2_not_a_repository_or_empty(tmp_path, monkeypatch):
+def test_not_a_repository_or_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -121,7 +121,7 @@ def test_ac2_not_a_repository_or_empty(tmp_path, monkeypatch):
     assert caught.value.code == "worktree_unavailable"
 
 
-async def test_ac3_subdirectory_project(tmp_path):
+async def test_subdirectory_project(tmp_path):
     project = repo(tmp_path)
     (project / "pkg").mkdir()
     (project / "pkg" / "m.py").write_text("x = 1\n", encoding="utf-8")
@@ -134,9 +134,9 @@ async def test_ac3_subdirectory_project(tmp_path):
     assert (manager.root_in(created.meta) / "m.py").is_file()
 
 
-# AC4: resuming -----------------------------------------------------------------------------------------
+# Resuming -----------------------------------------------------------------------------------------
 
-async def test_ac4_resume_reads_the_filesystem_only(tmp_path, monkeypatch):
+async def test_resume_reads_the_filesystem_only(tmp_path, monkeypatch):
     project = repo(tmp_path)
     manager = manager_of(project)
     first = await manager.create("demo")
@@ -150,7 +150,7 @@ async def test_ac4_resume_reads_the_filesystem_only(tmp_path, monkeypatch):
     assert again.resumed and again.meta.path == first.meta.path
 
 
-async def test_ac4_broken_worktree_is_reported_not_deleted_and_setup_finishes(tmp_path):
+async def test_broken_worktree_is_reported_not_deleted_and_setup_finishes(tmp_path):
     project = repo(tmp_path)
     manager = manager_of(project)
     created = await manager.create("demo")
@@ -171,9 +171,9 @@ async def test_ac4_broken_worktree_is_reported_not_deleted_and_setup_finishes(tm
     assert caught.value.code == "worktree_invalid" and path.is_dir()
 
 
-# AC5/AC6: setup ----------------------------------------------------------------------------------------
+# Setup ----------------------------------------------------------------------------------------
 
-async def test_ac5_local_files_include_and_links(tmp_path):
+async def test_local_files_include_and_links(tmp_path):
     project = repo(tmp_path)
     (project / ".mosscode").mkdir()
     (project / ".mosscode" / "permissions.local.yaml").write_text("allow: []\n", encoding="utf-8")
@@ -195,7 +195,7 @@ async def test_ac5_local_files_include_and_links(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction 回退")
-async def test_ac5_links_fall_back_to_a_junction_without_the_symlink_privilege(tmp_path, monkeypatch):
+async def test_links_fall_back_to_a_junction_without_the_symlink_privilege(tmp_path, monkeypatch):
     project = repo(tmp_path)
     (project / "node_modules" / "lib").mkdir(parents=True)
     (project / "node_modules" / "lib" / "index.js").write_text("x", encoding="utf-8")
@@ -215,7 +215,7 @@ async def test_ac5_links_fall_back_to_a_junction_without_the_symlink_privilege(t
     assert (project / "node_modules" / "lib" / "index.js").is_file()
 
 
-async def test_ac5_files_under_an_unignored_link_are_not_changes(tmp_path):
+async def test_files_under_an_unignored_link_are_not_changes(tmp_path):
     project = repo(tmp_path)
     (project / ".gitignore").write_text("", encoding="utf-8")
     git(project, "commit", "-q", "-am", "no ignores")
@@ -229,7 +229,7 @@ async def test_ac5_files_under_an_unignored_link_are_not_changes(tmp_path):
     assert (project / "vendor" / "pkg" / "index.js").is_file()
 
 
-async def test_ac5_failed_step_is_a_warning(tmp_path, monkeypatch):
+async def test_failed_step_is_a_warning(tmp_path, monkeypatch):
     project = repo(tmp_path)
     (project / ".worktreeinclude").write_text(".env\n", encoding="utf-8")
 
@@ -240,7 +240,7 @@ async def test_ac5_failed_step_is_a_warning(tmp_path, monkeypatch):
     assert Path(created.meta.path).is_dir() and any("boom" in item for item in created.warnings)
 
 
-async def test_ac6_git_hooks_run_and_config_stays(tmp_path):
+async def test_git_hooks_run_and_config_stays(tmp_path):
     project = repo(tmp_path)
     hook = project / ".git" / "hooks" / "pre-commit"
     hook.write_text("#!/bin/sh\necho ran > hook-ran.txt\n", encoding="utf-8", newline="\n")
@@ -255,9 +255,9 @@ async def test_ac6_git_hooks_run_and_config_stays(tmp_path):
     assert (project / ".git" / "config").read_text(encoding="utf-8") == config
 
 
-# AC7/AC8/AC9: changes and deleting -------------------------------------------------------------------------
+# Changes and deleting -------------------------------------------------------------------------
 
-async def test_ac7_change_counting(tmp_path):
+async def test_change_counting(tmp_path):
     project = repo(tmp_path)
     created = await manager_of(project).create("demo")
     path, branch = Path(created.meta.path), created.meta.branch
@@ -280,7 +280,7 @@ async def test_ac7_change_counting(tmp_path):
     assert broken.any and broken.error
 
 
-async def test_ac8_delete_keeps_link_targets_and_never_uses_worktree_remove(tmp_path, monkeypatch):
+async def test_delete_keeps_link_targets_and_never_uses_worktree_remove(tmp_path, monkeypatch):
     project = repo(tmp_path)
     (project / "node_modules" / "lib").mkdir(parents=True)
     (project / "node_modules" / "lib" / "index.js").write_text("keep", encoding="utf-8")
@@ -308,7 +308,7 @@ async def test_ac8_delete_keeps_link_targets_and_never_uses_worktree_remove(tmp_
     assert caught.value.code == "unknown_worktree"
 
 
-async def test_ac9_failed_delete_is_retried_by_clean(tmp_path, monkeypatch):
+async def test_failed_delete_is_retried_by_clean(tmp_path, monkeypatch):
     project = repo(tmp_path)
     manager = manager_of(project)
     created = await manager.ephemeral("t1")
@@ -329,9 +329,9 @@ async def test_ac9_failed_delete_is_retried_by_clean(tmp_path, monkeypatch):
     assert report.removed == [created.meta.name] and not Path(created.meta.path).exists()
 
 
-# AC10: cleaning -----------------------------------------------------------------------------------------
+# Cleaning -----------------------------------------------------------------------------------------
 
-async def test_ac10_clean_removes_only_old_unused_unchanged_ephemeral_worktrees(tmp_path):
+async def test_clean_removes_only_old_unused_unchanged_ephemeral_worktrees(tmp_path):
     project = repo(tmp_path)
     manager = manager_of(project)
     old = time.time() - 48 * 3600
@@ -363,14 +363,14 @@ async def test_ac10_clean_removes_only_old_unused_unchanged_ephemeral_worktrees(
     assert (manager.base / "stray").is_dir()
 
 
-async def test_ac10_stale_hours_zero_starts_no_cleanup(tmp_path):
+async def test_stale_hours_zero_starts_no_cleanup(tmp_path):
     repo(tmp_path)
     conv = conversation(tmp_path, ScriptProvider(lambda *a: response("好")), worktree_stale_hours=0)
     assert conv.start_worktree_cleanup(lambda report: None) is False
     await conv.close()
 
 
-# AC11–AC15: isolated sub-agents ---------------------------------------------------------------------------
+# Isolated sub-agents ---------------------------------------------------------------------------
 
 def isolated_script(kind, *, agent_type="writer", isolation=None, background=False):
     """The main agent calls one sub-agent; `kind` decides what the sub-agent does."""
@@ -390,7 +390,7 @@ def isolated_script(kind, *, agent_type="writer", isolation=None, background=Fal
     return script
 
 
-async def test_ac11_writer_keeps_its_worktree_and_main_is_untouched(tmp_path):
+async def test_writer_keeps_its_worktree_and_main_is_untouched(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-WRITER")
     provider = ScriptProvider(isolated_script(lambda *a: response(calls=[
@@ -407,7 +407,7 @@ async def test_ac11_writer_keeps_its_worktree_and_main_is_untouched(tmp_path):
     await conv.close()
 
 
-async def test_ac11_reader_worktree_is_deleted(tmp_path):
+async def test_reader_worktree_is_deleted(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\ntools: Read\n", "SUB-READER")
     provider = ScriptProvider(isolated_script(lambda *a: response(calls=[call("read_file", "r1", path="a.txt")])))
@@ -421,7 +421,7 @@ async def test_ac11_reader_worktree_is_deleted(tmp_path):
     await conv.close()
 
 
-async def test_ac12_boundaries(tmp_path):
+async def test_boundaries(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-W")
     outside = str(project / "c.txt")
@@ -446,7 +446,7 @@ async def test_ac12_boundaries(tmp_path):
     await conv.close()
 
 
-async def test_ac13_parameter_fork_plan_and_definition(tmp_path):
+async def test_parameter_fork_plan_and_definition(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "", "SUB-PLAIN")
     provider = ScriptProvider(isolated_script(lambda *a: response(calls=[
@@ -482,7 +482,7 @@ async def test_ac13_parameter_fork_plan_and_definition(tmp_path):
     assert parse_agent(write_agent(tmp_path / "defs", "good", "isolation: worktree\n"), "project").isolation == "worktree"
 
 
-async def test_ac13_outside_a_repository(tmp_path, monkeypatch):
+async def test_outside_a_repository(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-W")
     provider = ScriptProvider(isolated_script(lambda *a: response("x")))
@@ -493,7 +493,7 @@ async def test_ac13_outside_a_repository(tmp_path, monkeypatch):
     await conv.close()
 
 
-async def test_ac14_background_cancel_and_parallel(tmp_path):
+async def test_background_cancel_and_parallel(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-W")
     gate = asyncio.Event()
@@ -535,7 +535,7 @@ async def test_ac14_background_cancel_and_parallel(tmp_path):
     await conv.close()
 
 
-async def test_ac15_dirty_main_directory_is_mentioned(tmp_path):
+async def test_dirty_main_directory_is_mentioned(tmp_path):
     project = repo(tmp_path)
     (project / "a.txt").write_text("uncommitted\n", encoding="utf-8")
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-W")
@@ -547,10 +547,10 @@ async def test_ac15_dirty_main_directory_is_mentioned(tmp_path):
     await conv.close()
 
 
-# AC16/AC17: search and instructions -----------------------------------------------------------------------
+# Search and instructions -----------------------------------------------------------------------
 
 @pytest.mark.parametrize("ripgrep", [True, False])
-async def test_ac16_search_skips_worktrees_unless_asked(tmp_path, monkeypatch, ripgrep):
+async def test_search_skips_worktrees_unless_asked(tmp_path, monkeypatch, ripgrep):
     if ripgrep and shutil.which("rg") is None:
         pytest.skip("ripgrep 未安装")
     project = project_of(tmp_path)
@@ -574,19 +574,24 @@ async def test_ac16_search_skips_worktrees_unless_asked(tmp_path, monkeypatch, r
     assert "copy.txt" in await execute("grep", pattern="needle", path=inside)
 
 
-def test_ac17_instructions_in_a_worktree_come_once(tmp_path):
+def candidates(root, tmp_path):
+    """Only the files under tmp_path: the checkout's own ancestors may hold instruction files."""
+    return [p for p in instruction_candidates(root, tmp_path / "home") if tmp_path in p.parents]
+
+
+def test_instructions_in_a_worktree_come_once(tmp_path):
     project = tmp_path / "project"
     worktree = project / ".mosscode" / "worktrees" / "demo"
     worktree.mkdir(parents=True)
     (worktree / ".git").write_text("gitdir: x\n", encoding="utf-8")
     (project / "AGENTS.md").write_text("main", encoding="utf-8")
     (worktree / "AGENTS.md").write_text("copy", encoding="utf-8")
-    found = instruction_candidates(worktree, tmp_path / "home")
+    found = candidates(worktree, tmp_path)
     assert found == [worktree / "AGENTS.md"]
-    assert project / "AGENTS.md" in instruction_candidates(project, tmp_path / "home")
+    assert project / "AGENTS.md" in candidates(project, tmp_path)
 
 
-def test_ac17_instructions_above_the_main_project_still_load_in_a_worktree(tmp_path):
+def test_instructions_above_the_main_project_still_load_in_a_worktree(tmp_path):
     project = tmp_path / "project"
     worktree = project / ".mosscode" / "worktrees" / "demo"
     worktree.mkdir(parents=True)
@@ -594,14 +599,14 @@ def test_ac17_instructions_above_the_main_project_still_load_in_a_worktree(tmp_p
     (tmp_path / "AGENTS.md").write_text("parent", encoding="utf-8")
     (project / "AGENTS.md").write_text("main", encoding="utf-8")
     (worktree / "AGENTS.md").write_text("copy", encoding="utf-8")
-    found = instruction_candidates(worktree, tmp_path / "home")
+    found = candidates(worktree, tmp_path)
     assert found == [tmp_path / "AGENTS.md", worktree / "AGENTS.md"]
-    assert instruction_candidates(project, tmp_path / "home") == [tmp_path / "AGENTS.md", project / "AGENTS.md"]
+    assert candidates(project, tmp_path) == [tmp_path / "AGENTS.md", project / "AGENTS.md"]
 
 
-# AC18: hooks ------------------------------------------------------------------------------------------------
+# Hooks ------------------------------------------------------------------------------------------------
 
-async def test_ac18_hook_fields(tmp_path):
+async def test_hook_fields(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-W")
     hooks = hook_engine(tmp_path, {"id": "after", "event": "post_tool_use", "action": {"type": "command",
@@ -631,9 +636,9 @@ async def test_ac18_hook_fields(tmp_path):
     await conv.close()
 
 
-# AC19/AC21: commands ------------------------------------------------------------------------------------------
+# Commands ------------------------------------------------------------------------------------------
 
-async def test_ac19_worktree_command(tmp_path, monkeypatch):
+async def test_worktree_command(tmp_path, monkeypatch):
     project = repo(tmp_path)
     conv = conversation(tmp_path, ScriptProvider(lambda *a: response("好")))
     ctx = context(conv)
@@ -664,7 +669,7 @@ async def test_ac19_worktree_command(tmp_path, monkeypatch):
     await conv.close()
 
 
-async def test_ac21_tasks_detail_and_headless(tmp_path):
+async def test_tasks_detail_and_headless(tmp_path):
     repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-W")
     provider = ScriptProvider(isolated_script(lambda *a: response("看完了")))
@@ -681,7 +686,7 @@ async def test_ac21_tasks_detail_and_headless(tmp_path):
     assert parse_input("/worktree list", BUILTIN).command.name == "worktree"
 
 
-# AC20: configuration ---------------------------------------------------------------------------------------
+# Configuration ---------------------------------------------------------------------------------------
 
 def write_config(tmp_path, **extra):
     provider = {"name": "p", "protocol": "anthropic-messages", "model": "m", "api_key_env": "MOSS_TEST_KEY"}
@@ -690,7 +695,7 @@ def write_config(tmp_path, **extra):
     return path
 
 
-def test_ac20_configuration(tmp_path):
+def test_configuration(tmp_path):
     settings = load_settings(write_config(tmp_path))
     assert settings.worktree_links == () and settings.worktree_stale_hours == 24.0
     settings = load_settings(write_config(tmp_path, worktree_links=["node_modules/", "a\\b", "node_modules"],
@@ -703,7 +708,7 @@ def test_ac20_configuration(tmp_path):
             load_settings(write_config(tmp_path, **bad))
 
 
-def test_ac21_tool_row_names_the_worktree():
+def test_tool_row_names_the_worktree():
     from mosscode.tui import describe_call
     name, detail, _ = describe_call(call("agent", "a1", description="改", prompt="p", agent_type="general",
                                          isolation="worktree"))
@@ -711,7 +716,7 @@ def test_ac21_tool_row_names_the_worktree():
     assert describe_call(call("agent", "a1", description="改", prompt="p"))[1] == "fork · 改"
 
 
-async def test_ac21_live_row_names_the_worktree_only_when_the_task_has_one():
+async def test_live_row_names_the_worktree_only_when_the_task_has_one():
     from textual.app import App
     from mosscode.agents.tasks import Task
     from mosscode.messages import ToolProgress

@@ -1,5 +1,5 @@
-"""Session storage: the directory of stored tool results and compaction records (chapter 8),
-and the JSONL transcript that lets a session be resumed (9b)."""
+"""Session storage: the directory of stored tool results and compaction records,
+and the JSONL transcript that lets a session be resumed."""
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -25,7 +25,7 @@ INTERRUPTED = "会话中断，这个调用可能未执行，也可能执行了�
 
 
 def sessions_root() -> Path:
-    """Chapter 8's location; no longer written, only pruned until it empties."""
+    """The old location of tool results; no longer written, only pruned until it empties."""
     return Path.home() / ".mosscode" / "sessions"
 
 
@@ -112,7 +112,7 @@ def compact_record(boundary: Message, keep: int, record: str | None) -> dict:
 
 
 def skill_record(name: str, arguments: str, pinned: bool) -> dict:
-    """A9: a skill was used; pinned when its SOP went into <active-skills>."""
+    """A skill was used; pinned when its SOP went into <active-skills>."""
     return {"type": "skill", "time": _now(), "name": name, "arguments": arguments, "pinned": pinned}
 
 
@@ -359,7 +359,7 @@ class Restored:
     last_time: datetime | None = None
     title: str = "（无标题）"
     stripped: bool = False
-    skills: tuple[tuple[str, str, bool], ...] = ()  # A9: (name, arguments, pinned) in record order.
+    skills: tuple[tuple[str, str, bool], ...] = ()  # (name, arguments, pinned) in record order.
 
 
 def _strip(history: Sequence[Message]) -> list[Message]:
@@ -405,7 +405,7 @@ def repair(history: Sequence[Message]) -> tuple[list[Message], int]:
 
 
 def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restored:
-    """Replay the records (R5-R9). provider is the current (name, protocol)."""
+    """Replay the records. provider is the current (name, protocol)."""
     history: list[Message] = []
     skipped, last_time, last_provider = 0, None, None
     skills: list[tuple[str, str, bool]] = []
@@ -513,7 +513,7 @@ def _prune_project(base: Path, cutoff: float) -> int:
 
 
 def prune_all(home: Path | None = None, now: datetime | None = None, days: int = KEEP_DAYS) -> int:
-    """Startup cleanup (G1-G3): every project's sessions, then chapter 8's old location."""
+    """Startup cleanup: every project's sessions, then the old location of tool results."""
     root = mosscode_home(home)
     cutoff = ((now or datetime.now()) - timedelta(days=days)).timestamp()
     removed = 0

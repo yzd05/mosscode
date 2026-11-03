@@ -1,4 +1,4 @@
-"""Chapter 12: user-defined hooks at the agent's lifecycle points."""
+"""User-defined hooks at the agent's lifecycle points."""
 
 from .conditions import HookConfigError, parse_condition
 from .config import Hook, HookConfig, HookFile, TrustStore, hook_paths, load_hooks

@@ -1,4 +1,4 @@
-"""Refinement 08 SU: `moss setup`, and the first interactive run without a configuration.
+"""`moss setup`, and the first interactive run without a configuration.
 
 Plain questions in the terminal (input and getpass), so it works in any console and before Textual loads.
 """
@@ -156,7 +156,7 @@ def summary(provider: dict) -> list[str]:
 
 
 def write_config(path: Path, provider: dict) -> None:
-    """Never replaces a file (SU3): the exclusive create fails if one appeared meanwhile."""
+    """Never replaces a file: the exclusive create fails if one appeared meanwhile."""
     from .config import render_config
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8", newline="\n") as stream:
@@ -178,7 +178,7 @@ def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: 
     wizard.write(f"将写入 {path}。按 Ctrl+C 随时退出，不写入任何文件。")
     try:
         provider = wizard.collect()
-    except (Cancelled, KeyboardInterrupt):  # SU5
+    except (Cancelled, KeyboardInterrupt):
         wizard.write("\n已退出，没有写入文件。")
         return "cancelled"
     if provider is None:
@@ -194,7 +194,7 @@ def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: 
         return "failed"
     try:
         load_settings(path)
-    except ConfigError as exc:  # SU4
+    except ConfigError as exc:
         wizard.write(f"已写入 {path}，但校验失败：{exc} 请修改文件后再运行 moss。")
         return "failed"
     wizard.write(f"已写入 {path}。")
@@ -208,7 +208,7 @@ def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: 
 
 
 def run_setup(home: Path | None = None, wizard: Wizard | None = None) -> Path | None:
-    """SU1, the first interactive run: the configuration to start with, or None to stop there."""
+    """The first interactive run: the configuration to start with, or None to stop there."""
     return user_config(home) if setup(home, wizard) == "ready" else None
 
 

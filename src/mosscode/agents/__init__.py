@@ -1,4 +1,4 @@
-"""Sub-agent definitions (chapter 13): Markdown roles with YAML frontmatter, in three places."""
+"""Sub-agent definitions: Markdown roles with YAML frontmatter, in three places."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ DESCRIPTION_LIMIT = 1024
 CATALOG_DESCRIPTION = 250
 CATALOG_LIMIT = 8000
 FORK = "fork"
-# F3: snake_case first, then the Claude Code and hyphen spellings.
+# snake_case first, then the Claude Code and hyphen spellings.
 FIELDS = {
     "name": ("name",),
     "description": ("description",),
@@ -30,7 +30,7 @@ FIELDS = {
     "background": ("background",),
     "isolation": ("isolation",),
 }
-# F5: Claude Code fields MossCode does not support; ignored and reported.
+# Claude Code fields MossCode does not support; ignored and reported.
 ISOLATIONS = ("none", "worktree")
 UNSUPPORTED = ("color", "effort", "skills", "mcpServers", "hooks", "memory", "initialPrompt")
 
@@ -52,18 +52,18 @@ class AgentDef:
     max_turns: int | None = None
     permission_mode: str | None = None
     background: bool = False
-    isolation: str = "none"  # Ch14 A1: "worktree" runs it in its own git worktree.
+    isolation: str = "none"  # "worktree" runs it in its own git worktree.
     unsupported: tuple[str, ...] = ()
     overrides: tuple[Path, ...] = ()  # Same-named files this one replaced.
 
     def allows(self, tool: str) -> bool:
-        """L3: the blacklist first, then the whitelist."""
+        """The blacklist first, then the whitelist."""
         if any(_matches(tool, pattern) for pattern in self.disallowed_tools):
             return False
         return not self.tools or any(_matches(tool, pattern) for pattern in self.tools)
 
     def unknown_tools(self, available: Iterable[str]) -> list[str]:
-        """F4: names that match no registered tool now (MCP servers may not be connected yet)."""
+        """Names that match no registered tool now (MCP servers may not be connected yet)."""
         available = tuple(available)
         return [pattern for pattern in (*self.tools, *self.disallowed_tools)
                 if not any(_matches(name, pattern) for name in available)]
@@ -91,7 +91,6 @@ def _tools(meta: dict, path: Path, *names: str) -> tuple[str, ...]:
 
 
 def parse_agent(path: Path, source: Source) -> AgentDef:
-    """F2–F5."""
     try:
         meta, body = _split(_read(path), path)
         known = {name for names in FIELDS.values() for name in names}
@@ -141,7 +140,7 @@ def builtin_dir() -> Path:
 
 
 def agent_dirs(root: Path, home: Path | None = None, builtin: Path | None = None) -> list[tuple[Source, Path]]:
-    """F1, lowest priority first."""
+    """Lowest priority first."""
     return [("builtin", builtin if builtin is not None else builtin_dir()),
             ("user", mosscode_home(home) / "agents"),
             ("project", root / ".mosscode" / "agents")]
@@ -155,7 +154,7 @@ class AgentCatalog:
 
     @classmethod
     def load(cls, root: Path, home: Path | None = None, *, builtin: Path | None = None) -> AgentCatalog:
-        """F1/F5: a later place replaces a same-named definition; within a place the first file name wins."""
+        """A later place replaces a same-named definition; within a place the first file name wins."""
         agents: dict[str, AgentDef] = {}
         problems: list[str] = []
         for source, base in agent_dirs(root, home, builtin):
@@ -193,7 +192,7 @@ class AgentCatalog:
         return tuple(self.agents)
 
     def catalog_section(self) -> str:
-        """G2: what the model sees; the agent tool's own description never lists types."""
+        """What the model sees; the agent tool's own description never lists types."""
         lines, size = [], 0
         for agent in self.agents.values():
             description = agent.description

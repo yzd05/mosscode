@@ -1,4 +1,4 @@
-"""Stage-1 model-side refinements: docs/specs/refinement-01-model-side/spec.md (AC1, AC4-AC8)."""
+"""Model-side behaviour: plain-text tool results, cache breakpoints, output limits and retries."""
 
 import asyncio
 import json
@@ -22,7 +22,7 @@ from test_providers import SSEBody, anthropic_frames
 from test_tools import python_command
 
 
-# AC1: plain-text tool results.
+# Plain-text tool results.
 
 async def test_command_failure_is_plain_text_with_stdout_once(tmp_path):
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
@@ -43,7 +43,7 @@ async def test_invalid_arguments_list_fields_for_the_model(tmp_path):
     assert "- offset：" in result.output and "- invented：" in result.output
 
 
-# AC4: truncated tool calls are never executed.
+# Truncated tool calls are never executed.
 
 async def test_truncated_tool_call_is_not_executed_and_loop_continues(tmp_path):
     cut = Completed(Message("assistant", (), tool_calls=(ToolCall("w", "write_file", '{"path": "big.txt", "con'),)),
@@ -58,7 +58,7 @@ async def test_truncated_tool_call_is_not_executed_and_loop_continues(tmp_path):
     assert provider.requests[1][0][-1].tool_results[0].model_text().startswith("错误 [output_truncated]")
 
 
-# AC5: retry only before the first event of a request.
+# Retry only before the first event of a request.
 
 class FlakyProvider(SDKProvider):
     def __init__(self, plan, retries=4):
@@ -142,7 +142,7 @@ async def test_real_sdk_overloaded_529_then_success():
         await provider.close()
 
 
-# AC6: config lookup and limits.
+# Config lookup and limits.
 
 def write_yaml(path, **extra):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,7 +162,7 @@ def test_config_lookup_order_and_missing_error(tmp_path):
     assert "moss setup" in str(error.value)
     user = write_yaml(home / ".mosscode" / "config.yaml")
     assert find_config(cwd, home) == user
-    write_yaml(cwd / "config.yaml")  # Refinement 08 CF1: a project's own config.yaml is not ours.
+    write_yaml(cwd / "config.yaml")  # A project's own config.yaml is not ours.
     assert find_config(cwd, home) == user
     project = write_yaml(cwd / ".mosscode" / "config.yaml")
     assert find_config(cwd, home) == project
@@ -190,7 +190,7 @@ async def test_configured_iteration_limit_applies(tmp_path):
     assert len(provider.requests) == 3
 
 
-# AC7: AGENTS.md / CLAUDE.md project instructions.
+# AGENTS.md / CLAUDE.md project instructions.
 
 def instruction_tree(tmp_path):
     home, parent = tmp_path / "home", tmp_path / "repo"
@@ -210,7 +210,7 @@ def test_instruction_order_priority_and_truncation(tmp_path):
     ours = [f for f in files if tmp_path in f.path.resolve().parents]
     assert [f.path.resolve() for f in ours] == [(home / ".mosscode" / "AGENTS.md").resolve(),
                                               (parent / "CLAUDE.md").resolve(), (project / "AGENTS.md").resolve()]
-    assert files[-3:] == ours and not problems
+    assert files[0] == ours[0] and files[-2:] == ours[1:] and not problems  # The checkout's own may sit between.
     assert all("取代" not in f.text for f in files)
     # A multibyte character cut at the size limit is dropped, not reported.
     (project / "AGENTS.md").write_bytes(("中" * (INSTRUCTION_LIMIT // 3 + 10)).encode())
@@ -248,7 +248,7 @@ async def test_without_context_root_nothing_is_loaded(tmp_path):
     assert "git" not in json.loads(provider.requests[0][1].supplements[0].text)
 
 
-# AC8: git snapshot.
+# Git snapshot.
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 def test_git_snapshot_repo_and_non_repo(tmp_path, monkeypatch):

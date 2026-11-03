@@ -51,7 +51,7 @@ class FileState:
         self._seen.clear()
 
     def copy(self) -> "FileState":
-        """Ch13 I2: a fork starts from what its parent has read."""
+        """A fork starts from what its parent has read."""
         state = FileState()
         state._seen = dict(self._seen)
         return state

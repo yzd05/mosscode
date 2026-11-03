@@ -1,9 +1,9 @@
-"""Stage 6: parallel read-only calls, brief replies, and a prompt without duplicated tool rules."""
+"""Parallel read-only calls, brief replies, and a prompt without duplicated tool rules."""
 
 from mosscode.prompts import DEFAULT_SYSTEM_PROMPT, build_system_prompt, mode_reminder
 from mosscode.tools import create_default_registry
 
-BEFORE = 2856  # Stage 5 system prompt with the default tools (docs/specs/refinement-06-prompt-readme).
+BEFORE = 2856  # The earlier, longer system prompt with the default tools.
 
 
 def test_parallel_read_only_calls_and_brief_replies_in_every_tool_set(tmp_path):

@@ -1,4 +1,4 @@
-"""Refinement 07: the lead's member panel (PL1–PL6) and member view (MV1–MV8).
+"""The lead's member panel and member view.
 
 The widgets only show what MossCodeApp hands them; reading the team record and transcripts, and the
 keys that route between them, stay in tui.py.
@@ -18,11 +18,11 @@ from .appearance import OPERATION_COLOR, TOOL_SUCCESS_COLOR
 from .teams.runtime import STATUS_NAMES, MemberRow
 from .teams.view import Feed
 
-COMPACT_ROWS = 4  # PL2
-EXPANDED_ROWS = 8  # PL3
-VIEW_MESSAGES = 200  # MV1
-VIEW_SHARE = 1.0  # MV2: of the rows left by the status line (and a card); kept full after X5.
-STOP_CONFIRM = 2.0  # PL3: seconds between the two presses of x.
+COMPACT_ROWS = 4
+EXPANDED_ROWS = 8
+VIEW_MESSAGES = 200
+VIEW_SHARE = 1.0  # Of the rows left by the status line (and a card).
+STOP_CONFIRM = 2.0  # Seconds between the two presses of x.
 ASKING = "待审批"
 SYMBOLS = {"running": ("●", TOOL_SUCCESS_COLOR), "idle": ("○", "dim"), "stopped": ("·", "dim"),
            "asking": ("◆", OPERATION_COLOR)}
@@ -40,7 +40,7 @@ def elapsed(seconds: float) -> str:
 
 
 def state_of(row: MemberRow, asking: dict[str, int]) -> str:
-    """PL1: a waiting approval shows over running."""
+    """A waiting approval shows over running."""
     return "asking" if asking.get(row.name) and row.status != "stopped" else row.status
 
 
@@ -80,7 +80,7 @@ def row_line(row: MemberRow, asking: dict[str, int], now: float) -> Table:
 
 
 def compact_rows(rows: list[MemberRow], asking: dict[str, int], now: float, limit: int = COMPACT_ROWS):
-    """PL2: at most `limit` lines; stopped members, then idle ones, then the rest are summed up."""
+    """At most `limit` lines; stopped members, then idle ones, then the rest are summed up."""
     live = [row for row in rows if row.status != "stopped"]
     stopped = len(rows) - len(live)
     entries: list[tuple[MemberRow | Text, int]] = [(row, 1) for row in live]
@@ -106,7 +106,7 @@ def compact_rows(rows: list[MemberRow], asking: dict[str, int], now: float, limi
 
 
 class MemberList(OptionList):
-    """PL3: keys only; a click does not choose (as KeyboardOptions in tui.py)."""
+    """Keys only; a click does not choose (as KeyboardOptions in tui.py)."""
 
     BINDINGS = [Binding("x", "app.stop_member", "停止成员", show=False)]
 
@@ -116,7 +116,7 @@ class MemberList(OptionList):
 
 
 class MemberPanel(Vertical):
-    """PL1–PL3: compact lines under the prompt; Ctrl+T turns it into a list to pick from."""
+    """Compact lines under the prompt; Ctrl+T turns it into a list to pick from."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -185,13 +185,13 @@ class MemberPanel(Vertical):
 
 
 class MemberLog(RichLog):
-    """MV4: PgUp/PgDn, Home/End and ↑/↓ scroll (RichLog's own keys); ←/→ switch members."""
+    """PgUp/PgDn, Home/End and ↑/↓ scroll (RichLog's own keys); ←/→ switch members."""
 
     BINDINGS = [Binding("left", "app.member_step(-1)", show=False), Binding("right", "app.member_step(1)", show=False)]
 
 
 class MemberView(Vertical):
-    """MV1: header, the member's conversation, its calls still running, help."""
+    """Header, the member's conversation, its calls still running, help."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -231,7 +231,7 @@ class MemberView(Vertical):
         self.help()
 
     def write(self, lines: list, *, follow: bool | None = None) -> None:
-        """MV3: follow only while at the bottom; otherwise say there is more."""
+        """Follow only while at the bottom; otherwise say there is more."""
         if not lines:
             return
         log = self.member_log

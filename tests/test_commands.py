@@ -1,4 +1,4 @@
-"""Chapter 10: the command registry, parsing, built-in commands and prompt commands."""
+"""The command registry, parsing, built-in commands and prompt commands."""
 
 import asyncio
 
@@ -19,11 +19,11 @@ from mosscode.session import list_sessions, load_session
 from mosscode.tools import create_default_registry
 from test_cli import setup_cli
 from test_conversation import FakeProvider
-from test_sessions_stage9b import make, records, write_session, user, assistant
+from test_sessions import make, records, write_session, user, assistant
 
 
 REVIEW_TEMPLATE = "请审查当前仓库中尚未提交的改动。\n\n1. 先用 git status 和 git diff HEAD 查看改动范围。"
-# Chapter 11 turned the built-in /review into a skill; prompt commands are still tested with this one.
+# The built-in /review is a skill now; prompt commands are still tested with this one.
 PROMPTS = CommandRegistry([*BUILTIN.visible(), Command(
     "review", "让模型审查尚未提交的改动（只读）", "/review [范围或侧重点]", "prompt", argument="optional",
     argument_hint="[范围或侧重点]", template=REVIEW_TEMPLATE)])
@@ -34,7 +34,7 @@ async def noop(ctx, argument):
 
 
 class FakeUI:
-    """U4: records what commands ask of the interface."""
+    """Records what commands ask of the interface."""
 
     def __init__(self, provider_name="main", model="model-a"):
         self.provider_name, self.model = provider_name, model
@@ -88,7 +88,6 @@ def tools(tmp_path, mode="default"):
     return create_default_registry(tmp_path, permission_mode=mode, load_permissions=False)
 
 
-# AC1 --------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("second", [
     Command("help", "x", "/help", "local", handler=noop),
@@ -96,7 +95,7 @@ def tools(tmp_path, mode="default"):
     Command("other", "x", "/other", "local", aliases=("h",), handler=noop),
     Command("h", "x", "/h", "local", handler=noop),
 ])
-def test_ac1_names_and_aliases_must_be_unique(second):
+def test_names_and_aliases_must_be_unique(second):
     registry = CommandRegistry([Command("help", "x", "/help", "local", aliases=("h",), handler=noop)])
     with pytest.raises(CommandConflict) as exc:
         registry.register(second)
@@ -111,23 +110,20 @@ def test_ac1_names_and_aliases_must_be_unique(second):
     Command("ok", "x", "/ok", "local"),
     Command("ok", "x", "/ok", "prompt", template="  "),
 ])
-def test_ac1_malformed_commands_are_rejected(command):
+def test_malformed_commands_are_rejected(command):
     with pytest.raises(CommandConflict):
         CommandRegistry([command])
 
 
-def test_ac1_builtin_registry_has_nineteen_visible_commands():
-    # Chapter 11 adds /skills and turns /review into a built-in skill; chapter 12 adds /hooks, chapter 13 /agents and /tasks,
-    # chapter 14 /worktree, chapter 15 /team.
+def test_builtin_registry_has_nineteen_visible_commands():
     assert [c.name for c in BUILTIN.visible()] == [
         "help", "clear", "compact", "resume", "session", "memory", "model", "plan", "do", "permissions",
         "status", "mcp", "skills", "hooks", "agents", "tasks", "worktree", "team", "exit"]
     assert BUILTIN.get("/PERMISSION").name == "permissions" and BUILTIN.get("quit").name == "exit"
 
 
-# AC2 --------------------------------------------------------------------------------------
 
-def test_ac2_parsing():
+def test_parsing():
     assert parse_input("  \n ", BUILTIN).kind == "empty"
     assert parse_input("/Help", BUILTIN).command.name == "help"
     parsed = parse_input("/permission plan", BUILTIN)
@@ -144,9 +140,8 @@ def test_ac2_parsing():
     assert unknown_note(parse_input("/", BUILTIN), BUILTIN) == "输入 /help 查看命令。"
 
 
-# AC3 --------------------------------------------------------------------------------------
 
-def test_ac3_completion(tmp_path):
+def test_completion(tmp_path):
     store = MemoryStore(tmp_path / "u", tmp_path / "p")
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
     conv = Conversation(FakeProvider(), registry=tools(tmp_path), memory=store)
@@ -164,9 +159,8 @@ def test_ac3_completion(tmp_path):
     assert BUILTIN.matches(ctx, "/comp")[0].label == "/compact [说明]"
 
 
-# AC4 --------------------------------------------------------------------------------------
 
-async def test_ac4_migrated_commands_keep_their_behaviour(tmp_path):
+async def test_migrated_commands_keep_their_behaviour(tmp_path):
     conv = Conversation(FakeProvider(), registry=tools(tmp_path))
     two = Settings((ProviderConfig("main", "anthropic-messages", "model-a"),
                     ProviderConfig("other", "openai-chat-completions", "model-b")), "main")
@@ -197,7 +191,7 @@ async def test_ac4_migrated_commands_keep_their_behaviour(tmp_path):
     assert ui.notes == ["/exit 不接受参数。用法：/exit"] and ui.calls == []
 
 
-async def test_ac4_resume_picker_and_argument(tmp_path):
+async def test_resume_picker_and_argument(tmp_path):
     saved = write_session(tmp_path, [user("旧会话"), assistant("好")])
     conv = make(tmp_path, FakeProvider())
     ui = await run(context(conv), "/resume")
@@ -211,9 +205,9 @@ async def test_ac4_resume_picker_and_argument(tmp_path):
     await conv.close()
 
 
-# AC6 (logic) and AC7 ----------------------------------------------------------------------
+# /plan and /do ----------------------------------------------------------------------------------
 
-async def test_ac6_do_returns_to_the_mode_plan_was_entered_from(tmp_path):
+async def test_do_returns_to_the_mode_plan_was_entered_from(tmp_path):
     conv = Conversation(FakeProvider(), registry=tools(tmp_path, "acceptEdits"))
     ui = await run(context(conv), "/do 继续")
     assert ui.notes == ["当前不在计划模式。任务未发送。"] and ui.calls == []
@@ -229,7 +223,7 @@ async def test_ac6_do_returns_to_the_mode_plan_was_entered_from(tmp_path):
     assert ui.notes == ["当前会话未启用工具，不能进入计划模式。"]
 
 
-def test_ac7_status_without_requests_tools_or_mcp():
+def test_status_without_requests_tools_or_mcp():
     conv = Conversation(FakeProvider(), provider_info=("main", "anthropic-messages", "model-a"))
     report = status_report(context(conv))
     assert report.splitlines()[0] == "状态"
@@ -240,7 +234,7 @@ def test_ac7_status_without_requests_tools_or_mcp():
     assert "  MCP         未配置" in report and "  记忆        关闭（memory: false）" in report
 
 
-async def test_ac7_status_after_a_request(tmp_path):
+async def test_status_after_a_request(tmp_path):
     from mosscode.context import ContextBudget
     conv = Conversation(FakeProvider(), registry=tools(tmp_path, "acceptEdits"),
                         budget=ContextBudget.for_provider(None, 4_096))
@@ -253,7 +247,7 @@ async def test_ac7_status_after_a_request(tmp_path):
     assert "· 请求 1 次" in report and "  项目指令    2 个文件（/memory 查看）" in report
 
 
-async def test_ac7_session_report_and_help_for_one_command(tmp_path):
+async def test_session_report_and_help_for_one_command(tmp_path):
     conv = make(tmp_path, FakeProvider())
     async for _ in conv.reply("第一条消息"):
         pass
@@ -277,9 +271,8 @@ async def test_ac7_session_report_and_help_for_one_command(tmp_path):
     await off.close()
 
 
-# AC8 --------------------------------------------------------------------------------------
 
-def test_ac8_message_command_round_trips_and_old_records_load():
+def test_message_command_round_trips_and_old_records_load():
     message = Message("user", (ContentBlock("text", REVIEW_TEMPLATE),), command="/review 安全")
     data = message_to_json(message)
     assert data["command"] == "/review 安全" and message_from_json(data) == message
@@ -289,7 +282,7 @@ def test_ac8_message_command_round_trips_and_old_records_load():
     assert conversation_text([message]) == "[用户]\n/review 安全"
 
 
-async def test_ac8_review_in_the_tui_is_shown_saved_titled_and_replayed(tmp_path):
+async def test_review_in_the_tui_is_shown_saved_titled_and_replayed(tmp_path):
     from mosscode.tui import ChatEntry, MossCodeApp, resumed_rows
     from test_tui import send
     provider = FakeProvider()
@@ -315,9 +308,9 @@ async def test_ac8_review_in_the_tui_is_shown_saved_titled_and_replayed(tmp_path
     assert "/review 安全" in console.export_text() and "请审查" not in console.export_text()
 
 
-# AC5 / AC6 in the TUI ---------------------------------------------------------------------
+# Commands in the TUI ---------------------------------------------------------------------------
 
-async def test_ac5_argument_check_running_commands_and_forced_messages(tmp_path):
+async def test_argument_check_running_commands_and_forced_messages(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
     from test_tui import send
     provider = FakeProvider()
@@ -334,7 +327,7 @@ async def test_ac5_argument_check_running_commands_and_forced_messages(tmp_path)
         await send(app, pilot, "next")
         await asyncio.wait_for(provider.started.wait(), timeout=5)
         field = app.query_one("#prompt", PromptArea)
-        await send(app, pilot, "/compact")  # /status and /tasks run during a task (ch13); others wait.
+        await send(app, pilot, "/compact")  # /status and /tasks run during a task; others wait.
         assert field.value == "/compact" and conv.queued == ()
         field.clear()
         await send(app, pilot, "//x 不是命令")
@@ -343,7 +336,7 @@ async def test_ac5_argument_check_running_commands_and_forced_messages(tmp_path)
         await pilot.pause()
 
 
-async def test_ac6_plan_and_do_update_the_status_badge(tmp_path):
+async def test_plan_and_do_update_the_status_badge(tmp_path):
     from textual.widgets import Static
     from mosscode.tui import MossCodeApp
     from test_tui import send
@@ -362,7 +355,7 @@ async def test_ac6_plan_and_do_update_the_status_badge(tmp_path):
         assert provider.requests == []
 
 
-async def test_c3_tab_completes_a_unique_prefix_after_escape():
+async def test_tab_completes_a_unique_prefix_after_escape():
     from mosscode.tui import MossCodeApp, PromptArea
     app = MossCodeApp(Conversation(FakeProvider()), "test")
     async with app.run_test() as pilot:
@@ -377,9 +370,8 @@ async def test_c3_tab_completes_a_unique_prefix_after_escape():
         assert field.value == "/status"
 
 
-# AC9 --------------------------------------------------------------------------------------
 
-def test_ac9_headless_prompt_commands(monkeypatch, capsys):
+def test_headless_prompt_commands(monkeypatch, capsys):
     monkeypatch.setattr(cli, "BUILTIN", PROMPTS)
     provider, _ = setup_cli(monkeypatch, ["-p", "/review 只看 cli"])
     cli.main()
@@ -398,7 +390,7 @@ def test_ac9_headless_prompt_commands(monkeypatch, capsys):
     ("/QUIT", "/exit 只能在交互界面中使用。"),
     ("/compcat", "是不是想输入 /compact？未知命令 /compcat。"),
 ])
-def test_ac9_headless_local_and_unknown_commands_exit_with_code_2(monkeypatch, capsys, text, error):
+def test_headless_local_and_unknown_commands_exit_with_code_2(monkeypatch, capsys, text, error):
     provider, calls = setup_cli(monkeypatch, ["-p", text])
     with pytest.raises(SystemExit) as exc:
         cli.main()

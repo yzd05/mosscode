@@ -15,7 +15,7 @@ from ..permissions import Decision, PermissionPolicy
 from ..security import SecurityError, project_path, resolve_path
 
 
-# Ch13: the call a tool is executing, for tools that need its id (the agent tool's row in the UI).
+# The call a tool is executing, for tools that need its id (the agent tool's row in the UI).
 CURRENT_CALL: ContextVar[ToolCall | None] = ContextVar("mosscode_current_call", default=None)
 
 
@@ -38,11 +38,11 @@ def bounded_output(output, details):
     return output, details
 
 
-HOOK_NOTE_LIMIT = 8000  # Ch12 P5: hook text added to one tool result.
+HOOK_NOTE_LIMIT = 8000  # Hook text added to one tool result.
 
 
 def with_hook_notes(result: ToolResult, notes, modified_by: str | None) -> ToolResult:
-    """P4, P6: hook notes and the reformatting notice go after the result, into history and the transcript."""
+    """Hook notes and the reformatting notice go after the result, into history and the transcript."""
     if not notes and not modified_by:
         return result
     blocks, room = [], HOOK_NOTE_LIMIT
@@ -140,13 +140,13 @@ class ToolRegistry:
         self.permissions = permissions or PermissionPolicy(first.root if first else Path.cwd())
         # Set by the application; without it oversized results are cut to a preview, not stored.
         self.session = None
-        self.hooks = None  # Ch12: the HookEngine, set by the application.
-        self.agent = "main"  # "fork" or "subagent" in a sub-agent's view (E2, ch13 H1).
-        self.agent_type = ""  # Ch13 H1: the definition name, "fork" or "skill:<name>".
-        self.forbidden: frozenset[str] = frozenset()  # Ch13 L2: offered (fork cache) but refused when called.
-        self.nested = False  # Ch13 H5: started by a hook's agent action; its tool events run no agent action.
-        self.worktree = ""  # Ch14 H1: the worktree a sub-agent works in, relative to the repository.
-        # Ch15 CO3: withheld(tool) -> True keeps a tool for sub-agents and members but neither offers nor runs it here.
+        self.hooks = None  # The HookEngine, set by the application.
+        self.agent = "main"  # "fork" or "subagent" in a sub-agent's view.
+        self.agent_type = ""  # The definition name, "fork" or "skill:<name>".
+        self.forbidden: frozenset[str] = frozenset()  # Offered (fork cache) but refused when called.
+        self.nested = False  # Started by a hook's agent action; its tool events run no agent action.
+        self.worktree = ""  # The worktree a sub-agent works in, relative to the repository.
+        # withheld(tool) -> True keeps a tool for sub-agents and members but neither offers nor runs it here.
         self.withheld = None
         if any(tool.root != self.permissions.root for tool in self._tools.values()):
             raise ValueError("工具与权限策略必须使用同一个项目根目录。")
@@ -184,7 +184,7 @@ class ToolRegistry:
 
     def for_agent(self, *, agent: str, agent_type: str, permissions: PermissionPolicy, state=None,
                   keep=None, extra=(), forbidden=()) -> "ToolRegistry":
-        """Ch13 I2/P1: a sub-agent's registry.
+        """A sub-agent's registry.
 
         Tools holding a FileState are copied and share `state` (a new, empty one when None);
         keep(name) filters the rest; extra tools are added; forbidden names stay offered but are refused.
@@ -308,7 +308,7 @@ class ToolRegistry:
         return await self._after(call, tool, raw, state, result)
 
     async def _after(self, call: ToolCall, tool: Tool, raw, state, result: ToolResult) -> ToolResult:
-        """post_tool_use (P4, P6); a cancelled hook keeps the tool result (R8)."""
+        """post_tool_use; a cancelled hook keeps the tool result."""
         hooks, notes, modified = self.hooks, list(state.get("notes", ())), None
         if hooks.wants("post_tool_use"):
             event = self._event("post_tool_use", call.name, raw, state.get("operation"), tool.root, result)

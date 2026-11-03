@@ -1,4 +1,4 @@
-"""The memory tool (9c W1-W5): save or delete one note; never takes a path."""
+"""The memory tool: save or delete one note; never takes a path."""
 
 from typing import Literal
 
@@ -20,7 +20,7 @@ class MemoryParams(Params):
 class Memory(Tool):
     name = "memory"
     permission_kind = "memory"  # No approval: it writes only the two note directories.
-    plan_allowed = True  # Offered in plan mode too (Q4); not read-only, so it never runs concurrently.
+    plan_allowed = True  # Offered in plan mode too; not read-only, so it never runs concurrently.
     description = ("保存或删除跨会话的记忆笔记。save 写入或覆盖同名笔记（更新日期），delete 删除笔记；"
                    "成功后返回文件路径，索引由程序重新生成，下次会话开始时出现在系统提示中。"
                    "只写笔记目录，不需要审批，计划模式中也可以直接调用。"

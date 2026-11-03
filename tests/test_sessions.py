@@ -1,4 +1,4 @@
-"""Chapter 9b: session transcripts, resume and cleanup."""
+"""Session transcripts, resume and cleanup."""
 
 import json
 import os
@@ -19,7 +19,7 @@ from mosscode.session import (INTERRUPTED, MARKER, Lock, Session, Transcript, co
                               load_session, message_record, project_sessions, provider_record, prune_all, repair)
 from mosscode.tools import create_default_registry
 from test_agent import SequenceProvider, call, response
-from test_context_stage8 import NO_SUMMARY, chat, summary_reply
+from test_context import NO_SUMMARY, chat, summary_reply
 
 SMALL = ContextBudget.for_provider(60_000, 4_096)  # Auto threshold 27,000.
 INFO = ("main", "anthropic-messages", "model-a")
@@ -69,9 +69,8 @@ async def drain(stream):
     return [event async for event in stream]
 
 
-# AC1 ----------------------------------------------------------------------------------------
 
-def test_ac1_messages_round_trip_and_odd_details_never_fail(tmp_path):
+def test_messages_round_trip_and_odd_details_never_fail(tmp_path):
     call_a = ToolCall("c1", "edit_file", json.dumps({"path": "a.txt"}))
     history = [
         user("你好"),
@@ -91,7 +90,7 @@ def test_ac1_messages_round_trip_and_odd_details_never_fail(tmp_path):
     assert restored.skipped == 0 and restored.history[-1].tool_results[0].details["path"] == str(tmp_path / "a.txt")
 
 
-def test_ac1_strict_loading_rejects_bad_fields():
+def test_strict_loading_rejects_bad_fields():
     for bad in ({"role": "robot"}, {"role": "user", "content": [{"kind": "image"}]},
                 {"role": "tool", "tool_results": [{"call_id": "x", "name": "n", "output": "o", "is_error": "no"}]},
                 {"role": "assistant", "tool_calls": [{"id": 1, "name": "n", "arguments": "{}"}]}, "text"):
@@ -99,9 +98,8 @@ def test_ac1_strict_loading_rejects_bad_fields():
             message_from_json(bad)
 
 
-# AC2 ----------------------------------------------------------------------------------------
 
-async def test_ac2_records_follow_history_commits_and_batches_are_final(tmp_path):
+async def test_records_follow_history_commits_and_batches_are_final(tmp_path):
     (tmp_path / "project").mkdir()
     (tmp_path / "project" / "a.txt").write_text("alpha", encoding="utf-8")
     provider = SequenceProvider(response("先读", [call("read_file", "r1", path="a.txt"), call("glob", "g1", pattern="*.txt")]),
@@ -122,7 +120,7 @@ async def test_ac2_records_follow_history_commits_and_batches_are_final(tmp_path
     await conv.close()
 
 
-async def test_ac2_no_messages_no_file_and_half_lines_are_cut(tmp_path):
+async def test_no_messages_no_file_and_half_lines_are_cut(tmp_path):
     conv = make(tmp_path, SequenceProvider())
     await conv.close()
     assert not conv.session.transcript_path.exists() and not conv.session.directory.exists()
@@ -137,9 +135,8 @@ async def test_ac2_no_messages_no_file_and_half_lines_are_cut(tmp_path):
     assert [message_from_json(r["message"]).text for r in lines[1:]] == ["一", "二", "三"]
 
 
-# AC3 ----------------------------------------------------------------------------------------
 
-async def test_ac3_write_failure_is_reported_once_and_the_chat_goes_on(tmp_path, monkeypatch):
+async def test_write_failure_is_reported_once_and_the_chat_goes_on(tmp_path, monkeypatch):
     def full(self):
         raise OSError(28, "磁盘空间不足")
     monkeypatch.setattr(Transcript, "_create", full)
@@ -153,7 +150,7 @@ async def test_ac3_write_failure_is_reported_once_and_the_chat_goes_on(tmp_path,
     assert not conv.session.transcript_path.exists()
 
 
-async def test_ac3_a_session_in_use_cannot_be_resumed_until_released(tmp_path):
+async def test_a_session_in_use_cannot_be_resumed_until_released(tmp_path):
     saved = write_session(tmp_path, [user("一"), assistant("二")])
     first, second = make(tmp_path, SequenceProvider()), make(tmp_path, SequenceProvider())
     await drain(first.resume(saved.id))
@@ -167,7 +164,7 @@ async def test_ac3_a_session_in_use_cannot_be_resumed_until_released(tmp_path):
     await second.close()
 
 
-async def test_ac3_persist_off_writes_nothing_and_explains(tmp_path):
+async def test_persist_off_writes_nothing_and_explains(tmp_path):
     saved = write_session(tmp_path, [user("一"), assistant("二")])
     conv = make(tmp_path, SequenceProvider(response("好")), persist=False)
     await conv.ask("你好")
@@ -178,7 +175,7 @@ async def test_ac3_persist_off_writes_nothing_and_explains(tmp_path):
         await drain(conv.resume(saved.id))
 
 
-def test_ac3_settings_accept_the_new_switches(tmp_path):
+def test_settings_accept_the_new_switches(tmp_path):
     path = tmp_path / "config.yaml"
     base = "providers:\n  - {name: a, protocol: anthropic, model: m}\n  - {name: b, protocol: openai, model: n}\n"
     path.write_text(base + "persist_sessions: false\nmemory_provider: b\nauto_memory: false\n", encoding="utf-8")
@@ -191,7 +188,6 @@ def test_ac3_settings_accept_the_new_switches(tmp_path):
             load_settings(path)
 
 
-# AC4 ----------------------------------------------------------------------------------------
 
 def _raw_session(tmp_path, lines):
     project, home = tmp_path / "project", tmp_path / "home"
@@ -202,7 +198,7 @@ def _raw_session(tmp_path, lines):
     return session.transcript_path
 
 
-def test_ac4_replay_skips_bad_lines_and_applies_compact_and_provider_records(tmp_path):
+def test_replay_skips_bad_lines_and_applies_compact_and_provider_records(tmp_path):
     native = ({"type": "thinking", "signature": "sig"},)
     boundary = user("（摘要）", synthetic="compact")
     path = _raw_session(tmp_path, [
@@ -223,7 +219,7 @@ def test_ac4_replay_skips_bad_lines_and_applies_compact_and_provider_records(tmp
     assert [m.text for m in whole.history] == ["（摘要）", "u", "a"]
 
 
-def test_ac4_provider_records_strip_earlier_messages_and_name_the_model(tmp_path):
+def test_provider_records_strip_earlier_messages_and_name_the_model(tmp_path):
     native = ({"type": "thinking", "signature": "sig"},)
     path = _raw_session(tmp_path, [
         message_record(user("u1")), message_record(assistant("a1", protocol="openai-responses", native=native)),
@@ -235,12 +231,11 @@ def test_ac4_provider_records_strip_earlier_messages_and_name_the_model(tmp_path
     assert load_session(path, ("second", "anthropic-messages")).stripped
 
 
-# AC5 ----------------------------------------------------------------------------------------
 
 THREE = [ToolCall(f"c{i}", "read_file", json.dumps({"path": f"{i}.txt"})) for i in (1, 2, 3)]
 
 
-def test_ac5_missing_results_are_filled_orphans_dropped_and_trailing_users_returned(tmp_path):
+def test_missing_results_are_filled_orphans_dropped_and_trailing_users_returned(tmp_path):
     history, filled = repair([user("做"), assistant("我先看三个文件", THREE)])
     assert filled == 3 and history[1].text == "我先看三个文件"
     assert [(r.call_id, r.code, r.output) for r in history[2].tool_results] == [(f"c{i}", "interrupted", INTERRUPTED)
@@ -259,7 +254,7 @@ def test_ac5_missing_results_are_filled_orphans_dropped_and_trailing_users_retur
 
 
 @pytest.mark.parametrize("case", range(3))
-async def test_ac5_every_protocol_accepts_the_repaired_history(case):
+async def test_every_protocol_accepts_the_repaired_history(case):
     from test_providers import CASES, SSEBody, adapter
     protocol, cls, frames, _ = CASES[case]
     provider, requests, _ = adapter(protocol, cls, lambda: SSEBody(frames()))
@@ -274,9 +269,8 @@ async def test_ac5_every_protocol_accepts_the_repaired_history(case):
         await provider.close()
 
 
-# AC6 ----------------------------------------------------------------------------------------
 
-def test_ac6_lists_twenty_newest_with_titles_counts_and_locks(tmp_path, monkeypatch):
+def test_lists_twenty_newest_with_titles_counts_and_locks(tmp_path, monkeypatch):
     long = "很长的标题" * 20
     sessions = []
     for index in range(22):
@@ -301,7 +295,7 @@ def test_ac6_lists_twenty_newest_with_titles_counts_and_locks(tmp_path, monkeypa
     assert all(not s.path.with_suffix("").exists() for s in listed)
 
 
-async def test_ac6_empty_project_and_unknown_ids_are_explained(tmp_path):
+async def test_empty_project_and_unknown_ids_are_explained(tmp_path):
     conv = make(tmp_path, SequenceProvider())
     with pytest.raises(ProviderError, match="本项目没有可恢复的会话"):
         conv.resolve_session(None)
@@ -311,10 +305,9 @@ async def test_ac6_empty_project_and_unknown_ids_are_explained(tmp_path):
         conv.resolve_session("20990101-000000-abcd")
 
 
-# AC7 ----------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("auto_compact", [True, False])
-async def test_ac7_an_oversized_session_is_compacted_before_input(tmp_path, auto_compact):
+async def test_an_oversized_session_is_compacted_before_input(tmp_path, auto_compact):
     saved = write_session(tmp_path, chat(8))
     conv = make(tmp_path, SequenceProvider(summary_reply()), budget=SMALL, auto_compact=auto_compact)
     events = await drain(conv.resume(saved.id))
@@ -327,7 +320,7 @@ async def test_ac7_an_oversized_session_is_compacted_before_input(tmp_path, auto
     await conv.close()
 
 
-async def test_ac7_failed_compaction_still_restores(tmp_path):
+async def test_failed_compaction_still_restores(tmp_path):
     saved = write_session(tmp_path, chat(8))
     conv = make(tmp_path, SequenceProvider(NO_SUMMARY), budget=SMALL)
     events = await drain(conv.resume(saved.id))
@@ -338,14 +331,13 @@ async def test_ac7_failed_compaction_still_restores(tmp_path):
     await conv.close()
 
 
-# AC8 ----------------------------------------------------------------------------------------
 
 def _supplements(request):
     return " ".join(item.text for item in request[1].supplements)
 
 
 @pytest.mark.parametrize("hours,reminded", [(7, True), (5, False)])
-async def test_ac8_gap_reminder_once_and_never_saved(tmp_path, hours, reminded):
+async def test_gap_reminder_once_and_never_saved(tmp_path, hours, reminded):
     when = datetime.now().astimezone() - timedelta(hours=hours)
     saved = write_session(tmp_path, [user("一"), assistant("二")], when=when)
     provider = SequenceProvider(response("三"), response("四"))
@@ -360,7 +352,7 @@ async def test_ac8_gap_reminder_once_and_never_saved(tmp_path, hours, reminded):
     await conv.close()
 
 
-async def test_ac8_reads_session_rules_and_usage_reset_but_the_mode_stays(tmp_path):
+async def test_reads_session_rules_and_usage_reset_but_the_mode_stays(tmp_path):
     (tmp_path / "project").mkdir()
     (tmp_path / "project" / "a.txt").write_text("alpha", encoding="utf-8")
     saved = write_session(tmp_path, [user("一"), assistant("二")])
@@ -380,10 +372,9 @@ async def test_ac8_reads_session_rules_and_usage_reset_but_the_mode_stays(tmp_pa
     await conv.close()
 
 
-# AC9 ----------------------------------------------------------------------------------------
 
-async def test_ac9_resume_appends_to_the_same_file_and_clear_starts_a_new_one(tmp_path):
-    from test_context_stage8 import Dump, dump
+async def test_resume_appends_to_the_same_file_and_clear_starts_a_new_one(tmp_path):
+    from test_context import Dump, dump
     project = tmp_path / "project"
     project.mkdir()
     registry = create_default_registry(project, permission_mode="bypassPermissions", load_permissions=False)
@@ -407,7 +398,7 @@ async def test_ac9_resume_appends_to_the_same_file_and_clear_starts_a_new_one(tm
     await conv.close()
 
 
-async def test_ac9_model_switch_writes_a_provider_record(tmp_path):
+async def test_model_switch_writes_a_provider_record(tmp_path):
     conv = make(tmp_path, SequenceProvider(response("一")))
     await conv.ask("你好")
     await conv.set_provider(SequenceProvider(), info=("other", "openai-responses", "model-b"))
@@ -416,9 +407,8 @@ async def test_ac9_model_switch_writes_a_provider_record(tmp_path):
     await conv.close()
 
 
-# AC10 ---------------------------------------------------------------------------------------
 
-def test_ac10_cleanup_removes_old_sessions_together_and_skips_the_rest(tmp_path):
+def test_cleanup_removes_old_sessions_together_and_skips_the_rest(tmp_path):
     home = tmp_path / "home"
     now = datetime.now()
     base = project_sessions(tmp_path / "project", home)
@@ -456,14 +446,13 @@ def test_ac10_cleanup_removes_old_sessions_together_and_skips_the_rest(tmp_path)
     assert busy[0].exists() and busy[1].exists() and stray.exists() and not legacy.exists()
 
 
-def test_ac10_project_keys_are_readable_hashed_and_case_folded_on_windows(tmp_path):
+def test_project_keys_are_readable_hashed_and_case_folded_on_windows(tmp_path):
     key = project_key(tmp_path / "My Project")
     assert key.endswith("-" + key.rsplit("-", 1)[1]) and len(key.rsplit("-", 1)[1]) == 8
     assert key.rsplit("-", 1)[0].endswith("my-project" if os.name == "nt" else "My-Project")
     assert project_key(tmp_path / "a-b") != project_key(tmp_path / "a" / "b")
 
 
-# AC11 ---------------------------------------------------------------------------------------
 
 def _cli(monkeypatch, capsys, args, provider):
     from mosscode import cli
@@ -479,7 +468,7 @@ def _cli(monkeypatch, capsys, args, provider):
     return code, captured.out, captured.err
 
 
-def test_ac11_cli_continue_and_resume_answer_in_the_restored_context(monkeypatch, capsys):
+def test_cli_continue_and_resume_answer_in_the_restored_context(monkeypatch, capsys):
     code, out, _ = _cli(monkeypatch, capsys, ["-p", "记住数字 42", "--output-format", "json"],
                         SequenceProvider(response("记住了")))
     first = json.loads(out)
@@ -496,7 +485,7 @@ def test_ac11_cli_continue_and_resume_answer_in_the_restored_context(monkeypatch
     assert len(provider.requests[0][0]) == 5
 
 
-def test_ac11_cli_rejects_resume_without_id_in_print_mode_and_unknown_ids(monkeypatch, capsys):
+def test_cli_rejects_resume_without_id_in_print_mode_and_unknown_ids(monkeypatch, capsys):
     code, _, err = _cli(monkeypatch, capsys, ["--resume", "-p", "hi"], SequenceProvider())
     assert code == 2 and "--continue" in err
     code, _, err = _cli(monkeypatch, capsys, ["--resume", "20990101-000000-abcd", "-p", "hi"], SequenceProvider())
@@ -505,7 +494,7 @@ def test_ac11_cli_rejects_resume_without_id_in_print_mode_and_unknown_ids(monkey
     assert code == 1 and "本项目没有可恢复的会话" in err
 
 
-async def test_ac11_tui_lists_resumes_renders_and_returns_unanswered_text(tmp_path):
+async def test_tui_lists_resumes_renders_and_returns_unanswered_text(tmp_path):
     from rich.console import Console
     from textual.widgets import OptionList, Static
     from mosscode.tui import MossCodeApp, PromptArea
@@ -541,7 +530,7 @@ async def test_ac11_tui_lists_resumes_renders_and_returns_unanswered_text(tmp_pa
     await conv.close()
 
 
-async def test_ac11_tui_refuses_resume_while_running(tmp_path):
+async def test_tui_refuses_resume_while_running(tmp_path):
     import asyncio
     from mosscode.tui import MossCodeApp, PromptArea
     from test_conversation import FakeProvider

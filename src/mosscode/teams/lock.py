@@ -1,4 +1,4 @@
-"""Ch15 MB3/MB4: a lock file next to each data file, and writes a reader never sees half done.
+"""A lock file next to each data file, and writes a reader never sees half done.
 
 Every team file (config, tasks, mailboxes) is read, changed and written under its lock; the lock is
 held only for the file work, never across a model call.
@@ -53,7 +53,7 @@ def _holder(lock: Path) -> str:
 @contextmanager
 def file_lock(path: Path, *, busy: str = "team_busy", retries: int = LOCK_RETRIES, stale: float = STALE_AFTER,
               deadline: float = DEADLINE):
-    """MB3: O_CREAT|O_EXCL on <file>.lock; retries with random backoff, then TeamError(busy).
+    """O_CREAT|O_EXCL on <file>.lock; retries with random backoff, then TeamError(busy).
 
     The count starts again whenever the lock changed hands (others are making progress, it is not stuck),
     within an overall deadline; a lock held by one holder throughout fails after `retries`.
@@ -107,7 +107,7 @@ def _release(lock: Path) -> None:
 
 
 def atomic_write(path: Path, data: Any) -> None:
-    """MB4: a temporary file in the same directory, then os.replace (retried briefly on Windows)."""
+    """A temporary file in the same directory, then os.replace (retried briefly on Windows)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -141,7 +141,7 @@ def read_text(path: Path) -> str:
 
 def load_json(path: Path, default: Callable[[], Any], valid: Callable[[Any], bool],
               on_notice: Callable[[str], None] | None = None) -> Any:
-    """MB4: missing -> default; unreadable or the wrong shape -> kept as <file>.corrupt-<time>, then default."""
+    """Missing -> default; unreadable or the wrong shape -> kept as <file>.corrupt-<time>, then default."""
     try:
         text = read_text(path)
     except FileNotFoundError:

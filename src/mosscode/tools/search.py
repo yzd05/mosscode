@@ -11,7 +11,7 @@ from .process import run_process
 
 
 SKIP_DIRS = (".git", ".venv", "venv", "node_modules", "__pycache__")
-WORKTREES = (".mosscode", "worktrees")  # Ch14 S1: skipped unless the search starts inside one.
+WORKTREES = (".mosscode", "worktrees")  # Skipped unless the search starts inside one.
 GLOB_LIMIT = 200
 
 

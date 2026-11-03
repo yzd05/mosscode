@@ -1,4 +1,4 @@
-"""W2/W3: worktree names. A name may come from a command, so it is checked before it reaches a path or git."""
+"""Worktree names. A name may come from a command, so it is checked before it reaches a path or git."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ NAME_LIMIT = 64
 SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 EPHEMERAL = re.compile(r"agent-[0-9a-f]{8}")
 BRANCH_PREFIX = "mosscode/"
-# D15: names Windows reserves for devices, with or without an extension.
+# Names Windows reserves for devices, with or without an extension.
 RESERVED = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))})
 
 
@@ -38,7 +38,7 @@ def validate_name(name: str) -> str | None:
 
 
 def flatten(name: str) -> str:
-    """W1: one directory level and one branch level, so a/b never collides with a branch a (git D/F)."""
+    """One directory level and one branch level, so a/b never collides with a branch a (git D/F)."""
     return name.replace("/", "+")
 
 

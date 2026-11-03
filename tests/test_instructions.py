@@ -1,4 +1,4 @@
-"""Stage 9a: instruction layers and @include expansion (docs/specs/chapter-09-memory/9a-instructions.md)."""
+"""Instruction layers and @include expansion."""
 
 import os
 import subprocess
@@ -32,7 +32,6 @@ def load(project, home, tmp_path):
     return [f for f in files if tmp_path in f.path.resolve().parents], problems
 
 
-# AC1 (I1-I3)
 
 def test_layers_run_from_user_to_dot_mosscode(tmp_path):
     home, project = tree(tmp_path)
@@ -49,7 +48,6 @@ def test_layers_run_from_user_to_dot_mosscode(tmp_path):
     assert [f.text for f in files] == ["用户级", "专用"]
 
 
-# AC2 (N1-N3)
 
 def test_references_expand_relative_to_their_own_file(tmp_path):
     home, project = tree(tmp_path)
@@ -83,7 +81,6 @@ def test_user_file_may_reference_its_own_directory_with_tilde(tmp_path):
     assert problems == [f"项目指令引用未展开：{home / '.mosscode' / 'AGENTS.md'} 中的 @~/other.md（超出允许的目录）"]
 
 
-# AC3 (N4-N6)
 
 def test_reference_depth_is_limited(tmp_path):
     home, project = tree(tmp_path)
@@ -115,7 +112,6 @@ def test_cycles_are_reported_and_shared_files_load_once(tmp_path):
                                 "项目指令引用未展开：b.md 中的 @a.md（循环引用）"]
 
 
-# AC4 (N7)
 
 def test_references_cannot_leave_their_layer_boundary(tmp_path):
     home, project = tree(tmp_path)
@@ -152,7 +148,6 @@ def test_junction_out_of_the_project_is_not_followed(tmp_path):
         os.rmdir(link)
 
 
-# AC5 (N8, N9)
 
 def test_unreadable_references_are_replaced_and_the_rest_loads(tmp_path):
     home, project = tree(tmp_path)
@@ -179,7 +174,6 @@ def test_expanded_text_is_capped(tmp_path):
     assert note == "（引用展开后超过 64 KiB，其余内容已截断）" and len(body.encode()) <= EXPANDED_LIMIT
 
 
-# AC6 (N10, N11)
 
 async def test_notices_list_references_and_instructions_stay_frozen(tmp_path):
     home, project = tree(tmp_path)
@@ -190,7 +184,7 @@ async def test_notices_list_references_and_instructions_stay_frozen(tmp_path):
     conv = Conversation(provider, context_root=project, instructions_home=home)
     notices = await conv.start()
     # Only the problem is announced; the loaded files are listed by /memory.
-    assert conv.instruction_files == ("AGENTS.md（引用 docs/style.md）",)
+    assert conv.instruction_files[-1:] == ("AGENTS.md（引用 docs/style.md）",)  # Ancestors may add their own.
     assert notices == ("项目指令引用未展开：AGENTS.md 中的 @../outside.md（超出允许的目录）",)
     await conv.ask("一")
     style.write_text("新规范", encoding="utf-8")
@@ -208,4 +202,4 @@ async def test_startup_announces_only_problems(tmp_path):
     conv = Conversation(SequenceProvider(), context_root=project, instructions_home=home)
     notices = await conv.start()
     assert notices == ("项目指令过长，已截断：AGENTS.md；可用 /memory 查看已加载的文件。",)
-    assert conv.instruction_files == ("AGENTS.md（已截断）",)
+    assert conv.instruction_files[-1:] == ("AGENTS.md（已截断）",)

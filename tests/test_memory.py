@@ -1,4 +1,4 @@
-"""Chapter 9c: memory notes, injection, the memory tool and background extraction."""
+"""Memory notes, injection, the memory tool and background extraction."""
 
 import asyncio
 import json
@@ -21,7 +21,7 @@ from mosscode.messages import (CompactFinished, Completed, ContentBlock, Message
 from mosscode.prompts import MEMORY_NOTE
 from mosscode.tools import create_default_registry
 from test_agent import call, response
-from test_context_stage8 import chat, summary_reply
+from test_context import chat, summary_reply
 
 TODAY = date.today().isoformat()
 SAVE = {"op": "save", "scope": "user", "name": "prefer-pnpm", "type": "user",
@@ -103,9 +103,8 @@ def system_text(request):
     return request[1].stable
 
 
-# AC1 ----------------------------------------------------------------------------------------
 
-def test_ac1_save_overwrite_delete_and_index_order(tmp_path):
+def test_save_overwrite_delete_and_index_order(tmp_path):
     store = store_for(tmp_path)
     note, created = store.save("user", "alpha", "user", "第一条", "正文 A", today="2026-10-01")
     assert created and note.path == store.directory("user") / "alpha.md"
@@ -125,7 +124,7 @@ def test_ac1_save_overwrite_delete_and_index_order(tmp_path):
     assert caught.value.code == "not_found" and "用户级有同名笔记" in str(caught.value)
 
 
-def test_ac1_bad_notes_are_skipped_marked_and_hand_edits_regenerate_the_index(tmp_path):
+def test_bad_notes_are_skipped_marked_and_hand_edits_regenerate_the_index(tmp_path):
     store = store_for(tmp_path)
     store.save("project", "build", "project", "构建步骤", "用 make\n原因：脚本\n适用方式：构建时", today="2026-10-02")
     folder = store.directory("project")
@@ -141,7 +140,7 @@ def test_ac1_bad_notes_are_skipped_marked_and_hand_edits_regenerate_the_index(tm
     assert "手工改过的描述" in (folder / INDEX_FILE).read_text(encoding="utf-8")
 
 
-def test_ac1_a_failed_write_leaves_the_original_note(tmp_path, monkeypatch):
+def test_a_failed_write_leaves_the_original_note(tmp_path, monkeypatch):
     store = store_for(tmp_path)
     note, _ = store.save("user", "keep", "user", "原描述", "原正文")
     before = note.path.read_text(encoding="utf-8")
@@ -155,7 +154,6 @@ def test_ac1_a_failed_write_leaves_the_original_note(tmp_path, monkeypatch):
     assert not list(store.directory("user").glob("*.tmp")) and not list(store.directory("user").glob(".*.tmp"))
 
 
-# AC2 ----------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(("scope", "name", "type_", "description", "body", "code"), [
     ("user", "facts", "project", "d", "b", "scope_mismatch"),
@@ -171,7 +169,7 @@ def test_ac1_a_failed_write_leaves_the_original_note(tmp_path, monkeypatch):
     ("user", "ok", "user", "d", "字" * 1366, "body_too_large"),
     ("user", "ok", "user", "d", "api_key = sk-abcdefghijklmnopqrstuvwx", "secret_detected"),
 ])
-def test_ac2_invalid_notes_are_rejected_with_a_reason(tmp_path, scope, name, type_, description, body, code):
+def test_invalid_notes_are_rejected_with_a_reason(tmp_path, scope, name, type_, description, body, code):
     store = store_for(tmp_path)
     with pytest.raises(MemoryFailure) as caught:
         store.save(scope, name, type_, description, body)
@@ -181,15 +179,14 @@ def test_ac2_invalid_notes_are_rejected_with_a_reason(tmp_path, scope, name, typ
         assert "路径" in str(caught.value)
 
 
-def test_ac2_limits_are_inclusive_and_project_type_fits_the_project_scope(tmp_path):
+def test_limits_are_inclusive_and_project_type_fits_the_project_scope(tmp_path):
     store = store_for(tmp_path)
     store.save("project", "x" * 60, "project", "长" * 150, "字" * 1365)  # 4,095 bytes.
     assert len(store.load("project")) == 1
 
 
-# AC3 ----------------------------------------------------------------------------------------
 
-async def test_ac3_section_follows_instructions_is_frozen_and_reloads_after_clear(tmp_path):
+async def test_section_follows_instructions_is_frozen_and_reloads_after_clear(tmp_path):
     provider = RoutingProvider(main=[
         response("好的"),
         response("记下", [memory_call("m1", action="save", scope="user", name="new-note", type="user",
@@ -208,14 +205,14 @@ async def test_ac3_section_follows_instructions_is_frozen_and_reloads_after_clea
     assert str(store.directory("user")) in first and str(store.directory("project")) in first
     await say(conv, "记住这个")
     assert (store.directory("user") / "new-note.md").exists()
-    assert system_text(provider.requests[1]) == first and system_text(provider.requests[2]) == first  # P1: frozen.
+    assert system_text(provider.requests[1]) == first and system_text(provider.requests[2]) == first  # Frozen.
     await conv.clear()
     await say(conv, "新会话")
     assert "[new-note](new-note.md) — 新写的笔记" in system_text(provider.requests[3])
     await conv.close()
 
 
-def test_ac3_index_size_limits(tmp_path):
+def test_index_size_limits(tmp_path):
     store = store_for(tmp_path)
     for i in range(300):
         store.save("user" if i % 2 else "project", f"note-{i:03d}", "reference", f"第 {i} 条笔记，" + "说明" * 40, "b",
@@ -234,7 +231,7 @@ def test_ac3_index_size_limits(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["default", "plan"])
-async def test_ac3_reading_notes_needs_no_approval(tmp_path, mode):
+async def test_reading_notes_needs_no_approval(tmp_path, mode):
     conv, store = make(tmp_path, RoutingProvider(), auto=False, mode=mode)
     note, _ = store.save("user", "habit", "user", "用户习惯", "正文内容")
     registry = conv.registry
@@ -249,7 +246,7 @@ async def test_ac3_reading_notes_needs_no_approval(tmp_path, mode):
     await conv.close()
 
 
-async def test_ac3_memory_off_means_no_section_no_tool(tmp_path):
+async def test_memory_off_means_no_section_no_tool(tmp_path):
     provider = RoutingProvider(main=[response("好")])
     conv, _ = make(tmp_path, provider, memory=False)
     await say(conv, "你好")
@@ -258,10 +255,9 @@ async def test_ac3_memory_off_means_no_section_no_tool(tmp_path):
     await conv.close()
 
 
-# AC4 ----------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("mode", ["default", "plan"])
-async def test_ac4_tool_saves_and_deletes_without_approval(tmp_path, mode):
+async def test_tool_saves_and_deletes_without_approval(tmp_path, mode):
     conv, store = make(tmp_path, RoutingProvider(), auto=False, mode=mode)
     registry = conv.registry
     assert "memory" in [d.name for d in registry.definitions(plan=mode == "plan")]
@@ -280,7 +276,7 @@ async def test_ac4_tool_saves_and_deletes_without_approval(tmp_path, mode):
     await conv.close()
 
 
-async def test_ac4_tool_lines(tmp_path):
+async def test_tool_lines(tmp_path):
     from mosscode.messages import ToolProgress
     from mosscode.tui import MossCodeApp, ToolEntry
     conv, _ = make(tmp_path, RoutingProvider(), auto=False)
@@ -303,9 +299,8 @@ def _tool_lines(ToolEntry, ToolProgress):
     assert "失败" in entry.transcript.plain
 
 
-# AC5 ----------------------------------------------------------------------------------------
 
-async def test_ac5_extraction_input_has_only_what_was_said(tmp_path):
+async def test_extraction_input_has_only_what_was_said(tmp_path):
     provider = RoutingProvider(main=[response("先读", [call("read_file", "r", path="notes.txt")]), response("读完了，总结如下")],
                                extract=[ops_reply([])])
     conv, store = make(tmp_path, provider)
@@ -325,7 +320,7 @@ async def test_ac5_extraction_input_has_only_what_was_said(tmp_path):
     await conv.close()
 
 
-def test_ac5_long_input_keeps_the_newest_part_and_skips_summaries():
+def test_long_input_keeps_the_newest_part_and_skips_summaries():
     messages = [user("很早的消息 " + "旧" * 3000), user("摘要内容", synthetic="compact")] + \
                [user(f"消息{i} " + "新" * 2000) for i in range(8)]
     text = conversation_text(messages)
@@ -334,14 +329,13 @@ def test_ac5_long_input_keeps_the_newest_part_and_skips_summaries():
     assert "条消息超出长度上限，已省略" in text
 
 
-def test_ac5_operation_parsing():
+def test_operation_parsing():
     assert parse_operations("<analysis>x</analysis><operations>\n```json\n[]\n```\n</operations>") == []
     for bad in ("没有标签", "<operations>{not json}</operations>", '<operations>{"op": "save"}</operations>'):
         with pytest.raises(ExtractionError):
             parse_operations(bad)
 
 
-# AC6 ----------------------------------------------------------------------------------------
 
 async def run_extraction(tmp_path, operations, store=None):
     store = store or store_for(tmp_path)
@@ -353,7 +347,7 @@ async def run_extraction(tmp_path, operations, store=None):
     return store, results, extractor
 
 
-async def test_ac6_at_most_five_operations_and_secrets_rejected_one_by_one(tmp_path):
+async def test_at_most_five_operations_and_secrets_rejected_one_by_one(tmp_path):
     operations = [dict(SAVE, name=f"note-{i}") for i in range(7)]
     store, results, _ = await run_extraction(tmp_path, operations)
     assert sorted(n.name for n in store.load()) == [f"note-{i}" for i in range(5)]
@@ -364,12 +358,12 @@ async def test_ac6_at_most_five_operations_and_secrets_rejected_one_by_one(tmp_p
     assert [n.name for n in store.load()] == ["fine"] and results[0].rejected == 3
 
 
-async def test_ac6_empty_operations_write_nothing_and_show_nothing(tmp_path):
+async def test_empty_operations_write_nothing_and_show_nothing(tmp_path):
     store, results, extractor = await run_extraction(tmp_path, [])
     assert store.load() == [] and results == [] and extractor.backlog == []
 
 
-async def test_ac6_same_name_save_updates_the_existing_note(tmp_path):
+async def test_same_name_save_updates_the_existing_note(tmp_path):
     store = store_for(tmp_path)
     store.save("user", "prefer-pnpm", "user", "旧描述", "旧正文", today="2020-01-01")
     store, results, _ = await run_extraction(tmp_path, [dict(SAVE, body="合并后的正文")], store)
@@ -377,7 +371,7 @@ async def test_ac6_same_name_save_updates_the_existing_note(tmp_path):
     assert len(notes) == 1 and notes[0].updated == TODAY and notes[0].body == "合并后的正文"
 
 
-def test_ac6_secret_patterns():
+def test_secret_patterns():
     for text in ("sk-abcdefghijklmnopqrstuvwxyz", "AKIAABCDEFGHIJKLMNOP", "-----BEGIN RSA PRIVATE KEY-----",
                  "OPENAI_API_KEY=abcd1234efgh", "token: 0123456789abcdef", "ghp_abcdefghijklmnopqrstuvwxyz0123",
                  "xoxb-1234567890-abcdef"):
@@ -386,9 +380,8 @@ def test_ac6_secret_patterns():
         assert not find_secret(text), text
 
 
-# AC7 ----------------------------------------------------------------------------------------
 
-async def test_ac7_completed_task_extracts_in_the_background(tmp_path):
+async def test_completed_task_extracts_in_the_background(tmp_path):
     provider = RoutingProvider(main=[response("好的"), response("第二次")], extract=[ops_reply([SAVE]), ops_reply([])])
     provider.gate = asyncio.Event()
     conv, store = make(tmp_path, provider)
@@ -405,7 +398,7 @@ async def test_ac7_completed_task_extracts_in_the_background(tmp_path):
     await conv.close()
 
 
-async def test_ac7_failed_tasks_do_not_trigger_and_are_included_next_time(tmp_path):
+async def test_failed_tasks_do_not_trigger_and_are_included_next_time(tmp_path):
     provider = RoutingProvider(main=[response("读", [call("read_file", "r", path="a.txt")]), ProviderError("断了"),
                                      response("好")], extract=[ops_reply([])])
     conv, _ = make(tmp_path, provider)
@@ -419,7 +412,7 @@ async def test_ac7_failed_tasks_do_not_trigger_and_are_included_next_time(tmp_pa
     await conv.close()
 
 
-async def test_ac7_triggers_while_running_merge_into_one_follow_up(tmp_path):
+async def test_triggers_while_running_merge_into_one_follow_up(tmp_path):
     store = store_for(tmp_path)
     provider = RoutingProvider(extract=[ops_reply([]), ops_reply([])])
     provider.gate = asyncio.Event()
@@ -435,7 +428,7 @@ async def test_ac7_triggers_while_running_merge_into_one_follow_up(tmp_path):
     assert "二" in second and "三" in second and "[用户]\n一" not in second and extractor.backlog == []
 
 
-async def test_ac7_failures_keep_the_backlog_and_pause_after_three(tmp_path):
+async def test_failures_keep_the_backlog_and_pause_after_three(tmp_path):
     store = store_for(tmp_path)
     provider = RoutingProvider(extract=[ProviderError("服务不可用"), Completed(Message("assistant", (ContentBlock("text", "无"),)), "stop"),
                                         ops_reply("not a list")])
@@ -451,8 +444,8 @@ async def test_ac7_failures_keep_the_backlog_and_pause_after_three(tmp_path):
     assert extractor._task.done() and len(provider.extractions) == 3
 
 
-async def test_ac7_compaction_hands_over_messages_and_moves_the_cursor(tmp_path):
-    from test_context_stage8 import SMALL
+async def test_compaction_hands_over_messages_and_moves_the_cursor(tmp_path):
+    from test_context import SMALL
     provider = RoutingProvider(main=[summary_reply(), response("压缩后的回复")], extract=[ops_reply([]), ops_reply([])])
     conv, _ = make(tmp_path, provider, budget=SMALL)
     conv._agent.history = chat(10)
@@ -473,7 +466,7 @@ async def test_ac7_compaction_hands_over_messages_and_moves_the_cursor(tmp_path)
     await conv.close()
 
 
-async def test_ac7_clear_and_resume_rewind_the_cursor(tmp_path):
+async def test_clear_and_resume_rewind_the_cursor(tmp_path):
     conv, _ = make(tmp_path, RoutingProvider(main=[response("好")]), auto=True)
     conv._agent.history = [user("旧消息")]
     await conv.clear()
@@ -484,7 +477,7 @@ async def test_ac7_clear_and_resume_rewind_the_cursor(tmp_path):
     await conv.close()
 
 
-async def test_ac7_exit_waits_at_most_briefly(tmp_path):
+async def test_exit_waits_at_most_briefly(tmp_path):
     store = store_for(tmp_path)
     provider = RoutingProvider(extract=[ops_reply([SAVE])])
     provider.gate = asyncio.Event()
@@ -502,7 +495,7 @@ async def test_ac7_exit_waits_at_most_briefly(tmp_path):
     assert memory_extract.EXIT_WAIT == 5.0
 
 
-def test_ac7_headless_runs_never_extract(tmp_path):
+def test_headless_runs_never_extract(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("providers:\n  - {name: a, protocol: anthropic, model: m}\n", encoding="utf-8")
     settings = load_settings(path)
@@ -510,9 +503,8 @@ def test_ac7_headless_runs_never_extract(tmp_path):
     assert _memory_options(settings, interactive=True)["auto_memory"] is True
 
 
-# AC8 ----------------------------------------------------------------------------------------
 
-async def test_ac8_tui_memory_command_and_update_line(tmp_path):
+async def test_tui_memory_command_and_update_line(tmp_path):
     from rich.console import Console
     from textual.widgets import Static
     from mosscode.tui import MossCodeApp
@@ -546,7 +538,7 @@ async def test_ac8_tui_memory_command_and_update_line(tmp_path):
     await conv.close()
 
 
-async def test_ac8_memory_command_when_off(tmp_path):
+async def test_memory_command_when_off(tmp_path):
     conv, _ = make(tmp_path, RoutingProvider(), memory=False)
     report = memory_report(conv, "")
     assert report.startswith("项目指令") and report.endswith("记忆已关闭（memory: false）。")
@@ -555,9 +547,8 @@ async def test_ac8_memory_command_when_off(tmp_path):
     await conv.close()
 
 
-# AC9 ----------------------------------------------------------------------------------------
 
-async def test_ac9_extraction_usage_counts_but_not_the_context(tmp_path):
+async def test_extraction_usage_counts_but_not_the_context(tmp_path):
     provider = RoutingProvider(main=[response("好", usage=Usage(100, 10))], extract=[ops_reply([], Usage(500, 50))])
     provider.gate = asyncio.Event()
     conv, _ = make(tmp_path, provider)
@@ -571,7 +562,7 @@ async def test_ac9_extraction_usage_counts_but_not_the_context(tmp_path):
     await conv.close()
 
 
-async def test_ac9_switches(tmp_path):
+async def test_switches(tmp_path):
     conv, store = make(tmp_path, RoutingProvider(), auto=False)
     assert conv.extractor is None and conv.registry.get("memory") is not None
     await conv.close()
@@ -589,7 +580,7 @@ async def test_ac9_switches(tmp_path):
     await options["memory_provider"].close()
 
 
-async def test_ac9_extraction_uses_the_memory_provider(tmp_path):
+async def test_extraction_uses_the_memory_provider(tmp_path):
     main = RoutingProvider(main=[response("好")])
     side = RoutingProvider(extract=[ops_reply([])])
     conv, _ = make(tmp_path, main, memory_provider=side)
