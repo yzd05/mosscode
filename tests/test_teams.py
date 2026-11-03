@@ -2,8 +2,11 @@
 
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -33,6 +36,24 @@ def board(tmp_path):
 
 
 ROSTER = ("alice", "bob")
+
+HOLD_LOCK = """
+import sys, time
+from pathlib import Path
+from mosscode.teams.lock import file_lock
+with file_lock(Path(sys.argv[1])):
+    print("held", flush=True)
+    time.sleep(60)
+"""
+
+
+@contextmanager
+def lock_timeout(seconds):
+    saved, lock_module.TIMEOUT = lock_module.TIMEOUT, seconds
+    try:
+        yield
+    finally:
+        lock_module.TIMEOUT = saved
 
 
 @pytest.mark.parametrize("name", ["auth", "a", "team-2", "0x", "a" * 32])
@@ -128,32 +149,64 @@ def test_two_writers_lose_nothing(tmp_path):
     assert len(messages) == 400
     for name in ROSTER:
         assert [m.body for m in messages if m.sender == name] == [str(i) for i in range(200)]
-    assert not list(tmp_path.glob("*.lock")) and not list(tmp_path.glob("*.tmp"))
+    assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_stale_lock_is_taken_over(tmp_path):
+def test_a_lock_left_by_a_crashed_process_does_not_block(tmp_path):
     mailbox = Mailbox(tmp_path)
-    lock = tmp_path / "bob.json.lock"
-    lock.write_text("999 old", encoding="utf-8")
-    old = time.time() - 11
-    os.utime(lock, (old, old))
-    mailbox.send("bob", text(LEAD))
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLD_LOCK, str(tmp_path / "bob.json")], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(TeamError) as caught, lock_timeout(0.1):
+            mailbox.send("bob", text(LEAD, "while held"))
+        assert caught.value.code == "mailbox_busy"
+    finally:
+        holder.kill()
+        holder.wait()
+    with lock_timeout(1.0):
+        mailbox.send("bob", text(LEAD))
     assert [m.body for m in mailbox.read_unread("bob")] == ["hi"]
-    assert not lock.exists()
 
 
-def test_busy_lock_is_an_error_and_nothing_changes(tmp_path, monkeypatch):
+def test_a_leftover_lock_file_alone_does_not_block(tmp_path):
+    mailbox = Mailbox(tmp_path)
+    (tmp_path / "bob.json.lock").write_text("999 old", encoding="utf-8")
+    with lock_timeout(0.5):
+        mailbox.send("bob", text(LEAD))
+    assert [m.body for m in mailbox.read_unread("bob")] == ["hi"]
+
+
+def test_busy_lock_is_an_error_and_nothing_changes(tmp_path):
     mailbox = Mailbox(tmp_path)
     mailbox.send("bob", text(LEAD, "first"))
     before = (tmp_path / "bob.json").read_text(encoding="utf-8")
-    sleeps = []
-    monkeypatch.setattr(lock_module.time, "sleep", sleeps.append)
-    with file_lock(tmp_path / "bob.json"):
+    with file_lock(tmp_path / "bob.json"), lock_timeout(0.1):
+        started = time.monotonic()
         with pytest.raises(TeamError) as caught:
             mailbox.send("bob", text(LEAD, "second"))
-    assert caught.value.code == "mailbox_busy"
-    assert len(sleeps) == 10 and all(0.005 <= s <= 0.1 for s in sleeps)
+    assert caught.value.code == "mailbox_busy" and time.monotonic() - started < 2
     assert (tmp_path / "bob.json").read_text(encoding="utf-8") == before
+
+
+def test_a_waiter_gets_the_lock_once_it_is_released(tmp_path):
+    mailbox = Mailbox(tmp_path)
+    held = threading.Event()
+
+    def hold():
+        with file_lock(tmp_path / "bob.json"):
+            held.set()
+            time.sleep(0.2)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(5)
+        mailbox.send("bob", text(LEAD))
+    finally:
+        holder.join()
+    assert [m.body for m in mailbox.read_unread("bob")] == ["hi"]
 
 
 def test_read_marks_read_and_trims(tmp_path):
@@ -331,22 +384,6 @@ def test_broken_mailbox_is_kept_aside(tmp_path):
     mailbox.send("bob", text(LEAD))
     assert len(mailbox.peek("bob")) == 1
     assert list(tmp_path.glob("bob.json.corrupt-*")) and notes
-
-
-def test_release_retries_while_a_waiter_reads_the_lock(tmp_path, monkeypatch):
-    """Windows: deleting a file another thread has open fails for a moment; the lock must still go."""
-    real, failures = os.remove, []
-
-    def remove(path):
-        if str(path).endswith(".lock") and len(failures) < 3:
-            failures.append(path)
-            raise PermissionError(32, "being used by another process")
-        real(path)
-
-    monkeypatch.setattr(lock_module.os, "remove", remove)
-    with file_lock(tmp_path / "bob.json"):
-        pass
-    assert len(failures) == 3 and not (tmp_path / "bob.json.lock").exists()
 
 
 # Members, messages, lead notifications, approvals ------------------------------------
@@ -736,7 +773,6 @@ async def test_member_card_outlives_the_lead_turn(tmp_path):
 
 # Merging and the lead's guidance ----------------------------------------------
 
-import subprocess  # noqa: E402
 
 from mosscode.permissions import ApprovalRequest, Operation  # noqa: E402
 from test_worktree import git  # noqa: E402

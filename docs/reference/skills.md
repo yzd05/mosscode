@@ -9,10 +9,14 @@ Skill 是写在 Markdown 文件里的可复用操作规程（SOP），可以带�
 | 位置 | 来源 |
 | --- | --- |
 | 包内 `mosscode/skills/builtin/<名称>/` | 内置 |
+| `~/.agents/skills/<名称>/` | 用户级（与其他 agent 共用） |
 | `~/.mosscode/skills/<名称>/` | 用户级 |
+| `<启动目录>/.agents/skills/<名称>/` | 项目级（与其他 agent 共用） |
 | `<启动目录>/.mosscode/skills/<名称>/` | 项目级 |
 
-同名时项目级覆盖用户级，用户级覆盖内置，以整个目录为单位（专属工具一起替换）。被覆盖的版本在 `/skills <名称>` 中列出。
+`.agents/skills/` 是 [Agent Skills](https://agentskills.io/specification) 约定的共享目录，为其他 agent（如 pi）写的 Skill 放在这里即可直接使用。
+
+同名时项目级覆盖用户级，用户级覆盖内置；同一级中 `.mosscode/skills/` 覆盖 `.agents/skills/`。以整个目录为单位（专属工具一起替换）。被覆盖的版本在 `/skills <名称>` 中列出。
 
 启动时扫描一次，`/skills reload` 重新扫描。扫描出错的 Skill 会被跳过，并在启动区（`-p` 中为 stderr）提示文件路径和原因，不影响其他 Skill；被跳过的项目级 Skill 不会覆盖同名的用户级或内置版本。Skill 名与内置命令或其别名相同时（如 `help`、`quit`）同样跳过，并提示“与内置命令 /x 冲突”。
 
@@ -35,8 +39,8 @@ argument-hint: "[接口路径]"
 
 | 字段 | 说明 |
 | --- | --- |
-| `name` | 必填。`[a-z][a-z0-9-]*`，最长 64 个字符，必须与目录名相同 |
-| `description` | 必填。一句话，模型据此判断何时加载；超过 250 个字符的部分在模型可见的目录中截断 |
+| `name` | 必填。小写字母、数字和 `-`，不能以 `-` 开头或结尾，不能有连续的 `--`，最长 64 个字符，必须与目录名相同。以数字开头的 Skill 可以由模型加载，但不登记为命令 |
+| `description` | 必填。一句话，模型据此判断何时加载；超过 250 个字符的部分在模型可见的目录中截断，超过 1024 个字符时提示 |
 | `allowed_tools`（或 `allowed-tools`） | 工具名列表，也可以写成逗号或空格分隔的字符串，见[工具白名单](#工具白名单) |
 | `mode` | `inline`（缺省）或 `fork`；`context: fork` 等同 `mode: fork`，见[两种执行方式](#两种执行方式) |
 | `fork_context` | `none`（缺省）、`recent`、`full`，只对 fork 有效 |
@@ -44,8 +48,9 @@ argument-hint: "[接口路径]"
 | `argument-hint` | 补全菜单中命令后显示的参数提示 |
 | `disable-model-invocation: true` | 不列入模型可见的目录，模型不能加载，只能由用户输入命令调用 |
 | `user-invocable: false` | 不出现在补全菜单和 `/help` 中，仍可输入全名调用，也仍可由模型加载 |
+| `license`、`compatibility`、`metadata` | Agent Skills 规范的字段：许可证、环境要求（最长 500 个字符）、字符串到字符串的映射。前两项在 `/skills <名称>` 中显示 |
 
-字段值不合法（如 `mode: async`）时跳过该 Skill 并提示；不认识的字段忽略。为 Claude Code 写的 Skill 可以直接放进来：`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep` 会换算成 MossCode 的工具名，`Bash(git:*)` 这类写法只取工具名。
+字段值不合法（如 `mode: async`）时跳过该 Skill 并提示。不认识的字段和不符合 Agent Skills 规范的 `description`、`license`、`compatibility`、`metadata` 只提示，Skill 照常加载。为 Claude Code 写的 Skill 可以直接放进来：`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`、`WebFetch`、`WebSearch` 会换算成 MossCode 的工具名，`Bash(git:*)` 这类写法只取工具名。
 
 **参数**：正文中的 `$ARGUMENTS` 替换为调用参数；正文没有 `$ARGUMENTS` 而调用时带了参数，就在末尾追加“补充要求：<参数>”。
 
@@ -87,7 +92,7 @@ argument-hint: "[接口路径]"
 
 `allowed_tools` 分两次检查：
 
-1. 启动时（和 `/skills reload` 时）：内置工具（`read_file`、`write_file`、`edit_file`、`execute_command`、`glob`、`grep`、`memory`、`exit_plan_mode`）和本 Skill 的专属工具通过；`mcp__` 开头的名称这时不检查；其他名称（拼写错误、别的 Skill 的专属工具、MossCode 没有的工具如 `WebFetch`）让该 Skill 被跳过并提示。
+1. 启动时（和 `/skills reload` 时）：内置工具（`read_file`、`write_file`、`edit_file`、`execute_command`、`glob`、`grep`、`memory`、`exit_plan_mode`、`web_fetch`、`web_search`）和本 Skill 的专属工具通过；`mcp__` 开头的名称这时不检查；其他名称（拼写错误、别的 Skill 的专属工具、MossCode 没有的工具如 `TodoWrite`）让该 Skill 被跳过并提示。
 2. 调用时（命令、`load_skill`、fork 启动）：列出的工具必须当前可用。MCP Server 未连接、关闭记忆后的 `memory` 等缺失时不执行，并提示缺少哪些工具。
 
 白名单的作用因方式而异：
@@ -156,6 +161,7 @@ deny:
 | 命令 | 方式 | 作用 |
 | --- | --- | --- |
 | `/commit [对提交说明的要求]` | inline | 把与当前任务相关的改动提交为一次 git commit：逐个暂存相关文件，不暂存疑似凭据，不 `--amend`、不 `--no-verify`、不推送。`git add` 和 `git commit` 按档位审批 |
+| `/init [侧重点]` | inline | 分析项目结构、构建和测试命令，生成或补充 `AGENTS.md`：已有时只补充缺少或过时的部分，只有 `CLAUDE.md` 时补充它；只运行只读命令，不安装依赖、不运行构建和测试。写入前显示改动，按档位审批 |
 | `/review [范围或侧重点]` | fork（`none`） | 在独立上下文中审查尚未提交的改动，只用读取、搜索和命令执行工具，按严重程度列出问题；审查者看不到之前的对话 |
 | `/test [测试范围]` | inline | 先调用专属工具 `skill__test__detect` 识别项目类型（pytest、npm / pnpm / yarn、go、cargo、maven / gradle），再运行建议的测试命令，失败时分析原因；没有要求时不修改文件 |
 

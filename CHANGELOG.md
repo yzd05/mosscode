@@ -10,6 +10,15 @@
 - `web_search` 网络搜索，首先支持 Tavily，在 `config.yaml` 的 `web_search` 中配置；每个会话最多 100 次。
 - 权限规则 `WebFetch(domain:…)` 和 `WebSearch`，审批时可按域名授权本会话或永久允许；`moss doctor` 和 `/status` 显示网络搜索的配置状态。
 - 图片输入：`read_file` 可以查看图片（PNG、JPEG、GIF、WebP、BMP），MCP 工具返回的图片也会发给模型；图片自动转正、缩放和压缩，保存在会话目录的 `images/` 中，会话记录只保存引用。Provider 新增 `images` 配置，不接受图片的模型收到文字说明。新增依赖 Pillow。
+- 内置 Skill `/init`：分析项目后生成或补充 `AGENTS.md`，写入前显示改动并按档位审批。
+- Skill 另外从 [Agent Skills](https://agentskills.io/specification) 的共享目录 `~/.agents/skills/`、`.agents/skills/` 读取；按规范检查 `SKILL.md`，不认识的字段只提示；`/skills <名称>` 显示 `license`、`compatibility`；白名单中的 `WebFetch`、`WebSearch` 换算为 `web_fetch`、`web_search`。
+
+### 变更
+
+- 团队文件改用操作系统锁（`filelock`）：持有锁的进程崩溃后锁立即释放，不再要等 10 秒过期。
+- 命令的灾难级和高风险特征也按 bash 语法（tree-sitter）拆出的子命令检查，引号、转义、`$(…)` 和子 shell 不再能绕过；显式 deny 规则同样按子命令匹配。
+- Skill 名改按 Agent Skills 规范：可以以数字开头；以 `-` 结尾或含 `--` 的名称不再接受（不兼容）。
+- 没有 ripgrep 时，内置搜索用 `pathspec` 匹配 `.gitignore`，转义（如 `\[draft\].md`）和行尾空格等写法与 git 一致。
 
 ## [0.1.0] - 2026-11-03
 

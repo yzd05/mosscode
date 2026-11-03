@@ -14,19 +14,34 @@ import yaml
 
 from ..paths import mosscode_home
 
-NAME = re.compile(r"[a-z][a-z0-9-]*")
+# Agent Skills specification: no leading, trailing or doubled "-" (a "--" would also turn into the "__"
+# that separates the parts of a skill tool name).
+NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 TOOL_NAME = re.compile(r"[a-z][a-z0-9_]*")
 NAME_LIMIT = 64
 TOOL_SHORT_LIMIT = 32
 TOOL_NAME_LIMIT = 64  # Provider tool-name limit.
 FILE_LIMIT = 64 * 1024
 DEFAULT_TIMEOUT, MAX_TIMEOUT = 120.0, 600.0
-DESCRIPTION_LIMIT = 250
+DESCRIPTION_LIMIT = 250  # Shown to the model in the catalog; the rest is cut.
+SPEC_DESCRIPTION_LIMIT = 1024
+SPEC_COMPATIBILITY_LIMIT = 500
 CATALOG_LIMIT = 8000
 LOAD_SKILL = "load_skill"
 # Names known before MCP connects. load_skill is a system tool and always allowed.
 BUILTIN_TOOLS = frozenset(
-    {"read_file", "write_file", "edit_file", "execute_command", "glob", "grep", "memory", "exit_plan_mode"}
+    {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "execute_command",
+        "glob",
+        "grep",
+        "memory",
+        "exit_plan_mode",
+        "web_fetch",
+        "web_search",
+    }
 )
 CLAUDE_TOOLS = {
     "Read": "read_file",
@@ -35,7 +50,31 @@ CLAUDE_TOOLS = {
     "Bash": "execute_command",
     "Glob": "glob",
     "Grep": "grep",
+    "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
 }
+# Fields read below, plus those of the Agent Skills specification; anything else is ignored with a warning.
+KNOWN_FIELDS = frozenset(
+    {
+        "name",
+        "description",
+        "allowed_tools",
+        "allowed-tools",
+        "mode",
+        "context",
+        "fork_context",
+        "model",
+        "argument-hint",
+        "argument_hint",
+        "disable-model-invocation",
+        "disable_model_invocation",
+        "user-invocable",
+        "user_invocable",
+        "license",
+        "compatibility",
+        "metadata",
+    }
+)
 Source = Literal["builtin", "user", "project"]
 SOURCE_LABELS = {"builtin": "内置", "user": "用户", "project": "项目"}
 
@@ -70,6 +109,9 @@ class SkillDef:
     user_invocable: bool = True
     tools: tuple[SkillToolDef, ...] = ()
     overrides: tuple[Path, ...] = ()  # Same-named SKILL.md files this one replaced.
+    license: str = ""
+    compatibility: str = ""
+    warnings: tuple[str, ...] = ()  # Departures from the Agent Skills specification that do not stop loading.
 
     @property
     def directory(self) -> Path:
@@ -247,6 +289,37 @@ def _tools(directory: Path, skill: str) -> tuple[SkillToolDef, ...]:
     return tools
 
 
+def _spec_warnings(meta: dict, path: Path, description: str) -> tuple[str, ...]:
+    notes = []
+    unknown = [str(key) for key in meta if key not in KNOWN_FIELDS]
+    if unknown:
+        notes.append(f"{path}：不认识的字段 {'、'.join(unknown)}，已忽略。")
+    if len(description) > SPEC_DESCRIPTION_LIMIT:
+        notes.append(f"{path}：description 超过 {SPEC_DESCRIPTION_LIMIT} 个字符（Agent Skills 规范的上限）。")
+    license = meta.get("license")
+    if license is not None and not (isinstance(license, str) and license.strip()):
+        notes.append(f"{path}：license 应为非空字符串，已忽略。")
+    compatibility = meta.get("compatibility")
+    if compatibility is not None and not (
+        isinstance(compatibility, str) and 1 <= len(compatibility.strip()) <= SPEC_COMPATIBILITY_LIMIT
+    ):
+        notes.append(f"{path}：compatibility 应为 1–{SPEC_COMPATIBILITY_LIMIT} 个字符的字符串，已忽略。")
+    metadata = meta.get("metadata")
+    if metadata is not None and not (
+        isinstance(metadata, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in metadata.items())
+    ):
+        notes.append(f"{path}：metadata 应为字符串到字符串的映射。")
+    return tuple(notes)
+
+
+def _optional_text(meta: dict, key: str, limit: int | None = None) -> str:
+    """A specification field MossCode only shows: an unusable value is dropped (and warned about)."""
+    value = meta.get(key)
+    if not isinstance(value, str) or not value.strip() or (limit is not None and len(value.strip()) > limit):
+        return ""
+    return " ".join(value.split())
+
+
 def parse_skill(directory: Path, source: Source) -> SkillDef:
     """Read and check one skill directory, its tool whitelist included."""
     path = directory / "SKILL.md"
@@ -255,7 +328,9 @@ def parse_skill(directory: Path, source: Source) -> SkillDef:
     meta, body = _split(_read(path), path)
     name = _text(meta, path, "name", required=True)
     if not NAME.fullmatch(name) or len(name) > NAME_LIMIT:
-        raise SkillError(f"{path}：name 须以小写字母开头，只含小写字母、数字和 -，最长 {NAME_LIMIT} 个字符。")
+        raise SkillError(
+            f"{path}：name 只能含小写字母、数字和 -，不能以 - 开头或结尾，不能有连续的 --，最长 {NAME_LIMIT} 个字符。"
+        )
     if name != directory.name:
         raise SkillError(f"{path}：name（{name}）必须与目录名（{directory.name}）相同。")
     description = " ".join(_text(meta, path, "description", required=True).split())
@@ -291,6 +366,9 @@ def parse_skill(directory: Path, source: Source) -> SkillDef:
         not _flag(meta, path, "disable-model-invocation", "disable_model_invocation", default=False),
         _flag(meta, path, "user-invocable", "user_invocable", default=True),
         tools,
+        license=_optional_text(meta, "license"),
+        compatibility=_optional_text(meta, "compatibility", SPEC_COMPATIBILITY_LIMIT),
+        warnings=_spec_warnings(meta, path, description),
     )
 
 
@@ -302,10 +380,13 @@ def builtin_dir() -> Path:
 
 
 def skill_dirs(root: Path, home: Path | None = None, builtin: Path | None = None) -> list[tuple[Source, Path]]:
-    """Lowest priority first."""
+    """Lowest priority first. .agents/skills is shared with other agents (Agent Skills); at the same level
+    MossCode's own directory wins."""
     return [
         ("builtin", builtin if builtin is not None else builtin_dir()),
+        ("user", (Path.home() if home is None else home) / ".agents" / "skills"),
         ("user", mosscode_home(home) / "skills"),
+        ("project", root / ".agents" / "skills"),
         ("project", root / ".mosscode" / "skills"),
     ]
 
@@ -321,7 +402,7 @@ class SkillCatalog:
     def load(
         cls, root: Path, home: Path | None = None, *, reserved: Iterable[str] = (), builtin: Path | None = None
     ) -> SkillCatalog:
-        """Scan the three places; a later place replaces a same-named skill of an earlier one."""
+        """Scan every place; a later place replaces a same-named skill of an earlier one."""
         reserved = set(reserved)
         skills: dict[str, SkillDef] = {}
         problems: list[str] = []
@@ -343,6 +424,7 @@ class SkillCatalog:
                 if skill.name in reserved:
                     problems.append(f"Skill {skill.name} 已跳过：与内置命令 /{skill.name} 冲突（{skill.path}）。")
                     continue
+                problems.extend(f"Skill {skill.name} 提示：{note}" for note in skill.warnings)
                 previous = skills.get(skill.name)
                 if previous is not None:
                     skill = replace(skill, overrides=previous.overrides + (previous.path,))

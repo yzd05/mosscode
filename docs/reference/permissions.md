@@ -88,7 +88,7 @@ deny:
 
 ## 危险命令
 
-程序内置命令特征分两级。**灾难级**——删除文件系统根目录或用户主目录、`--no-preserve-root`、格式化和分区、写块设备、fork 炸弹、关机重启——一律以 `dangerous_command` 拒绝，不可被配置、档位或用户确认解除。**高风险级**——递归强制删除（`rm -rf`、`Remove-Item -Recurse -Force`、`rmdir /s`、`del /s`）、`git reset --hard`、`git clean -f`、`git push --force`、`Invoke-Expression`/`iex`、PowerShell 编码命令——在任何档位都要求每次确认：会话规则、永久规则和 bypassPermissions 都不会自动放行，显式 deny 规则仍然生效；审批面板说明风险原因，只提供“本次允许”和“拒绝”；无界面模式返回 approval_required。正则仅覆盖已知特征，不保证识别全部混淆或间接执行，也可能误报。
+程序内置命令特征分两级。**灾难级**——删除文件系统根目录或用户主目录、`--no-preserve-root`、格式化和分区、写块设备、fork 炸弹、关机重启——一律以 `dangerous_command` 拒绝，不可被配置、档位或用户确认解除。**高风险级**——递归强制删除（`rm -rf`、`Remove-Item -Recurse -Force`、`rmdir /s`、`del /s`）、`git reset --hard`、`git clean -f`、`git push --force`、`Invoke-Expression`/`iex`、PowerShell 编码命令——在任何档位都要求每次确认：会话规则、永久规则和 bypassPermissions 都不会自动放行，显式 deny 规则仍然生效；审批面板说明风险原因，只提供“本次允许”和“拒绝”；无界面模式返回 approval_required。两级特征既检查命令原文，也检查用 bash 语法（tree-sitter）拆出的每条子命令：引号和转义去掉后再比对，所以 `r''m -rf /`、`git "push" --force`、`$(…)` 和子 shell 中的命令同样能识别；显式 deny 规则也按这些子命令匹配。拆分只增加检查，不会放行原文已命中的命令；PowerShell 命令按同样方式多检查一遍，可能多出确认，不会少。依赖变量或命令替换的部分（如 `$cmd -rf /`）无法静态判断，特征仅覆盖已知写法，不保证识别全部混淆或间接执行，也可能误报。
 
 ## 路径限制
 

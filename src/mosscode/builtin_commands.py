@@ -574,6 +574,9 @@ def skills_report(catalog, name: str = "", active=()) -> str:
             ("命令", f"/{skill.name}" if skill.user_invocable else "不列出（user-invocable: false），仍可输入调用"),
             ("规程首行", _first_line(skill.body)),
         ]
+        rows += [
+            (label, value) for label, value in (("许可证", skill.license), ("兼容性", skill.compatibility)) if value
+        ]
         lines = [f"Skill {skill.name}", *(f"  {label}{' ' * (12 - cell_len(label))}{value}" for label, value in rows)]
         if skill.tools:
             lines.append("  专属工具")

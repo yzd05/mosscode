@@ -26,7 +26,7 @@
 | `/team [名称\|stop 成员\|delete 名称]` | `/teams` | 本地 | 列出本项目的 Agent 团队；带名称时显示成员和任务，`stop` 停止当前团队的一个成员，`delete` 确认后删除团队（见 [Agent 团队](teams.md#命令)） |
 | `/exit` | `/quit` | 本地 | 退出并清理资源；有后台任务在运行时先确认 |
 
-除内置命令外，每个 Skill 是一条 `/<名称> [参数]` 命令，例如内置 Skill `/commit`、`/review`、`/test`（见 [Skill](skills.md#内置-skill)）。补全菜单和 `/help` 中，Skill 命令的描述后面带 `[skill]`；`user-invocable: false` 的 Skill 不列出，但输入全名仍可执行。
+除内置命令外，每个 Skill 是一条 `/<名称> [参数]` 命令，例如内置 Skill `/commit`、`/init`、`/review`、`/test`（见 [Skill](skills.md#内置-skill)）。补全菜单和 `/help` 中，Skill 命令的描述后面带 `[skill]`；`user-invocable: false` 的 Skill 不列出，但输入全名仍可执行。
 
 本地命令不请求模型，结果只显示在界面中，不进入模型上下文；`/compact` 例外，它用一次不带工具的请求生成摘要。任务运行期间只接受 `/tasks`、`/status`、`/worktree`、`/worktree list` 和 `/team`（`delete` 除外）（查看或停止子 Agent 任务、查看状态，不改变正在运行的任务所依赖的状态）；输入其他命令会提示“运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送”，输入保留在框中。
 
