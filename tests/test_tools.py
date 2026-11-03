@@ -79,6 +79,59 @@ async def test_paths_outside_root_and_binary_errors(tmp_path):
     assert (await registry.execute(call("write_file", path=".", content="x"))).code == "is_directory"
 
 
+def save_image(path, size=(40, 30), fmt="PNG"):
+    from PIL import Image
+
+    Image.new("RGB", size, "red").save(path, fmt)
+    return path
+
+
+async def test_read_file_attaches_images_recognized_by_their_header(tmp_path):
+    from mosscode.images import size_label
+    from mosscode.session import Session
+
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    registry.use_session(Session(tmp_path / "session"))
+    size = save_image(tmp_path / "shot.png").stat().st_size
+    result = await registry.execute(call("read_file", path="shot.png", offset=5, limit=1))
+    assert not result.is_error and result.output == f"shot.png · 图片 · 40×30 · {size_label(size)}"
+    (image,) = result.images
+    assert (image.width, image.height, image.alt) == (40, 30, "shot.png") and "_images" not in result.details
+    assert image.path == (tmp_path / "session" / "images" / image.name).resolve() and image.path.is_file()
+    assert result.details["image"]["name"] == image.name
+    save_image(tmp_path / "photo.txt", (3000, 1500), "JPEG")
+    big = await registry.execute(call("read_file", path="photo.txt"))
+    assert big.images[0].width == 2000 and big.output.endswith("（发送尺寸 2000×1000）")
+    assert big.output.startswith("photo.txt · 图片 · 3000×1500 · ")
+    save_image(tmp_path / "old.bmp", (5, 5), "BMP")
+    assert (await registry.execute(call("read_file", path="old.bmp"))).images[0].media_type == "image/png"
+
+
+async def test_read_file_image_errors(tmp_path, monkeypatch):
+    from mosscode import images
+
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    (tmp_path / "broken.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 64)
+    broken = await registry.execute(call("read_file", path="broken.png"))
+    assert broken.code == "image_invalid" and not broken.images
+    save_image(tmp_path / "shot.png")
+    registry.images = False
+    unsupported = await registry.execute(call("read_file", path="shot.png"))
+    assert unsupported.code == "image_unsupported" and "不支持图片" in unsupported.output and not unsupported.images
+    registry.images = True
+    monkeypatch.setattr(images, "MAX_FILE", 10)
+    assert (await registry.execute(call("read_file", path="shot.png"))).code == "image_too_large"
+
+
+async def test_reading_an_image_outside_the_project_still_needs_approval(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    save_image(tmp_path / "outside.png")
+    registry = create_default_registry(root, permission_mode="default", load_permissions=False)
+    result = await registry.execute(call("read_file", path="../outside.png"))
+    assert result.code == "approval_required" and not result.images
+
+
 async def test_read_byte_budget_next_page_does_not_skip_unshown_lines(tmp_path):
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
     (tmp_path / "large.txt").write_text(

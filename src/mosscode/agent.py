@@ -447,6 +447,8 @@ class AgentLoop:
                 # Enter paired-results cleanup before yielding a committed call.
                 position = len(self.history)
                 try:
+                    # Read per batch: /model may have switched to a model with or without image input.
+                    self.registry.images = getattr(getattr(self.provider, "config", None), "accepts_images", True)
                     async with aclosing(execute_batch(final.message, self.registry, self.history)) as batch:
                         boundary = await anext(batch)
                         yield UsageUpdate(iteration, final.usage, self.total_usage)

@@ -16,6 +16,7 @@ from mosscode.mcp_client import MCPManager, MCPTool, ServerConnection, tool_name
 from mosscode.mcp_config import MCPConfigError, MCPSettings, ServerConfig, load_mcp_settings
 from mosscode.messages import ToolCall
 from mosscode.permissions import ApprovalRequest, parse_rule
+from mosscode.session import Session
 from mosscode.tools import create_default_registry
 from mosscode.tools.base import ExecutionCancelled, ToolFailure
 from test_agent import SequenceProvider, response
@@ -28,6 +29,9 @@ def stdio_config(name, log, mode="normal"):
     return ServerConfig(
         name, "stdio", sys.executable, (str(FIXTURE), str(log), mode), {"MOSS_MCP_FIXTURE": "test-only"}
     )
+
+
+PICTURE_TEXT = "iVBORw0KGgo"
 
 
 def call(name, **args):
@@ -100,6 +104,26 @@ def test_empty_and_malformed_configuration(tmp_path):
     assert "fake-secret" not in str(e.value)
 
 
+async def test_mcp_images_are_attached_stored_and_left_out_for_text_only_models(tmp_path):
+    reg = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    reg.use_session(Session(tmp_path / "session"))
+    manager = MCPManager(tmp_path, MCPSettings((stdio_config("one", tmp_path / "one.log"),)), startup_timeout=5)
+    try:
+        await manager.start(reg)
+        shot = await reg.execute(call(tool_name("one", "mixed"), text="picture"))
+        assert not shot.is_error and [(i.width, i.height, i.media_type) for i in shot.images] == [(3, 2, "image/png")]
+        assert "one/mixed 的图片 1 · 图片 · 3×2 · " in shot.output and "_images" not in shot.details
+        assert shot.images[0].path.parent == (tmp_path / "session" / "images").resolve()
+        assert shot.images[0].path.is_file() and PICTURE_TEXT not in shot.output
+        failed = await reg.execute(call(tool_name("one", "mixed"), text="picture-error"))
+        assert failed.is_error and failed.code == "mcp_tool_error" and len(failed.images) == 1
+        reg.images = False
+        text_only = await reg.execute(call(tool_name("one", "mixed"), text="picture"))
+        assert not text_only.images and "one/mixed 的图片 1（当前模型不支持图片，已省略）" in text_only.output
+    finally:
+        await manager.close()
+
+
 def test_names_are_stable_bounded_and_collision_resistant():
     assert tool_name("notes", "search") == "mcp__notes__search"
     names = [
@@ -137,8 +161,8 @@ async def test_stdio_real_handshake_pagination_reuse_errors_and_correlation(tmp_
         failed = await reg.execute(call(tool_name("one", "fail"), text="failure"))
         assert failed.is_error and failed.code == "mcp_tool_error" and failed.output == "failure"
         mixed = await reg.execute(call(tool_name("one", "mixed"), text="data"))
-        assert '"received": "data"' in mixed.output and "image" in mixed.output
-        assert "aGVsbG8=" not in mixed.model_text()
+        assert '"received": "data"' in mixed.output and "one/mixed 的图片 1（不是可识别的图片" in mixed.output
+        assert "aGVsbG8=" not in mixed.model_text() and not mixed.images
         protocol = await reg.execute(call(tool_name("one", "echo"), text="protocol-error"))
         assert protocol.code == "mcp_protocol_error" and protocol.details["rpc_code"] == -32602
         assert "fixture-private-error" not in protocol.output

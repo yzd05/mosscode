@@ -67,6 +67,7 @@ def test_literal_key_not_in_repr(tmp_path):
         {"max_output_tokens": True},
         {"stream_usage": "false"},
         {"prompt_cache": "true"},
+        {"images": "yes"},
         {"thinking": {"type": "enabled", "budget_tokens": 0}},
         {"thinking": {"type": "adaptive", "budget_tokens": 2000}},
         {"protocol": "openai-responses", "thinking": True},
@@ -76,6 +77,22 @@ def test_literal_key_not_in_repr(tmp_path):
 def test_invalid_configuration_fails_before_request(tmp_path, change):
     with pytest.raises(ConfigError):
         load_settings(write_config(tmp_path, **change))
+
+
+@pytest.mark.parametrize(
+    "protocol,images,accepts",
+    [
+        ("anthropic-messages", None, True),
+        ("openai-responses", None, True),
+        ("openai-chat-completions", None, False),
+        ("openai-chat-completions", True, True),
+        ("anthropic-messages", False, False),
+    ],
+)
+def test_image_support_defaults_by_protocol_and_the_setting_wins(tmp_path, protocol, images, accepts):
+    options = {"protocol": protocol} | ({} if images is None else {"images": images})
+    config = load_settings(write_config(tmp_path, **options)).select()
+    assert config.images is images and config.accepts_images is accepts
 
 
 def test_thinking_true_maps_to_adaptive(tmp_path):

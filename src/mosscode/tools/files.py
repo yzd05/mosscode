@@ -4,7 +4,8 @@ from pathlib import Path
 
 from pydantic import Field
 
-from .base import Params, Tool, ToolFailure, file_io
+from ..images import ImageError, image_ref, load_image, sniff
+from .base import IMAGES, Params, Tool, ToolFailure, file_io, image_context
 from .diffing import unified_diff
 
 READ_LIMIT = 2000
@@ -109,8 +110,9 @@ class ReadFile(FileTool):
     description = (
         f"读取 UTF-8 文本文件。每行格式为“行号 + Tab + 原文”；offset 从 1 开始，limit 默认 {READ_LIMIT} 行。"
         f"超过 {LINE_LIMIT} 字符的行会截断，单页还有字节上限并会提示下一页的 offset。项目目录之外的路径需要用户确认。"
+        "也能查看图片（PNG、JPEG、GIF、WebP、BMP）：图片附在结果中，offset 和 limit 不起作用。"
     )
-    prompt_summary = "读取文本文件，可按行分段查看"
+    prompt_summary = "读取文本文件或查看图片，文本可按行分段查看"
     prompt_guidelines = (
         "使用 read_file 查看文本原文，优先于 shell 读取；修改或覆盖已有文件前必须先用 read_file 读取，文件被外部改动后需重新读取。",
         "read_file 输出中 Tab 之前的行号不是文件正文，不要把行号加入编辑参数。遇到截断时根据返回提示继续读取相关范围。",
@@ -118,10 +120,16 @@ class ReadFile(FileTool):
     params_model = ReadParams
 
     async def execute(self, params: ReadParams):
+        accepts, store = image_context()
+
         def read():
             path = self.read_path(params.path)
             # Stamp before reading: a change during the read makes the record stale.
             stamp = FileState.stamp(path)
+            with path.open("rb") as stream:
+                head = stream.read(32)
+            if sniff(head) is not None:
+                return self._image(path, stamp, accepts, store)
             selected, more, size, long_lines, total = [], False, 0, 0, 0
             with path.open("r", encoding="utf-8", newline="") as stream:
                 for number, line in enumerate(stream, 1):
@@ -164,6 +172,25 @@ class ReadFile(FileTool):
             }
 
         return await file_io(read)
+
+    def _image(self, path: Path, stamp, accepts: bool, store):
+        if not accepts:
+            raise ToolFailure(
+                "image_unsupported", "当前模型不支持图片输入，无法查看这张图片；切换到支持图片的模型后可以读取。"
+            )
+        try:
+            image = load_image(path)
+        except ImageError as exc:
+            raise ToolFailure(exc.code, str(exc)) from None
+        name = self.display(path)
+        ref = image_ref(image, name, store)
+        self.state.record(path, stamp)
+        details = {
+            "path": str(path),
+            "image": {"name": ref.name, "media_type": ref.media_type, "width": ref.width, "height": ref.height},
+            IMAGES: (ref,),
+        }
+        return f"{name} · 图片 · {image.describe()}", details
 
 
 class WriteFile(FileTool):

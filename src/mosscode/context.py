@@ -23,9 +23,11 @@ def estimate_text(text: str) -> int:
 
 
 def estimate_message(message: Message) -> int:
-    total = MESSAGE_OVERHEAD + sum(estimate_text(block.text) for block in message.content)
+    total = MESSAGE_OVERHEAD
+    total += sum(b.image.tokens if b.image is not None else estimate_text(b.text) for b in message.content)
     total += sum(estimate_text(call.name) + estimate_text(call.arguments) for call in message.tool_calls)
-    return total + sum(estimate_text(result.model_text()) for result in message.tool_results)
+    total += sum(estimate_text(result.model_text()) for result in message.tool_results)
+    return total + sum(image.tokens for result in message.tool_results for image in result.images)
 
 
 def estimate_messages(messages: Sequence[Message]) -> int:

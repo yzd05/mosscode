@@ -1,6 +1,7 @@
 import asyncio
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import anthropic
 import httpx2
@@ -9,7 +10,17 @@ import pytest
 
 from mosscode.config import ProviderConfig
 from mosscode.conversation import Conversation
-from mosscode.messages import Completed, Delta, ProviderError, Retrying, RunStopped
+from mosscode.messages import (
+    Completed,
+    ContentBlock,
+    Delta,
+    Message,
+    ProviderError,
+    Retrying,
+    RunStopped,
+    ToolCall,
+    ToolResult,
+)
 from mosscode.providers import AnthropicProvider, ChatCompletionsProvider, ResponsesProvider
 from waiting import until
 
@@ -355,3 +366,157 @@ async def test_responses_incomplete_for_other_reasons_stays_an_error():
         assert conv.history == ()
     finally:
         await provider.close()
+
+
+# Images ---------------------------------------------------------------------------------------
+
+
+class Captured(Exception):
+    pass
+
+
+def picture(color="red", alt="[图片 #1]"):
+    import io
+
+    from PIL import Image
+
+    from mosscode.images import image_ref, load_image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 2), color).save(buffer, "PNG")
+    return image_ref(load_image(buffer.getvalue()), alt)
+
+
+async def request(cls, protocol, history, **options):
+    seen = []
+
+    async def create(**kwargs):
+        seen.append(kwargs)
+        raise Captured()
+
+    endpoint = SimpleNamespace(create=create)
+    client = SimpleNamespace(messages=endpoint, responses=endpoint, chat=SimpleNamespace(completions=endpoint))
+    client.base_url = ""
+    provider = options.pop("provider", None) or cls(
+        ProviderConfig("p", protocol, "m", max_retries=0, **options), client
+    )
+    if provider.client is not client:
+        provider.client = client
+    with pytest.raises(Captured):
+        async for _ in provider.stream(history, "系统"):
+            pass
+    return seen[0]
+
+
+def image_history(*results):
+    calls = tuple(ToolCall(r.call_id, r.name, "{}") for r in results)
+    user = Message("user", (ContentBlock("text", "看 [图片 #1] 这里"), ContentBlock("image", "[图片 #1]", picture())))
+    return [user, Message("assistant", (), tool_calls=calls), Message("tool", (), tool_results=results)]
+
+
+def data_of(ref):
+    return ref.base64()
+
+
+async def test_anthropic_images_in_user_messages_and_tool_results():
+    shot, failed = picture("blue", "a.png"), picture("green", "b.png")
+    history = image_history(
+        ToolResult("c1", "read_file", "a.png · 4×2", images=(shot,)),
+        ToolResult("c2", "mcp__x__shot", "", images=(shot,)),
+        ToolResult("c3", "mcp__x__shot", "截图失败", True, "mcp_error", images=(failed,)),
+    )
+    turns = (await request(AnthropicProvider, "anthropic-messages", history))["messages"]
+    user = turns[0]["content"]
+    assert [b["type"] for b in user] == ["text", "image"] and user[0]["text"] == "看 [图片 #1] 这里"
+    source = {"type": "base64", "media_type": "image/png", "data": data_of(history[0].content[1].image)}
+    assert user[1]["source"] == source
+    blocks = turns[2]["content"]
+    assert [b["type"] for b in blocks] == ["tool_result"] * 3 + ["text", "text", "image"]
+    assert blocks[0]["content"][0] == {"type": "text", "text": "a.png · 4×2"}
+    assert blocks[0]["content"][1]["source"]["data"] == data_of(shot)
+    assert blocks[1]["content"][0]["text"] == "(see attached image)"
+    assert blocks[2]["content"] == "错误 [mcp_error]：截图失败" and blocks[2]["is_error"]
+    assert [b.get("text") for b in blocks[3:5]] == ["出错的工具结果中的图片：", "b.png"]
+    assert blocks[5]["source"]["data"] == data_of(failed)
+
+
+async def test_responses_images_are_input_images_and_tool_outputs_become_arrays():
+    shot = picture("blue", "a.png")
+    history = image_history(ToolResult("c1", "read_file", "", images=(shot,)), ToolResult("c2", "glob", "a.png"))
+    items = (await request(ResponsesProvider, "openai-responses", history))["input"]
+    user = next(i for i in items if i.get("role") == "user")
+    url = f"data:image/png;base64,{data_of(history[0].content[1].image)}"
+    assert user["content"] == [
+        {"type": "input_text", "text": "看 [图片 #1] 这里"},
+        {"type": "input_image", "image_url": url},
+    ]
+    outputs = [i for i in items if i.get("type") == "function_call_output"]
+    assert outputs[0]["output"] == [
+        {"type": "input_text", "text": "(see attached image)"},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{data_of(shot)}"},
+    ]
+    assert outputs[1]["output"] == "a.png"
+
+
+async def test_chat_tool_images_follow_the_tool_messages_as_one_user_message():
+    first, second = picture("blue", "a.png"), picture("green", "b.png")
+    history = image_history(
+        ToolResult("c1", "read_file", "a.png", images=(first,)), ToolResult("c2", "read_file", "", images=(second,))
+    )
+    messages = (await request(ChatCompletionsProvider, "openai-chat-completions", history, images=True))["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "tool", "tool", "user"]
+    assert messages[1]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/png;base64,{data_of(history[0].content[1].image)}"},
+    }
+    assert [m["content"] for m in messages[3:5]] == ["a.png", "(see attached image)"]
+    extra = messages[5]["content"]
+    assert [p.get("text") for p in extra if p["type"] == "text"] == ["工具结果中的图片：", "a.png", "b.png"]
+    assert [p["image_url"]["url"] for p in extra if p["type"] == "image_url"] == [
+        f"data:image/png;base64,{data_of(first)}",
+        f"data:image/png;base64,{data_of(second)}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "cls,protocol,options",
+    [
+        (ChatCompletionsProvider, "openai-chat-completions", {}),
+        (AnthropicProvider, "anthropic-messages", {"images": False}),
+        (ResponsesProvider, "openai-responses", {"images": False}),
+    ],
+)
+async def test_models_without_image_input_get_alt_text_instead(cls, protocol, options):
+    history = image_history(ToolResult("c1", "read_file", "a.png", images=(picture("blue", "a.png"),)))
+    body = json.dumps(await request(cls, protocol, history, **options), ensure_ascii=False)
+    assert "base64" not in body and "image_url" not in body and '"image"' not in body
+    assert "[图片 #1]（当前模型不支持图片，已省略）" in body
+    assert "a.png\\na.png（当前模型不支持图片，已省略）" in body
+
+
+async def test_only_the_latest_twenty_images_are_sent():
+    refs = [picture((i, 0, 0), f"{i}.png") for i in range(21)]  # With the user's image, 22 in all.
+    results = tuple(ToolResult(f"c{i}", "read_file", f"{i}.png", images=(ref,)) for i, ref in enumerate(refs))
+    turns = (await request(AnthropicProvider, "anthropic-messages", image_history(*results)))["messages"]
+    body = json.dumps(turns, ensure_ascii=False)
+    assert body.count('"type": "image"') == 20
+    assert "[图片 #1]（较早的图片已省略）" in body and "0.png\\n0.png（较早的图片已省略）" in body
+    assert "1.png（较早的图片已省略）" not in body and data_of(refs[1]) in body
+
+
+async def test_images_are_encoded_once_and_a_lost_file_becomes_text(tmp_path):
+    from mosscode.images import ImageRef
+
+    ref = picture("blue", "a.png")
+    path = tmp_path / ref.name
+    path.write_bytes(ref.read())
+    stored = ImageRef(ref.name, ref.media_type, ref.width, ref.height, ref.size, "a.png", path=path)
+    gone = ImageRef("0" * 32 + ".png", "image/png", 4, 2, 10, "b.png", path=tmp_path / "missing.png")
+    history = image_history(ToolResult("c1", "read_file", "a.png", images=(stored,)))
+    provider = AnthropicProvider(ProviderConfig("p", "anthropic-messages", "m", max_retries=0), SimpleNamespace())
+    await request(AnthropicProvider, "anthropic-messages", history, provider=provider)
+    path.unlink()  # Already encoded: the next request needs no file.
+    history[2] = Message("tool", (), tool_results=(ToolResult("c1", "read_file", "a.png", images=(stored, gone)),))
+    turns = (await request(AnthropicProvider, "anthropic-messages", history, provider=provider))["messages"]
+    content = turns[2]["content"][0]["content"]
+    assert content[0]["text"] == "a.png\n[图片已丢失：b.png]" and content[1]["source"]["data"] == data_of(ref)

@@ -63,6 +63,9 @@ def respond(request):
         if name == "mixed":
             result["structuredContent"] = {"received": args["text"]}
             result["content"].append({"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"})
+            if args["text"].startswith("picture"):
+                result["content"][-1]["data"] = PICTURE
+                result["isError"] = args["text"] == "picture-error"
         if args["text"] == "protocol-error":
             error = {"code": -32602, "message": "fixture-private-error"}
         if args["text"] == "disconnect":
@@ -73,6 +76,10 @@ def respond(request):
     response["error" if error else "result"] = error or result
     with lock:
         print(json.dumps(response), flush=True)
+
+
+# A 3×2 red PNG.
+PICTURE = "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAEElEQVR4nGP8zwAFTDAGAwATKQED8NgHhAAAAABJRU5ErkJggg=="
 
 
 # MCP stdio is UTF-8; Python otherwise uses the locale code page (GBK on Chinese Windows) for pipes.

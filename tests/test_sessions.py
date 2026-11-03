@@ -11,6 +11,7 @@ from mosscode import session as session_module
 from mosscode.config import ConfigError, load_settings
 from mosscode.context import ContextBudget
 from mosscode.conversation import Conversation, Notice, Resumed
+from mosscode.images import load_image
 from mosscode.messages import (
     CompactFailed,
     CompactFinished,
@@ -139,6 +140,100 @@ def test_strict_loading_rejects_bad_fields():
     ):
         with pytest.raises(ValueError):
             message_from_json(bad)
+
+
+def png(color="red"):
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 4), color).save(buffer, "PNG")
+    return load_image(buffer.getvalue())
+
+
+def image_session(tmp_path):
+    (tmp_path / "project").mkdir(exist_ok=True)
+    return Session.new(tmp_path / "project", home=tmp_path / "home")
+
+
+def test_images_are_stored_once_by_content_and_transcripts_hold_references(tmp_path):
+    session = image_session(tmp_path)
+    first, again = session.store_image(png(), "[图片 #1]"), session.store_image(png(), "a.png")
+    other = session.store_image(png("blue"), "b.png")
+    files = sorted(p.name for p in (session.directory / "images").iterdir())
+    assert files == sorted({first.name, other.name}) and first.name == again.name and first.read() == png().data
+    message = Message("user", (ContentBlock("text", "看 "), ContentBlock("image", "[图片 #1]", first)))
+    tool = results(ToolResult("c1", "read_file", "a.png", images=(again,)))
+    for item in (message, tool):
+        data = json.loads(json.dumps(message_to_json(item)))
+        assert message_from_json(data) == item
+        assert first.name in json.dumps(data) and "base64" not in json.dumps(data)
+    assert message_to_json(message)["content"][1]["image"] == {
+        "name": first.name,
+        "media_type": "image/png",
+        "width": 8,
+        "height": 4,
+        "size": len(png().data),
+        "alt": "[图片 #1]",
+    }
+    assert "images" not in message_to_json(results(ToolResult("c2", "glob", "x")))["tool_results"][0]
+
+
+def test_resumed_images_read_their_files_and_missing_ones_become_text(tmp_path):
+    session = image_session(tmp_path)
+    kept, gone = session.store_image(png(), "[图片 #1]"), session.store_image(png("blue"), "b.png")
+    lost_block = session.store_image(png("green"), "[图片 #2]")
+    history = [
+        Message("user", (ContentBlock("image", "[图片 #1]", kept), ContentBlock("image", "[图片 #2]", lost_block))),
+        assistant(calls=[ToolCall("c1", "read_file", "{}")]),
+        results(ToolResult("c1", "read_file", "b.png", images=(gone, kept))),
+    ]
+    transcript = Transcript(session, tmp_path / "project")
+    for message in history:
+        transcript.append(message_record(message))
+    transcript.close()
+    gone.path.unlink()
+    lost_block.path.unlink()
+    restored = load_session(session.transcript_path)
+    assert restored.skipped == 0 and restored.lost_images == 2
+    content = restored.history[0].content
+    assert content[0].image.read() == kept.read() and content[1] == ContentBlock("text", "[图片已丢失：[图片 #2]]")
+    result = restored.history[2].tool_results[0]
+    assert result.images == (kept,) and result.output == "b.png\n[图片已丢失：b.png]"
+
+
+async def test_resume_reports_lost_images_once(tmp_path):
+    session = image_session(tmp_path)
+    image = session.store_image(png(), "[图片 #1]")
+    transcript = Transcript(session, tmp_path / "project")
+    transcript.append(message_record(Message("user", (ContentBlock("image", "[图片 #1]", image),))))
+    transcript.append(message_record(assistant("看到了")))
+    transcript.close()
+    image.path.unlink()
+    conv = make(tmp_path, SequenceProvider())
+    resumed = (await drain(conv.resume(session.id)))[0]
+    assert [n for n in resumed.notices if "图片" in n] == ["1 张图片的文件已丢失，已改为文字说明。"]
+    await conv.close()
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        {"name": "../../secret.png"},
+        {"name": "A" * 32 + ".png"},
+        {"name": "0" * 32 + ".png", "media_type": "image/jpeg"},
+        {"name": "0" * 32 + ".svg", "media_type": "image/svg+xml"},
+        {"width": -1},
+        {"size": "1"},
+    ],
+)
+def test_image_references_that_could_point_elsewhere_are_rejected(image):
+    data = {"name": "0" * 32 + ".png", "media_type": "image/png", "width": 1, "height": 1, "size": 1, "alt": "x"}
+    block = {"kind": "image", "text": "x", "image": data | image}
+    with pytest.raises(ValueError):
+        message_from_json({"role": "user", "content": [block]})
+    assert message_from_json({"role": "user", "content": [block | {"image": data}]}).content[0].image.width == 1
 
 
 async def test_records_follow_history_commits_and_batches_are_final(tmp_path):

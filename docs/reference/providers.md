@@ -38,6 +38,29 @@ Provider 配置、协议、重试与无界面输出。
 
 Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，多轮原样回传服务返回的不透明推理数据。兼容服务不支持该选项时可设 `include_encrypted_reasoning: false`；缺少加密数据的推理条目不回传，仍保留正文历史，无法保留隐式推理连续性。
 
+## 图片输入
+
+配置项 `images` 表示模型是否接受图片输入。省略时，`anthropic-messages` 和 `openai-responses` 视为接受；`openai-chat-completions` 视为不接受，因为兼容服务的模型差别很大。与默认值不符时明确填写：
+
+```yaml
+  - name: vision-gateway
+    protocol: openai-chat-completions
+    model: replace-with-vision-model
+    base_url: https://your-gateway.example/v1
+    api_key_env: MY_GATEWAY_API_KEY
+    images: true
+```
+
+`images` 为假时，请求不会因为图片而失败：历史中的图片发送时改为文字 `替代文本（当前模型不支持图片，已省略）`，`read_file` 读取图片返回 `image_unsupported`，MCP 结果中的图片也只留下文字说明。图片文件仍在会话目录中，`/model` 切换到接受图片的模型后，历史中的图片重新随请求发送。
+
+图片在发送时才从会话目录读取并编码为 base64，同一个 Provider 缓存最近使用的 32 张编码结果。每次请求最多带最近的 20 张图片，更早的改为 `替代文本（较早的图片已省略）`；图片文件已被删除时改为 `[图片已丢失：替代文本]`。三种协议的映射：
+
+| 协议 | 消息中的图片 | 工具结果中的图片 |
+| --- | --- | --- |
+| Messages | `image` 块（base64），保留在原来的位置 | `tool_result.content` 为文本块加图片块，只有图片时文本为 `(see attached image)`；出错的结果不能带图片，这些图片放在同一条消息的所有结果之后，前面加“出错的工具结果中的图片：” |
+| Responses | `input_image`（data URL） | `function_call_output.output` 为 `input_text` 和 `input_image` 组成的数组 |
+| Chat Completions | `image_url`（data URL） | `tool` 消息只放文本；这一批工具消息之后追加一条用户消息“工具结果中的图片：”，后面跟这些图片 |
+
 ## 重试与错误
 
 请求在收到任何流事件之前遇到限流（429）、过载（529 / overloaded_error）、5xx、超时或连接中断时自动重试，默认最多 4 次，指数退避并带随机抖动，遵守服务给出的 `retry-after`（最长 60 秒）；界面状态行与 `--prompt` 的 stderr 显示重试原因和等待时间，等待期间 Esc 可取消。收到首个事件后的断流不重试，因为正文可能已显示。认证失败、请求不被接受等错误立即报告；上下文超限错误（HTTP 400/413 且报错提到 prompt is too long、maximum context length 等）标记为 `context_overflow`，由 Agent Loop 压缩后重试一次。`max_retries: 0` 关闭重试；SDK 自身的重试保持关闭，避免叠加。没有自动协议降级。未完整接收的 assistant 响应不进入历史；已经完整接收并执行的工具调用与实际结果保留。取消表示停止接收并关闭流，不保证远程服务已经停止计费。
@@ -50,7 +73,7 @@ Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，�
 | --- | --- |
 | `text`（默认） | 正文流式输出到 stdout，提示与 `--show-usage` 用量输出到 stderr，与以往一致 |
 | `json` | 结束时输出一个结果对象：`type`、`subtype`（`completed`、`max_iterations`、`error` 等停止原因）、`is_error`、`result`（最终正文或错误说明）、`num_turns`、`duration_ms`、`usage`、`compactions`（成功压缩上下文的次数）、`model`、`permission_mode` |
-| `stream-json` | 每行一个 JSON 事件：`system`（init：cwd、model、permission_mode、tools）、`assistant`（text、tool_calls、stop_reason、usage）、`tool_result`、`retry`、`notice`、`compact`（subtype 为 started、finished、failed，见 [上下文管理](context.md#界面与无界面输出)），最后一行是与 json 格式相同的 `result` |
+| `stream-json` | 每行一个 JSON 事件：`system`（init：cwd、model、permission_mode、tools）、`assistant`（text、tool_calls、stop_reason、usage）、`tool_result`（有图片时带 `images`：文件名、媒体类型、宽、高，不含图片数据）、`retry`、`notice`、`compact`（subtype 为 started、finished、failed，见 [上下文管理](context.md#界面与无界面输出)），最后一行是与 json 格式相同的 `result` |
 
 ```powershell
 moss -p "列出 src 下的模块" --output-format json

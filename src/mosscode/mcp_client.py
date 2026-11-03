@@ -5,6 +5,7 @@ it is ready, so a slow server never holds up the prompt or the other servers.
 """
 
 import asyncio
+import base64
 import errno
 import hashlib
 import json
@@ -27,9 +28,10 @@ from mcp.shared.exceptions import McpError
 from mcp.shared.message import SessionMessage
 from referencing import Registry
 
+from .images import ImageError, image_ref, load_image
 from .mcp_config import MCPSettings, ServerConfig
 from .messages import ToolDefinition
-from .tools.base import Tool, ToolFailure
+from .tools.base import IMAGES, Tool, ToolFailure, image_context
 
 
 def tool_name(server: str, tool: str) -> str:
@@ -195,22 +197,51 @@ class MCPTool(Tool):
         return json_arguments(self.validator, raw, "MCP")
 
     async def execute(self, params):
+        accepts, store = image_context()
         result = await self.connection.call(self.remote_name, params.model_dump())
-        lines, unsupported = [], []
+        lines, unsupported, pictures = [], [], []
         for block in result.content:
             if block.type == "text":
                 lines.append(block.text)
+            elif block.type == "image":
+                pictures.append(block.data)
             else:
                 unsupported.append(block.type)
+        refs = ()
+        if pictures:
+            refs, notes = await asyncio.to_thread(self._images, pictures, accepts, store)
+            lines.extend(notes)
         if result.structuredContent is not None:
             lines.append(json.dumps(result.structuredContent, ensure_ascii=False, allow_nan=False))
         if unsupported:
             lines.append("（本章未展示的 MCP 内容类型：" + ", ".join(sorted(set(unsupported))) + "；未自动读取资源。）")
         output = "\n".join(lines) or "MCP 工具未返回正文。"
         details = {"server": self.server_name, "tool": self.remote_name, "unsupported_types": unsupported}
+        if refs:
+            details[IMAGES] = refs
         if result.isError:
             raise ToolFailure("mcp_tool_error", output, **details)
         return output, details
+
+    def _images(self, pictures: list[str], accepts: bool, store) -> tuple[tuple, list[str]]:
+        """The images to attach and a line for each: its size, or why it was left out."""
+        refs, notes = [], []
+        for number, data in enumerate(pictures, 1):
+            alt = f"{self.server_name}/{self.remote_name} 的图片 {number}"
+            if not accepts:
+                notes.append(f"{alt}（当前模型不支持图片，已省略）")
+                continue
+            try:
+                image = load_image(base64.b64decode(data, validate=True))
+            except ImageError as exc:
+                notes.append(f"{alt}（{exc}）")
+                continue
+            except ValueError:
+                notes.append(f"{alt}（图片数据不是有效的 base64。）")
+                continue
+            refs.append(image_ref(image, alt, store))
+            notes.append(f"{alt} · 图片 · {image.describe()}")
+        return tuple(refs), notes
 
 
 class ServerConnection:

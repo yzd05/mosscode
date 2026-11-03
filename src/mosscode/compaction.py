@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .context import ContextBudget, estimate_messages, estimate_text
+from .images import ImageRef
 from .messages import Completed, ContentBlock, Message, ProviderError
 from .session import Session
 
@@ -125,12 +126,18 @@ def fit_quotes(quotes: Sequence[str], budget: int = QUOTE_TOKENS) -> tuple[list[
     return kept, omitted
 
 
+def _image(image: ImageRef) -> str:
+    """The summary keeps what an image was, never its pixels."""
+    return image.placeholder(f"图片 {image.width}×{image.height}")
+
+
 def render(message: Message, shrink: bool = False) -> str:
     """One message as role-tagged plain text, so no protocol ever sees unpaired tool calls."""
     if message.synthetic == BOUNDARY:
         return "[之前的压缩摘要]\n" + message.text.strip()
     if message.role == "user":
-        return "[用户]\n" + message.text
+        content = (_image(b.image) if b.image is not None else b.text for b in message.content if b.kind != "thinking")
+        return "[用户]\n" + "".join(content)
     if message.role == "assistant":
         parts = ["[助手]\n" + message.text] if message.text.strip() else []
         parts += [f"[工具调用] {call.name} {call.arguments}" for call in message.tool_calls]
@@ -140,6 +147,7 @@ def render(message: Message, shrink: bool = False) -> str:
         text = result.model_text()
         if shrink and len(text) > RESULT_CLIP:
             text = text[:RESULT_CLIP] + f"\n…（已缩短，原文 {len(text)} 字符）"
+        text = "\n".join([text, *map(_image, result.images)])
         parts.append(f"[工具结果 · {result.name}]\n{text}")
     return "\n".join(parts)
 

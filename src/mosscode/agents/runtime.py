@@ -264,6 +264,7 @@ class SubAgents:
             )
             self._logs[task.id] = log
             loop.on_commit = log.append
+            loop.registry.image_dir = task.transcript.with_suffix("") / "images"
         conversation._record(
             {
                 "type": "task",

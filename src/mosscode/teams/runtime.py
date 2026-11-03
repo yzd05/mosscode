@@ -298,6 +298,7 @@ async def build_runner(
         },
     )
     loop.on_commit = log.append
+    registry.image_dir = (store.directory / member.transcript).with_suffix("") / "images"
     runner.loop, runner.owned = loop, owned
     return runner
 

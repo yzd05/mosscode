@@ -4,12 +4,15 @@ import asyncio
 import json
 import random
 import sys
-from collections.abc import AsyncIterator, Sequence
+import threading
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import aclosing
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 from .config import ProviderConfig
+from .images import ImageRef
 from .messages import (
     Completed,
     ContentBlock,
@@ -26,15 +29,118 @@ from .messages import (
 from .prompts import PREFIX_KINDS, PromptRequest, as_prompt
 from .usage import parse_usage, usage_data
 
+# Anthropic tightens its per-image limits above 20 images a request, and old screenshots rarely still matter.
+IMAGE_LIMIT = 20
+ENCODED_CACHE = 32
+UNSUPPORTED = "当前模型不支持图片，已省略"
+EARLIER = "较早的图片已省略"
+IMAGE_ONLY = "(see attached image)"
+TOOL_IMAGES = "工具结果中的图片："
+ERROR_IMAGES = "出错的工具结果中的图片："
+Encode = Callable[[ImageRef], str]
 
-def _blocks(message: Message, protocol: str) -> list[dict[str, Any]]:
+
+def _has_images(messages: Sequence[Message]) -> bool:
+    return any(b.image is not None for m in messages for b in m.content) or any(
+        r.images for m in messages for r in m.tool_results
+    )
+
+
+def _image(ref: ImageRef, protocol: str, encode: Encode) -> dict[str, Any]:
+    data = encode(ref)
+    if protocol == "anthropic-messages":
+        return {"type": "image", "source": {"type": "base64", "media_type": ref.media_type, "data": data}}
+    url = f"data:{ref.media_type};base64,{data}"
+    if protocol == "openai-responses":
+        return {"type": "input_image", "image_url": url}
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def _text(text: str, protocol: str) -> dict[str, Any]:
+    return {"type": "input_text" if protocol == "openai-responses" else "text", "text": text}
+
+
+def _labelled(header: str, refs: Sequence[ImageRef], protocol: str, encode: Encode) -> list[dict[str, Any]]:
+    """Images outside their tool result, each after its alt text so the model can tell them apart."""
+    parts = [_text(header, protocol)]
+    for ref in refs:
+        parts.extend((_text(ref.alt, protocol), _image(ref, protocol, encode)))
+    return parts
+
+
+def _parts(message: Message, protocol: str, encode: Encode) -> list[dict[str, Any]]:
+    """Text and images in their original order; adjacent text joins into one part."""
+    parts, text = [], ""
+    for block in message.content:
+        if block.image is not None:
+            if text:
+                parts.append(_text(text, protocol))
+            parts.append(_image(block.image, protocol, encode))
+            text = ""
+        elif block.kind == "text":
+            text += block.text
+    if text:
+        parts.append(_text(text, protocol))
+    return parts
+
+
+def _with_images(messages: Sequence[Message], accepts: bool, encode: Encode) -> list[Message]:
+    """Images the request carries, already encoded; the rest become their alt text with the reason."""
+    total = sum(1 for m in messages for b in m.content if b.image is not None)
+    total += sum(len(r.images) for m in messages for r in m.tool_results)
+    dropped = max(total - IMAGE_LIMIT, 0) if accepts else total
+    seen = 0
+
+    def note(ref: ImageRef) -> str | None:
+        nonlocal seen
+        seen += 1
+        if seen <= dropped:
+            return ref.placeholder(EARLIER if accepts else UNSUPPORTED)
+        try:
+            encode(ref)
+        except OSError:
+            return f"[图片已丢失：{ref.alt}]"
+        return None
+
+    prepared = []
+    for message in messages:
+        content = []
+        for block in message.content:
+            text = None if block.image is None else note(block.image)
+            content.append(block if text is None else ContentBlock("text", text))
+        results = []
+        for result in message.tool_results:
+            kept, notes = [], []
+            for ref in result.images:
+                text = note(ref)
+                if text is None:
+                    kept.append(ref)
+                else:
+                    notes.append(text)
+            if notes:
+                output = "\n".join([result.output, *notes] if result.output else notes)
+                result = replace(result, output=output, images=tuple(kept))
+            results.append(result)
+        prepared.append(replace(message, content=tuple(content), tool_results=tuple(results)))
+    return prepared
+
+
+def _blocks(message: Message, protocol: str, encode: Encode) -> list[dict[str, Any]]:
     if message.role == "tool":
-        return [
-            {"type": "tool_result", "tool_use_id": r.call_id, "content": r.model_text(), "is_error": r.is_error}
-            for r in message.tool_results
-        ]
+        blocks, failed = [], []
+        for r in message.tool_results:
+            content: Any = r.model_text()
+            if r.images and not r.is_error:
+                content = [{"type": "text", "text": content or IMAGE_ONLY}]
+                content.extend(_image(ref, protocol, encode) for ref in r.images)
+            failed.extend(r.images if r.is_error else ())
+            blocks.append({"type": "tool_result", "tool_use_id": r.call_id, "content": content, "is_error": r.is_error})
+        # Anthropic refuses images inside an error result: they follow all the results instead.
+        return blocks + (_labelled(ERROR_IMAGES, failed, protocol, encode) if failed else [])
     if message.protocol == protocol and message.native:
         return list(deepcopy(message.native))
+    if any(b.image is not None for b in message.content):
+        return _parts(message, protocol, encode)
     # Portable form, e.g. after switching models: text plus rebuilt tool_use blocks.
     blocks = [{"type": "text", "text": message.text}] if message.text or not message.tool_calls else []
     blocks.extend(
@@ -51,15 +157,15 @@ def _arguments(arguments: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _turns(messages: Sequence[Message], protocol: str) -> list[dict[str, Any]]:
+def _turns(messages: Sequence[Message], protocol: str, encode: Encode) -> list[dict[str, Any]]:
     """Anthropic turns; adjacent same-role messages (tool results then queued text) merge."""
     turns: list[dict[str, Any]] = []
     for message in messages:
         role = "user" if message.role == "tool" else message.role
         if turns and turns[-1]["role"] == role:
-            turns[-1]["content"].extend(_blocks(message, protocol))
+            turns[-1]["content"].extend(_blocks(message, protocol, encode))
         else:
-            turns.append({"role": role, "content": _blocks(message, protocol)})
+            turns.append({"role": role, "content": _blocks(message, protocol, encode)})
     return turns
 
 
@@ -185,6 +291,20 @@ class SDKProvider:
     def __init__(self, config: ProviderConfig, client: Any = None) -> None:
         self.config = config
         self.client = client if client is not None else self._client()
+        # base64 by image name (a content hash): history images are sent again every turn.
+        self._encoded: dict[str, str] = {}
+        self._encoded_lock = threading.Lock()
+
+    def _encode(self, ref: ImageRef) -> str:
+        with self._encoded_lock:
+            data = self._encoded.pop(ref.name, None)
+        if data is None:
+            data = ref.base64()
+        with self._encoded_lock:
+            self._encoded[ref.name] = data
+            while len(self._encoded) > ENCODED_CACHE:
+                del self._encoded[next(iter(self._encoded))]
+        return data
 
     def _client(self) -> Any:
         config = self.config
@@ -217,6 +337,9 @@ class SDKProvider:
         *,
         allow_tools: bool = True,
     ) -> AsyncIterator[StreamEvent]:
+        if _has_images(messages):
+            # Reading and encoding image files stays off the event loop.
+            messages = await asyncio.to_thread(_with_images, messages, self.config.accepts_images, self._encode)
         attempt = 0
         while True:
             produced = False
@@ -264,7 +387,7 @@ class AnthropicProvider(SDKProvider):
         options: dict[str, Any] = {
             "model": config.model,
             "max_tokens": config.max_output_tokens,
-            "messages": _turns(messages, config.protocol),
+            "messages": _turns(messages, config.protocol, self._encode),
             "stream": True,
         }
         blocks = [{"type": "text", "text": prompt.stable}] if prompt.stable else []
@@ -388,14 +511,19 @@ class ResponsesProvider(SDKProvider):
         ]
         for message in messages:
             if message.role == "tool":
-                inputs.extend(
-                    {"type": "function_call_output", "call_id": r.call_id, "output": r.model_text()}
-                    for r in message.tool_results
-                )
+                for r in message.tool_results:
+                    output: Any = r.model_text()
+                    if r.images:
+                        output = [_text(output or IMAGE_ONLY, self.config.protocol)]
+                        output.extend(_image(ref, self.config.protocol, self._encode) for ref in r.images)
+                    inputs.append({"type": "function_call_output", "call_id": r.call_id, "output": output})
             elif message.role == "assistant" and message.protocol == self.config.protocol and message.native:
                 inputs.extend(deepcopy(message.native))
             else:
-                if message.text or not message.tool_calls:
+                if any(b.image is not None for b in message.content):
+                    content = _parts(message, self.config.protocol, self._encode)
+                    inputs.append({"role": message.role, "content": content})
+                elif message.text or not message.tool_calls:
                     inputs.append({"role": message.role, "content": message.text})
                 inputs.extend(
                     {"type": "function_call", "call_id": c.id, "name": c.name, "arguments": c.arguments}
@@ -492,12 +620,26 @@ class ChatCompletionsProvider(SDKProvider):
         for message in messages:
             if message.role == "tool":
                 history.extend(
-                    {"role": "tool", "tool_call_id": r.call_id, "content": r.model_text()} for r in message.tool_results
+                    {
+                        "role": "tool",
+                        "tool_call_id": r.call_id,
+                        "content": r.model_text() or IMAGE_ONLY * bool(r.images),
+                    }
+                    for r in message.tool_results
                 )
+                # A tool message carries text only: the batch's images follow as one user message.
+                images = [ref for r in message.tool_results for ref in r.images]
+                if images:
+                    history.append(
+                        {"role": "user", "content": _labelled(TOOL_IMAGES, images, self.config.protocol, self._encode)}
+                    )
             elif message.protocol == self.config.protocol and message.native:
                 history.extend(deepcopy(message.native))
             else:
-                entry = {"role": message.role, "content": message.text}
+                content: Any = message.text
+                if any(b.image is not None for b in message.content):
+                    content = _parts(message, self.config.protocol, self._encode)
+                entry: dict[str, Any] = {"role": message.role, "content": content}
                 if message.tool_calls:
                     entry["tool_calls"] = [
                         {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}

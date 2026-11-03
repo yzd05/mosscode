@@ -28,6 +28,7 @@ mdit-py-plugins==0.6.1
 mdurl==0.1.2
 openai==3.26.0
 packaging==26.3
+pillow==13.0.0
 platformdirs==4.12.4
 pluggy==1.6.0
 pycparser==3.11

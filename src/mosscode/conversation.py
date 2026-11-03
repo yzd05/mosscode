@@ -714,6 +714,8 @@ class Conversation:
         notices.extend(self._restore_skills(restored.skills))
         if restored.skipped:
             notices.append(f"跳过了 {restored.skipped} 行无法读取的记录。")
+        if restored.lost_images:
+            notices.append(f"{restored.lost_images} 张图片的文件已丢失，已改为文字说明。")
         if restored.interrupted:
             notices.append(f"{restored.interrupted} 个工具调用在中断时没有结果，已标记为“会话中断”；模型会先检查状态。")
         if restored.unanswered:

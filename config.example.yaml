@@ -75,6 +75,8 @@ providers:
     stream_usage: false
     # 支持较新 token 参数的服务可以改为 max_completion_tokens：
     max_tokens_field: max_tokens
+    # 模型是否接受图片：Chat Completions 默认不接受，所用模型支持时改为 true（其他协议默认接受）。
+    # images: true
 
   - name: deepseek
     protocol: openai-chat-completions

@@ -3,13 +3,15 @@
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from .images import ImageRef
 from .permissions import ApprovalRequest
 
 
 @dataclass(frozen=True)
 class ContentBlock:
-    kind: Literal["text", "thinking"]
-    text: str
+    kind: Literal["text", "thinking", "image"]
+    text: str  # For an image, its alt text.
+    image: ImageRef | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ class ToolResult:
     is_error: bool = False
     code: str | None = None
     details: dict[str, Any] = field(default_factory=dict)
+    images: tuple[ImageRef, ...] = ()
 
     def model_text(self) -> str:
         # Details stay local (UI/tests); the model reads plain text only.

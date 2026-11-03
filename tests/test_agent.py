@@ -255,13 +255,13 @@ async def test_plan_offers_only_read_tools_and_blocks_writes_and_command(tmp_pat
     assert [r.code for r in conv.history[2].tool_results] == ["plan_blocked"] * 3 + [None]
     assert conv.mode == "plan"
     assert all(
-        {t.name for t in r[2]} == {"read_file", "glob", "grep", "execute_command", "exit_plan_mode"}
+        {t.name for t in r[2]} == {"read_file", "glob", "grep", "execute_command", "exit_plan_mode", "web_fetch"}
         for r in provider.requests
     )
     assert "计划模式" in provider.requests[0][1].supplements[-1].text
     conv.set_mode("normal")
     assert await conv.ask("执行") == "完成"
-    assert (tmp_path / "a").read_text() == "new" and len(provider.requests[-1][2]) == 6
+    assert (tmp_path / "a").read_text() == "new" and len(provider.requests[-1][2]) == 7
 
 
 async def test_unexpected_stream_error_is_safe_stop_and_keeps_completed_tools(tmp_path):
@@ -412,3 +412,25 @@ async def test_at_most_four_reads_and_cancel_settles_all_jobs(tmp_path):
 def test_iteration_cap_requires_positive_integer(limit):
     with pytest.raises(ValueError):
         AgentLoop(None, "", None, max_iterations=limit)
+
+
+async def test_an_image_read_by_a_tool_reaches_the_next_request_and_follows_the_model(tmp_path):
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    Image.new("RGB", (30, 20), "red").save(tmp_path / "shot.png")
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    provider = SequenceProvider(response(calls=[call("read_file", "r1", path="shot.png")]), response("红色"))
+    conv = Conversation(provider, registry=registry)
+    assert await conv.ask("看图") == "红色"
+    (result,) = provider.requests[1][0][-1].tool_results
+    assert [(i.width, i.height, i.alt) for i in result.images] == [(30, 20, "shot.png")]
+    assert result.output.startswith("shot.png · 图片 · 30×20 · ")
+    # A text-only model: the same read is refused instead of sending an image it cannot take.
+    text_only = SequenceProvider(response(calls=[call("read_file", "r2", path="shot.png")]), response("好"))
+    text_only.config = SimpleNamespace(accepts_images=False)
+    await conv.set_provider(text_only)
+    assert await conv.ask("再看") == "好"
+    (refused,) = text_only.requests[1][0][-1].tool_results
+    assert refused.code == "image_unsupported" and not refused.images

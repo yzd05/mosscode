@@ -42,6 +42,30 @@ def test_estimate_counts_ascii_by_four_and_every_cjk_character_as_a_token():
     assert estimate_message(tool) == 4 + estimate_text("错误 [failed]：x")
 
 
+def image_messages():
+    from mosscode.images import ImageRef
+
+    pasted = ImageRef("0" * 32 + ".png", "image/png", 1000, 1000, 10, "[图片 #1]", data=b"pixels")
+    shot = ImageRef("1" * 32 + ".png", "image/png", 2000, 1125, 10, "a.png", data=b"pixels")
+    user = Message("user", (ContentBlock("text", "abcd"), ContentBlock("image", "[图片 #1]", pasted)))
+    tool = Message("tool", (), tool_results=(ToolResult("1", "read_file", "a.png", images=(shot,)),))
+    return user, tool
+
+
+def test_images_count_by_their_area_capped_at_1600():
+    user, tool = image_messages()
+    assert estimate_message(user) == 4 + 1 + 1334
+    assert estimate_message(tool) == 4 + estimate_text("a.png") + 1600
+
+
+def test_compaction_sees_images_as_alt_text_and_size():
+    from mosscode.compaction import transcript
+
+    text = transcript(image_messages())
+    assert "[用户]\nabcd[图片 #1]（图片 1000×1000）" in text
+    assert "[工具结果 · read_file]\na.png\na.png（图片 2000×1125）" in text and "pixels" not in text
+
+
 def test_meter_anchors_on_reported_usage_and_estimates_only_the_increment():
     meter = ContextMeter()
     history = [text("user", "hi"), text("assistant", "hello")]

@@ -13,6 +13,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
+from .images import ImageRef, ProcessedImage, store_image
 from .messages import Message, ToolResult
 from .paths import SESSION_ID, mosscode_home, new_session_id, project_dir
 from .serialization import message_from_json, message_to_json
@@ -82,6 +83,11 @@ class Session:
         except FileExistsError:
             pass
         return path
+
+    def store_image(self, image: ProcessedImage, alt: str) -> ImageRef:
+        """images/<sha256 prefix>.<ext>: the same image is stored once."""
+        self.ensure()
+        return store_image(self.directory / "images", image, alt)
 
     def write_record(self, text: str) -> Path:
         """compact-<n>.md with the next free n; earlier records are never overwritten."""
@@ -391,6 +397,7 @@ class Restored:
     title: str = "（无标题）"
     stripped: bool = False
     skills: tuple[tuple[str, str, bool], ...] = ()  # (name, arguments, pinned) in record order.
+    lost_images: int = 0  # Image files missing from the session directory.
 
 
 def _strip(history: Sequence[Message]) -> list[Message]:
@@ -440,6 +447,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     history: list[Message] = []
     skipped, last_time, last_provider = 0, None, None
     skills: list[tuple[str, str, bool]] = []
+    images, lost = path.with_suffix("") / "images", []
     with path.open("rb") as stream:
         for raw in stream:
             if not raw.strip():
@@ -450,12 +458,12 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     raise ValueError("记录类型不合法")
                 kind = record["type"]
                 if kind == "message":
-                    history.append(message_from_json(record.get("message")))
+                    history.append(message_from_json(record.get("message"), images, lost))
                 elif kind == "compact":
                     keep = record.get("keep")
                     if type(keep) is not int or keep < 0:
                         raise ValueError("keep 不合法")
-                    boundary = message_from_json(record.get("boundary"))
+                    boundary = message_from_json(record.get("boundary"), images, lost)
                     history = [boundary] + (history[len(history) - min(keep, len(history)) :] if keep else [])
                 elif kind == "provider":
                     if not isinstance(record.get("name"), str) or not isinstance(record.get("protocol"), str):
@@ -492,7 +500,16 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     while history and history[-1].role == "user" and history[-1].synthetic is None:
         unanswered.insert(0, history.pop().shown)
     return Restored(
-        path.stem, history, skipped, filled, tuple(unanswered), last_time, read_title(path), stripped, tuple(skills)
+        path.stem,
+        history,
+        skipped,
+        filled,
+        tuple(unanswered),
+        last_time,
+        read_title(path),
+        stripped,
+        tuple(skills),
+        len(lost),
     )
 
 

@@ -281,16 +281,21 @@ async def _prompt(
                         _emit(_assistant(event.message, usage, event.stop_reason))
                     elif isinstance(event, ToolProgress) and event.phase == "finished":
                         result = event.result
-                        _emit(
-                            {
-                                "type": "tool_result",
-                                "id": event.call.id,
-                                "name": event.call.name,
-                                "is_error": result.is_error,
-                                "code": result.code,
-                                "output": result.output,
-                            }
-                        )
+                        item = {
+                            "type": "tool_result",
+                            "id": event.call.id,
+                            "name": event.call.name,
+                            "is_error": result.is_error,
+                            "code": result.code,
+                            "output": result.output,
+                        }
+                        if result.images:
+                            # Metadata only: the bytes stay in the session directory.
+                            item["images"] = [
+                                {"name": i.name, "media_type": i.media_type, "width": i.width, "height": i.height}
+                                for i in result.images
+                            ]
+                        _emit(item)
                     elif isinstance(event, Retrying):
                         _emit(
                             {

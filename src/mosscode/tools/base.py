@@ -16,6 +16,25 @@ from ..security import SecurityError, project_path, resolve_path
 
 # The call a tool is executing, for tools that need its id (the agent tool's row in the UI).
 CURRENT_CALL: ContextVar[ToolCall | None] = ContextVar("mosscode_current_call", default=None)
+# The registry running it: its session stores images, its images flag says whether the model sees them.
+CURRENT_REGISTRY: ContextVar["ToolRegistry | None"] = ContextVar("mosscode_current_registry", default=None)
+# A details key for the images a tool returns; the registry moves them to ToolResult.images.
+IMAGES = "_images"
+
+
+def image_context() -> tuple[bool, Any]:
+    """(whether the model accepts images, where to store them) for the running tool."""
+    registry = CURRENT_REGISTRY.get()
+    if registry is None:
+        return True, None
+    return registry.images, registry
+
+
+def _split_images(details: dict[str, Any]) -> tuple[dict[str, Any], tuple]:
+    if IMAGES not in details:
+        return details, ()
+    details = dict(details)
+    return details, tuple(details.pop(IMAGES))
 
 
 class Params(BaseModel):
@@ -145,6 +164,9 @@ class ToolRegistry:
         self.forbidden: frozenset[str] = frozenset()  # Offered (fork cache) but refused when called.
         self.nested = False  # Started by a hook's agent action; its tool events run no agent action.
         self.worktree = ""  # The worktree a sub-agent works in, relative to the repository.
+        self.images = True  # Whether the current model accepts images; the agent loop keeps it current.
+        # A sub-agent or member keeps its images beside its own transcript, where reloading it looks for them.
+        self.image_dir: Path | None = None
         # withheld(tool) -> True keeps a tool for sub-agents and members but neither offers nor runs it here.
         self.withheld = None
         if any(tool.root != self.permissions.root for tool in self._tools.values()):
@@ -154,6 +176,13 @@ class ToolRegistry:
         """Store oversized results in this run's directory and let read_file open them without approval."""
         self.session = session
         self.permissions.session_dir = session.directory if session is not None else None
+
+    def store_image(self, image, alt: str):
+        from ..images import image_ref, store_image
+
+        if self.image_dir is not None:
+            return store_image(self.image_dir, image, alt)
+        return image_ref(image, alt, self.session)
 
     def forget_reads(self) -> None:
         """After compaction the model no longer holds file contents: edits need a fresh read."""
@@ -204,6 +233,7 @@ class ToolRegistry:
         state = state if state is not None else FileState()
         view = ToolRegistry(permissions=permissions)
         view.session, view.hooks, view.agent, view.agent_type = self.session, self.hooks, agent, agent_type
+        view.images = self.images
         view.forbidden = frozenset(forbidden)
         for name, tool in self._tools.items():
             if keep is not None and not keep(name):
@@ -243,14 +273,17 @@ class ToolRegistry:
         return bound_result(call.name, call.id, output, details, self.session)
 
     async def _invoke(self, call: ToolCall, tool: Tool, params: Params) -> ToolResult:
-        CURRENT_CALL.set(call)  # Runs in its own task: the value never leaks to the caller.
+        CURRENT_CALL.set(call)  # Runs in its own task: the values never leak to the caller.
+        CURRENT_REGISTRY.set(self)
         try:
             output, details = await tool.execute(params)
+            details, images = _split_images(details)
             output, details = self._bound(call, output, details)
-            return ToolResult(call.id, call.name, output, details=details)
+            return ToolResult(call.id, call.name, output, details=details, images=images)
         except ToolFailure as exc:
-            output, details = self._bound(call, str(exc), exc.details)
-            return ToolResult(call.id, call.name, output, True, exc.code, details)
+            details, images = _split_images(exc.details)
+            output, details = self._bound(call, str(exc), details)
+            return ToolResult(call.id, call.name, output, True, exc.code, details, images)
         except FileNotFoundError:
             return ToolResult(call.id, call.name, "文件或目录不存在。", True, "not_found")
         except IsADirectoryError:

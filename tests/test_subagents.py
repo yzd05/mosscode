@@ -201,6 +201,33 @@ async def test_definition_runs_in_a_blank_conversation(tmp_path):
     await conv.close()
 
 
+async def test_a_sub_agent_keeps_its_images_beside_its_own_transcript(tmp_path):
+    from PIL import Image
+
+    from mosscode.session import load_session
+
+    write_agent(agents_dir(tmp_path), "worker", "tools: Read\n", "SUB-WORKER")
+    Image.new("RGB", (4, 3), "red").save(project_of(tmp_path) / "shot.png")
+
+    def script(messages, system, tools):
+        if "SUB-WORKER" in system.stable:
+            if len(messages) == 1:
+                return response(calls=[call("read_file", "r1", path="shot.png")])
+            return response("看到了")
+        if messages[-1].role == "user":
+            return response(calls=[call("agent", "a1", description="看图", prompt="看 shot.png", agent_type="worker")])
+        return response("完成")
+
+    conv = conversation(tmp_path, ScriptProvider(script))
+    await drain(conv.reply("开始"))
+    task = conv.tasks.get("t1")
+    (image,) = [i for m in load_session(task.transcript).history for r in m.tool_results for i in r.images]
+    assert image.path == task.transcript.with_suffix("") / "images" / image.name and image.path.is_file()
+    assert load_session(task.transcript).lost_images == 0
+    assert not (conv.session.directory / "images").exists()
+    await conv.close()
+
+
 async def test_max_turns_and_global_limit(tmp_path):
     write_agent(agents_dir(tmp_path), "loop", "max_turns: 2\n", "SUB-LOOP")
     write_agent(agents_dir(tmp_path), "big", "max_turns: 999\n", "SUB-BIG")

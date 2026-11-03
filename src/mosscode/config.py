@@ -55,6 +55,12 @@ class ProviderConfig:
     prompt_cache: bool | None = None
     context_window: int | None = None
     compact_threshold: int | None = None
+    images: bool | None = None  # Whether the model accepts images; None follows the protocol.
+
+    @property
+    def accepts_images(self) -> bool:
+        # Many Chat Completions services (DeepSeek and the like) have text-only models.
+        return self.images if self.images is not None else self.protocol != "openai-chat-completions"
 
     def budget(self) -> ContextBudget:
         return ContextBudget.for_provider(self.context_window, self.max_output_tokens, self.compact_threshold)
@@ -194,6 +200,8 @@ def _provider(raw: Any) -> ProviderConfig:
         raise ConfigError("include_encrypted_reasoning 必须是布尔值。")
     if data.get("prompt_cache") is not None and type(data["prompt_cache"]) is not bool:
         raise ConfigError("prompt_cache 必须是布尔值或 null。")
+    if data.get("images") is not None and type(data["images"]) is not bool:
+        raise ConfigError("images 必须是布尔值或 null。")
     if data.get("max_tokens_field", "max_tokens") not in {"max_tokens", "max_completion_tokens"}:
         raise ConfigError("max_tokens_field 必须是 max_tokens 或 max_completion_tokens。")
     thinking = data.get("thinking")
