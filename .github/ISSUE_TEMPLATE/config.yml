@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 报告安全漏洞
+    url: https://github.com/yzd11/mosscode/security/advisories/new
+    about: 通过私密漏洞报告提交，不要公开 Issue
+  - name: 使用文档
+    url: https://github.com/yzd11/mosscode/tree/main/docs/reference
+    about: 配置、命令、权限、MCP、Skill、Hook 等的完整说明

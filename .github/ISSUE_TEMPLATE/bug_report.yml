@@ -1,0 +1,68 @@
+name: 问题报告
+description: MossCode 的行为与文档不符、报错或崩溃
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请搜索已有的 Issue。安全漏洞不要在这里报告，见 [安全策略](https://github.com/yzd11/mosscode/security/policy)。
+        粘贴的内容里不要包含 API 密钥、令牌或其他凭据。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: "`moss --version` 的输出"
+      placeholder: mosscode 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options: [Windows, Linux, macOS, WSL, 其他]
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: 终端与 Shell
+      description: 例如 Windows Terminal + PowerShell 7、iTerm2 + zsh、VS Code 内置终端
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: 协议与模型
+      description: 例如 anthropic-messages / claude-sonnet-4-5；与模型无关的问题可以不填
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 实际的行为，以及你期望的行为
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动 `moss` 开始的最少步骤；能用 `moss -p` 复现时请写出命令
+      placeholder: |
+        1. 在空目录运行 moss
+        2. 输入 ……
+        3. ……
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: moss doctor 输出
+      description: 运行 `moss doctor` 并粘贴完整输出（不含凭据）
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错与日志
+      description: 终端里的报错、Traceback 或截图
+      render: text

@@ -1,0 +1,114 @@
+name: Release
+
+# A pushed tag v<version> builds once, uploads to TestPyPI, checks that the upload installs, then
+# uploads the same files to PyPI and creates the GitHub release. Uploads use Trusted Publishing:
+# the testpypi and pypi environments must be registered as trusted publishers on each index.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - name: Check the tag matches the version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in pyproject.toml"
+            exit 1
+          fi
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+      - run: uv build
+      - run: uvx twine check --strict dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  testpypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/mosscode
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - name: Install the uploaded wheel
+        # Only mosscode comes from TestPyPI; its dependencies come from PyPI.
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if uvx pip download --no-deps --only-binary :all: --dest /tmp/testpypi \
+                 --index-url https://test.pypi.org/simple/ "mosscode==$version"; then
+              break
+            fi
+            sleep 30
+          done
+          uv venv /tmp/release-check
+          uv pip install --python /tmp/release-check/bin/python /tmp/testpypi/mosscode-*.whl
+          /tmp/release-check/bin/moss --version | grep -F "$version"
+
+  pypi:
+    needs: testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mosscode
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Create the release with this version's changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v h="## [$version]" '
+            index($0, h) == 1 { on = 1; next }
+            on && (/^## / || /^\[[^]]*\]: /) { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "MossCode $version" --notes-file notes.md

@@ -1,21 +1,23 @@
 # MossCode
 
-轻量级终端 coding agent，参考 Claude Code 与 Pi 的设计：单一 Agent Loop，六个本地工具（读、写、改、命令、glob、grep）加 MCP 外部工具，四档权限与只读计划模式，支持 Anthropic Messages、OpenAI Responses 和 Chat Completions 三种协议。代码量小，便于学习和修改。
+终端里的 coding agent，设计上参考 Claude Code 与 pi：单一 Agent Loop，六个本地工具（读、写、改、命令、glob、grep）加 MCP 外部工具，四档权限与只读计划模式，支持 Anthropic Messages、OpenAI Responses 和 Chat Completions 三种协议；在此之上有 Skill、Hook、子 Agent、git 工作树隔离和 Agent 团队。
 
 ## 安装
 
-需要 Python 3.12 和 [uv](https://docs.astral.sh/uv/)。在仓库目录中（PowerShell）：
+需要 Python 3.12 或更高版本。推荐用 [uv](https://docs.astral.sh/uv/) 安装成独立的命令：
 
 ```powershell
-uv tool install --editable .
+uv tool install mosscode
 moss --version
 ```
 
-安装后得到 `moss` 和 `mosscode` 两个相同的命令，在任意目录都能运行。`--editable` 让命令直接使用仓库中的源码，修改代码后不用重装。uv 若提示 `%USERPROFILE%\.local\bin` 不在 PATH 中，运行 `uv tool update-shell`，然后打开新的终端。`moss doctor` 检查安装、PATH、配置和依赖工具，不发送请求。
+安装后得到 `moss` 和 `mosscode` 两个相同的命令，在任意目录都能运行。uv 若提示 `~/.local/bin`（Windows 上是 `%USERPROFILE%\.local\bin`）不在 PATH 中，运行 `uv tool update-shell`，然后打开新的终端。`moss doctor` 检查安装、PATH、配置和依赖工具，不发送请求。
 
-也可以用 pipx：`pipx install --editable .`。依赖或命令入口（`pyproject.toml`）变化后重新安装：`uv tool install --editable . --reinstall`；卸载：`uv tool uninstall mosscode`。
+升级：`uv tool upgrade mosscode`；卸载：`uv tool uninstall mosscode`。也可以用 pipx：`pipx install mosscode`。
 
-搜索优先使用 PATH 中的 ripgrep（`rg`），没有时自动退回内置实现；Windows 上建议安装 Git for Windows，命令工具会优先使用 Git Bash。开发用的虚拟环境见 [开发与测试](#开发与测试)。
+支持 Windows、Linux 和 macOS：日常开发在 Windows（Windows Terminal）上进行，三个系统都由 CI 运行全部测试。搜索优先使用 PATH 中的 ripgrep（`rg`），没有时自动退回内置实现；Windows 上建议安装 Git for Windows，命令工具会优先使用 Git Bash。Agent 团队的分屏窗格需要 Windows Terminal 或 tmux，否则成员在进程内运行。
+
+从源码安装、开发与测试见 [参与贡献](CONTRIBUTING.md)。
 
 ## 配置
 
@@ -215,23 +217,9 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 | 主题 | 文档 |
 | --- | --- |
 | 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
-| 设计评审 | [对照 Claude Code 与 Pi 的完善建议](docs/research/claude-code-pi-gap-review.md) |
-| 各阶段规格与验证 | `docs/specs/`：`chapter-*` 为各章，`refinement-*` 为完善阶段 1–6，每个目录含 `spec.md` 与 `validation.md` |
-| 人工验收 | [完善阶段 1–6、上下文管理与第九至十四章验收指南](docs/acceptance.md)：自动测试、离线检查和真实模型用例，验收项目由 `scripts/acceptance_setup.py` 生成 |
-
-### 开发与测试
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e '.[dev]'
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe scripts/verify_inline_terminal.py   # Windows 真实控制台烟测，需在交互式终端运行
-.\.venv\Scripts\python.exe scripts/verify_resize.py            # 窗口宽度变化后的重绘检查，会弹出并自动关闭一个控制台窗口
-.\.venv\Scripts\python.exe scripts/verify_keys.py              # 经控制台输入队列检查换行、历史和 /clear，同样弹出窗口
-```
-
-需要复现锁定的依赖版本时，先安装 `requirements-lock.txt`，再执行 `pip install --no-deps -e .`。虚拟环境中也有 `moss` 命令（`.\.venv\Scripts\moss.exe`），`.\.venv\Scripts\python.exe -m mosscode` 同样可用。
-
-测试使用模拟模型、模拟 SSE 和无界面 TUI，不读取 API 配置，也不发送请求；真实服务的联调需要自行配置。界面预览脚本见 [终端界面](docs/reference/interface.md#预览与烟测脚本)。
+| 版本变化 | [更新日志](CHANGELOG.md) |
+| 开发与贡献 | [参与贡献](CONTRIBUTING.md)、[开发说明](AGENTS.md)、[安全策略](SECURITY.md) |
 
 目前不支持网络限制、资源配额和审计日志。
+
+MossCode 以 [MIT 许可证](LICENSE) 发布。

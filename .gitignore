@@ -20,3 +20,8 @@ mcp.yaml
 
 # Third-party course material kept for reference, not part of the project
 /reference/
+
+# Lint cache and build output
+.ruff_cache/
+dist/
+build/
