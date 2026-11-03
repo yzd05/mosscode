@@ -7,6 +7,7 @@ from mosscode.conversation import Conversation
 from mosscode.messages import ProviderError
 from mosscode.tools import create_default_registry
 from test_providers import CASES, SSEBody, adapter, frame
+from waiting import until
 
 
 @pytest.mark.parametrize("protocol,cls,plain_frames,path", CASES)
@@ -238,10 +239,7 @@ async def test_incomplete_tool_response_has_no_side_effects(tmp_path, protocol, 
         )
         task = asyncio.create_task(conv.ask("write"))
         if cancel:
-            for _ in range(100):
-                if bodies:
-                    break
-                await asyncio.sleep(0.01)
+            await until(lambda: bodies)
             await asyncio.wait_for(bodies[0].waiting.wait(), 3)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

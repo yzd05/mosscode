@@ -8,6 +8,7 @@ from mosscode.tools import create_default_registry
 from mosscode.tui import MossCodeApp, PromptArea
 from test_agent import SequenceProvider, call, response
 from test_tui import send
+from waiting import until
 
 
 def make_app(root, provider):
@@ -17,13 +18,10 @@ def make_app(root, provider):
 
 
 async def wait_approval(app, pilot):
-    for _ in range(40):
-        await pilot.pause(0.02)
-        if app._approval_request:
-            return
-        if app._reply_task.done():
-            raise AssertionError("调用结束但未显示审批")
-    raise AssertionError("未显示审批")
+    await until(lambda: app._approval_request or app._reply_task.done(), message="未显示审批")
+    if not app._approval_request:
+        raise AssertionError("调用结束但未显示审批")
+    await pilot.pause()
 
 
 async def test_keyboard_approval_below_input_and_once_scope(tmp_path):

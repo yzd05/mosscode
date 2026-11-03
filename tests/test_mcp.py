@@ -19,6 +19,7 @@ from mosscode.permissions import ApprovalRequest, parse_rule
 from mosscode.tools import create_default_registry
 from mosscode.tools.base import ExecutionCancelled, ToolFailure
 from test_agent import SequenceProvider, response
+from waiting import until
 
 FIXTURE = Path(__file__).parent / "fixtures/mcp_stdio_server.py"
 
@@ -345,10 +346,7 @@ async def test_cancel_pending_and_running_remote_operations_preserves_history(tm
         assert conversation.history[-1].tool_results[0].code == "cancelled"
         reg.permissions.mode = "bypassPermissions"
         request = asyncio.create_task(reg.execute(call("mcp__notes__slow", text="slow")))
-        for _ in range(100):
-            if (tmp_path / "calls.log").exists():
-                break
-            await asyncio.sleep(0.01)
+        await until((tmp_path / "calls.log").exists)
         request.cancel()
         with pytest.raises(ExecutionCancelled) as e:
             await request
@@ -449,10 +447,7 @@ async def test_concurrent_start_and_cancelled_initialization_cleanup(tmp_path):
     assert await unopened.start(reg) == () and unopened.connections[0].task is None
     hanging = MCPManager(tmp_path, MCPSettings((stdio_config("hang", tmp_path / "hang.log", "hang"),)))
     task = asyncio.create_task(hanging.start(reg))
-    for _ in range(100):
-        if (tmp_path / "hang.pid").exists():
-            break
-        await asyncio.sleep(0.01)
+    await until((tmp_path / "hang.pid").exists)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -508,12 +503,8 @@ async def test_tui_exit_while_connecting_cleans_startup_task(tmp_path):
     reg = create_default_registry(tmp_path, load_permissions=False)
     manager = MCPManager(tmp_path, MCPSettings((stdio_config("hang", tmp_path / "hang.log", "hang"),)))
     app = MossCodeApp(Conversation(SequenceProvider(), registry=reg, mcp_manager=manager), "Demo")
-    async with app.run_test() as pilot:
-        for _ in range(100):
-            if (tmp_path / "hang.pid").exists():
-                break
-            await pilot.pause(0.02)
-        assert (tmp_path / "hang.pid").exists()
+    async with app.run_test():
+        await until((tmp_path / "hang.pid").exists)
         assert not app.query_one("#prompt", PromptArea).disabled  # Never blocked by MCP.
     assert app._startup_task.done() and manager.connections[0].task.done()
     assert not reg.permissions.pending

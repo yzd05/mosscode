@@ -42,6 +42,7 @@ from mosscode.session import (
 from mosscode.tools import create_default_registry
 from test_agent import SequenceProvider, call, response
 from test_context import NO_SUMMARY, chat, summary_reply
+from waiting import until
 
 SMALL = ContextBudget.for_provider(60_000, 4_096)  # Auto threshold 27,000.
 INFO = ("main", "anthropic-messages", "model-a")
@@ -605,10 +606,7 @@ async def test_tui_lists_resumes_renders_and_returns_unanswered_text(tmp_path):
                 console.print(getattr(widget, "transcript", None) or widget.render())
             return console.export_text()
 
-        for _ in range(200):  # Under a loaded test run the resume task may start a few frames late.
-            await pilot.pause()
-            if not app._task_running and "最后 1 条消息没有得到回复" in rendered():
-                break
+        await until(lambda: not app._task_running and "最后 1 条消息没有得到回复" in rendered())
         shown = rendered()
         assert "已恢复会话 · 修改 notes.txt · 2 条消息" in shown
         assert "Read" in shown and "notes.txt" in shown

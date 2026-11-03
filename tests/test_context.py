@@ -21,6 +21,7 @@ from mosscode.tools import create_default_registry
 from mosscode.tools.base import Params, Tool
 from mosscode.tools.execution import execute_batch
 from test_config import write_config
+from waiting import until
 
 
 def text(role, value):
@@ -585,13 +586,11 @@ async def test_tui_shows_a_live_row_while_compacting_and_turns_it_into_the_resul
         await pilot.pause()
         app.query_one("#prompt", PromptArea).value = "继续"
         await pilot.press("enter")
-        for _ in range(20):
-            await pilot.pause(0.05)
-            if app.query(CompactRow):
-                break
+        await until(lambda: app.query(CompactRow))
+        await pilot.pause()
         row = app.query_one(CompactRow)
         assert "上下文接近上限，正在压缩" in str(row.render()) and row.transcript is None
-        assert "压缩上下文中" in str(app.query_one("#status", Static).render())
+        await until(lambda: "压缩上下文中" in str(app.query_one("#status", Static).render()))  # The next status tick.
         gate.set()
         await app._reply_task
         await pilot.pause()
@@ -611,14 +610,11 @@ async def test_tui_cancelling_a_compaction_finishes_its_row():
         await pilot.pause()
         app.query_one("#prompt", PromptArea).value = "/compact"
         await pilot.press("enter")
-        for _ in range(20):
-            await pilot.pause(0.05)
-            if app.query(CompactRow):
-                break
+        await until(lambda: app.query(CompactRow))
         await pilot.press("escape")
-        await pilot.pause(0.2)
         row = app.query_one(CompactRow)
-        assert row.transcript is not None and "已取消压缩" in row.transcript.plain
+        await until(lambda: row.transcript is not None)
+        assert "已取消压缩" in row.transcript.plain
         assert app.conversation.history[0].synthetic is None and not app._generating
 
 

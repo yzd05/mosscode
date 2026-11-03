@@ -9,6 +9,7 @@ from mosscode.tools import create_default_registry
 from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_agent import SequenceProvider, call, response
 from test_tui import send
+from waiting import until
 
 
 async def test_plan_then_permissions_command_help_and_chinese_completion(tmp_path):
@@ -193,11 +194,7 @@ async def test_repeated_escape_waits_for_file_io_outcome_and_pairs_later_calls(t
     async with app.run_test() as pilot:
         try:
             await send(app, pilot, "任务")
-            for _ in range(100):
-                if entered.is_set():
-                    break
-                await asyncio.sleep(0.01)
-            assert entered.is_set()
+            await until(entered.is_set)
             await pilot.press("escape", "escape")
             assert app._reply_task.cancelling() == 1
         finally:

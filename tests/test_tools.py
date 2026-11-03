@@ -12,6 +12,7 @@ from mosscode.messages import ToolCall
 from mosscode.tools import create_default_registry
 from mosscode.tools.base import ExecutionCancelled
 from mosscode.tools.shell import resolve_shell
+from waiting import until
 
 
 def call(name, **arguments):
@@ -184,13 +185,9 @@ async def test_command_cancel_or_timeout_kills_own_child(tmp_path, cancel):
         registry.execute(call("execute_command", command=python_command(script), timeout=4 if not cancel else 30))
     )
     try:
-        for _ in range(200):
-            if marker.exists():
-                break
-            if task.done():
-                pytest.fail(f"Command stopped before creating child: {task.result()}")
-            await asyncio.sleep(0.02)
-        assert marker.exists()
+        await until(lambda: marker.exists() or task.done())
+        if not marker.exists():
+            pytest.fail(f"Command stopped before creating child: {task.result()}")
         pid = int(marker.read_text())
         assert process_alive(pid)
         if cancel:
@@ -200,11 +197,7 @@ async def test_command_cancel_or_timeout_kills_own_child(tmp_path, cancel):
             assert error.value.result.code == "cancelled"
         else:
             assert (await task).code == "timeout"
-        for _ in range(100):
-            if not process_alive(pid):
-                break
-            await asyncio.sleep(0.01)
-        assert not process_alive(pid)
+        await until(lambda: not process_alive(pid), message=f"child process {pid} still alive")
     finally:
         if not task.done():
             task.cancel()

@@ -16,6 +16,7 @@ from mosscode.messages import (
     ToolProgress,
 )
 from mosscode.tools import create_default_registry
+from waiting import until
 
 
 class ToolProvider:
@@ -144,11 +145,7 @@ async def test_complete_write_remains_recorded_if_cancelled_during_file_io(tmp_p
         registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
     )
     task = asyncio.create_task(conv.ask("write"))
-    for _ in range(100):
-        if started.is_set():
-            break
-        await asyncio.sleep(0.01)
-    assert started.is_set()
+    await until(started.is_set)
     task.cancel()
     release.set()
     with pytest.raises(asyncio.CancelledError):

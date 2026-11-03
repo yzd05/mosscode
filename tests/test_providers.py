@@ -11,6 +11,7 @@ from mosscode.config import ProviderConfig
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, Delta, ProviderError, Retrying, RunStopped
 from mosscode.providers import AnthropicProvider, ChatCompletionsProvider, ResponsesProvider
+from waiting import until
 
 
 def frame(kind, data):
@@ -280,11 +281,7 @@ async def test_cancellation_closes_actual_sdk_http_body(protocol, cls, frames, p
     try:
         conv = Conversation(provider)
         task = asyncio.create_task(conv.ask("hello"))
-        for _ in range(100):
-            if bodies:
-                break
-            await asyncio.sleep(0.01)
-        assert bodies
+        await until(lambda: bodies)
         await asyncio.wait_for(bodies[0].waiting.wait(), timeout=2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

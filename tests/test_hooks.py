@@ -27,6 +27,7 @@ from test_commands import FakeUI, context, run
 from test_context import NO_SUMMARY_REPLY, summary_reply
 from test_sessions import assistant, drain, make, user, write_session
 from test_skills import places  # noqa: F401  (fixture)
+from waiting import until
 
 PY = "${PYTHON}"
 MARK = "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('x', encoding='utf-8')"
@@ -1184,16 +1185,11 @@ async def test_tui_asks_before_session_start(tmp_path, key, trusted):
     seen = record(hooks)
     app = MossCodeApp(make(tmp_path, SequenceProvider(), hooks=hooks), "test")
     async with app.run_test() as pilot:
-        for _ in range(100):
-            await pilot.pause()
-            if app._pick is not None:
-                break
-        assert app._pick is not None and seen == []  # session_start waits for the answer.
+        await until(lambda: app._pick is not None)
+        await pilot.pause()
+        assert seen == []  # session_start waits for the answer.
         await pilot.press(key)
-        for _ in range(100):
-            await pilot.pause()
-            if seen:
-                break
+        await until(lambda: seen)
         assert names(seen) == ["session_start"] and app._pick is None
         assert [h.id for h in hooks.hooks] == (["ss"] if trusted else [])
         assert TrustStore(hooks.root).path.exists() is trusted

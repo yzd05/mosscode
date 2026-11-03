@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mosscode.skills import SkillCatalog, SkillError, expand_arguments, missing_tools, parse_skill, split_tool_list
+from waiting import until
 
 
 def write_skill(
@@ -1128,8 +1129,7 @@ async def test_fork_failures_leave_a_marked_exchange(tmp_path, places):
             seen.append(event)
 
     task = asyncio.create_task(consume())
-    await asyncio.sleep(0.1)
-    assert conversation._busy
+    await until(lambda: conversation._busy)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

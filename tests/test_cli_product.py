@@ -18,6 +18,7 @@ from mosscode.setup import Wizard, run_setup, setup, user_config
 from mosscode.tui import MossCodeApp
 from test_cli import setup_cli
 from test_conversation import FakeProvider
+from waiting import until
 
 
 def modules_after(code: str) -> str:
@@ -151,11 +152,8 @@ def test_cli_passes_the_initial_prompt(monkeypatch):
 async def test_initial_prompt_is_sent_once_started():
     provider = FakeProvider()
     app = MossCodeApp(Conversation(provider), "test", initial_prompt="列出文件")
-    async with app.run_test() as pilot:
-        for _ in range(100):
-            if app._reply_task is not None:
-                break
-            await pilot.pause(0.02)
+    async with app.run_test():
+        await until(lambda: app._reply_task is not None)
         await asyncio.wait_for(app._reply_task, 5)
         assert provider.requests[0][-1].text == "列出文件"
         assert app._initial_prompt is None

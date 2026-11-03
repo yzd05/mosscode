@@ -30,6 +30,7 @@ from mosscode.prompts import MEMORY_NOTE
 from mosscode.tools import create_default_registry
 from test_agent import call, response
 from test_context import chat, summary_reply
+from waiting import until
 
 TODAY = date.today().isoformat()
 SAVE = {
@@ -625,10 +626,7 @@ async def test_tui_memory_command_and_update_line(tmp_path):
         await send(app, pilot, "/memory habit")
         assert "完整正文在这里" in shown() and str(store.directory("user") / "habit.md") in shown()
         await send(app, pilot, "测试里不要 mock 数据库")
-        for _ in range(50):
-            await pilot.pause()
-            if "✎ 已更新记忆" in shown():
-                break
+        await until(lambda: "✎ 已更新记忆" in shown())
         assert "✎ 已更新记忆：no-db-mock" in shown()
     await conv.close()
 
