@@ -289,6 +289,36 @@ async def test_fallback_respects_gitignore(tmp_path, monkeypatch):
     assert nested.output == "src/main.py"
 
 
+@pytest.mark.parametrize("ripgrep", [False, True])
+async def test_gitignore_edge_cases_match_ripgrep(tmp_path, monkeypatch, ripgrep):
+    if ripgrep and shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+    if not ripgrep:
+        no_rg(monkeypatch)
+    rules = [BS + "[draft" + BS + "].md", "/top.txt", "logs/**/debug.txt", "*.tmp", BS + "#notes.md"]
+    (tmp_path / ".gitignore").write_text("\n".join(rules) + "\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / ".gitignore").write_text("!keep.tmp\n", encoding="utf-8")
+    for name in [
+        "[draft].md",
+        "draft.md",
+        "top.txt",
+        "sub/top.txt",
+        "logs/debug.txt",
+        "logs/a/b/debug.txt",
+        "logs/info.txt",
+        "x.tmp",
+        "sub/keep.tmp",
+        "sub/other.tmp",
+        "#notes.md",
+    ]:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("needle", encoding="utf-8")
+    found = await registry(tmp_path).execute(call("grep", pattern="needle"))
+    assert sorted(found.output.splitlines()) == ["draft.md", "logs/info.txt", "sub/keep.tmp", "sub/top.txt"]
+
+
 async def test_grep_output_modes(tmp_path, monkeypatch):
     no_rg(monkeypatch)
     ignore_tree(tmp_path)

@@ -1,4 +1,4 @@
-"""Standard-library fallback, isolated so regex/search can be timed out.
+"""Fallback search without ripgrep, isolated so regex/search can be timed out.
 
 Output mirrors the ripgrep invocations in search.py: relative paths for glob,
 `--json` match/context events for grep content, `path NUL count` for counts.
@@ -11,6 +11,8 @@ import re
 import sys
 from collections import deque
 from pathlib import Path
+
+from pathspec import GitIgnoreSpec
 
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 FOLD = os.name == "nt"  # Git for Windows matches ignore patterns case-insensitively.
@@ -77,51 +79,40 @@ def matches(path, pattern):
 
 
 class Ignore:
-    """The subset of .gitignore semantics that decides most real files:
-    comments, `!` negation, `/` anchoring, trailing-`/` directory patterns, `**`."""
+    """The .gitignore files from the outermost directory in; pathspec parses git's pattern syntax.
 
-    def __init__(self, rules=()):
-        self.rules = tuple(rules)
+    The last pattern matching a path decides, so a deeper .gitignore overrides an outer one, as in git.
+    Only matches of the whole path count: pathspec's patterns also match everything under a matched
+    directory, but the walk never enters an ignored directory, and a search started inside one still
+    sees its files, like ripgrep.
+    """
+
+    def __init__(self, layers=()):
+        self.layers = tuple(layers)
 
     def extend(self, directory: Path) -> "Ignore":
         try:
             text = (directory / ".gitignore").read_text(encoding="utf-8", errors="replace")
         except OSError:
             return self
-        rules = list(self.rules)
-        for line in text.splitlines():
-            line = line.rstrip()
-            if not line or line.startswith("#"):
-                continue
-            negate = line.startswith("!")
-            if negate:
-                line = line[1:]
-            if line.startswith("\\"):
-                line = line[1:]
-            dir_only = line.endswith("/")
-            line = line.rstrip("/")
-            anchored = "/" in line
-            line = line.lstrip("/")
-            if line:
-                rules.append((directory, line.casefold() if FOLD else line, negate, dir_only, anchored))
-        return Ignore(rules)
+        spec = GitIgnoreSpec.from_lines((text.casefold() if FOLD else text).splitlines())
+        patterns = tuple(pattern for pattern in spec.patterns if pattern.include is not None)
+        return Ignore((*self.layers, (directory, patterns))) if patterns else self
 
     def ignored(self, path: Path, is_dir: bool) -> bool:
         result = False
-        name = path.name.casefold() if FOLD else path.name
-        for base, pattern, negate, dir_only, anchored in self.rules:
-            if dir_only and not is_dir:
+        for base, patterns in self.layers:
+            try:
+                relative = path.relative_to(base).as_posix()
+            except ValueError:
                 continue
-            if anchored:
-                try:
-                    relative = path.relative_to(base).as_posix()
-                except ValueError:
-                    continue
-                hit = matches(relative.casefold() if FOLD else relative, pattern)
-            else:
-                hit = fnmatch.fnmatchcase(name, pattern)
-            if hit:
-                result = not negate  # Last matching rule wins.
+            if FOLD:
+                relative = relative.casefold()
+            if is_dir:
+                relative += "/"
+            for pattern in patterns:
+                if pattern.regex.fullmatch(relative):
+                    result = pattern.include
         return result
 
 
