@@ -19,6 +19,7 @@ from .memory import SCOPE_LABELS
 from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
 from .skills import SOURCE_LABELS, ForkRequest
+from .usage import cost_text
 
 USAGE_WIDTH = 22
 
@@ -397,6 +398,9 @@ async def _permissions(ctx: CommandContext, argument: str) -> None:
 # Status -----------------------------------------------------------------------------------
 
 
+CATALOG_FIELDS = {"context_window": "窗口", "max_output_tokens": "输出上限", "images": "图片能力"}
+
+
 def _model_line(ctx: CommandContext) -> str:
     name, model = ctx.ui.provider_name, ctx.ui.model
     config = next((item for item in _providers(ctx) if item.name == name), None)
@@ -404,7 +408,11 @@ def _model_line(ctx: CommandContext) -> str:
         config.protocol if config else ctx.conversation.provider_info[1] if ctx.conversation.provider_info else ""
     )
     detail = " / ".join(part for part in (protocol, model) if part)
-    return name + (f"（{detail}）" if detail else "")
+    line = name + (f"（{detail}）" if detail else "")
+    if config is not None and config.catalog is not None and config.from_catalog:
+        filled = "、".join(label for field, label in CATALOG_FIELDS.items() if field in config.from_catalog)
+        line += f"；{filled}来自模型目录（{config.catalog.name}）"
+    return line
 
 
 def _context_line(conversation) -> str:
@@ -417,7 +425,7 @@ def _context_line(conversation) -> str:
         f"约 {estimate:,} / {budget.effective:,} Token（{round(100 * estimate / budget.effective)}%），"
         f"自动压缩阈值 {budget.auto_threshold:,}；已压缩 {conversation.compactions} 次"
     )
-    return line + ("；未配置 context_window，按 128K 估算" if not budget.configured else "")
+    return line + ("；窗口未知，按 128K 估算" if not budget.configured else "")
 
 
 def _usage_line(conversation) -> str:
@@ -426,7 +434,7 @@ def _usage_line(conversation) -> str:
         return "尚未发送请求"
     return (
         f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）· 输出 {usage.output_tokens:,}"
-        f" · 请求 {usage.requests} 次"
+        f" · 请求 {usage.requests} 次 · 费用 {cost_text(usage)}"
     )
 
 
@@ -931,7 +939,7 @@ def _task_usage(task) -> str:
     usage = task.usage
     return (
         f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）· 输出 {usage.output_tokens:,}"
-        f" · 请求 {usage.requests} 次"
+        f" · 请求 {usage.requests} 次 · 费用 {cost_text(usage)}"
     )
 
 

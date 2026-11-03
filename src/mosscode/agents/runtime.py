@@ -16,6 +16,7 @@ from ..permissions import ApprovalRequest, stricter
 from ..prompts import git_snapshot, hook_notification
 from ..skills import ActiveSkills
 from ..tool_budget import bound_result
+from ..usage import price_of
 from . import FORK, AgentCatalog, AgentDef
 from .tasks import STATUS_LABELS, Task, TaskManager
 
@@ -241,8 +242,9 @@ class SubAgents:
         main = self.main
 
         def counted(usage) -> None:
-            task.usage = add_usage(task.usage, usage)
-            main.total_usage = add_usage(main.total_usage, usage)
+            price = price_of(loop.provider)
+            task.usage = add_usage(task.usage, usage, price)
+            main.total_usage = add_usage(main.total_usage, usage, price)
             self.tasks.changed(task)
 
         loop.on_usage = counted

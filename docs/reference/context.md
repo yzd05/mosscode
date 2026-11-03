@@ -6,7 +6,7 @@
 
 | 位置 | 选项 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| 每个 Provider | `context_window` | 未配置时按 128,000 估算 | 模型的上下文窗口（Token）。程序不维护模型窗口表，以这里的配置为准，`/model` 切换后按新提供商的值重新计算。未配置时启动区提示一次 |
+| 每个 Provider | `context_window` | 模型目录中的窗口；目录中没有时按 128,000 估算 | 模型的上下文窗口（Token）。通常不必填写，以[模型目录](providers.md#模型目录)为准；填写后以配置为准。`/model` 切换后按新提供商的值重新计算。按 128,000 估算时启动区提示一次 |
 | 每个 Provider | `compact_threshold` | 不设置 | 提前自动压缩的 Token 数，用于大窗口模型。取值需在 16,000 与自动阈值之间 |
 | 顶层 | `auto_compact` | `true` | 设为 `false` 时不自动压缩，也不在超限时自救；仍可 `/compact` |
 
@@ -18,7 +18,7 @@ providers:
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
     max_output_tokens: 16384
-    context_window: 1000000      # 以服务文档为准
+    context_window: 1000000      # 模型目录中有该模型时可以省略
     # compact_threshold: 200000  # 可选：约 20 万 Token 时就压缩，降低成本和延迟
 ```
 

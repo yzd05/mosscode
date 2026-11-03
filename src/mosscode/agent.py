@@ -8,7 +8,7 @@ from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .compaction import NOTHING, CompactionError, compact_history, cut_point
 from .context import ContextBudget, ContextMeter
@@ -51,6 +51,10 @@ from .skills import ActiveSkills
 from .tools import shell_label
 from .tools.base import ToolRegistry
 from .tools.execution import execute_batch
+from .usage import price_of, request_cost
+
+if TYPE_CHECKING:
+    from .catalog import ModelInfo
 
 
 class Provider(Protocol):
@@ -82,7 +86,8 @@ class ResponseCollector:
 DEFAULT_MAX_ITERATIONS = 200
 
 
-def add_usage(total: UsageTotals, usage: Usage) -> UsageTotals:
+def add_usage(total: UsageTotals, usage: Usage, price: "ModelInfo | None" = None) -> UsageTotals:
+    cost = request_cost(usage, price)
     return UsageTotals(
         input_tokens=total.input_tokens + (usage.input_tokens or 0),
         output_tokens=total.output_tokens + (usage.output_tokens or 0),
@@ -93,6 +98,8 @@ def add_usage(total: UsageTotals, usage: Usage) -> UsageTotals:
         cache_write_tokens=total.cache_write_tokens + (usage.cache_write_tokens or 0),
         missing_cached=total.missing_cached + (usage.cached_input_tokens is None),
         missing_cache_write=total.missing_cache_write + (usage.cache_write_tokens is None),
+        cost_usd=total.cost_usd + (cost or 0.0),
+        missing_cost=total.missing_cost + (cost is None),
     )
 
 
@@ -327,7 +334,7 @@ class AgentLoop:
         return self.auto_compact and not self.auto_paused
 
     def _usage(self, usage):
-        self.total_usage = add_usage(self.total_usage, usage)
+        self.total_usage = add_usage(self.total_usage, usage, price_of(self.provider))
         if self.on_usage is not None:
             self.on_usage(usage)
 

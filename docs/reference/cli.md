@@ -4,7 +4,7 @@
 
 ```text
 moss [选项] [PROMPT]
-moss setup | doctor
+moss setup | doctor | models
 ```
 
 ## 启动方式
@@ -16,7 +16,7 @@ moss setup | doctor
 | `moss -p "任务"` | 无界面执行一次任务后退出，见 [模型提供商](providers.md#无界面模式与输出格式) |
 | `moss "任务" -p` | 同上：`-p` 不带值时，位置参数就是任务 |
 | `命令 \| moss -p "任务"` | 管道输入空一行后附在任务之后；只有管道输入（`命令 \| moss -p`）时它就是任务 |
-| `moss -- doctor` | 把 `doctor`、`setup` 这样的词当作消息发送，而不是运行子命令 |
+| `moss -- doctor` | 把 `doctor`、`setup`、`models` 这样的词当作消息发送，而不是运行子命令 |
 
 交互界面需要终端：标准输入被重定向时（例如管道）只能用 `-p`，否则以退出码 2 结束。
 
@@ -44,7 +44,7 @@ moss setup | doctor
 
 ### setup
 
-`moss setup` 在终端中逐项询问：协议（Anthropic Messages、OpenAI Responses、OpenAI Chat Completions）、服务地址 `base_url`（回车使用协议的官方地址，提问中写明是哪个；选 OpenAI Chat Completions 时提示填写兼容服务的地址，例如 `https://api.deepseek.com`）、模型名、上下文窗口（如 `200k`，回车按 128K 估算）、凭据。凭据有两种保存方式：
+`moss setup` 在终端中逐项询问：协议（Anthropic Messages、OpenAI Responses、OpenAI Chat Completions）、服务地址 `base_url`（回车使用协议的官方地址，提问中写明是哪个；选 OpenAI Chat Completions 时提示填写兼容服务的地址，例如 `https://api.deepseek.com`）、模型名、上下文窗口（如 `200k`）、凭据。填完模型名后在[模型目录](providers.md#模型目录)中查找：找到时上下文窗口一步回车即采用目录中的值，且不写入配置，以后随目录更新；找不到时说明可以用 `catalog_model` 指定条目，回车按 128K 估算。凭据有两种保存方式：
 
 - 环境变量（默认）：配置中只写变量名，按协议默认 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，给了服务地址时按域名取名，如 `DEEPSEEK_API_KEY`。变量还没设置时，写完后显示 PowerShell 的设置方法。
 - 直接输入密钥：输入时不显示，以明文写入配置文件。
@@ -62,10 +62,23 @@ moss setup | doctor
 - 版本、解释器、安装方式（uv tool、pipx、虚拟环境，是否可编辑安装）；
 - PATH 中的 `moss`、`mosscode`：找不到、不是当前运行的这一个、或有多个时提示；
 - 生效的配置文件和每个 Provider 的协议、模型、服务地址的主机名、凭据状态（“已设置”“环境变量 X 未设置”），从不显示密钥；工作目录下有不会被读取的 `config.yaml` 时提示；
+- 模型目录的条目数、数据日期和来源；每个 Provider 匹配到的目录条目和窗口、输出上限，如“目录：deepseek/deepseek-v4-flash（1M / 32K）”，没有匹配、按 128K 估算时给出警告和填写建议；
 - 网络搜索服务（`web_search`）及其凭据状态；未配置时说明搜索不可用，读取网页不受影响；
 - `~/.mosscode` 是否可写；
 - ripgrep、git，Windows 上的 Git Bash 和 Windows Terminal（`wt.exe`，团队分屏窗格需要）；
 - 当前目录 `.mosscode/` 下的权限、MCP 和 Hook 文件能否解析。
+
+### models
+
+`moss models` 查看[模型目录](providers.md#模型目录)：
+
+| 写法 | 行为 |
+| --- | --- |
+| `moss models` | 列出配置中每个 Provider 匹配到的条目（按模型名还是 `catalog_model`）、窗口和输出上限，或者“目录中没有” |
+| `moss models 关键词` | 列出条目名中包含关键词的模型（不区分大小写），模型厂商自己的服务排在前面，最多 30 个：条目名、服务商、窗口、输出上限、每百万 Token 的输入和输出价格、是否接受图片 |
+| `moss models update` | 从 LiteLLM 下载最新数据，写入 `~/.mosscode/models.json.gz`，显示条目数以及新增、删除、变化的数量；遵守 `HTTPS_PROXY`；下载或解析失败时原有文件不变 |
+
+`--config 路径` 指定读取的配置文件。每次都在最后一行显示目录的条目数、数据日期和来源。
 
 ## 配置查找
 
@@ -83,6 +96,7 @@ moss setup | doctor
 | `moss`、`moss -p` | 0 完成；1 配置、权限或连接错误，或 `json` 输出中 `is_error` 为真；2 参数错误、`-p` 没有任务、`-p` 中的本地命令或未知命令、交互界面没有终端 |
 | `moss setup` | 0 写入完成或配置已存在；1 写入或校验失败；2 不在终端中；130 中途退出 |
 | `moss doctor` | 0 没有 ✗；1 有 ✗ |
+| `moss models` | 0 完成；1 配置无法读取，或更新时下载、解析、写入失败 |
 
 ## 启动速度
 

@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from mosscode import cli, doctor, launcher
+from mosscode.catalog import encode, save, slim
 from mosscode.config import ConfigError, find_config, load_settings, render_config
 from mosscode.conversation import Conversation
 from mosscode.setup import Wizard, run_setup, setup, user_config
@@ -281,8 +282,15 @@ def test_doctor_reports_credentials_without_values(tmp_path, monkeypatch):
                         "model": "m",
                         "api_key": secret,
                         "base_url": "https://gateway.example/v1?token=x",
+                        "context_window": 200_000,
                     },
-                    {"name": "b", "protocol": "openai-responses", "model": "m", "api_key_env": "MOSS_TEST_UNSET_KEY"},
+                    {
+                        "name": "b",
+                        "protocol": "openai-responses",
+                        "model": "m",
+                        "api_key_env": "MOSS_TEST_UNSET_KEY",
+                        "context_window": 200_000,
+                    },
                 ],
             }
         ),
@@ -293,9 +301,62 @@ def test_doctor_reports_credentials_without_values(tmp_path, monkeypatch):
     text = doctor.report(items)
     assert secret not in text and "token=x" not in text
     assert "gateway.example" in text and "已设置" in text and "api.openai.com（官方地址）" in text
-    assert [item.level for item in items] == [doctor.OK, doctor.OK, doctor.WARN, doctor.OK]
+    assert [item.level for item in items] == [doctor.OK, doctor.OK, doctor.OK, doctor.WARN, doctor.OK]
     assert "网络搜索：未配置" in text
     assert "MOSS_TEST_UNSET_KEY 未设置" in text
+
+
+def use_catalog(*names):
+    raw = {
+        name: {
+            "mode": "chat",
+            "litellm_provider": "deepseek",
+            "max_input_tokens": 1_000_000,
+            "max_output_tokens": 393_216,
+        }
+        for name in names
+    }
+    save(encode(slim(raw, "2026-01-02")))
+
+
+def test_doctor_shows_the_catalog_entry_or_how_to_name_one(tmp_path):
+    use_catalog("deepseek/deepseek-v4-flash")
+    path = tmp_path / "c.yaml"
+    base = {"protocol": "anthropic-messages", "base_url": "https://api.deepseek.com/anthropic", "api_key": "k"}
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "providers": [
+                    {"name": "a", "model": "deepseek-v4-flash", **base},
+                    {"name": "b", "model": "flash", **base},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    text = doctor.report(doctor.check_config(str(path), cwd=tmp_path))
+    assert "模型目录 1 个模型，数据日期 2026-01-02" in text
+    assert "Provider a：anthropic-messages · deepseek-v4-flash · api.deepseek.com" in text
+    assert "目录：deepseek/deepseek-v4-flash（1M / 32K）" in text
+    assert "! b：模型目录中没有 flash，按 128K 估算上下文" in text and "catalog_model" in text
+
+
+def test_setup_offers_the_catalog_window_without_writing_it(tmp_path):
+    use_catalog("deepseek/deepseek-v4-flash")
+    w, out = wizard(["3", "https://api.deepseek.com", "deepseek-v4-flash", "", "", "", ""])
+    setup(tmp_path, w)
+    assert "4/5 上下文窗口 Token 数，如 200k（回车采用模型目录中的 1M）：" in out
+    assert "  上下文窗口 未填写，按模型目录 1M" in out
+    assert "context_window" not in user_config(tmp_path).read_text(encoding="utf-8")
+    assert load_settings(user_config(tmp_path)).providers[0].context_window == 1_000_000
+
+
+def test_setup_says_when_the_model_is_not_in_the_catalog(tmp_path):
+    use_catalog("deepseek/deepseek-v4-flash")
+    w, out = wizard(["3", "https://api.deepseek.com", "flash", "", "", "", ""])
+    setup(tmp_path, w)
+    assert any("模型目录中没有 flash" in str(line) and "catalog_model" in str(line) for line in out)
+    assert "4/5 上下文窗口 Token 数，如 200k（回车按 128K 估算）：" in out
 
 
 def test_doctor_reports_web_search_credentials_without_values(tmp_path, monkeypatch):

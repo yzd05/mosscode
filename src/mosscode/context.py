@@ -36,7 +36,7 @@ def estimate_messages(messages: Sequence[Message]) -> int:
 
 @dataclass(frozen=True)
 class ContextBudget:
-    """Thresholds for one provider. The window comes from configuration, never from a model table."""
+    """Thresholds for one provider. The window comes from configuration or the model catalog, else an estimate."""
 
     window: int
     max_output_tokens: int

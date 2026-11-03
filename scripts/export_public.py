@@ -17,6 +17,7 @@ except .git is replaced. Nothing is committed or pushed; review with git status/
 from __future__ import annotations
 
 import argparse
+import gzip
 import io
 import os
 import re
@@ -128,7 +129,8 @@ def scan(files: dict[str, bytes]) -> list[str]:
     problems = []
     for name, data in sorted(files.items()):
         try:
-            text = data.decode("utf-8")
+            # The packaged model catalog is gzipped JSON; check what it holds.
+            text = (gzip.decompress(data) if name.endswith(".gz") else data).decode("utf-8")
         except UnicodeDecodeError:
             problems.append(f"{name}: not UTF-8 text")
             continue

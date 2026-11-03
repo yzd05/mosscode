@@ -1,0 +1,49 @@
+import pytest
+
+from mosscode.agent import add_usage
+from mosscode.catalog import ModelInfo
+from mosscode.messages import Usage, UsageTotals
+from mosscode.usage import cost_text, parse_usage, request_cost
+
+
+def info(input_price=3e-6, output_price=15e-6, read=3e-7, write=3.75e-6):
+    return ModelInfo("m", "anthropic", 200_000, 64_000, input_price, output_price, read, write, True)
+
+
+def test_anthropic_cost_splits_uncached_cache_read_cache_write_and_output():
+    usage = parse_usage(
+        {"input_tokens": 100, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 200, "output_tokens": 50},
+        "anthropic-messages",
+    )
+    assert request_cost(usage, info()) == pytest.approx(100 * 3e-6 + 1000 * 3e-7 + 200 * 3.75e-6 + 50 * 15e-6)
+
+
+def test_openai_input_total_includes_cached_tokens():
+    usage = parse_usage(
+        {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 800}, "output_tokens": 10}, "openai-responses"
+    )
+    assert request_cost(usage, info()) == pytest.approx(200 * 3e-6 + 800 * 3e-7 + 10 * 15e-6)
+
+
+def test_missing_cache_prices_charge_cached_tokens_as_input():
+    usage = Usage(1000, 10, cached_input_tokens=800, cache_write_tokens=100)
+    assert request_cost(usage, info(read=None, write=None)) == pytest.approx(1000 * 3e-6 + 10 * 15e-6)
+
+
+@pytest.mark.parametrize(
+    "usage,price",
+    [(Usage(10, 5), None), (Usage(10, 5), info(input_price=None)), (Usage(None, 5), info()), (Usage(10, None), info())],
+)
+def test_no_cost_without_a_price_or_counts(usage, price):
+    assert request_cost(usage, price) is None
+
+
+def test_totals_and_their_text_say_when_the_cost_is_partial_or_unknown():
+    total = add_usage(UsageTotals(), Usage(1000, 100), info(input_price=1e-6, output_price=2e-6))
+    assert total.cost_usd == pytest.approx(0.0012) and total.missing_cost == 0
+    assert cost_text(total) == "约 $0.0012"
+    partial = add_usage(total, Usage(10, 10), None)
+    assert partial.missing_cost == 1 and cost_text(partial) == "≥ $0.0012"
+    assert cost_text(add_usage(UsageTotals(), Usage(10, 10))) == "无价格信息"
+    big = add_usage(UsageTotals(), Usage(1_000_000, 0), info(input_price=3e-6))
+    assert cost_text(big) == "约 $3.00"

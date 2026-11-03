@@ -11,6 +11,7 @@ from .agents import AgentCatalog
 from .agents.tasks import Announcer
 from .appearance import compact_notice
 from .builtin_commands import BUILTIN, typed
+from .catalog import load_catalog
 from .commands import CommandRegistry, argument_problem, parse_input, unknown_note
 from .config import ConfigError, find_config, load_settings
 from .conversation import Conversation, Notice, Resumed
@@ -329,6 +330,8 @@ async def _prompt(
                 "cache_write_tokens": total.cache_write_tokens,
                 "requests": total.requests,
             },
+            # Base prices from the model catalog; null when no request had a price.
+            "total_cost_usd": round(total.cost_usd, 6) if total.missing_cost < total.requests else None,
             "compactions": conversation.compactions,
             "session_id": conversation.session_id,
             "model": model,
@@ -478,8 +481,7 @@ def run(args: argparse.Namespace) -> None:
         )
         if coordinator_notice:
             notices += (coordinator_notice,)
-        if not budget.configured:
-            notices += (f"{config.name} 未配置 context_window，按 128K 估算上下文。",)
+        notices += tuple(filter(None, (load_catalog().problem, config.window_note())))
         conversation = Conversation(
             create_provider(config),
             settings.system_prompt,

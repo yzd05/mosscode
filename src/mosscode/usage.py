@@ -1,6 +1,11 @@
 """Normalize service-reported counters without inventing missing measurements."""
 
+from typing import TYPE_CHECKING
+
 from .messages import Usage, UsageTotals
+
+if TYPE_CHECKING:
+    from .catalog import ModelInfo
 
 
 def usage_data(value) -> dict:
@@ -41,6 +46,34 @@ def parse_usage(value, protocol: str) -> Usage:
             read = vendor_read
         miss = counter(data, "prompt_cache_miss_tokens")
     return Usage(total, output, read, write, miss)
+
+
+def price_of(provider) -> "ModelInfo | None":
+    """The catalog entry behind a provider, which carries its prices."""
+    return getattr(getattr(provider, "config", None), "catalog", None)
+
+
+def request_cost(usage: Usage, info: "ModelInfo | None") -> float | None:
+    """US dollars for one request at base prices; None when the price or the counts are unknown."""
+    if info is None or not info.priced or usage.input_tokens is None or usage.output_tokens is None:
+        return None
+    read, write = usage.cached_input_tokens or 0, usage.cache_write_tokens or 0
+    uncached = usage.uncached_input_tokens
+    if uncached is None:
+        uncached = max(usage.input_tokens - read - write, 0)
+    # Without a cache price the cached tokens are charged as ordinary input, which errs high.
+    read_price = info.input_price if info.cache_read_price is None else info.cache_read_price
+    write_price = info.input_price if info.cache_write_price is None else info.cache_write_price
+    return (
+        uncached * info.input_price + read * read_price + write * write_price + usage.output_tokens * info.output_price
+    )
+
+
+def cost_text(total: UsageTotals) -> str:
+    if total.missing_cost >= total.requests:
+        return "无价格信息"
+    amount = f"${total.cost_usd:.4f}" if total.cost_usd < 1 else f"${total.cost_usd:.2f}"
+    return ("≥ " if total.missing_cost else "约 ") + amount
 
 
 def accumulated(value: int, missing: int, requests: int, unknown: str = "未提供") -> str:

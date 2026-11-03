@@ -240,6 +240,7 @@ async def build_runner(
     from ..agents.runtime import GLOBAL_BAN, SubagentLog, effective_mode
     from ..prompts import git_snapshot
     from ..tools.team import member_tools
+    from ..usage import price_of
 
     main = conversation._agent
     parent = main.registry.permissions
@@ -283,7 +284,7 @@ async def build_runner(
     loop.budget, loop.auto_compact, loop.session = budget, main.auto_compact, main.session
 
     def counted(usage) -> None:  # The session total includes in-process members.
-        main.total_usage = add_usage(main.total_usage, usage)
+        main.total_usage = add_usage(main.total_usage, usage, price_of(loop.provider))
 
     loop.on_usage = counted
     log = SubagentLog(

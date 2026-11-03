@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .catalog import ModelInfo, load_catalog, lookup, tokens_label
 from .context import ContextBudget
 from .prompts import DEFAULT_SYSTEM_PROMPT, stable_prompt
 
@@ -26,6 +27,9 @@ ALIASES = {
 PROTOCOLS = set(ALIASES.values())
 TEAMMATE_MODES = ("auto", "in-process", "windows-terminal", "tmux")
 SEARCH_PROVIDERS = ("tavily",)
+# Default output limit taken from the catalog at most: some models allow as much output as their whole window,
+# and the reply reserve comes out of the window.
+OUTPUT_CAP = 32_000
 
 
 def _validate_env_name(value: str | None) -> None:
@@ -56,11 +60,29 @@ class ProviderConfig:
     context_window: int | None = None
     compact_threshold: int | None = None
     images: bool | None = None  # Whether the model accepts images; None follows the protocol.
+    catalog_model: str | None = None  # The model catalog entry, when the model name is an alias it does not list.
+    # Filled in when the configuration is read: the catalog entry and which fields came from it.
+    catalog: ModelInfo | None = field(default=None, compare=False, repr=False)
+    from_catalog: tuple[str, ...] = field(default=(), compare=False, repr=False)
 
     @property
     def accepts_images(self) -> bool:
         # Many Chat Completions services (DeepSeek and the like) have text-only models.
         return self.images if self.images is not None else self.protocol != "openai-chat-completions"
+
+    def window_note(self) -> str | None:
+        """Why the context window is a guess, or None when it is known."""
+        if self.context_window is not None:
+            return None
+        if self.catalog is not None and self.catalog.context_window:
+            return (
+                f"{self.name}：模型目录记录 {self.catalog.name} 的上下文窗口为 {tokens_label(self.catalog.context_window)}，"
+                "不足以运行 MossCode，按 128K 估算；如果服务实际支持更大的窗口，请在配置中填写 context_window。"
+            )
+        return (
+            f"{self.name}：模型目录中没有 {self.model}，按 128K 估算上下文；可以在配置中填写 context_window，"
+            "或用 catalog_model 指定目录中的条目（moss models <关键词> 查找）。"
+        )
 
     def budget(self) -> ContextBudget:
         return ContextBudget.for_provider(self.context_window, self.max_output_tokens, self.compact_threshold)
@@ -155,7 +177,7 @@ def _links(raw: Any) -> tuple[str, ...]:
 def _provider(raw: Any) -> ProviderConfig:
     if not isinstance(raw, dict):
         raise ConfigError("providers 的每一项必须是配置对象。")
-    allowed = set(ProviderConfig.__dataclass_fields__)
+    allowed = set(ProviderConfig.__dataclass_fields__) - {"catalog", "from_catalog"}
     if set(raw) - allowed:
         raise ConfigError("Provider 包含未知字段，请对照 config.example.yaml。")
     for key in ("name", "protocol", "model"):
@@ -183,9 +205,8 @@ def _provider(raw: Any) -> ProviderConfig:
         not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()
     ):
         raise ConfigError("headers 必须是字符串键值对象。")
-    data["max_output_tokens"] = _positive_int(
-        data.get("max_output_tokens", ProviderConfig.max_output_tokens), "max_output_tokens"
-    )
+    if "max_output_tokens" in data:
+        data["max_output_tokens"] = _positive_int(data["max_output_tokens"], "max_output_tokens")
     retries = data.get("max_retries", ProviderConfig.max_retries)
     if type(retries) is not int or retries < 0:
         raise ConfigError("max_retries 必须是非负整数。")
@@ -217,22 +238,66 @@ def _provider(raw: Any) -> ProviderConfig:
         if set(thinking) - {"type", "budget_tokens", "effort"}:
             raise ConfigError("thinking 包含未知字段。")
         if thinking["type"] == "enabled":
-            budget = _positive_int(thinking.get("budget_tokens"), "thinking.budget_tokens")
-            if not 1024 <= budget < data["max_output_tokens"]:
+            if _positive_int(thinking.get("budget_tokens"), "thinking.budget_tokens") < 1024:
                 raise ConfigError("手动思考预算需至少 1024 且小于 max_output_tokens。")
         elif "budget_tokens" in thinking:
             raise ConfigError("budget_tokens 仅用于手动 enabled 模式。")
         if "effort" in thinking and (thinking["type"] != "adaptive" or not isinstance(thinking["effort"], str)):
             raise ConfigError("effort 需用于 adaptive 模式并为字符串。")
-    data["thinking"] = thinking
     for key in ("context_window", "compact_threshold"):
         if data.get(key) is not None:
             data[key] = _positive_int(data[key], key)
+    _catalog_defaults(data)
+    if (
+        thinking is not None
+        and thinking["type"] == "enabled"
+        and not thinking["budget_tokens"] < data["max_output_tokens"]
+    ):
+        raise ConfigError("手动思考预算需至少 1024 且小于 max_output_tokens。")
+    data["thinking"] = thinking
     config = ProviderConfig(**data)
     problem = config.budget().problem()
     if problem:
         raise ConfigError(f"Provider {config.name}：{problem}")
     return config
+
+
+def catalog_window(info: ModelInfo, output: int | None = None) -> int | None:
+    """The catalog's window, when the agent fits in it with this output limit (default: the catalog's)."""
+    if output is None:
+        output = min(info.max_output_tokens, OUTPUT_CAP) if info.max_output_tokens else ProviderConfig.max_output_tokens
+    # Old models list windows too small for the agent; a local service may run them with a larger one,
+    # so the estimate is kept rather than refusing to start.
+    if info.context_window and ContextBudget.for_provider(info.context_window, output).problem() is None:
+        return info.context_window
+    return None
+
+
+def _catalog_defaults(data: dict) -> None:
+    """Fill the window, output limit and image support the configuration leaves out from the model catalog."""
+    alias = data.get("catalog_model")
+    if alias is not None and (not isinstance(alias, str) or not alias.strip()):
+        raise ConfigError("catalog_model 必须是非空字符串。")
+    catalog = load_catalog()
+    info = lookup(data["model"], base_url=data.get("base_url"), protocol=data["protocol"], alias=alias, catalog=catalog)
+    if alias and info is None:
+        raise ConfigError(
+            f"Provider {data['name']}：模型目录中没有 catalog_model {alias}（moss models <关键词> 查找）。"
+        )
+    filled = []
+    if info is not None:
+        if "max_output_tokens" not in data and info.max_output_tokens:
+            data["max_output_tokens"] = min(info.max_output_tokens, OUTPUT_CAP)
+            filled.append("max_output_tokens")
+        output = data.get("max_output_tokens", ProviderConfig.max_output_tokens)
+        if data.get("context_window") is None and (window := catalog_window(info, output)):
+            data["context_window"] = window
+            filled.append("context_window")
+        if data.get("images") is None and info.vision is not None:
+            data["images"] = info.vision
+            filled.append("images")
+    data.setdefault("max_output_tokens", ProviderConfig.max_output_tokens)
+    data["catalog"], data["from_catalog"] = info, tuple(filled)
 
 
 def _web_search(raw: Any) -> WebSearchConfig | None:

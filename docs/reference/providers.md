@@ -40,7 +40,7 @@ Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，�
 
 ## 图片输入
 
-配置项 `images` 表示模型是否接受图片输入。省略时，`anthropic-messages` 和 `openai-responses` 视为接受；`openai-chat-completions` 视为不接受，因为兼容服务的模型差别很大。与默认值不符时明确填写：
+配置项 `images` 表示模型是否接受图片输入。省略时先看[模型目录](#模型目录)中是否有明确记录；没有时，`anthropic-messages` 和 `openai-responses` 视为接受，`openai-chat-completions` 视为不接受，因为兼容服务的模型差别很大。与实际不符时明确填写：
 
 ```yaml
   - name: vision-gateway
@@ -61,6 +61,56 @@ Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，�
 | Responses | `input_image`（data URL） | `function_call_output.output` 为 `input_text` 和 `input_image` 组成的数组 |
 | Chat Completions | `image_url`（data URL） | `tool` 消息只放文本；这一批工具消息之后追加一条用户消息“工具结果中的图片：”，后面跟这些图片 |
 
+## 模型目录
+
+MossCode 带有一份模型目录，记录各家模型的上下文窗口、输出上限、价格和是否接受图片。数据来自 [LiteLLM](https://github.com/BerriAI/litellm) 的 `model_prices_and_context_window.json`（MIT 许可，Copyright (c) 2023 Berri AI），只保留聊天模型和这几项数据，许可证声明随数据一起保存在包内的 `mosscode/data/models.json.gz` 中。只使用数据，不依赖 LiteLLM 程序包。
+
+### 查找
+
+启动时按配置查找当前模型，只做精确匹配，不猜相近的名字：
+
+1. 配置了 `catalog_model` 时，只查它：先按条目名查，没有时把它当作模型名按下面的步骤查；都没有时报配置错误。
+2. 根据 `base_url` 的主机名推断服务商（未配置 `base_url` 时按协议：Messages 为 `anthropic`，两种 OpenAI 协议为 `openai`），先查 `<服务商>/<模型名>`，再查属于该服务商的 `<模型名>`。
+3. 查名为 `<模型名>` 的条目。
+4. 模型名带服务商前缀（如经由网关时的 `anthropic/claude-…`）时，查去掉前缀、属于该服务商的条目。
+
+能识别的主机：`api.anthropic.com`、`api.openai.com`、`api.deepseek.com`、`api.moonshot.cn`、`api.moonshot.ai`、`api.z.ai`、`open.bigmodel.cn`、`dashscope.aliyuncs.com`、`dashscope-intl.aliyuncs.com`、`generativelanguage.googleapis.com`、`api.x.ai`、`api.mistral.ai`、`api.minimax.io`、`api.minimaxi.com`、`ark.cn-beijing.volces.com`，以及本机 11434 端口（Ollama）。其他网关只按第 3、4 步查找。
+
+服务给模型起了目录中没有的名字时，用 `catalog_model` 指定对应的条目：
+
+```yaml
+  - name: deepseek
+    protocol: anthropic-messages
+    base_url: https://api.deepseek.com/anthropic
+    model: my-flash-alias
+    catalog_model: deepseek/deepseek-v4-flash   # moss models flash 查找条目名
+    api_key_env: DEEPSEEK_API_KEY
+```
+
+### 默认值
+
+配置中填写的值总是优先，目录只补没填的项：
+
+| 配置项 | 依次取 |
+| --- | --- |
+| `context_window` | 配置值；目录中的窗口；128,000（估算） |
+| `max_output_tokens` | 配置值；目录中的输出上限与 32,000 中较小的一个；16,384 |
+| `images` | 配置值；目录中明确记录的是否支持图片；按协议的默认值（见[图片输入](#图片输入)） |
+
+有些模型的输出上限和整个窗口一样大，而输出预留要从窗口中扣除，所以从目录取值时最多取 32,000。手动思考预算按最终的 `max_output_tokens` 校验。目录记录的窗口太小、放不下 MossCode 的输出预留和压缩余量时（一些老模型只有 4K–40K），不使用它，按 128,000 估算并在启动区说明；本地服务实际开了更大的窗口时填写 `context_window`。
+
+目录中找不到模型时，启动区提示一次，`/model` 切换到这样的 Provider 时也提示。`/status` 的模型一行注明哪些值来自目录和条目名，`moss doctor` 的每个 Provider 一行显示匹配到的条目，或者给出填写建议。
+
+### 更新
+
+包内的目录在发布时生成。新模型发布后不必等 MossCode 更新：运行 `moss models update` 从 LiteLLM 下载最新数据，写入 `~/.mosscode/models.json.gz`，以后优先使用它。`moss models <关键词>` 查找条目，见 [命令行](cli.md#models)。用户目录中的文件损坏时，改用包内的目录并在启动区提示，重新运行 `moss models update` 即可修复。
+
+### 费用估算
+
+目录中有价格的模型，每次请求按服务报告的 Token 数估算费用：未缓存输入 × 输入价格 + 缓存读取 × 缓存读取价格 + 缓存写入 × 缓存写入价格 + 输出 × 输出价格。缺少缓存价格时按输入价格计算。`/status` 的用量一行显示“费用 约 $0.0123”；部分请求没有价格（服务没报告 Token 数，或切换到了目录中没有价格的模型）时显示“≥ $…”，全部没有时显示“无价格信息”。子 Agent 和团队成员的请求与 Token 一样计入。`-p` 的 `json` 结果中是 `total_cost_usd`。
+
+这只是估算：只用基础价格，不考虑分段价格、错峰优惠、批量价格和地区差异；人民币计价的服务也按目录中的美元价格计算。以服务商的账单为准。
+
 ## 重试与错误
 
 请求在收到任何流事件之前遇到限流（429）、过载（529 / overloaded_error）、5xx、超时或连接中断时自动重试，默认最多 4 次，指数退避并带随机抖动，遵守服务给出的 `retry-after`（最长 60 秒）；界面状态行与 `--prompt` 的 stderr 显示重试原因和等待时间，等待期间 Esc 可取消。收到首个事件后的断流不重试，因为正文可能已显示。认证失败、请求不被接受等错误立即报告；上下文超限错误（HTTP 400/413 且报错提到 prompt is too long、maximum context length 等）标记为 `context_overflow`，由 Agent Loop 压缩后重试一次。`max_retries: 0` 关闭重试；SDK 自身的重试保持关闭，避免叠加。没有自动协议降级。未完整接收的 assistant 响应不进入历史；已经完整接收并执行的工具调用与实际结果保留。取消表示停止接收并关闭流，不保证远程服务已经停止计费。
@@ -72,7 +122,7 @@ Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，�
 | 格式 | 输出 |
 | --- | --- |
 | `text`（默认） | 正文流式输出到 stdout，提示与 `--show-usage` 用量输出到 stderr，与以往一致 |
-| `json` | 结束时输出一个结果对象：`type`、`subtype`（`completed`、`max_iterations`、`error` 等停止原因）、`is_error`、`result`（最终正文或错误说明）、`num_turns`、`duration_ms`、`usage`、`compactions`（成功压缩上下文的次数）、`model`、`permission_mode` |
+| `json` | 结束时输出一个结果对象：`type`、`subtype`（`completed`、`max_iterations`、`error` 等停止原因）、`is_error`、`result`（最终正文或错误说明）、`num_turns`、`duration_ms`、`usage`、`total_cost_usd`（按[模型目录](#费用估算)估算的美元费用，没有价格时为 null）、`compactions`（成功压缩上下文的次数）、`model`、`permission_mode` |
 | `stream-json` | 每行一个 JSON 事件：`system`（init：cwd、model、permission_mode、tools）、`assistant`（text、tool_calls、stop_reason、usage）、`tool_result`（有图片时带 `images`：文件名、媒体类型、宽、高，不含图片数据）、`retry`、`notice`、`compact`（subtype 为 started、finished、failed，见 [上下文管理](context.md#界面与无界面输出)），最后一行是与 json 格式相同的 `result` |
 
 ```powershell

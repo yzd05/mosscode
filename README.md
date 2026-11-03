@@ -40,12 +40,13 @@ providers:
     protocol: anthropic-messages      # 或 openai-responses、openai-chat-completions
     model: replace-with-service-model
     api_key_env: ANTHROPIC_API_KEY    # 环境变量名；也可以用 api_key 直接填写
-    max_output_tokens: 32000          # 单次回复的输出上限，默认 16384
-    context_window: 200000            # 模型的上下文窗口；未配置时按 128K 估算
+    # max_output_tokens: 32000        # 单次回复的输出上限；默认取模型目录的值（最多 32000）
+    # context_window: 200000          # 通常不必填写，模型目录中没有该模型时再填
+    # catalog_model: claude-sonnet-4-5  # 模型名是目录中没有的别名时，指定目录中的条目
     # base_url: https://your-gateway.example/v1
 ```
 
-凭据推荐放在环境变量中（`$env:ANTHROPIC_API_KEY = '你的凭据'`），不要提交到仓库，也不用发送到聊天。兼容服务、多 Provider、重试和协议选项见 [模型提供商](docs/reference/providers.md)。
+凭据推荐放在环境变量中（`$env:ANTHROPIC_API_KEY = '你的凭据'`），不要提交到仓库，也不用发送到聊天。上下文窗口、输出上限、是否接受图片和价格来自随程序发布的[模型目录](docs/reference/providers.md#模型目录)（数据来自 LiteLLM），`moss models` 查看匹配结果，`moss models update` 下载最新数据。兼容服务、多 Provider、重试和协议选项见 [模型提供商](docs/reference/providers.md)。
 
 常用的顶层选项：
 
@@ -124,7 +125,7 @@ moss --resume                 # 启动后从列表中选择会话
 | `/permissions 档位` | 切换到 default、acceptEdits、plan 或 bypassPermissions |
 | `/mcp` | 列出 MCP Server 的状态（连接中、已连接及工具数、失败原因）与配置问题 |
 | `/mcp 名称` | 列出该 Server 的工具，只读工具标注 `[只读]` |
-| `/status` | 显示模型、权限档位、上下文、本会话用量、会话、MCP、记忆、网络工具、Hook 和子 Agent 的状态 |
+| `/status` | 显示模型、权限档位、上下文、本会话用量和估算费用、会话、MCP、记忆、网络工具、Hook 和子 Agent 的状态 |
 | `/skills`（别名 `/skill`） | 列出全部 Skill 及其来源、模式和描述；`/skills 名称` 查看详情，`/skills reload` 重新扫描 |
 | `/hooks`（别名 `/hook`） | 列出 Hook 及其来源、条件、状态和最近的执行记录；`/hooks id` 查看详情，`/hooks reload` 重新加载 |
 | `/agents`（别名 `/agent`） | 列出子 Agent 定义及其来源和描述；`/agents 名称` 查看实际可用的工具和有效权限档位，`/agents reload` 重新扫描 |

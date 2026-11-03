@@ -128,7 +128,17 @@ def _web_search(config) -> Item:
     return Item(level, f"网络搜索：{config.provider} · 凭据：{credential}", fix)
 
 
+def _catalog_match(provider) -> str:
+    from .catalog import tokens_label
+
+    if provider.catalog is None:
+        return "目录中没有该模型"
+    window, output = tokens_label(provider.context_window), tokens_label(provider.max_output_tokens)
+    return f"目录：{provider.catalog.name}（{window} / {output}）"
+
+
 def check_config(config: str | None = None, cwd: Path | None = None, home: Path | None = None) -> list[Item]:
+    from .catalog import load_catalog
     from .config import ConfigError, find_config, load_settings
     from .setup import OFFICIAL
 
@@ -146,6 +156,13 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
             items.append(Item(ERROR, f"配置 {path}：{exc}", "对照 config.example.yaml 修改"))
         else:
             items.append(Item(OK, f"配置 {path}"))
+            catalog = load_catalog()
+            where = catalog.path or "随程序发布"
+            items.append(
+                Item(WARN, catalog.problem, "")
+                if catalog.problem
+                else Item(OK, f"模型目录 {len(catalog.models)} 个模型，数据日期 {catalog.fetched}（{where}）")
+            )
             for provider in settings.providers:
                 level, credential = _credential(provider)
                 host = (
@@ -158,7 +175,7 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
                     Item(
                         level,
                         f"Provider {provider.name}{default}：{provider.protocol} · {provider.model}"
-                        f" · {host} · 凭据：{credential}",
+                        f" · {host} · 凭据：{credential} · {_catalog_match(provider)}",
                         ""
                         if level == OK
                         else f"设置环境变量 {provider.api_key_env} 后打开新的终端"
@@ -166,6 +183,8 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
                         else "在配置中填写 api_key_env",
                     )
                 )
+                if note := provider.window_note():
+                    items.append(Item(WARN, note, ""))
             items.append(_web_search(settings.web_search))
     legacy = cwd / "config.yaml"
     if config is None and legacy.is_file():

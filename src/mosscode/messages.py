@@ -153,6 +153,8 @@ class UsageTotals:
     cache_write_tokens: int = 0
     missing_cached: int = 0
     missing_cache_write: int = 0
+    cost_usd: float = 0.0  # Estimated from the model catalog's base prices.
+    missing_cost: int = 0  # Requests without a price: model not in the catalog, or counts not reported.
 
 
 @dataclass(frozen=True)

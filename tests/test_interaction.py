@@ -9,6 +9,7 @@ from textual import events
 from textual.widgets import Static
 
 from mosscode import cli
+from mosscode.catalog import ModelInfo
 from mosscode.config import ProviderConfig, Settings
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Delta, Message, ProviderError, ToolCall, ToolResult, Usage
@@ -497,13 +498,19 @@ def test_json_outputs_one_result_object(monkeypatch, capsys):
     assert result["type"] == "result" and result["subtype"] == "completed" and result["is_error"] is False
     assert result["result"] == "partial" and result["num_turns"] == 1 and result["model"] == "model-a"
     assert result["permission_mode"] == "default" and result["usage"]["requests"] == 1
-    assert isinstance(result["duration_ms"], int)
+    assert isinstance(result["duration_ms"], int) and result["total_cost_usd"] is None  # No usage, no price.
 
 
 def test_stream_json_lines_include_tools_in_order(monkeypatch, capsys):
     provider = SequenceProvider(
         response("先看文件", [call("read_file", "r", path="pyproject.toml")], Usage(5, 2)),
         response("读完了", usage=Usage(7, 3)),
+    )
+    provider.config = ProviderConfig(
+        "a",
+        "openai-responses",
+        "model-a",
+        catalog=ModelInfo("model-a", "openai", None, None, 1e-6, 2e-6, None, None, None),
     )
     code, out, _, _ = run_cli(monkeypatch, capsys, ["-p", "看看", "--output-format", "stream-json"], provider)
     events = [json.loads(line) for line in out.splitlines()]
@@ -517,6 +524,7 @@ def test_stream_json_lines_include_tools_in_order(monkeypatch, capsys):
     assert tool["id"] == "r" and tool["is_error"] is False and "[project]" in tool["output"]
     assert final["text"] == "读完了" and final["stop_reason"] == "stop"
     assert result["num_turns"] == 2 and result["usage"]["input_tokens"] == 12
+    assert result["total_cost_usd"] == pytest.approx(12 * 1e-6 + 5 * 2e-6)
 
 
 @pytest.mark.parametrize("fmt", ["json", "stream-json"])

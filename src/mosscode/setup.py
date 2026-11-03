@@ -104,6 +104,9 @@ class Wizard:
 
     def collect(self) -> dict | None:
         """The provider entry, or None when the user did not confirm. Raises Cancelled on Ctrl+D."""
+        from .catalog import lookup, tokens_label
+        from .config import catalog_window
+
         self.write("")
         protocol = PROTOCOLS[self.choose("1/5 协议", [label for _, label in PROTOCOLS]) - 1][0]
         if protocol == "openai-chat-completions":
@@ -116,8 +119,18 @@ class Wizard:
             self.write("  " + problem)
         while not (model := self.ask("3/5 模型名（以服务文档为准）")):
             self.write("  模型名不能为空。")
+        info = lookup(model, base_url=base_url or None, protocol=protocol)
+        known = catalog_window(info) if info else None
+        if known:
+            # Not written to the file, so a later catalog update can correct it.
+            hint = f"回车采用模型目录中的 {tokens_label(known)}"
+        else:
+            self.write(
+                f"  模型目录中没有 {model}；可以在配置中填写 catalog_model 指定目录中的条目（moss models <关键词> 查找）。"
+            )
+            hint = "回车按 128K 估算"
         while True:
-            answer = self.ask("4/5 上下文窗口 Token 数，如 200k（回车按 128K 估算）")
+            answer = self.ask(f"4/5 上下文窗口 Token 数，如 200k（{hint}）")
             window = _window(answer) if answer else None
             if not answer or window is not None:
                 break
@@ -150,19 +163,22 @@ class Wizard:
             provider["context_window"] = window
         self.write("")
         self.write("将写入：")
-        for line in summary(provider):
+        for line in summary(provider, known):
             self.write("  " + line)
         return provider if self.ask("确认写入？(Y/n)").lower() in {"", "y", "yes", "是"} else None
 
 
-def summary(provider: dict) -> list[str]:
+def summary(provider: dict, catalog_window: int | None = None) -> list[str]:
     """What will be written, the key itself never shown."""
+    from .catalog import tokens_label
+
+    window = f"未填写，按模型目录 {tokens_label(catalog_window)}" if catalog_window else "未填写，按 128K 估算"
     lines = [
         f"名称 {provider['name']}（默认 Provider）",
         f"协议 {provider['protocol']}",
         f"模型 {provider['model']}",
         f"服务地址 {provider.get('base_url') or '官方地址 ' + OFFICIAL[provider['protocol']]}",
-        f"上下文窗口 {provider.get('context_window') or '未填写，按 128K 估算'}",
+        f"上下文窗口 {provider.get('context_window') or window}",
     ]
     if "api_key_env" in provider:
         lines.append(f"凭据 环境变量 {provider['api_key_env']}")

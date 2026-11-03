@@ -1897,8 +1897,8 @@ class MossCodeApp(TerminalApp[None]):
         self._refresh_context()
         self._status("")
         await self._local_note(f"└ 已切换到 {config.name}（{config.protocol} / {config.model}）；对话历史保留。")
-        if config.context_window is None:
-            await self._local_note(f"└ {config.name} 未配置 context_window，按 128K 估算上下文。")
+        if note := config.window_note():
+            await self._local_note(f"└ {note}")
 
     def _close_model_panel(self) -> None:
         self._pick = self._on_cancel = None

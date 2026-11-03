@@ -11,6 +11,7 @@
 - 权限规则 `WebFetch(domain:…)` 和 `WebSearch`，审批时可按域名授权本会话或永久允许；`moss doctor` 和 `/status` 显示网络搜索的配置状态。
 - 图片输入：`read_file` 可以查看图片（PNG、JPEG、GIF、WebP、BMP），MCP 工具返回的图片也会发给模型；图片自动转正、缩放和压缩，保存在会话目录的 `images/` 中，会话记录只保存引用。Provider 新增 `images` 配置，不接受图片的模型收到文字说明。新增依赖 Pillow。
 - 粘贴和拖入图片：Alt+V（可用时也包括 Ctrl+V）附加剪贴板中的截图或复制的图片文件，拖入或粘贴图片路径也会附加；输入框中显示为 `[图片 #N]`，删掉占位符即取消；排队消息和调出的历史消息保留图片；`/status` 显示当前模型能否接收图片。
+- 模型目录：随程序附带 LiteLLM 的模型数据，`context_window`、`max_output_tokens`（最多 32,000）和 `images` 未配置时按模型自动取值，不再一律按 128K 估算；模型名是别名时用新配置项 `catalog_model` 指定条目。新增 `moss models [关键词]` 查找条目、`moss models update` 下载最新数据；`/status` 和 `-p` 的 json 结果（`total_cost_usd`）显示按目录价格估算的费用；`moss setup` 和 `moss doctor` 显示目录的匹配结果。
 - 内置 Skill `/init`：分析项目后生成或补充 `AGENTS.md`，写入前显示改动并按档位审批。
 - Skill 另外从 [Agent Skills](https://agentskills.io/specification) 的共享目录 `~/.agents/skills/`、`.agents/skills/` 读取；按规范检查 `SKILL.md`，不认识的字段只提示；`/skills <名称>` 显示 `license`、`compatibility`；白名单中的 `WebFetch`、`WebSearch` 换算为 `web_fetch`、`web_search`。
 

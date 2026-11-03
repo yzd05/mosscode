@@ -1,6 +1,7 @@
 import pytest
 import yaml
 
+from mosscode.catalog import encode, save, slim
 from mosscode.config import ConfigError, ProviderConfig, load_settings
 from mosscode.providers import create_provider
 
@@ -145,3 +146,95 @@ def test_default_and_legacy_config_use_rewritten_modules(tmp_path, old):
     settings = load_settings(path)
     assert settings.system_prompt == DEFAULT_SYSTEM_PROMPT
     assert settings.select().prompt_cache is True
+
+
+def use_catalog(models):
+    """Install a small catalog as the user's copy, inside the isolated test home."""
+    raw = {
+        name: {
+            "mode": "chat",
+            "litellm_provider": provider,
+            "max_input_tokens": window,
+            "max_output_tokens": output,
+            **({} if vision is None else {"supports_vision": vision}),
+        }
+        for name, (provider, window, output, vision) in models.items()
+    }
+    save(encode(slim(raw, "2026-01-02")))
+
+
+DEEPSEEK = {"protocol": "anthropic-messages", "base_url": "https://api.deepseek.com/anthropic"}
+
+
+def test_catalog_fills_window_output_and_images_the_config_leaves_out(tmp_path):
+    use_catalog({"deepseek/deepseek-v4-flash": ("deepseek", 1_000_000, 393_216, False)})
+    config = load_settings(write_config(tmp_path, model="deepseek-v4-flash", **DEEPSEEK)).select()
+    assert (config.context_window, config.max_output_tokens, config.images) == (1_000_000, 32_000, False)
+    assert config.from_catalog == ("max_output_tokens", "context_window", "images")
+    assert config.catalog.name == "deepseek/deepseek-v4-flash" and config.window_note() is None
+    assert config.budget().configured and config.budget().window == 1_000_000
+
+
+def test_configured_values_win_over_the_catalog(tmp_path):
+    use_catalog({"deepseek/deepseek-v4-flash": ("deepseek", 1_000_000, 8_192, True)})
+    config = load_settings(
+        write_config(
+            tmp_path,
+            model="deepseek-v4-flash",
+            context_window=64_000,
+            max_output_tokens=4_000,
+            images=False,
+            **DEEPSEEK,
+        )
+    ).select()
+    assert (config.context_window, config.max_output_tokens, config.images) == (64_000, 4_000, False)
+    assert config.from_catalog == () and config.catalog is not None
+
+
+def test_output_limit_is_the_smaller_of_the_catalog_and_the_cap(tmp_path):
+    use_catalog({"deepseek/deepseek-v4-flash": ("deepseek", 1_000_000, 8_192, None)})
+    config = load_settings(write_config(tmp_path, model="deepseek-v4-flash", **DEEPSEEK)).select()
+    assert config.max_output_tokens == 8_192 and config.images is None and config.accepts_images
+
+
+def test_unknown_model_keeps_the_old_defaults_and_says_how_to_fix_it(tmp_path):
+    use_catalog({"deepseek/deepseek-v4-flash": ("deepseek", 1_000_000, 393_216, True)})
+    config = load_settings(write_config(tmp_path, model="deepseek-flash-alias", **DEEPSEEK)).select()
+    assert (config.context_window, config.max_output_tokens, config.catalog) == (None, 16_384, None)
+    note = config.window_note()
+    assert "模型目录中没有 deepseek-flash-alias，按 128K 估算" in note and "catalog_model" in note
+    assert not config.budget().configured
+
+
+def test_catalog_model_names_the_entry_for_an_alias(tmp_path):
+    use_catalog({"deepseek/deepseek-v4-flash": ("deepseek", 1_000_000, 393_216, True)})
+    config = load_settings(
+        write_config(tmp_path, model="flash", catalog_model="deepseek/deepseek-v4-flash", **DEEPSEEK)
+    ).select()
+    assert config.context_window == 1_000_000 and config.catalog_model == "deepseek/deepseek-v4-flash"
+    with pytest.raises(ConfigError, match="catalog_model deepseek/missing"):
+        load_settings(write_config(tmp_path, model="flash", catalog_model="deepseek/missing", **DEEPSEEK))
+    with pytest.raises(ConfigError, match="catalog_model"):
+        load_settings(write_config(tmp_path, model="flash", catalog_model=""))
+
+
+def test_thinking_budget_is_checked_against_the_resolved_output_limit(tmp_path):
+    use_catalog(
+        {"claude-small": ("anthropic", 200_000, 8_192, True), "claude-big": ("anthropic", 200_000, 64_000, True)}
+    )
+    thinking = {"type": "enabled", "budget_tokens": 10_000}
+    with pytest.raises(ConfigError, match="max_output_tokens"):
+        load_settings(write_config(tmp_path, model="claude-small", thinking=thinking))
+    assert (
+        load_settings(write_config(tmp_path, model="claude-big", thinking=thinking)).select().max_output_tokens
+        == 32_000
+    )
+
+
+def test_a_catalog_window_too_small_for_the_agent_is_not_used(tmp_path):
+    use_catalog({"llama3": ("ollama", 8_192, 8_192, None)})
+    config = load_settings(
+        write_config(tmp_path, protocol="openai-chat-completions", model="llama3", base_url="http://localhost:11434/v1")
+    ).select()
+    assert config.context_window is None and config.max_output_tokens == 8_192
+    assert "上下文窗口为 8K，不足以运行 MossCode" in config.window_note()

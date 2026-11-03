@@ -285,10 +285,8 @@ async def test_status_after_a_request(tmp_path):
     conv.instruction_files = ("AGENTS.md", "CLAUDE.md")
     report = status_report(context(conv))
     assert "  权限档位    ⏵⏵ 接受编辑（acceptEdits）" in report
-    assert (
-        f"/ {conv.budget.effective:,} Token" in report and "已压缩 0 次；未配置 context_window，按 128K 估算" in report
-    )
-    assert "· 请求 1 次" in report and "  项目指令    2 个文件（/memory 查看）" in report
+    assert f"/ {conv.budget.effective:,} Token" in report and "已压缩 0 次；窗口未知，按 128K 估算" in report
+    assert "· 请求 1 次 · 费用 无价格信息" in report and "  项目指令    2 个文件（/memory 查看）" in report
     assert "  网络        读取网页可用；搜索未配置（配置文件中的 web_search）" in report
 
 
@@ -460,3 +458,20 @@ def test_headless_local_and_unknown_commands_exit_with_code_2(monkeypatch, capsy
         cli.main()
     assert exc.value.code == 2 and capsys.readouterr().err.startswith(error)
     assert calls["created"] == [] and provider.requests == []
+
+
+def test_status_names_the_catalog_entry_behind_the_model_settings(tmp_path):
+    from mosscode.catalog import ModelInfo
+
+    entry = ModelInfo("deepseek/deepseek-v4-flash", "deepseek", 1_000_000, 393_216, None, None, None, None, True)
+    config = ProviderConfig(
+        "main",
+        "anthropic-messages",
+        "model-a",
+        context_window=1_000_000,
+        max_output_tokens=32_000,
+        catalog=entry,
+        from_catalog=("max_output_tokens", "context_window"),
+    )
+    report = status_report(context(Conversation(FakeProvider()), Settings((config,), "main")))
+    assert "main（anthropic-messages / model-a）；窗口、输出上限来自模型目录（deepseek/deepseek-v4-flash）" in report
