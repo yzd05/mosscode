@@ -16,7 +16,14 @@ from mosscode.permissions import (
     parse_rule,
     path_matches,
 )
-from mosscode.security import SecurityError, check_command, command_risk, read_only_command
+from mosscode.security import (
+    SecurityError,
+    check_command,
+    command_risk,
+    command_segments,
+    read_only_command,
+    subcommands,
+)
 from mosscode.tools import create_default_registry
 from test_agent import SequenceProvider, call, response
 
@@ -101,7 +108,77 @@ def test_risky_signatures_are_not_hard_denied(command, reason):
 
 
 @pytest.mark.parametrize(
-    "command", ["git status", "git reset --soft HEAD~1", "git clean -n", "git push origin main", "python -m pytest"]
+    "command",
+    [
+        "r''m -rf /",
+        'r""m -rf ~',
+        "\\rm -r /",
+        "echo $(r''m -rf /)",
+        "echo \"`r''m -rf /`\"",
+        "true && (cd x; r'm' -rf /)",
+        "sh'u'tdown now",
+    ],
+)
+def test_quoting_does_not_hide_catastrophic_commands(command):
+    with pytest.raises(SecurityError) as error:
+        check_command(command)
+    assert error.value.code == "dangerous_command"
+
+
+@pytest.mark.parametrize(
+    "command,reason",
+    [
+        ('git "push" --force', "强制推送"),
+        ("g'i't reset --hard", "丢弃 Git 改动"),
+        ("git 'clean' -fd", "强制清理 Git 文件"),
+        ("ls | xargs r''m -rf", "递归强制删除"),
+        ('echo "$(git reset "--hard")"', "丢弃 Git 改动"),
+    ],
+)
+def test_quoting_does_not_hide_risky_commands(command, reason):
+    check_command(command)
+    assert command_risk(command) == reason
+
+
+@pytest.mark.parametrize(
+    "command,segment",
+    [
+        ("r''m -rf build", "rm -rf build"),
+        ('echo "$(git push)"', "git push"),
+        ('a && { "b" c; } | d', "b c"),
+        ('cmd "$HOME" x', 'cmd "$HOME" x'),
+    ],
+)
+def test_parsed_subcommands_drop_quoting_and_keep_expansions(command, segment):
+    assert segment in subcommands(command) and segment in command_segments(command)
+
+
+async def test_deny_prefix_matches_a_quoted_command_inside_a_substitution(tmp_path):
+    policy = PermissionPolicy(tmp_path, load=False)
+    policy.layers[1] = (parse_rule("Bash(git push:*)", "deny"),)
+    operation = Operation("execute_command", 'echo "$(git push origin)"')
+    assert policy.decide(operation, read_only=False).action == "deny"
+
+
+def test_without_tree_sitter_the_raw_checks_still_apply(monkeypatch):
+    monkeypatch.setattr("mosscode.security._bash_language", lambda: None)
+    assert subcommands("r''m -rf /") == []
+    with pytest.raises(SecurityError):
+        check_command("rm -rf /")
+    assert command_risk("git push -f") == "强制推送"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status",
+        "git reset --soft HEAD~1",
+        "git clean -n",
+        "git push origin main",
+        "python -m pytest",
+        "echo 'git push'",
+        "Get-ChildItem C:\\Users\\me -Recurse",
+    ],
 )
 def test_similar_safe_commands(command):
     check_command(command)

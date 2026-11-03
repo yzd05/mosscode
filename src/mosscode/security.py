@@ -1,5 +1,6 @@
 """Application-level hard guards, independent of configurable permissions."""
 
+import functools
 import ipaddress
 import re
 import shlex
@@ -37,7 +38,7 @@ def project_path(root: Path, value: str | Path) -> Path:
     return path
 
 
-# These are known-danger signatures, not a shell parser or an OS sandbox.
+# These are known-danger signatures, not an OS sandbox; they also run on each parsed subcommand.
 # Keep static expressions bounded; configuration cannot replace them.
 def _compile(entries):
     return tuple((re.compile(pattern, re.IGNORECASE), reason) for pattern, reason in entries)
@@ -80,17 +81,86 @@ RISKY_COMMANDS = _compile(
 )
 
 
+@functools.cache
+def _bash_language():
+    try:
+        import tree_sitter
+        import tree_sitter_bash
+    except ImportError:
+        return None
+    return tree_sitter.Language(tree_sitter_bash.language())
+
+
+def _static_word(node) -> str | None:
+    """A word's value with bash quoting removed, or None when it depends on an expansion."""
+    kind, text = node.type, node.text.decode("utf-8", "replace")
+    if kind == "command_name":
+        return _static_word(node.named_children[0]) if node.named_child_count == 1 else None
+    if kind in {"word", "number"}:
+        return re.sub(r"\\(.)", r"\1", text, flags=re.DOTALL)
+    if kind == "raw_string":
+        return text[1:-1]
+    if kind == "string":
+        if any(child.type != "string_content" for child in node.named_children):
+            return None
+        return re.sub(r'\\([$`"\\\n])', r"\1", text[1:-1])
+    if kind == "concatenation":
+        parts = [
+            _static_word(child) if child.is_named else child.text.decode("utf-8", "replace") for child in node.children
+        ]
+        return None if None in parts else "".join(parts)
+    return None
+
+
+def subcommands(command: str) -> list[str]:
+    """Every simple command in a bash command line, nested ones included, with quoting taken out of its words:
+    `r''m -rf /` and `echo $("rm" -rf /)` both yield `rm -rf /`. A word that depends on an expansion keeps
+    its source text. Empty when tree-sitter is not installed.
+
+    Only ever used for extra checks next to the raw text, so a parse that does not fit the actual shell
+    (PowerShell) can add a confirmation but never remove one.
+    """
+    language = _bash_language()
+    if language is None or not command.strip():
+        return []
+    from tree_sitter import Parser
+
+    found, stack = [], [Parser(language).parse(command.encode("utf-8")).root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "command":
+            words = [node.child_by_field_name("name"), *node.children_by_field_name("argument")]
+            values = []
+            for word in words:
+                if word is not None:
+                    value = _static_word(word)
+                    values.append(word.text.decode("utf-8", "replace") if value is None else value)
+            if values:
+                found.append(" ".join(values))
+        stack.extend(reversed(node.children))
+    return found
+
+
 def check_command(command: str) -> None:
     if "\0" in command:
         raise SecurityError("invalid_command", "命令不能包含空字符。")
+    candidates = (command, *subcommands(command))
     for expression, reason in CATASTROPHIC_COMMANDS:
-        if expression.search(command):
+        if any(expression.search(candidate) for candidate in candidates):
             raise SecurityError("dangerous_command", f"内置黑名单拒绝：{reason}。此操作不能授权。")
 
 
 def command_risk(command: str) -> str | None:
     """Reason a command needs confirmation every time, if any."""
-    return next((reason for expression, reason in RISKY_COMMANDS if expression.search(command)), None)
+    candidates = (command, *subcommands(command))
+    return next(
+        (
+            reason
+            for expression, reason in RISKY_COMMANDS
+            if any(expression.search(candidate) for candidate in candidates)
+        ),
+        None,
+    )
 
 
 def command_words(command: str) -> list[str] | None:
@@ -101,8 +171,10 @@ def command_words(command: str) -> list[str] | None:
 
 
 def command_segments(command: str) -> list[str]:
-    """Rough split of a compound command, for deny rules only (over-matching is safe there)."""
-    return [part.strip() for part in re.split(r"\$\(|[;&|\r\n`(){}]+", command) if part.strip()]
+    """Parts of a compound command, for deny rules and hook conditions only (over-matching is safe there):
+    a rough split of the text plus the parsed subcommands."""
+    rough = [part.strip() for part in re.split(r"\$\(|[;&|\r\n`(){}]+", command) if part.strip()]
+    return list(dict.fromkeys((*rough, *subcommands(command))))
 
 
 def starts_with(command: str, prefix: str) -> bool:
