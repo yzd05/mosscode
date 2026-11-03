@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3  # Publishes no major-version tag.
         with:
           python-version: "3.12"
       - name: Check the tag matches the version
@@ -54,7 +54,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3  # Publishes no major-version tag.
         with:
           python-version: "3.12"
       - name: Install the uploaded wheel
