@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path, PurePosixPath
 import shutil
+from pathlib import Path, PurePosixPath
 
 from . import git
 from .git import WorktreeError
@@ -39,6 +39,7 @@ def _copy(source: Path, target: Path, label: str, warnings: list[str]) -> bool:
 
 def _junction(source: Path, target: Path) -> None:
     import _winapi
+
     _winapi.CreateJunction(str(source), str(target))
 
 
@@ -60,8 +61,11 @@ def create_links(top: Path, worktree: Path, links, warnings: list[str]) -> list[
                     warnings.append(f"未能链接 {relative}：{inner.strerror or inner}")
                     continue
             else:
-                reason = "Windows 上创建文件的符号链接需要特权" if getattr(exc, "winerror", None) == 1314 \
+                reason = (
+                    "Windows 上创建文件的符号链接需要特权"
+                    if getattr(exc, "winerror", None) == 1314
                     else (exc.strerror or str(exc))
+                )
                 warnings.append(f"未能链接 {relative}：{reason}")
                 continue
         made.append(relative)
@@ -86,8 +90,18 @@ def copy_included(top: Path, worktree: Path, skip, warnings: list[str]) -> list[
     if not include.is_file():
         return []
     try:
-        listed = git.run_git(["ls-files", "--others", "--ignored", f"--exclude-from={include}", "--",
-                              ".", f":(exclude){WORKTREES.rstrip('/')}"], top)
+        listed = git.run_git(
+            [
+                "ls-files",
+                "--others",
+                "--ignored",
+                f"--exclude-from={include}",
+                "--",
+                ".",
+                f":(exclude){WORKTREES.rstrip('/')}",
+            ],
+            top,
+        )
     except WorktreeError as exc:
         warnings.append(f"未能读取 {INCLUDE_FILE} 匹配的文件：{exc}")
         return []

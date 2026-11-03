@@ -1,8 +1,8 @@
 """Stable facade: one independent AgentLoop owns state and history."""
 
 import asyncio
-from contextlib import aclosing
 import difflib
+from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -13,13 +13,39 @@ from .agents.runtime import AUTO_BACKGROUND, GLOBAL_BAN, MAX_BACKGROUND, SubAgen
 from .context import ContextBudget, estimate_text
 from .memory import INDEX_TOKENS, MemoryStore
 from .memory_extract import MemoryExtractor
-from .messages import (NOTIFICATION, CompactFailed, CompactFinished, Completed, ContentBlock, Message, ProviderError,
-                       RunStopped, ToolProgress, UsageUpdate)
-from .prompts import (display_path, gap_reminder, git_snapshot, hook_context, instructions_section,
-                      load_instructions, memory_section)
+from .messages import (
+    NOTIFICATION,
+    CompactFailed,
+    CompactFinished,
+    Completed,
+    ContentBlock,
+    Message,
+    ProviderError,
+    RunStopped,
+    ToolProgress,
+    UsageUpdate,
+)
+from .prompts import (
+    display_path,
+    gap_reminder,
+    git_snapshot,
+    hook_context,
+    instructions_section,
+    load_instructions,
+    memory_section,
+)
+from .session import (
+    Restored,
+    Session,
+    SessionLocked,
+    Transcript,
+    find_session,
+    list_sessions,
+    load_session,
+    provider_record,
+    skill_record,
+)
 from .skills import ACTIVE_LIMIT, LOAD_SKILL, ForkRequest, SkillCatalog, SkillDef, missing_tools
-from .session import (Restored, Session, SessionLocked, Transcript, find_session, list_sessions, load_session,
-                      provider_record, skill_record)
 from .tools.agent import AgentTool, TaskOutput, TaskStop
 from .tools.base import ToolFailure, ToolRegistry
 from .tools.memory import Memory
@@ -29,36 +55,63 @@ from .tools.skill import LoadSkill, SkillTool
 @dataclass(frozen=True)
 class Notice:
     """A local note raised outside the model's events, e.g. a transcript write failure."""
+
     text: str
 
 
 @dataclass(frozen=True)
 class MemoryUpdated:
     """The background extractor wrote or deleted notes."""
+
     names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class Resumed:
     """A session was restored; shown before any compaction it needs."""
+
     restored: Restored
     messages: int
     notices: tuple[str, ...]
 
 
 class Conversation:
-    def __init__(self, provider: Provider, system: str = "", registry: ToolRegistry | None = None,
-                 *, max_iterations: int = DEFAULT_MAX_ITERATIONS, unknown_limit: int = 3,
-                 mcp_manager=None, context_root: Path | None = None, instructions_home: Path | None = None,
-                 budget: ContextBudget | None = None, session=None, auto_compact: bool = True,
-                 notices: tuple[str, ...] = (), persist: bool = False,
-                 provider_info: tuple[str, str, str] | None = None, sessions_home: Path | None = None,
-                 memory: MemoryStore | None = None, auto_memory: bool = False, memory_provider: Provider | None = None,
-                 skills: SkillCatalog | None = None, provider_configs=(), provider_factory=None, hooks=None,
-                 agents: AgentCatalog | None = None, agent_auto_background: float = AUTO_BACKGROUND,
-                 agent_max_background: int = MAX_BACKGROUND, worktree_links=(), worktree_stale_hours: float = 24.0,
-                 teams: bool = False, team_max_members: int = 4, teammate_mode: str = "in-process",
-                 team_launch: dict | None = None, coordinator: bool = False):
+    def __init__(
+        self,
+        provider: Provider,
+        system: str = "",
+        registry: ToolRegistry | None = None,
+        *,
+        max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        unknown_limit: int = 3,
+        mcp_manager=None,
+        context_root: Path | None = None,
+        instructions_home: Path | None = None,
+        budget: ContextBudget | None = None,
+        session=None,
+        auto_compact: bool = True,
+        notices: tuple[str, ...] = (),
+        persist: bool = False,
+        provider_info: tuple[str, str, str] | None = None,
+        sessions_home: Path | None = None,
+        memory: MemoryStore | None = None,
+        auto_memory: bool = False,
+        memory_provider: Provider | None = None,
+        skills: SkillCatalog | None = None,
+        provider_configs=(),
+        provider_factory=None,
+        hooks=None,
+        agents: AgentCatalog | None = None,
+        agent_auto_background: float = AUTO_BACKGROUND,
+        agent_max_background: int = MAX_BACKGROUND,
+        worktree_links=(),
+        worktree_stale_hours: float = 24.0,
+        teams: bool = False,
+        team_max_members: int = 4,
+        teammate_mode: str = "in-process",
+        team_launch: dict | None = None,
+        coordinator: bool = False,
+    ):
         self.provider, self.system, self.registry = provider, system, registry
         # The worktree manager is built on first use; it needs a git repository.
         self.worktree_links, self.worktree_stale_hours = tuple(worktree_links), worktree_stale_hours
@@ -111,18 +164,22 @@ class Conversation:
                     registry.register(Memory(registry.permissions.root, memory))
                 registry.permissions.memory_dirs = tuple(path.resolve() for path in memory.dirs.values())
             if auto_memory:
-                self.extractor = MemoryExtractor(memory, lambda: self.memory_provider or self.provider,
-                                                 on_result=lambda r: self._emit(MemoryUpdated(r.names)),
-                                                 on_notice=lambda text: self._emit(Notice(text)),
-                                                 on_usage=self._agent._usage)
+                self.extractor = MemoryExtractor(
+                    memory,
+                    lambda: self.memory_provider or self.provider,
+                    on_result=lambda r: self._emit(MemoryUpdated(r.names)),
+                    on_notice=lambda text: self._emit(Notice(text)),
+                    on_usage=self._agent._usage,
+                )
                 self._agent.on_compact = self._handover
         self._notices.extend(self._offer_skills())
         # Sub-agents. The agent tools are offered only with a catalog (None keeps the core hermetic);
         # the runtime itself always exists, Skill fork runs on it.
         self.project_instructions = ""  # The project files only, for definition sub-agents.
         self.on_tasks = None  # Set by the UI: background results wait while the main agent is idle.
-        self.subagents = SubAgents(self, agents, auto_background=agent_auto_background,
-                                   max_background=agent_max_background)
+        self.subagents = SubAgents(
+            self, agents, auto_background=agent_auto_background, max_background=agent_max_background
+        )
         self.agents_enabled = agents is not None
         if hooks is not None:
             hooks.agent_runner = self.subagents.hook_agent
@@ -133,8 +190,10 @@ class Conversation:
         if teams and self.registry is not None and self.agents_enabled:
             from .teams.runtime import TeamRuntime
             from .tools.team import lead_tools
-            self.teams = TeamRuntime(self, home=sessions_home, max_members=team_max_members,
-                                     teammate_mode=teammate_mode, launch=team_launch)
+
+            self.teams = TeamRuntime(
+                self, home=sessions_home, max_members=team_max_members, teammate_mode=teammate_mode, launch=team_launch
+            )
             for tool in lead_tools(self.registry.permissions.root, self.teams):
                 if self.registry.get(tool.name) is None:
                     self.registry.register(tool)
@@ -143,6 +202,7 @@ class Conversation:
         self.coordinator = False
         if coordinator:
             from .coordinator import NO_AGENTS, SECTION, withheld
+
             if self.teams is None:
                 self._notices.append(NO_AGENTS)
             else:
@@ -186,6 +246,7 @@ class Conversation:
         if self.hooks is None or not self.hooks.wants(name):
             return ()
         from .hooks import HookEvent
+
         return (await self.hooks.fire(HookEvent(name, fields=fields))).notes
 
     async def _session_start(self, source: str) -> None:
@@ -216,13 +277,13 @@ class Conversation:
         if self.extractor is None:
             return
         history = self._agent.history
-        messages, self._cursor = history[self._cursor:], len(history)
+        messages, self._cursor = history[self._cursor :], len(history)
         self.extractor.schedule(messages)
 
     def _handover(self, removed) -> None:
         """Before a compaction: messages about to be summarized that the extractor has not seen yet."""
         if self._cursor < len(removed):
-            self.extractor.schedule(removed[self._cursor:])
+            self.extractor.schedule(removed[self._cursor :])
         self._cursor = max(self._cursor, len(removed))
         self._cut = len(removed)
 
@@ -339,8 +400,9 @@ class Conversation:
         self._team_context_due = self.teams is not None  # The team keeps running.
         return tuple(notices)
 
-    async def set_provider(self, provider: Provider, budget: ContextBudget | None = None,
-                           info: tuple[str, str, str] | None = None):
+    async def set_provider(
+        self, provider: Provider, budget: ContextBudget | None = None, info: tuple[str, str, str] | None = None
+    ):
         old = self.provider
         self._agent.set_provider(provider, budget)
         self.provider = provider
@@ -422,8 +484,10 @@ class Conversation:
         skill, notice = self.skills.fresh(name)
         missing = self._missing(skill)
         if missing:
-            raise ProviderError(f"Skill {name} 未运行：工具不可用：{'、'.join(missing)}。"
-                                "MCP 工具需要对应的 Server 已连接（/mcp 查看）。")
+            raise ProviderError(
+                f"Skill {name} 未运行：工具不可用：{'、'.join(missing)}。"
+                "MCP 工具需要对应的 Server 已连接（/mcp 查看）。"
+            )
         self._use_skill_dir(skill)
         if skill.mode == "fork":
             if skill.model and self._fork_provider_config(skill.model) is None and not self._is_current(skill.model):
@@ -450,8 +514,11 @@ class Conversation:
         text = skill.render(arguments)
         active = self._agent.active_skills
         if active.size(without=name) + len(text) > ACTIVE_LIMIT:
-            raise ToolFailure("skill_too_large", f"已加载的 Skill 规程合计将超过 {ACTIVE_LIMIT} 个字符，未加载 {name}。"
-                              "可以请用户 /clear 后再加载，或直接按已加载的规程继续。")
+            raise ToolFailure(
+                "skill_too_large",
+                f"已加载的 Skill 规程合计将超过 {ACTIVE_LIMIT} 个字符，未加载 {name}。"
+                "可以请用户 /clear 后再加载，或直接按已加载的规程继续。",
+            )
         refreshed = name in active
         active.activate(skill, arguments, text)
         self._use_skill_dir(skill)
@@ -564,6 +631,7 @@ class Conversation:
     async def cancel_tasks(self, wait: float | None = None) -> int:
         """Cancel every running task; their notifications are never sent."""
         from .agents.tasks import CANCEL_WAIT
+
         count = await self.tasks.cancel_all(CANCEL_WAIT if wait is None else wait)
         self._agent.notifications = []
         return count
@@ -678,6 +746,7 @@ class Conversation:
             notes = [f"引用 {'、'.join(display_path(root, path) for path in item.includes)}"] if item.includes else []
             notes += ["已截断"] if item.truncated or item.overflow else []
             return display_path(root, item.path) + "".join(f"（{note}）" for note in notes)
+
         # Listed by /memory rather than announced at startup; only problems are announced.
         self.instruction_files = tuple(shown(f) for f in files)
         cut = [display_path(root, f.path) for f in files if f.truncated or f.overflow]
@@ -720,9 +789,11 @@ class Conversation:
         """The git repository of the project; WorktreeError outside one."""
         if self._worktrees is None:
             from .worktree import WorktreeManager
+
             root = self.registry.permissions.root if self.registry is not None else (self.context_root or Path.cwd())
-            self._worktrees = WorktreeManager.discover(Path(root), links=self.worktree_links,
-                                                       stale_hours=self.worktree_stale_hours)
+            self._worktrees = WorktreeManager.discover(
+                Path(root), links=self.worktree_links, stale_hours=self.worktree_stale_hours
+            )
         return self._worktrees
 
     def start_worktree_cleanup(self, on_report) -> bool:
@@ -732,6 +803,7 @@ class Conversation:
 
         async def run() -> None:
             from .worktree import WorktreeError
+
             try:
                 manager = await asyncio.to_thread(self.worktree_manager)
             except WorktreeError:
@@ -767,8 +839,9 @@ class Conversation:
             if self.memory_provider is not None and self.memory_provider is not self.provider:
                 await self.memory_provider.close()
 
-    async def reply(self, prompt: str, *, command: str | None = None, fork: ForkRequest | None = None,
-                    synthetic: str | None = None):
+    async def reply(
+        self, prompt: str, *, command: str | None = None, fork: ForkRequest | None = None, synthetic: str | None = None
+    ):
         try:
             async with aclosing(self._reply(prompt, command, fork, synthetic)) as stream:
                 async for event in stream:
@@ -841,7 +914,7 @@ class Conversation:
             return history
         if context == "recent":
             starts = [i for i, m in enumerate(history) if m.role == "user" and m.synthetic is None]
-            return history[starts[-3]:] if starts else []
+            return history[starts[-3] :] if starts else []
         return []
 
     def _fork_registry(self, skill: SkillDef, task) -> ToolRegistry | None:
@@ -858,9 +931,13 @@ class Conversation:
         state = self.registry.file_state()
         state = state.copy() if state is not None and skill.fork_context != "none" else None
         return self.registry.for_agent(
-            agent="fork", agent_type=task.agent_type, permissions=policy, state=state,
+            agent="fork",
+            agent_type=task.agent_type,
+            permissions=policy,
+            state=state,
             keep=lambda name: name not in GLOBAL_BAN and (listed is None or name in listed),
-            extra=[tool for tool in own if listed is None or tool.name in listed])
+            extra=[tool for tool in own if listed is None or tool.name in listed],
+        )
 
     def _fork_provider(self, skill: SkillDef):
         """(provider, budget, owned); owned providers are closed after the run."""
@@ -890,10 +967,16 @@ class Conversation:
             raise ProviderError("已有请求正在运行，请等待或取消。")
         provider, budget, owned = self._fork_provider(skill)
         tasks = self.subagents.tasks
-        task = tasks.new(origin="skill", agent="fork", agent_type=f"skill:{skill.name}", description=command,
-                         prompt=fork.prompt)
-        child = AgentLoop(provider, "", self._fork_registry(skill, task), max_iterations=main.max_iterations,
-                          unknown_limit=main.unknown_limit)
+        task = tasks.new(
+            origin="skill", agent="fork", agent_type=f"skill:{skill.name}", description=command, prompt=fork.prompt
+        )
+        child = AgentLoop(
+            provider,
+            "",
+            self._fork_registry(skill, task),
+            max_iterations=main.max_iterations,
+            unknown_limit=main.unknown_limit,
+        )
         child.system, child.instructions, child.git = main.system, main.instructions, main.git  # No catalog.
         child.budget, child.auto_compact, child.session = budget, main.auto_compact, self.session
         child.history = self._fork_history(skill.fork_context)
@@ -905,8 +988,9 @@ class Conversation:
             nonlocal ended
             self._fork_result(skill, command, text)
             ended = True
-            if task.status == "running" and not (stopped is not None and stopped.reason in {"completed", "max_tokens"}
-                                                 and final is not None):
+            if task.status == "running" and not (
+                stopped is not None and stopped.reason in {"completed", "max_tokens"} and final is not None
+            ):
                 task.status = "failed"
             tasks.settle(task, text)
 
@@ -928,8 +1012,12 @@ class Conversation:
             except asyncio.CancelledError:
                 task.status = "cancelled"
                 end(f"[Skill {skill.name} 未完成：已取消]")
-                yield RunStopped("cancelled", f"已取消 Skill {skill.name}；主对话可以继续。",
-                                 stopped.iterations if stopped else 0, stopped.results if stopped else ())
+                yield RunStopped(
+                    "cancelled",
+                    f"已取消 Skill {skill.name}；主对话可以继续。",
+                    stopped.iterations if stopped else 0,
+                    stopped.results if stopped else (),
+                )
                 raise
             except ProviderError as exc:
                 end(f"[Skill {skill.name} 未完成：{exc}]")

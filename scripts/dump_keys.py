@@ -42,9 +42,11 @@ def main() -> None:
                 if record.EventType != 1:
                     continue
                 event = record.Event.KeyEvent
-                out.write(f"{'down' if event.bKeyDown else 'up  '}  vk=0x{event.wVirtualKeyCode:02X}"
-                          f"  char={event.uChar.UnicodeChar!r:6}  state=0x{event.dwControlKeyState:04X}"
-                          f"  shift_held={shift}\r\n")
+                out.write(
+                    f"{'down' if event.bKeyDown else 'up  '}  vk=0x{event.wVirtualKeyCode:02X}"
+                    f"  char={event.uChar.UnicodeChar!r:6}  state=0x{event.dwControlKeyState:04X}"
+                    f"  shift_held={shift}\r\n"
+                )
             text = key_text(batch)
             if text:
                 out.write(f"  -> {text!r}\r\n")

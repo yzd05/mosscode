@@ -1,31 +1,65 @@
 """UI- and SDK-independent bounded ReAct runtime and event stream."""
 
 import asyncio
+import json
+import time
+from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import asdict, replace
-import json
 from pathlib import Path
-import time
-from typing import AsyncIterator, Protocol, Sequence
+from typing import Protocol
 
 from .compaction import NOTHING, CompactionError, compact_history, cut_point
 from .context import ContextBudget, ContextMeter
-from .messages import (Completed, CompactFailed, CompactFinished, CompactStarted, Message, ContentBlock, ProviderError,
-                       StreamEvent, ResponseBoundary, ToolDefinition, ToolProgress, ToolResult, IterationProgress,
-                       NOTIFICATION, TasksNotified, Usage, UsageTotals, UsageUpdate, RunStopped, UserInput)
+from .messages import (
+    NOTIFICATION,
+    CompactFailed,
+    CompactFinished,
+    CompactStarted,
+    Completed,
+    ContentBlock,
+    IterationProgress,
+    Message,
+    ProviderError,
+    ResponseBoundary,
+    RunStopped,
+    StreamEvent,
+    TasksNotified,
+    ToolDefinition,
+    ToolProgress,
+    ToolResult,
+    Usage,
+    UsageTotals,
+    UsageUpdate,
+    UserInput,
+)
+from .prompts import (
+    PromptRequest,
+    Supplement,
+    active_skills,
+    build_system_prompt,
+    environment,
+    hook_notification,
+    mode_reminder,
+    stable_prompt,
+)
+from .session import compact_record, message_record
+from .skills import ActiveSkills
 from .tools import shell_label
 from .tools.base import ToolRegistry
 from .tools.execution import execute_batch
-from .prompts import (PromptRequest, Supplement, active_skills, build_system_prompt, environment, hook_notification,
-                      mode_reminder, stable_prompt)
-from .skills import ActiveSkills
-from .session import compact_record, message_record
 
 
 class Provider(Protocol):
-    def stream(self, messages: Sequence[Message], system: str | PromptRequest, tools: Sequence[ToolDefinition] = (),
-               *, allow_tools: bool = True) -> AsyncIterator[StreamEvent]: ...
+    def stream(
+        self,
+        messages: Sequence[Message],
+        system: str | PromptRequest,
+        tools: Sequence[ToolDefinition] = (),
+        *,
+        allow_tools: bool = True,
+    ) -> AsyncIterator[StreamEvent]: ...
     async def close(self) -> None: ...
 
 
@@ -51,17 +85,28 @@ def add_usage(total: UsageTotals, usage: Usage) -> UsageTotals:
         input_tokens=total.input_tokens + (usage.input_tokens or 0),
         output_tokens=total.output_tokens + (usage.output_tokens or 0),
         missing_input=total.missing_input + (usage.input_tokens is None),
-        missing_output=total.missing_output + (usage.output_tokens is None), requests=total.requests + 1,
+        missing_output=total.missing_output + (usage.output_tokens is None),
+        requests=total.requests + 1,
         cached_input_tokens=total.cached_input_tokens + (usage.cached_input_tokens or 0),
         cache_write_tokens=total.cache_write_tokens + (usage.cache_write_tokens or 0),
         missing_cached=total.missing_cached + (usage.cached_input_tokens is None),
-        missing_cache_write=total.missing_cache_write + (usage.cache_write_tokens is None))
+        missing_cache_write=total.missing_cache_write + (usage.cache_write_tokens is None),
+    )
+
+
 BREAKER = 3  # Consecutive automatic compaction failures before automatic compaction pauses.
 
 
 class AgentLoop:
-    def __init__(self, provider: Provider, system: str, registry: ToolRegistry | None,
-                 *, max_iterations: int = DEFAULT_MAX_ITERATIONS, unknown_limit: int = 3):
+    def __init__(
+        self,
+        provider: Provider,
+        system: str,
+        registry: ToolRegistry | None,
+        *,
+        max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        unknown_limit: int = 3,
+    ):
         if type(max_iterations) is not int or max_iterations < 1 or type(unknown_limit) is not int or unknown_limit < 1:
             raise ValueError("循环上限与未知工具阈值必须是正整数。")
         self.provider, self.system, self.registry = provider, system, registry
@@ -168,8 +213,9 @@ class AgentLoop:
         return self.registry.definitions(plan=self.mode == "plan") if self.registry else ()
 
     def _prompt(self, definitions):
-        instructions = "\n\n".join(part for part in (self.instructions, self.skill_catalog, self.agent_catalog,
-                                                     self.team_guide) if part)
+        instructions = "\n\n".join(
+            part for part in (self.instructions, self.skill_catalog, self.agent_catalog, self.team_guide) if part
+        )
         return build_system_prompt(definitions, override=self.system, instructions=instructions)
 
     def _active(self) -> Supplement | None:
@@ -210,10 +256,11 @@ class AgentLoop:
         started = time.monotonic()
         if self.on_compact is not None:
             # Messages about to be summarized away; the memory extractor still gets to read them.
-            self.on_compact(self.history[:cut_point(self.history, self.budget.auto_threshold, manual=manual)])
+            self.on_compact(self.history[: cut_point(self.history, self.budget.auto_threshold, manual=manual)])
         try:
-            done = await compact_history(self.provider, self.history, self.budget, session=self.session,
-                                         instructions=instructions, manual=manual)
+            done = await compact_history(
+                self.provider, self.history, self.budget, session=self.session, instructions=instructions, manual=manual
+            )
         except CompactionError as exc:
             if failure is not None:  # Resuming: its own message, and the breaker is untouched.
                 yield CompactFailed(failure.format(exc), self.compact_failures, self.auto_paused, "restore")
@@ -231,10 +278,12 @@ class AgentLoop:
         self.meter.invalidate()
         self.compact_failures = 0
         self.compactions += 1
-        yield CompactFinished(done.removed, done.summary_tokens, time.monotonic() - started,
-                              str(done.record) if done.record else None)
+        yield CompactFinished(
+            done.removed, done.summary_tokens, time.monotonic() - started, str(done.record) if done.record else None
+        )
         if self.hooks is not None and self.hooks.wants("compact"):
             from .hooks import HookEvent
+
             trigger = "restore" if failure is not None else "manual" if manual else "auto"
             await self.hooks.fire(HookEvent("compact", fields={"trigger": trigger}))
 
@@ -282,6 +331,7 @@ class AgentLoop:
         if self.hooks is None or not self.hooks.wants(name):
             return ()
         from .hooks import HookEvent
+
         return (await self.hooks.fire(HookEvent(name, fields=fields))).notes
 
     async def run(self, prompt: str, *, command: str | None = None, synthetic: str | None = None):
@@ -293,16 +343,22 @@ class AgentLoop:
         iteration, unknown_run = 0, 0
         user = Message("user", (ContentBlock("text", prompt),), command=command, synthetic=synthetic)
         committed = False
+
         def outcomes():
             return self.history[-1].tool_results if committed and self.history[-1].role == "tool" else ()
+
         try:
             definitions = self.registry.definitions() if self.registry else ()
             root = self.registry.get(definitions[0].name).root if definitions else Path.cwd()
             for iteration in range(1, self.max_iterations + 1):
                 # Rebuilt each round: approving a plan changes the mode mid-task.
-                env = environment(root, tools_enabled=self.registry is not None,
-                                  permission_mode=self.registry.permissions.mode if self.registry else None, git=self.git,
-                                  shell=shell_label(self.registry))
+                env = environment(
+                    root,
+                    tools_enabled=self.registry is not None,
+                    permission_mode=self.registry.permissions.mode if self.registry else None,
+                    git=self.git,
+                    shell=shell_label(self.registry),
+                )
                 yield IterationProgress(iteration, self.max_iterations, self.mode)
                 if committed and self.pending:
                     texts, self.pending = tuple(self.pending), []
@@ -360,15 +416,28 @@ class AgentLoop:
                     yield UsageUpdate(iteration, final.usage, self.total_usage)
                     yield final
                     if truncated:
-                        yield RunStopped("max_tokens", "回复达到输出上限（max_output_tokens），已截断；可以输入“继续”或调高该配置。", iteration)
+                        yield RunStopped(
+                            "max_tokens",
+                            "回复达到输出上限（max_output_tokens），已截断；可以输入“继续”或调高该配置。",
+                            iteration,
+                        )
                     else:
                         yield RunStopped("completed", "", iteration)
                     return
                 if truncated:
                     # Arguments may be cut mid-JSON: never execute them, let the model retry smaller.
-                    results = tuple(ToolResult(c.id, c.name, "回复达到输出上限，此调用的参数可能不完整，未执行。"
-                                               "请缩小单次输出后重试，例如分多次写入或编辑。", True, "output_truncated",
-                                               {"executed": False}) for c in calls)
+                    results = tuple(
+                        ToolResult(
+                            c.id,
+                            c.name,
+                            "回复达到输出上限，此调用的参数可能不完整，未执行。"
+                            "请缩小单次输出后重试，例如分多次写入或编辑。",
+                            True,
+                            "output_truncated",
+                            {"executed": False},
+                        )
+                        for c in calls
+                    )
                     self._append(Message("tool", (), tool_results=results))
                     yield UsageUpdate(iteration, final.usage, self.total_usage)
                     yield ResponseBoundary(final.message)
@@ -390,9 +459,19 @@ class AgentLoop:
                         self._commit(message_record(self.history[position]))
                 unknown_run = unknown_run + 1 if all(self.registry.get(c.name) is None for c in calls) else 0
                 if unknown_run >= self.unknown_limit:
-                    yield RunStopped("unknown_tools", f"连续 {self.unknown_limit} 轮仅请求未知工具，已停止；可以修改任务后继续。", iteration, outcomes())
+                    yield RunStopped(
+                        "unknown_tools",
+                        f"连续 {self.unknown_limit} 轮仅请求未知工具，已停止；可以修改任务后继续。",
+                        iteration,
+                        outcomes(),
+                    )
                     return
-            yield RunStopped("max_iterations", f"已达最大迭代轮数 {self.max_iterations}，已停止；可以继续提问推进任务。", iteration, outcomes())
+            yield RunStopped(
+                "max_iterations",
+                f"已达最大迭代轮数 {self.max_iterations}，已停止；可以继续提问推进任务。",
+                iteration,
+                outcomes(),
+            )
         except asyncio.CancelledError:
             yield RunStopped("cancelled", "已取消；已执行工具及其结果保留。", iteration, outcomes())
             raise

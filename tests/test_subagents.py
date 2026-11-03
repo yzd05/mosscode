@@ -19,8 +19,8 @@ from mosscode.tools.files import FileState
 from test_agent import call, response
 from test_sessions import drain, make
 
-
 # Helpers ------------------------------------------------------------------------------------------
+
 
 def write_agent(base: Path, name: str, front: str = "", body: str = "你是测试用的子 Agent。") -> Path:
     base.mkdir(parents=True, exist_ok=True)
@@ -93,6 +93,7 @@ def main_requests(provider, marker="SUB-"):
 
 # Definitions --------------------------------------------------------------------------------
 
+
 def test_three_places_override_and_problems(tmp_path, isolated_home):
     project = project_of(tmp_path)
     user = isolated_home / ".mosscode" / "agents"
@@ -110,8 +111,11 @@ def test_three_places_override_and_problems(tmp_path, isolated_home):
     explore = catalog.get("explore")
     assert explore.prompt == "PROJECT-EXPLORE" and explore.source == "project" and len(explore.overrides) == 2
     alias, snake = catalog.get("alias"), catalog.get("snake")
-    assert (alias.disallowed_tools, alias.max_turns, alias.permission_mode) == \
-           (snake.disallowed_tools, snake.max_turns, snake.permission_mode) == (("execute_command",), 3, "plan")
+    assert (
+        (alias.disallowed_tools, alias.max_turns, alias.permission_mode)
+        == (snake.disallowed_tools, snake.max_turns, snake.permission_mode)
+        == (("execute_command",), 3, "plan")
+    )
     assert alias.unsupported == ("color",)
     problems = "\n".join(catalog.problems)
     for name in ("bad-field.md", "zero.md", "empty.md", "fork.md", "z-copy.md"):
@@ -135,9 +139,14 @@ async def test_unknown_type_and_missing_provider(tmp_path):
 
     def script(messages, system, tools):
         if messages[-1].role == "user":
-            return response(calls=[call("agent", "a1", description="x", prompt="p", agent_type="nope"),
-                                   call("agent", "a2", description="x", prompt="p", agent_type="remote")])
+            return response(
+                calls=[
+                    call("agent", "a1", description="x", prompt="p", agent_type="nope"),
+                    call("agent", "a2", description="x", prompt="p", agent_type="remote"),
+                ]
+            )
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
@@ -150,6 +159,7 @@ async def test_unknown_type_and_missing_provider(tmp_path):
 
 # A definition sub-agent --------------------------------------------------------------------------
 
+
 async def test_definition_runs_in_a_blank_conversation(tmp_path):
     write_agent(agents_dir(tmp_path), "worker", "tools: Read, Grep\n", "SUB-WORKER")
     (project_of(tmp_path) / "AGENTS.md").write_text("PROJECT-RULE", encoding="utf-8")
@@ -161,9 +171,12 @@ async def test_definition_runs_in_a_blank_conversation(tmp_path):
                 return response("读一下", [call("read_file", "r1", path="a.txt")], Usage(10, 2))
             return response("WORKER-DONE", usage=Usage(20, 3))
         if messages[-1].role == "user":
-            return response(calls=[call("agent", "a1", description="读文件", prompt="读取 a.txt", agent_type="worker")],
-                            usage=Usage(5, 1))
+            return response(
+                calls=[call("agent", "a1", description="读文件", prompt="读取 a.txt", agent_type="worker")],
+                usage=Usage(5, 1),
+            )
         return response("主对话完成", usage=Usage(5, 1))
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
@@ -196,9 +209,14 @@ async def test_max_turns_and_global_limit(tmp_path):
         if "SUB-" in system.stable:
             return response("还在找", [call("glob", f"g{len(messages)}", pattern="*.txt")])
         if messages[-1].role == "user":
-            return response(calls=[call("agent", "a1", description="x", prompt="p", agent_type="loop"),
-                                   call("agent", "a2", description="x", prompt="p", agent_type="big")])
+            return response(
+                calls=[
+                    call("agent", "a1", description="x", prompt="p", agent_type="loop"),
+                    call("agent", "a2", description="x", prompt="p", agent_type="big"),
+                ]
+            )
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider, max_iterations=3)
     await drain(conv.reply("开始"))
@@ -211,6 +229,7 @@ async def test_max_turns_and_global_limit(tmp_path):
 
 # Fork -------------------------------------------------------------------------------------------
 
+
 async def test_fork_shares_the_prefix_and_is_refused_nesting(tmp_path):
     def script(messages, system, tools):
         if is_fork(messages):
@@ -220,10 +239,16 @@ async def test_fork_shares_the_prefix_and_is_refused_nesting(tmp_path):
         if messages[-1].role == "tool" and messages[-1].tool_results[0].call_id == "n1":
             return response("范围：嵌套被拒绝")
         if len(messages) == 1:
-            return response("分两个出去", [call("agent", "f1", description="写测试", prompt="写测试"),
-                                         call("agent", "f2", description="写文档", prompt="写文档"),
-                                         call("agent", "f3", description="嵌套", prompt="嵌套")])
+            return response(
+                "分两个出去",
+                [
+                    call("agent", "f1", description="写测试", prompt="写测试"),
+                    call("agent", "f2", description="写文档", prompt="写文档"),
+                    call("agent", "f3", description="嵌套", prompt="嵌套"),
+                ],
+            )
         return response("已分出")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("讨论一下"))
@@ -251,8 +276,10 @@ async def test_fork_shares_the_prefix_and_is_refused_nesting(tmp_path):
 
 # File state -------------------------------------------------------------------------------------
 
+
 async def test_file_state_per_sub_agent(tmp_path):
     from test_agent import call as make_call
+
     project = project_of(tmp_path)
     (project / "a.txt").write_text("one", encoding="utf-8")
     main = create_default_registry(project, permission_mode="bypassPermissions", load_permissions=False)
@@ -269,10 +296,13 @@ async def test_file_state_per_sub_agent(tmp_path):
 
 # Permissions --------------------------------------------------------------------------------
 
+
 def test_effective_mode():
     from mosscode.agents import AgentDef
+
     def agent(source, mode):
         return AgentDef("x", "d", "p", Path("x.md"), source, permission_mode=mode)
+
     assert effective_mode(agent("user", "bypassPermissions"), "plan") == "plan"
     assert effective_mode(agent("project", "bypassPermissions"), "default") == "default"
     assert effective_mode(agent("project", "plan"), "default") == "plan"
@@ -297,7 +327,12 @@ async def test_views_keep_their_own_grants_and_background_never_asks(tmp_path):
 
 async def test_plan_session_blocks_general_writes(tmp_path):
     def script(messages, system, tools):
-        if "你是通用" in system.stable or "general" in system.stable.lower() and len(messages) == 1 and messages[0].text == "写文件":
+        if (
+            "你是通用" in system.stable
+            or "general" in system.stable.lower()
+            and len(messages) == 1
+            and messages[0].text == "写文件"
+        ):
             pass
         if len(messages) == 1 and asked(messages) == "写文件":
             return response(calls=[call("write_file", "w", path="a.txt", content="x")])
@@ -306,6 +341,7 @@ async def test_plan_session_blocks_general_writes(tmp_path):
         if messages[-1].role == "user":
             return response(calls=[call("agent", "a1", description="写", prompt="写文件", agent_type="general")])
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider, mode="plan")
     await drain(conv.reply("开始"))
@@ -322,11 +358,13 @@ async def test_foreground_approval_goes_to_the_shared_queue_and_detach_denies(tm
         if "SUB-WRITER" in system.stable:
             if len(messages) == 1:
                 return response(calls=[call("write_file", "w", path=f"{asked(messages)}.txt", content="x")])
-            return response("写完：" + messages[-1].tool_results[0].code if messages[-1].tool_results[0].is_error
-                            else "写完")
+            return response(
+                "写完：" + messages[-1].tool_results[0].code if messages[-1].tool_results[0].is_error else "写完"
+            )
         if messages[-1].role == "user":
             return response(calls=[call("agent", "a1", description="写一个", prompt="one", agent_type="writer")])
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider, mode="default", interactive=True)
     requests = []
@@ -351,10 +389,18 @@ async def test_foreground_approval_goes_to_the_shared_queue_and_detach_denies(tm
 
 # Parallel ---------------------------------------------------------------------------------------
 
+
 def test_adjacent_agent_calls_group(tmp_path):
     conv = conversation(tmp_path, ScriptProvider(lambda *a: response("x")))
-    calls = [call("agent", "a"), call("agent", "b"), call("read_file", "r"), call("glob", "g"), call("agent", "c"),
-             call("write_file", "w"), call("agent", "d")]
+    calls = [
+        call("agent", "a"),
+        call("agent", "b"),
+        call("read_file", "r"),
+        call("glob", "g"),
+        call("agent", "c"),
+        call("write_file", "w"),
+        call("agent", "d"),
+    ]
     assert list(partition_calls(calls, conv.registry)) == [[0, 1], [2, 3], [4], [5], [6]]
 
 
@@ -373,9 +419,11 @@ async def test_three_agents_run_at_once(tmp_path):
         if "SUB-W" in system.stable:
             return child(messages)
         if messages[-1].role == "user":
-            return response(calls=[call("agent", f"a{i}", description="x", prompt=str(i), agent_type="w")
-                                   for i in range(3)])
+            return response(
+                calls=[call("agent", f"a{i}", description="x", prompt=str(i), agent_type="w") for i in range(3)]
+            )
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
@@ -385,6 +433,7 @@ async def test_three_agents_run_at_once(tmp_path):
 
 
 # Background and notifications -------------------------------------------------------------
+
 
 async def test_background_limits_and_auto_background(tmp_path):
     write_agent(agents_dir(tmp_path), "slow", "", "SUB-SLOW")
@@ -399,14 +448,17 @@ async def test_background_limits_and_auto_background(tmp_path):
         if "SUB-" in system.stable:
             return wait()
         if messages[-1].role == "user" and messages[-1].text == "开始":
-            return response(calls=[call("agent", "a1", description="x", prompt="p", agent_type="slow",
-                                        run_in_background=True),
-                                   call("agent", "a2", description="x", prompt="p", agent_type="bg"),
-                                   call("agent", "a3", description="x", prompt="p", agent_type="slow",
-                                        run_in_background=True)])
+            return response(
+                calls=[
+                    call("agent", "a1", description="x", prompt="p", agent_type="slow", run_in_background=True),
+                    call("agent", "a2", description="x", prompt="p", agent_type="bg"),
+                    call("agent", "a3", description="x", prompt="p", agent_type="slow", run_in_background=True),
+                ]
+            )
         if messages[-1].role == "user":
             return response(calls=[call("agent", "b1", description="前台", prompt="p", agent_type="slow")])
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider, agent_max_background=2, agent_auto_background=0.3)
     await drain(conv.reply("开始"))
@@ -444,14 +496,17 @@ async def test_notifications_idle_and_busy(tmp_path):
         if last.role == "user" and last.synthetic == NOTIFICATION:
             return response("收到通知")
         if last.role == "user" and last.text == "空闲":
-            return response(calls=[call("agent", "a1", description="空闲任务", prompt="p", agent_type="w",
-                                        run_in_background=True)])
+            return response(
+                calls=[call("agent", "a1", description="空闲任务", prompt="p", agent_type="w", run_in_background=True)]
+            )
         if last.role == "user" and last.text == "忙":
-            return response(calls=[call("agent", "b1", description="忙任务", prompt="p", agent_type="w",
-                                        run_in_background=True)])
+            return response(
+                calls=[call("agent", "b1", description="忙任务", prompt="p", agent_type="w", run_in_background=True)]
+            )
         if last.role == "tool" and last.tool_results[0].call_id == "b1":
             return busy_main(holder["conv"])
         return response("好")
+
     provider = ScriptProvider(script)
     conv = holder["conv"] = conversation(tmp_path, provider)
     ready = []
@@ -484,11 +539,13 @@ async def test_stopped_tasks_never_notify(tmp_path):
             return asyncio.Event().wait()
         last = messages[-1]
         if last.role == "user":
-            return response(calls=[call("agent", "a1", description="x", prompt="p", agent_type="w",
-                                        run_in_background=True)])
+            return response(
+                calls=[call("agent", "a1", description="x", prompt="p", agent_type="w", run_in_background=True)]
+            )
         if last.tool_results[0].call_id == "a1":
             return response(calls=[call("task_stop", "s1", task_id="t1"), call("task_output", "o1", task_id="t1")])
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
@@ -500,6 +557,7 @@ async def test_stopped_tasks_never_notify(tmp_path):
 
 # Transcripts, cancellation and session switches -------------------------------------------
 
+
 async def test_no_transcript_without_persistence_and_resume_ignores_tasks(tmp_path):
     write_agent(agents_dir(tmp_path), "w", "", "SUB-W")
 
@@ -509,6 +567,7 @@ async def test_no_transcript_without_persistence_and_resume_ignores_tasks(tmp_pa
         if messages[-1].role == "user":
             return response(calls=[call("agent", "a1", description="x", prompt="p", agent_type="w")])
         return response("好")
+
     conv = conversation(tmp_path, ScriptProvider(script), persist=False)
     await drain(conv.reply("开始"))
     assert conv.tasks.get("t1").transcript is None
@@ -538,11 +597,13 @@ async def test_cancel_foreground_and_clear_cancels_background(tmp_path):
         if "SUB-W" in system.stable:
             return hang()
         if messages[-1].role == "user" and asked(messages[-1:]) == "后台":
-            return response(calls=[call("agent", "a1", description="x", prompt="p", agent_type="w",
-                                        run_in_background=True)])
+            return response(
+                calls=[call("agent", "a1", description="x", prompt="p", agent_type="w", run_in_background=True)]
+            )
         if messages[-1].role == "user":
             return response(calls=[call("agent", "a2", description="x", prompt="p", agent_type="w")])
         return response("好")
+
     conv = conversation(tmp_path, ScriptProvider(script))
     await drain(conv.reply("后台"))
     background = conv.tasks.get("t1")
@@ -563,12 +624,15 @@ async def test_cancel_foreground_and_clear_cancels_background(tmp_path):
 
 # Hooks -------------------------------------------------------------------------------
 
+
 def hook_engine(tmp_path, *hooks):
     import yaml
+
     home = tmp_path / "hook-home"
     (home / ".mosscode").mkdir(parents=True, exist_ok=True)
-    (home / ".mosscode" / "hooks.yaml").write_text(yaml.safe_dump({"hooks": list(hooks)}, allow_unicode=True),
-                                                   encoding="utf-8")
+    (home / ".mosscode" / "hooks.yaml").write_text(
+        yaml.safe_dump({"hooks": list(hooks)}, allow_unicode=True), encoding="utf-8"
+    )
     return HookEngine(project_of(tmp_path), home=home)
 
 
@@ -576,18 +640,28 @@ async def test_hook_fields_and_subagent_events(tmp_path):
     write_agent(agents_dir(tmp_path), "explorer", "", "SUB-EXP")
     hooks = hook_engine(
         tmp_path,
-        {"id": "no-glob", "event": "pre_tool_use", "if": "agent == subagent && agent_type == explorer && tool == glob",
-         "reject": "子 Agent 不能 glob"},
-        {"id": "hello", "event": "subagent_start", "if": "agent_type == explorer",
-         "action": {"type": "prompt", "message": "START-NOTE {{task_id}}"}},
+        {
+            "id": "no-glob",
+            "event": "pre_tool_use",
+            "if": "agent == subagent && agent_type == explorer && tool == glob",
+            "reject": "子 Agent 不能 glob",
+        },
+        {
+            "id": "hello",
+            "event": "subagent_start",
+            "if": "agent_type == explorer",
+            "action": {"type": "prompt", "message": "START-NOTE {{task_id}}"},
+        },
         {"id": "turn", "event": "turn_start", "action": {"type": "prompt", "message": "TURN-NOTE"}},
-        {"id": "bye", "event": "subagent_stop", "action": {"type": "command", "command": "echo bye"}})
+        {"id": "bye", "event": "subagent_stop", "action": {"type": "command", "command": "echo bye"}},
+    )
     seen = []
     original = hooks.fire
 
     async def fire(event):
         seen.append((event.name, event.agent, dict(event.fields), event.agent_type))
         return await original(event)
+
     hooks.fire = fire
 
     def script(messages, system, tools):
@@ -598,6 +672,7 @@ async def test_hook_fields_and_subagent_events(tmp_path):
         if messages[-1].role == "user":
             return response(calls=[call("agent", "a1", description="找", prompt="找文件", agent_type="explorer")])
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider, hooks=hooks)
     await drain(conv.reply("开始"))
@@ -621,8 +696,13 @@ async def test_agent_action_runs_in_the_background(tmp_path):
     write_agent(agents_dir(tmp_path), "checker", "", "SUB-CHECK")
     hooks = hook_engine(
         tmp_path,
-        {"id": "review", "event": "post_tool_use", "if": "tool == glob",
-         "action": {"type": "agent", "agent_type": "checker", "prompt": "检查 {{tool}}"}})
+        {
+            "id": "review",
+            "event": "post_tool_use",
+            "if": "tool == glob",
+            "action": {"type": "agent", "agent_type": "checker", "prompt": "检查 {{tool}}"},
+        },
+    )
 
     def script(messages, system, tools):
         if "SUB-CHECK" in system.stable:
@@ -632,13 +712,17 @@ async def test_agent_action_runs_in_the_background(tmp_path):
         if messages[-1].role == "user":
             return response(calls=[call("glob", "g1", pattern="*")])
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider, hooks=hooks)
     await drain(conv.reply("开始"))
     await hooks.drain(5)
     task = conv.tasks.get("t1")
-    assert task.origin == "hook" and task.status == "completed" and asked(
-        [r for r in provider.requests if "SUB-CHECK" in r[1].stable][0][0]) == "检查 glob"
+    assert (
+        task.origin == "hook"
+        and task.status == "completed"
+        and asked([r for r in provider.requests if "SUB-CHECK" in r[1].stable][0][0]) == "检查 glob"
+    )
     assert all("检查通过" not in m.text for m in conv.history)
     log = [json.loads(line) for line in hooks.log_path.read_text(encoding="utf-8").splitlines()]
     outcomes = [(r["hook"], r["outcome"]) for r in log]
@@ -652,8 +736,12 @@ async def test_agent_action_timeout(tmp_path):
     write_agent(agents_dir(tmp_path), "checker", "", "SUB-CHECK")
     hooks = hook_engine(
         tmp_path,
-        {"id": "review", "event": "post_tool_use",
-         "action": {"type": "agent", "agent_type": "checker", "prompt": "检查", "timeout": 1}})
+        {
+            "id": "review",
+            "event": "post_tool_use",
+            "action": {"type": "agent", "agent_type": "checker", "prompt": "检查", "timeout": 1},
+        },
+    )
 
     def script(messages, system, tools):
         if "SUB-CHECK" in system.stable:
@@ -661,6 +749,7 @@ async def test_agent_action_timeout(tmp_path):
         if messages[-1].role == "user":
             return response(calls=[call("glob", "g1", pattern="*")])
         return response("好")
+
     conv = conversation(tmp_path, ScriptProvider(script), hooks=hooks)
     await drain(conv.reply("开始"))
     await hooks.drain(5)
@@ -676,6 +765,7 @@ def test_task_label():
 
 
 # Commands ---------------------------------------------------------------------------
+
 
 def hanging_conversation(tmp_path, gate=None):
     """The main agent starts one background sub-agent of type w, which waits for the gate."""
@@ -693,16 +783,30 @@ def hanging_conversation(tmp_path, gate=None):
         if last.role == "user" and last.synthetic == NOTIFICATION:
             return response("收到通知")
         if last.role == "user":
-            return response(calls=[call("agent", "a1", description="子任务", prompt="p", agent_type="w",
-                                        run_in_background=last.text != "前台")])
+            return response(
+                calls=[
+                    call(
+                        "agent",
+                        "a1",
+                        description="子任务",
+                        prompt="p",
+                        agent_type="w",
+                        run_in_background=last.text != "前台",
+                    )
+                ]
+            )
         return response("主对话完成")
+
     provider = ScriptProvider(script)
     return conversation(tmp_path, provider), provider, gate
 
 
 async def test_agents_command(tmp_path):
     from test_commands import FakeUI, context, run
-    write_agent(agents_dir(tmp_path), "worker", "tools: Read, mcp__x__y\nmodel: nowhere\ncolor: red\n", "第一行\n第二行")
+
+    write_agent(
+        agents_dir(tmp_path), "worker", "tools: Read, mcp__x__y\nmodel: nowhere\ncolor: red\n", "第一行\n第二行"
+    )
     write_agent(agents_dir(tmp_path), "bad", "max_turns: 0\n")
     conv = conversation(tmp_path, ScriptProvider(lambda *a: response("x")))
     ui = FakeUI()
@@ -713,8 +817,15 @@ async def test_agents_command(tmp_path):
     assert "! Agent 定义已跳过" in listing and "bad.md" in listing
     await run(ctx, "/agents worker")
     detail = ui.notes[-1]
-    for part in ("可用工具", "read_file", "mcp__x__y", "color", "本会话实际为 bypassPermissions", "提示词首行    第一行",
-                 "没有该提供商"):
+    for part in (
+        "可用工具",
+        "read_file",
+        "mcp__x__y",
+        "color",
+        "本会话实际为 bypassPermissions",
+        "提示词首行    第一行",
+        "没有该提供商",
+    ):
         assert part in detail, part
     assert "write_file" not in detail.split("可用工具")[1].splitlines()[0]
     await run(ctx, "/agents nope")
@@ -729,6 +840,7 @@ async def test_agents_command(tmp_path):
 
 async def test_tasks_command_and_status(tmp_path):
     from test_commands import FakeUI, context, run
+
     conv, provider, gate = hanging_conversation(tmp_path)
     ui = FakeUI()
     ctx = context(conv, ui=ui)
@@ -753,6 +865,7 @@ async def test_tasks_command_and_status(tmp_path):
 
 def test_m3_commands_exit_2_in_headless_mode(capsys):
     from mosscode.cli import _headless_input
+
     for text in ("/agents", "/tasks stop t1"):
         with pytest.raises(SystemExit) as exc:
             _headless_input(text)
@@ -762,6 +875,7 @@ def test_m3_commands_exit_2_in_headless_mode(capsys):
 
 async def test_clear_and_exit_ask_first(tmp_path):
     from test_commands import FakeUI, context, run
+
     conv, provider, gate = hanging_conversation(tmp_path)
     ui = FakeUI()
     ctx = context(conv, ui=ui)
@@ -782,8 +896,10 @@ async def test_clear_and_exit_ask_first(tmp_path):
 
 # -p --------------------------------------------------------------------------------------------
 
+
 async def test_headless_waits_and_delivers_notifications(tmp_path):
     from mosscode.cli import _task_notices, _turns
+
     conv, provider, gate = hanging_conversation(tmp_path)
     said = []
     _task_notices(conv, lambda kind, text: said.append((kind, text)))
@@ -800,6 +916,7 @@ async def test_headless_waits_and_delivers_notifications(tmp_path):
 
 # The TUI ------------------------------------------------------------------------------
 
+
 async def wait_until(pilot, check, limit=5.0):
     loop = asyncio.get_running_loop()
     end = loop.time() + limit
@@ -810,6 +927,7 @@ async def wait_until(pilot, check, limit=5.0):
 
 async def test_tui_ctrl_b_detaches_and_the_notification_starts_a_turn(tmp_path):
     from mosscode.tui import MossCodeApp, ToolEntry
+
     conv, provider, gate = hanging_conversation(tmp_path)
     app = MossCodeApp(conv, "test")
     async with app.run_test(size=(120, 40)) as pilot:
@@ -834,6 +952,7 @@ async def test_tui_ctrl_b_detaches_and_the_notification_starts_a_turn(tmp_path):
 def test_resumed_rows_show_notifications_as_one_line():
     from mosscode.messages import ContentBlock, Message
     from mosscode.tui import resumed_rows
+
     text = "<task-notification>\n任务：t2\n类型：fork\n</task-notification>"
     rows = resumed_rows([Message("user", (ContentBlock("text", text),), synthetic=NOTIFICATION)])
     assert rows[0].plain == "└ 已收到后台任务通知：t2"
@@ -841,9 +960,13 @@ def test_resumed_rows_show_notifications_as_one_line():
 
 def test_latest_call_keeps_the_file_name(tmp_path, monkeypatch):
     from mosscode.agents.runtime import describe_call
+
     monkeypatch.chdir(tmp_path)
     inside = str(tmp_path / "src" / ("a" * 70) / "util.py")
-    assert describe_call(call("read_file", "c1", path=str(tmp_path / "src" / "util.py"))) == f"read_file {Path('src/util.py')}"
+    assert (
+        describe_call(call("read_file", "c1", path=str(tmp_path / "src" / "util.py")))
+        == f"read_file {Path('src/util.py')}"
+    )
     assert describe_call(call("read_file", "c2", path=inside)).endswith("util.py")
     assert describe_call(call("grep", "c3", pattern="old_name", path=str(tmp_path))) == "grep old_name"
     assert describe_call(call("execute_command", "c4", command="git status")) == "execute_command git status"
@@ -851,6 +974,7 @@ def test_latest_call_keeps_the_file_name(tmp_path, monkeypatch):
 
 async def test_exit_after_cancelling_drops_late_notes(tmp_path):
     from mosscode.tui import MossCodeApp
+
     conv, provider, gate = hanging_conversation(tmp_path)
     app = MossCodeApp(conv, "test")
     async with app.run_test(size=(120, 40)) as pilot:
@@ -866,6 +990,7 @@ async def test_exit_after_cancelling_drops_late_notes(tmp_path):
 
 async def test_tasks_and_status_work_during_a_run(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
+
     conv, provider, gate = hanging_conversation(tmp_path)
     app = MossCodeApp(conv, "test")
     async with app.run_test(size=(120, 40)) as pilot:

@@ -1,7 +1,7 @@
 """README stays a four-part entry point; its links and the reference docs' links resolve."""
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import pytest
 
@@ -11,8 +11,10 @@ DOCS = [ROOT / "README.md", *sorted((ROOT / "docs/reference").glob("*.md"))]
 
 def anchors(path: Path) -> set[str]:
     # GitHub-style slugs: lower case, punctuation removed, spaces become hyphens.
-    return {re.sub(r"[^\w\- ]", "", h.strip().lower()).replace(" ", "-")
-            for h in re.findall(r"^#+ (.+)$", path.read_text(encoding="utf-8"), re.M)}
+    return {
+        re.sub(r"[^\w\- ]", "", h.strip().lower()).replace(" ", "-")
+        for h in re.findall(r"^#+ (.+)$", path.read_text(encoding="utf-8"), re.M)
+    }
 
 
 def test_readme_has_install_configure_use_architecture():

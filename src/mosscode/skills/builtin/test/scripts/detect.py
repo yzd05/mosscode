@@ -5,9 +5,9 @@ Each item is {"kind", "command", "evidence"}. Only reads files; never runs anyth
 
 import configparser
 import json
-from pathlib import Path
 import sys
 import tomllib
+from pathlib import Path
 
 
 def _text(path: Path) -> str:
@@ -69,8 +69,11 @@ def _jvm(root: Path) -> dict | None:
     for name in ("build.gradle", "build.gradle.kts"):
         if (root / name).is_file():
             wrapper = (root / "gradlew").is_file() or (root / "gradlew.bat").is_file()
-            return {"kind": "gradle", "command": "./gradlew test" if wrapper else "gradle test",
-                    "evidence": name + ("；gradlew" if wrapper else "")}
+            return {
+                "kind": "gradle",
+                "command": "./gradlew test" if wrapper else "gradle test",
+                "evidence": name + ("；gradlew" if wrapper else ""),
+            }
     return None
 
 

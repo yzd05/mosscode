@@ -5,9 +5,9 @@ Not agents/tasks.py: those are the one-shot sub-agents of a session (/tasks, tas
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Callable, Iterable
 
 from .lock import TeamError, atomic_write, file_lock, load_json, now
 from .mailbox import LEAD
@@ -43,8 +43,11 @@ class Updated:
 
 
 def _valid(data) -> bool:
-    return (isinstance(data, dict) and isinstance(data.get("tasks"), list)
-            and all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in data["tasks"]))
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("tasks"), list)
+        and all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in data["tasks"])
+    )
 
 
 def is_ready(task: TeamTask, tasks: dict[str, TeamTask]) -> bool:
@@ -108,8 +111,16 @@ class TaskBoard:
             raise TeamError("unknown_task", f"没有编号为 {task_id} 的任务。")
         return task
 
-    def create(self, subject: str, description: str = "", blocked_by: Iterable[str] = (), *,
-               owner: str = "", actor: str = LEAD, participants: Iterable[str] = ()) -> TeamTask:
+    def create(
+        self,
+        subject: str,
+        description: str = "",
+        blocked_by: Iterable[str] = (),
+        *,
+        owner: str = "",
+        actor: str = LEAD,
+        participants: Iterable[str] = (),
+    ) -> TeamTask:
         subject = _text(subject, "subject", SUBJECT_LIMIT, required=True)
         description = _text(description, "description", DESCRIPTION_LIMIT)
         with file_lock(self.path):
@@ -124,9 +135,19 @@ class TaskBoard:
             self._save(tasks)
         return task
 
-    def update(self, task_id: str, *, actor: str, participants: Iterable[str] = (), status: str | None = None,
-               owner: str | None = None, subject: str | None = None, description: str | None = None,
-               add_blocked_by: Iterable[str] = (), remove_blocked_by: Iterable[str] = ()) -> Updated:
+    def update(
+        self,
+        task_id: str,
+        *,
+        actor: str,
+        participants: Iterable[str] = (),
+        status: str | None = None,
+        owner: str | None = None,
+        subject: str | None = None,
+        description: str | None = None,
+        add_blocked_by: Iterable[str] = (),
+        remove_blocked_by: Iterable[str] = (),
+    ) -> Updated:
         """The result lists the tasks that became ready."""
         add_blocked_by, remove_blocked_by = list(add_blocked_by), list(remove_blocked_by)
         with file_lock(self.path):
@@ -157,8 +178,11 @@ class TaskBoard:
                 self._move(task, status, actor, tasks)
             task.updated = now()
             self._save(tasks)
-        ready = tuple(tasks[key] for key, was in before.items()
-                      if not was and tasks[key].status == "pending" and is_ready(tasks[key], tasks))
+        ready = tuple(
+            tasks[key]
+            for key, was in before.items()
+            if not was and tasks[key].status == "pending" and is_ready(tasks[key], tasks)
+        )
         return Updated(task, ready)
 
     @staticmethod

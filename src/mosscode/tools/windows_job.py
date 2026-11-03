@@ -5,22 +5,35 @@ from ctypes import wintypes
 
 
 class BasicLimit(ctypes.Structure):
-    _fields_ = [("ProcessTime", ctypes.c_int64), ("JobTime", ctypes.c_int64),
-                ("Flags", wintypes.DWORD), ("MinWorkingSet", ctypes.c_size_t),
-                ("MaxWorkingSet", ctypes.c_size_t), ("ActiveProcesses", wintypes.DWORD),
-                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
-                ("SchedulingClass", wintypes.DWORD)]
+    _fields_ = [
+        ("ProcessTime", ctypes.c_int64),
+        ("JobTime", ctypes.c_int64),
+        ("Flags", wintypes.DWORD),
+        ("MinWorkingSet", ctypes.c_size_t),
+        ("MaxWorkingSet", ctypes.c_size_t),
+        ("ActiveProcesses", wintypes.DWORD),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", wintypes.DWORD),
+        ("SchedulingClass", wintypes.DWORD),
+    ]
 
 
 class IOCounters(ctypes.Structure):
-    _fields_ = [(name, ctypes.c_uint64) for name in
-                ("ReadOperations", "WriteOperations", "OtherOperations", "ReadBytes", "WriteBytes", "OtherBytes")]
+    _fields_ = [
+        (name, ctypes.c_uint64)
+        for name in ("ReadOperations", "WriteOperations", "OtherOperations", "ReadBytes", "WriteBytes", "OtherBytes")
+    ]
 
 
 class ExtendedLimit(ctypes.Structure):
-    _fields_ = [("Basic", BasicLimit), ("IO", IOCounters), ("ProcessMemory", ctypes.c_size_t),
-                ("JobMemory", ctypes.c_size_t), ("PeakProcessMemory", ctypes.c_size_t),
-                ("PeakJobMemory", ctypes.c_size_t)]
+    _fields_ = [
+        ("Basic", BasicLimit),
+        ("IO", IOCounters),
+        ("ProcessMemory", ctypes.c_size_t),
+        ("JobMemory", ctypes.c_size_t),
+        ("PeakProcessMemory", ctypes.c_size_t),
+        ("PeakJobMemory", ctypes.c_size_t),
+    ]
 
 
 class WindowsJob:

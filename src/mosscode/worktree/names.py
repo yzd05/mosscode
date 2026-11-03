@@ -10,7 +10,9 @@ SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 EPHEMERAL = re.compile(r"agent-[0-9a-f]{8}")
 BRANCH_PREFIX = "mosscode/"
 # Names Windows reserves for devices, with or without an extension.
-RESERVED = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))})
+RESERVED = frozenset(
+    {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+)
 
 
 def validate_name(name: str) -> str | None:

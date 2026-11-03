@@ -11,8 +11,7 @@ os.environ.pop("NO_COLOR", None)
 from mosscode.config import ProviderConfig, Settings
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Delta, Message
-from mosscode.tui import MossCodeApp
-from mosscode.tui import PromptArea
+from mosscode.tui import MossCodeApp, PromptArea
 
 
 class PreviewProvider:
@@ -51,17 +50,22 @@ class ThinkingPreviewProvider(PreviewProvider):
 
 def capture(app, path):
     def color(value, fallback):
-        return "#%02x%02x%02x" % value.get_truecolor() if value and not value.is_default else fallback
+        return "#{:02x}{:02x}{:02x}".format(*value.get_truecolor()) if value and not value.is_default else fallback
 
     lines = []
     for strip in app.screen._compositor.render_strips():
-        lines.append([
-            {"text": segment.text,
-             "fg": color(segment.style.color if segment.style else None, None),
-             "bg": color(segment.style.bgcolor if segment.style else None, None),
-             "bold": bool(segment.style and segment.style.bold)}
-            for segment in strip if not segment.control
-        ])
+        lines.append(
+            [
+                {
+                    "text": segment.text,
+                    "fg": color(segment.style.color if segment.style else None, None),
+                    "bg": color(segment.style.bgcolor if segment.style else None, None),
+                    "bold": bool(segment.style and segment.style.bold),
+                }
+                for segment in strip
+                if not segment.control
+            ]
+        )
     path.with_suffix(".json").write_text(json.dumps(lines, ensure_ascii=False), encoding="utf-8")
     path.with_suffix(".svg").write_text(app.export_screenshot(title="MossCode · 模拟对话预览"), encoding="utf-8")
 
@@ -70,8 +74,13 @@ async def main():
     output = Path("docs/ui/previews")
     output.mkdir(parents=True, exist_ok=True)
     provider = ThinkingPreviewProvider()
-    settings = Settings((ProviderConfig("Demo Provider", "anthropic-messages", "demo-model"),
-                         ProviderConfig("Backup", "openai-chat-completions", "backup-model")), "Demo Provider")
+    settings = Settings(
+        (
+            ProviderConfig("Demo Provider", "anthropic-messages", "demo-model"),
+            ProviderConfig("Backup", "openai-chat-completions", "backup-model"),
+        ),
+        "Demo Provider",
+    )
     app = MossCodeApp(Conversation(provider), "Demo Provider", settings=settings, model="demo-model")
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()

@@ -5,8 +5,17 @@ import pytest
 
 from mosscode.conversation import Conversation
 from mosscode.messages import ToolDefinition
-from mosscode.prompts import (MODULES, DEFAULT_SYSTEM_PROMPT, LEGACY_SYSTEM_PROMPT,
-                              PromptModule, build_system_prompt, compose_modules, environment, mode_reminder, stable_prompt)
+from mosscode.prompts import (
+    DEFAULT_SYSTEM_PROMPT,
+    LEGACY_SYSTEM_PROMPT,
+    MODULES,
+    PromptModule,
+    build_system_prompt,
+    compose_modules,
+    environment,
+    mode_reminder,
+    stable_prompt,
+)
 from mosscode.tools import create_default_registry
 from test_agent import SequenceProvider, call, response
 
@@ -36,7 +45,10 @@ async def test_reminder_only_on_mode_change_stable_prefix_and_clean_history(tmp_
     (tmp_path / "a").write_text("content")
     steps = [response(calls=[call("read_file", str(i), path="a")]) for i in range(3)]
     provider = SequenceProvider(*steps, response("完成"), response("新任务"))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     conv.set_mode(mode)
     await conv.ask("任务一")
     prompts = [r[1] for r in provider.requests]
@@ -59,7 +71,10 @@ async def test_reminder_only_on_mode_change_stable_prefix_and_clean_history(tmp_
 
 async def test_leaving_plan_mode_announces_once(tmp_path):
     provider = SequenceProvider(response("计划"), response("执行"), response("继续"))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     conv.set_mode("plan")
     await conv.ask("查看")
     conv.set_mode("normal")
@@ -112,7 +127,10 @@ def test_custom_tool_contributions_list_without_hardcoded_builtin_names():
 
 async def test_mode_switch_changes_only_enabled_contributions_and_custom_override_survives(tmp_path):
     provider = SequenceProvider(response("计划"), response("执行"))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     conv.set_mode("plan")
     await conv.ask("查看项目")
     conv.set_mode("normal")
@@ -122,6 +140,10 @@ async def test_mode_switch_changes_only_enabled_contributions_and_custom_overrid
     assert "`write_file`" in normal and "`exit_plan_mode`" not in normal
     assert (len(provider.requests[0][2]), len(provider.requests[1][2])) == (5, 6)
     custom_provider = SequenceProvider(response("答复"))
-    custom_conv = Conversation(custom_provider, "自定义完整替换", registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    custom_conv = Conversation(
+        custom_provider,
+        "自定义完整替换",
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     await custom_conv.ask("任务")
     assert custom_provider.requests[0][1].stable == "自定义完整替换"

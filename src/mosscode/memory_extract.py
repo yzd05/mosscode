@@ -5,11 +5,11 @@ placeholder, so text from files, web pages or MCP servers cannot plant notes in 
 """
 
 import asyncio
-from contextlib import aclosing
-from dataclasses import dataclass
 import json
 import re
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
+from contextlib import aclosing
+from dataclasses import dataclass
 
 from .context import estimate_text
 from .memory import SCOPE_LABELS, SCOPES, MemoryStore
@@ -56,6 +56,7 @@ class ExtractionError(Exception):
 @dataclass(frozen=True)
 class Extracted:
     """One finished extraction: the note names written or deleted, and operations it rejected."""
+
     saved: tuple[str, ...]
     deleted: tuple[str, ...]
     rejected: int
@@ -74,8 +75,9 @@ def render(message: Message) -> str:
         parts = ["[助手]\n" + message.text] if message.text.strip() else []
         parts += [f"[工具调用] {call.name}" for call in message.tool_calls]
         return "\n".join(parts) or "[助手]（无文本）"
-    return "\n".join(f"[工具结果 · {result.name}，{len(result.model_text())} 字符，已省略]"
-                     for result in message.tool_results)
+    return "\n".join(
+        f"[工具结果 · {result.name}，{len(result.model_text())} 字符，已省略]" for result in message.tool_results
+    )
 
 
 def conversation_text(messages: Sequence[Message], limit: int = INPUT_TOKENS) -> str:
@@ -114,8 +116,10 @@ def notes_text(store: MemoryStore, limit: int = NOTES_TOKENS) -> tuple[str, str]
 
 def extraction_prompt(messages: Sequence[Message], store: MemoryStore) -> str:
     indexes, bodies = notes_text(store)
-    return (f"{INSTRUCTIONS}\n\n## 已有笔记索引\n{indexes}\n\n## 已有笔记全文\n{bodies}\n\n"
-            f"## 新对话\n<conversation>\n{conversation_text(messages)}\n</conversation>")
+    return (
+        f"{INSTRUCTIONS}\n\n## 已有笔记索引\n{indexes}\n\n## 已有笔记全文\n{bodies}\n\n"
+        f"## 新对话\n<conversation>\n{conversation_text(messages)}\n</conversation>"
+    )
 
 
 def parse_operations(text: str) -> list:
@@ -139,10 +143,15 @@ def has_user_text(messages: Sequence[Message]) -> bool:
 class MemoryExtractor:
     """One extraction at a time; a backlog that is consumed only when an extraction succeeds."""
 
-    def __init__(self, store: MemoryStore, provider: Callable[[], object], *,
-                 on_result: Callable[[Extracted], None] | None = None,
-                 on_notice: Callable[[str], None] | None = None,
-                 on_usage: Callable[[object], None] | None = None):
+    def __init__(
+        self,
+        store: MemoryStore,
+        provider: Callable[[], object],
+        *,
+        on_result: Callable[[Extracted], None] | None = None,
+        on_notice: Callable[[str], None] | None = None,
+        on_usage: Callable[[object], None] | None = None,
+    ):
         self.store, self._provider = store, provider
         self.on_result, self.on_notice, self.on_usage = on_result, on_notice, on_usage
         self.backlog: list[Message] = []
@@ -189,9 +198,12 @@ class MemoryExtractor:
         except Exception:
             return self._failed("内部错误")
         self.failures = 0
-        del self.backlog[:len(batch)]
-        result = Extracted(tuple(name for op, _, name in applied if op == "save"),
-                           tuple(name for op, _, name in applied if op == "delete"), len(rejected))
+        del self.backlog[: len(batch)]
+        result = Extracted(
+            tuple(name for op, _, name in applied if op == "save"),
+            tuple(name for op, _, name in applied if op == "delete"),
+            len(rejected),
+        )
         if result.names and self.on_result is not None:
             self.on_result(result)
         return True
@@ -206,8 +218,9 @@ class MemoryExtractor:
 
     async def _ask(self, prompt: str) -> Completed:
         provider = self._provider()
-        async with aclosing(provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (),
-                                            allow_tools=False)) as events:
+        async with aclosing(
+            provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (), allow_tools=False)
+        ) as events:
             async for event in events:
                 if isinstance(event, Completed):
                     if self.on_usage is not None:
@@ -222,7 +235,7 @@ class MemoryExtractor:
             return
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             task.cancel()
             try:
                 await task

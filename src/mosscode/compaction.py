@@ -3,13 +3,13 @@
 Pure with respect to the agent: returns a new history or raises CompactionError, never mutates the input.
 """
 
+import math
+import re
+from collections.abc import Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime
-import math
 from pathlib import Path
-import re
-from typing import Sequence
 
 from .context import ContextBudget, estimate_messages, estimate_text
 from .messages import Completed, ContentBlock, Message, ProviderError
@@ -95,7 +95,7 @@ def cut_point(history: Sequence[Message], threshold: int, *, manual: bool = Fals
 
 
 def carried_quotes(message: Message) -> list[str]:
-    return [b.text[len(QUOTE):] for b in message.content if b.text.startswith(QUOTE)]
+    return [b.text[len(QUOTE) :] for b in message.content if b.text.startswith(QUOTE)]
 
 
 def collect_quotes(removed: Sequence[Message]) -> list[str]:
@@ -151,13 +151,15 @@ def transcript(messages: Sequence[Message], *, shrink: bool = False, dropped: in
 
 def summary_request(text: str, instructions: str = "") -> str:
     extra = f"\n用户对本次摘要的额外要求：{instructions.strip()}" if instructions.strip() else ""
-    return (f"{SYSTEM}\n\n下面是编程助手与用户较早的一段对话记录，请压缩成摘要，供助手在后续工作中代替这段记录使用。\n\n"
-            f"<transcript>\n{text}\n</transcript>\n\n"
-            "先在 <analysis> 中按时间顺序梳理：用户每次要求了什么，做了哪些修改，涉及哪些文件和代码，"
-            "遇到了什么错误、怎么修复的。\n"
-            f"再在 <summary> 中按以下 9 部分写正式摘要：\n{SECTIONS}\n"
-            "用户原话会由程序另外附上，摘要中不必逐字复述，只需总结其中的要求和约束。"
-            f"{extra}\n\n再次提醒：不要调用任何工具，只输出 <analysis> 和 <summary>。")
+    return (
+        f"{SYSTEM}\n\n下面是编程助手与用户较早的一段对话记录，请压缩成摘要，供助手在后续工作中代替这段记录使用。\n\n"
+        f"<transcript>\n{text}\n</transcript>\n\n"
+        "先在 <analysis> 中按时间顺序梳理：用户每次要求了什么，做了哪些修改，涉及哪些文件和代码，"
+        "遇到了什么错误、怎么修复的。\n"
+        f"再在 <summary> 中按以下 9 部分写正式摘要：\n{SECTIONS}\n"
+        "用户原话会由程序另外附上，摘要中不必逐字复述，只需总结其中的要求和约束。"
+        f"{extra}\n\n再次提醒：不要调用任何工具，只输出 <analysis> 和 <summary>。"
+    )
 
 
 def parse_summary(response: Completed) -> str:
@@ -180,30 +182,45 @@ def record_text(removed: Sequence[Message]) -> str:
 
 def boundary(summary: str, quotes: Sequence[str], omitted: int, record: Path | None) -> Message:
     """Replaces the compacted messages; quotes stay separate blocks so the next compaction carries them."""
-    blocks = [ContentBlock("text", "（上下文已压缩：较早的对话由下面的摘要代替，之后的消息保留原文。）"),
-              ContentBlock("text", f"\n\n摘要：\n{summary}")]
+    blocks = [
+        ContentBlock("text", "（上下文已压缩：较早的对话由下面的摘要代替，之后的消息保留原文。）"),
+        ContentBlock("text", f"\n\n摘要：\n{summary}"),
+    ]
     if quotes:
         blocks.append(ContentBlock("text", "\n\n用户原话（按时间顺序，由程序原样附上）："))
         blocks += [ContentBlock("text", QUOTE + quote) for quote in quotes]
     if omitted:
         blocks.append(ContentBlock("text", f"\n\n（另有 {omitted} 条更早的用户消息未附上，原文见记录文件。）"))
     where = f"压缩前的完整记录：{record}\n" if record else "（本次未能保存压缩前的完整记录。）\n"
-    blocks.append(ContentBlock("text", f"\n\n{where}需要具体代码、报错或输出时用 read_file 读取记录文件；"
-                                       "文件可能已变化，修改前必须重新读取，不要依据摘要补写代码。"))
+    blocks.append(
+        ContentBlock(
+            "text",
+            f"\n\n{where}需要具体代码、报错或输出时用 read_file 读取记录文件；"
+            "文件可能已变化，修改前必须重新读取，不要依据摘要补写代码。",
+        )
+    )
     return Message("user", tuple(blocks), synthetic=BOUNDARY)
 
 
 async def _ask(provider, prompt: str) -> Completed:
-    async with aclosing(provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (),
-                                        allow_tools=False)) as events:
+    async with aclosing(
+        provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (), allow_tools=False)
+    ) as events:
         async for event in events:
             if isinstance(event, Completed):
                 return event
     raise ProviderError("摘要回复在完成信号前中断。")
 
 
-async def compact_history(provider, history: Sequence[Message], budget: ContextBudget, *,
-                          session: Session | None = None, instructions: str = "", manual: bool = False) -> Compacted:
+async def compact_history(
+    provider,
+    history: Sequence[Message],
+    budget: ContextBudget,
+    *,
+    session: Session | None = None,
+    instructions: str = "",
+    manual: bool = False,
+) -> Compacted:
     cut = cut_point(history, budget.auto_threshold, manual=manual)
     if cut == 0:
         raise CompactionError(NOTHING, "nothing")

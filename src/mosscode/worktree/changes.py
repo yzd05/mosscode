@@ -47,11 +47,13 @@ def count_changes(path: Path, branch: str, skip=()) -> Changes:
             if name and not any(name == item or name.startswith(item + "/") for item in skip):
                 files.append(name)
         # With --branches the exclude pattern is relative to refs/heads/.
-        commits = git.run_git(["rev-list", "--count", "HEAD", "--not", f"--exclude={branch}",
-                               "--branches", "--remotes"], path)
+        commits = git.run_git(
+            ["rev-list", "--count", "HEAD", "--not", f"--exclude={branch}", "--branches", "--remotes"], path
+        )
         if commits.returncode != 0:
-            return Changes(max(len(files), 1), 0, tuple(files[:FILE_LIMIT]),
-                           (commits.stderr or "git rev-list 失败").strip()[:200])
+            return Changes(
+                max(len(files), 1), 0, tuple(files[:FILE_LIMIT]), (commits.stderr or "git rev-list 失败").strip()[:200]
+            )
         return Changes(len(files), int(commits.stdout.strip() or "0"), tuple(files[:FILE_LIMIT]))
     except (WorktreeError, ValueError) as exc:
         return Changes(1, 0, (), str(exc)[:200])

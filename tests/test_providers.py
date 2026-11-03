@@ -36,7 +36,16 @@ class SSEBody(httpx2.AsyncByteStream):
 
 
 def anthropic_frames(reason="end_turn", stop=True):
-    start = {"id": "msg_test", "type": "message", "role": "assistant", "content": [], "model": "custom-model", "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 12, "output_tokens": 0}}
+    start = {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "content": [],
+        "model": "custom-model",
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 12, "output_tokens": 0},
+    }
     events = [
         ("message_start", {"message": start}),
         ("content_block_start", {"index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
@@ -49,29 +58,93 @@ def anthropic_frames(reason="end_turn", stop=True):
         ("content_block_stop", {"index": 1}),
     ]
     if stop:
-        events.extend([
-            ("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None}, "usage": {"output_tokens": 7}}),
-            ("message_stop", {}),
-        ])
+        events.extend(
+            [
+                (
+                    "message_delta",
+                    {"delta": {"stop_reason": reason, "stop_sequence": None}, "usage": {"output_tokens": 7}},
+                ),
+                ("message_stop", {}),
+            ]
+        )
     return [frame(kind, {"type": kind, **data}) for kind, data in events]
 
 
 def response_frames(status="completed", stop=True):
-    output = [{"type": "message", "id": "msg_test", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "你好", "annotations": []}]}]
-    events = [("response.output_text.delta", {"delta": "你", "item_id": "msg_test", "output_index": 0, "content_index": 0}),
-              ("response.output_text.delta", {"delta": "好", "item_id": "msg_test", "output_index": 0, "content_index": 0})]
+    output = [
+        {
+            "type": "message",
+            "id": "msg_test",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "你好", "annotations": []}],
+        }
+    ]
+    events = [
+        ("response.output_text.delta", {"delta": "你", "item_id": "msg_test", "output_index": 0, "content_index": 0}),
+        ("response.output_text.delta", {"delta": "好", "item_id": "msg_test", "output_index": 0, "content_index": 0}),
+    ]
     if stop:
-        events.append((f"response.{status}", {"response": {"id": "resp_test", "created_at": 1, "object": "response", "status": status, "model": "custom-model", "output": output, "usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19}}}))
+        events.append(
+            (
+                f"response.{status}",
+                {
+                    "response": {
+                        "id": "resp_test",
+                        "created_at": 1,
+                        "object": "response",
+                        "status": status,
+                        "model": "custom-model",
+                        "output": output,
+                        "usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19},
+                    }
+                },
+            )
+        )
     return [frame(kind, {"type": kind, "sequence_number": index, **data}) for index, (kind, data) in enumerate(events)]
 
 
 def chat_frames(reason="stop", stop=True):
     chunks = []
     for text in ("你", "好"):
-        chunks.append(frame("message", {"id": "chat_test", "object": "chat.completion.chunk", "created": 1, "model": "custom-model", "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}))
+        chunks.append(
+            frame(
+                "message",
+                {
+                    "id": "chat_test",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "custom-model",
+                    "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                },
+            )
+        )
     if stop:
-        chunks.append(frame("message", {"id": "chat_test", "object": "chat.completion.chunk", "created": 1, "model": "custom-model", "choices": [{"index": 0, "delta": {}, "finish_reason": reason}]}))
-        chunks.append(frame("message", {"id": "chat_test", "object": "chat.completion.chunk", "created": 1, "model": "custom-model", "choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}}))
+        chunks.append(
+            frame(
+                "message",
+                {
+                    "id": "chat_test",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "custom-model",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": reason}],
+                },
+            )
+        )
+        chunks.append(
+            frame(
+                "message",
+                {
+                    "id": "chat_test",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "custom-model",
+                    "choices": [],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19},
+                },
+            )
+        )
         chunks.append(b"data: [DONE]\n\n")
     return chunks
 
@@ -90,16 +163,22 @@ def adapter(protocol, cls, body_factory, status=200):
     async def handler(request):
         requests.append((request, json.loads(request.content)))
         if status != 200:
-            return httpx2.Response(status, json={"error": {"type": "authentication_error", "message": "private-test-key"}})
+            return httpx2.Response(
+                status, json={"error": {"type": "authentication_error", "message": "private-test-key"}}
+            )
         body = body_factory()
         bodies.append(body)
         return httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=body)
 
     http = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     sdk_cls = anthropic.AsyncAnthropic if protocol == "anthropic-messages" else openai.AsyncOpenAI
-    base_url = "https://gateway.example/proxy" if protocol == "anthropic-messages" else "https://gateway.example/proxy/v1"
+    base_url = (
+        "https://gateway.example/proxy" if protocol == "anthropic-messages" else "https://gateway.example/proxy/v1"
+    )
     sdk = sdk_cls(api_key="private-test-key", base_url=base_url, http_client=http, max_retries=0)
-    config = ProviderConfig("gateway", protocol, "custom-model", thinking={"type": "adaptive"} if protocol == "anthropic-messages" else None)
+    config = ProviderConfig(
+        "gateway", protocol, "custom-model", thinking={"type": "adaptive"} if protocol == "anthropic-messages" else None
+    )
     return cls(config, sdk), requests, bodies
 
 
@@ -139,7 +218,9 @@ async def test_real_sdk_streams_custom_endpoint_and_reuses_history(protocol, cls
 
 @pytest.mark.parametrize("protocol,cls,frames,path", CASES)
 async def test_error_sse_is_a_safe_provider_failure(protocol, cls, frames, path):
-    error_frame = frame("error", {"type": "error", "error": {"type": "invalid_request_error", "message": "private-test-key"}})
+    error_frame = frame(
+        "error", {"type": "error", "error": {"type": "invalid_request_error", "message": "private-test-key"}}
+    )
     provider, _, bodies = adapter(protocol, cls, lambda: SSEBody([error_frame]))
     try:
         conv = Conversation(provider)
@@ -248,13 +329,16 @@ async def test_output_budget_exhaustion_stops_with_text_preserved(protocol, cls,
             chunks[-1] = frame("response.incomplete", final)
             return SSEBody(chunks)
         return SSEBody(frames(reason="length"))
+
     provider, requests, _ = adapter(protocol, cls, body)
     try:
         conv = Conversation(provider)
         events = [e async for e in conv.reply("hello")]
         assert next(e for e in events if isinstance(e, Completed)).message.text == "你好"
         stopped = events[-1]
-        assert isinstance(stopped, RunStopped) and stopped.reason == "max_tokens" and "max_output_tokens" in stopped.notice
+        assert (
+            isinstance(stopped, RunStopped) and stopped.reason == "max_tokens" and "max_output_tokens" in stopped.notice
+        )
         assert [m.role for m in conv.history] == ["user", "assistant"] and conv.history[1].text == "你好"
         assert len(requests) == 1
     finally:

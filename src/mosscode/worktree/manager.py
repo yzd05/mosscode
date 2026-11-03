@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from datetime import datetime
 import os
-from pathlib import Path
 import shutil
 import stat
 import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 
 from . import git
 from .changes import Changes, count_changes
@@ -27,8 +27,11 @@ DEFAULT_STALE_HOURS = 24.0
 class WorktreeChanged(WorktreeError):
     def __init__(self, name: str, changes: Changes):
         files = "、".join(changes.files)
-        super().__init__(f"工作树 {name} 有改动（{changes.describe()}{'：' + files if files else ''}），未删除；"
-                         "确认丢弃时加 --discard。", "worktree_changed")
+        super().__init__(
+            f"工作树 {name} 有改动（{changes.describe()}{'：' + files if files else ''}），未删除；"
+            "确认丢弃时加 --discard。",
+            "worktree_changed",
+        )
         self.changes = changes
 
 
@@ -71,8 +74,15 @@ def _writable(function, path, _exc):
 
 
 class WorktreeManager:
-    def __init__(self, top: Path, common: Path, project: Path | None = None, *, links=(),
-                 stale_hours: float = DEFAULT_STALE_HOURS):
+    def __init__(
+        self,
+        top: Path,
+        common: Path,
+        project: Path | None = None,
+        *,
+        links=(),
+        stale_hours: float = DEFAULT_STALE_HOURS,
+    ):
         self.top, self.common = top.resolve(), common.resolve()
         self.project = (project or top).resolve()
         self.links = tuple(links)
@@ -191,13 +201,17 @@ class WorktreeManager:
         """Links, copies and the setup command in order; the record says when it is complete."""
         warnings: list[str] = []
         path = Path(meta.path)
+
         def copied(items) -> None:
             meta.copied.extend(item for item in items if item not in meta.copied)
 
-        steps = (lambda: copied(copy_local(self.top, path, self.project_part, warnings)),
-                 lambda: meta.links.extend(item for item in create_links(self.top, path, self.links, warnings)
-                                           if item not in meta.links),
-                 lambda: copied(copy_included(self.top, path, meta.links, warnings)))
+        steps = (
+            lambda: copied(copy_local(self.top, path, self.project_part, warnings)),
+            lambda: meta.links.extend(
+                item for item in create_links(self.top, path, self.links, warnings) if item not in meta.links
+            ),
+            lambda: copied(copy_included(self.top, path, meta.links, warnings)),
+        )
         for step in steps:
             try:
                 step()
@@ -214,11 +228,15 @@ class WorktreeManager:
         head = git.read_head(path)
         meta = load_meta(meta_path)
         if head is None or meta is None or meta.flat != flat:
-            raise WorktreeError(f"{self.display(path)} 存在，但不是有效的 MossCode 工作树；"
-                                f"用 /worktree remove {flat} --discard 清理，或手动处理。", "worktree_invalid")
+            raise WorktreeError(
+                f"{self.display(path)} 存在，但不是有效的 MossCode 工作树；"
+                f"用 /worktree remove {flat} --discard 清理，或手动处理。",
+                "worktree_invalid",
+            )
         if meta.removing:
-            raise WorktreeError(f"工作树 {meta.name} 的删除尚未完成；用 /worktree remove {meta.name} 再试。",
-                                "worktree_invalid")
+            raise WorktreeError(
+                f"工作树 {meta.name} 的删除尚未完成；用 /worktree remove {meta.name} 再试。", "worktree_invalid"
+            )
         warnings = []
         if head[1] != f"refs/heads/{meta.branch}":
             warnings.append(f"工作树当前不在分支 {meta.branch} 上。")
@@ -235,8 +253,18 @@ class WorktreeManager:
         # The directory is gone: only the branch can still hold work.
         if git.run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{meta.branch}"], self.top).returncode != 0:
             return Changes()
-        done = git.run_git(["rev-list", "--count", f"refs/heads/{meta.branch}", "--not",
-                            f"--exclude={meta.branch}", "--branches", "--remotes"], self.top)
+        done = git.run_git(
+            [
+                "rev-list",
+                "--count",
+                f"refs/heads/{meta.branch}",
+                "--not",
+                f"--exclude={meta.branch}",
+                "--branches",
+                "--remotes",
+            ],
+            self.top,
+        )
         if done.returncode != 0:
             return Changes(1, 0, (), done.stderr.strip()[:200] or "git rev-list 失败")
         return Changes(0, int(done.stdout.strip() or "0"))
@@ -254,8 +282,9 @@ class WorktreeManager:
         meta = load_meta(meta_path)
         if meta is None:
             if path.exists():
-                raise WorktreeError(f"{self.display(path)} 没有 MossCode 的记录，不会自动删除；请手动处理。",
-                                    "worktree_invalid")
+                raise WorktreeError(
+                    f"{self.display(path)} 没有 MossCode 的记录，不会自动删除；请手动处理。", "worktree_invalid"
+                )
             raise WorktreeError(f"没有名为 {name} 的工作树。", "unknown_worktree")
         if meta.in_use and process_alive(int(meta.in_use.get("pid", 0))):
             task = meta.in_use.get("task") or "?"
@@ -278,7 +307,9 @@ class WorktreeManager:
         """After the change check passed or the user discarded. Never `git worktree remove`."""
         path = Path(meta.path).resolve()
         if path.parent != self.base.resolve():
-            raise WorktreeError(f"记录中的路径 {path} 不在 {self.display(self.base)} 中，拒绝删除。", "worktree_invalid")
+            raise WorktreeError(
+                f"记录中的路径 {path} 不在 {self.display(self.base)} 中，拒绝删除。", "worktree_invalid"
+            )
         meta.removing, meta.in_use = True, None
         save_meta(meta, meta_path)  # An interrupted deletion is retried, never re-checked into "changed".
         for relative in meta.links:
@@ -294,9 +325,11 @@ class WorktreeManager:
             try:
                 shutil.rmtree(path, onexc=_writable)
             except OSError as exc:
-                raise WorktreeError(f"删除 {self.display(path)} 未完成：{exc.strerror or exc}；"
-                                    f"关闭占用它的程序后用 /worktree remove {meta.name} 重试。",
-                                    "remove_failed") from None
+                raise WorktreeError(
+                    f"删除 {self.display(path)} 未完成：{exc.strerror or exc}；"
+                    f"关闭占用它的程序后用 /worktree remove {meta.name} 重试。",
+                    "remove_failed",
+                ) from None
         git.run_git(["worktree", "prune"], self.top)
         git.run_git(["branch", "-D", meta.branch], self.top)
         meta_path.unlink(missing_ok=True)
@@ -340,9 +373,11 @@ class WorktreeManager:
                 return f"[工作树] 无改动，但删除未完成：{finished.error}"
             return "[工作树] 无改动，已删除。"
         where = self.display(meta.path)
-        return (f"[工作树] 已保留：{where}\n"
-                f"分支 {meta.branch}，基于 {meta.base[:7]}；{finished.changes.describe()}。\n"
-                f"合并：git merge {meta.branch}；查看：git -C {where} status；删除：/worktree remove {meta.name}")
+        return (
+            f"[工作树] 已保留：{where}\n"
+            f"分支 {meta.branch}，基于 {meta.base[:7]}；{finished.changes.describe()}。\n"
+            f"合并：git merge {meta.branch}；查看：git -C {where} status；删除：/worktree remove {meta.name}"
+        )
 
     # Listing and cleaning ------------------------------------------------------------------
 

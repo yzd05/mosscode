@@ -6,7 +6,7 @@ rules apply as always.
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 ENV = "MOSSCODE_COORDINATOR_MODE"
 ON_VALUES = ("1", "true", "yes")
@@ -50,4 +50,5 @@ def withheld(tool) -> bool:
     """Kept in the registry for sub-agents and members, but not offered to the lead."""
     from .mcp_client import MCPTool
     from .tools.skill import SkillTool
+
     return tool.name in WRITE_TOOLS or isinstance(tool, (MCPTool, SkillTool))

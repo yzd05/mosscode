@@ -3,11 +3,10 @@
 from importlib.metadata import version
 from pathlib import Path
 
-from rich.table import Table
 from rich.style import Style
+from rich.table import Table
 from rich.text import Text
 from textual.theme import Theme
-
 
 TEXT_COLOR = "ansi_default"
 TOOL_SUCCESS_COLOR = "#8bd5a6"
@@ -79,16 +78,36 @@ OptionList:focus > .option-list--option-highlighted {
 
 def moss_themes() -> tuple[Theme, ...]:
     # Use the terminal's full-strength foreground; never dim supporting text.
-    variables = {name: TEXT_COLOR for name in (
-        "text", "text-muted", "text-disabled", "foreground-muted",
-        "input-cursor-foreground", "link-color", "link-color-hover",
-    )}
+    variables = {
+        name: TEXT_COLOR
+        for name in (
+            "text",
+            "text-muted",
+            "text-disabled",
+            "foreground-muted",
+            "input-cursor-foreground",
+            "link-color",
+            "link-color-hover",
+        )
+    }
     variables["input-cursor-background"] = "ansi_default"
-    return (Theme(
-        name="moss-dark", primary=TEXT_COLOR, secondary=TEXT_COLOR, accent=TEXT_COLOR,
-        foreground=TEXT_COLOR, background="#0c0c0c", surface="#0c0c0c", panel="#0c0c0c",
-        success=TEXT_COLOR, warning=TEXT_COLOR, error=TEXT_COLOR, dark=True, variables=variables,
-    ),)
+    return (
+        Theme(
+            name="moss-dark",
+            primary=TEXT_COLOR,
+            secondary=TEXT_COLOR,
+            accent=TEXT_COLOR,
+            foreground=TEXT_COLOR,
+            background="#0c0c0c",
+            surface="#0c0c0c",
+            panel="#0c0c0c",
+            success=TEXT_COLOR,
+            warning=TEXT_COLOR,
+            error=TEXT_COLOR,
+            dark=True,
+            variables=variables,
+        ),
+    )
 
 
 def pixel_art(pixels: tuple[str, ...], colors: dict[str, str]) -> Text:
@@ -129,8 +148,10 @@ def startup_banner(
 def compact_notice(event) -> str:
     """One line for a finished or failed compaction, shared by the TUI and headless text output."""
     if hasattr(event, "removed"):
-        return (f"✓ 已压缩上下文 · {event.removed} 条消息 → 摘要 · 约 {event.summary_tokens} Token"
-                f" · 用时 {event.elapsed:.1f}s")
+        return (
+            f"✓ 已压缩上下文 · {event.removed} 条消息 → 摘要 · 约 {event.summary_tokens} Token"
+            f" · 用时 {event.elapsed:.1f}s"
+        )
     if event.code == "nothing":
         return "└ " + event.reason
     if event.code == "restore":

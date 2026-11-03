@@ -1,28 +1,33 @@
 import asyncio
 from dataclasses import replace
 
-from textual.widgets import Markdown, OptionList, Static
-from mosscode.tui import PromptArea
+from textual.widgets import Markdown, Static
 
 from mosscode.conversation import Conversation
 from mosscode.messages import Delta, Retrying, Usage
 from mosscode.tools import create_default_registry
-from mosscode.tui import ChatEntry, MossCodeApp, ToolEntry
+from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_agent import SequenceProvider, call, response
 from test_tui import send
 
 
 async def test_plan_then_permissions_command_help_and_chinese_completion(tmp_path):
-    provider = SequenceProvider(response("计划：创建 a"),
-                                response(calls=[call("write_file", path="a", content="done")]), response("执行完成"))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    provider = SequenceProvider(
+        response("计划：创建 a"), response(calls=[call("write_file", path="a", content="done")]), response("执行完成")
+    )
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     app = MossCodeApp(conv, "Demo")
     async with app.run_test(size=(100, 36)) as pilot:
         field = app.query_one("#prompt", PromptArea)
         field.value = "/p"
         await pilot.pause()
-        assert [hint[:2] for hint in app._hint_choices] == [("/plan", "只读调查和规划，提交计划经批准后执行"),
-                                    ("/permissions", "查看或切换工具权限档位")]
+        assert [hint[:2] for hint in app._hint_choices] == [
+            ("/plan", "只读调查和规划，提交计划经批准后执行"),
+            ("/permissions", "查看或切换工具权限档位"),
+        ]
         await pilot.press("tab")
         assert field.value == "/plan"
         await pilot.press("enter")
@@ -54,7 +59,10 @@ async def test_plan_then_permissions_command_help_and_chinese_completion(tmp_pat
 
 async def test_leaving_plan_mode_by_command_sends_nothing(tmp_path):
     provider = SequenceProvider(response("完成"))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     conv.set_mode("plan")
     app = MossCodeApp(conv, "Demo")
     async with app.run_test() as pilot:
@@ -67,16 +75,23 @@ async def test_leaving_plan_mode_by_command_sends_nothing(tmp_path):
 
 async def test_multiple_iterations_streaming_final_markdown_and_usage(tmp_path):
     arrived, release = asyncio.Event(), asyncio.Event()
+
     async def final():
         yield Delta("text", "**已完")
         arrived.set()
         await release.wait()
         yield Delta("text", "成**")
         yield response("**已完成**", usage=Usage(12, 4))
+
     provider = SequenceProvider(
         response("先创建", [call("write_file", path="a", content="one")], Usage(10, 2, 8, 2)),
-        response("再修改", [call("write_file", path="a", content="two")]), final)
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+        response("再修改", [call("write_file", path="a", content="two")]),
+        final,
+    )
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     app = MossCodeApp(conv, "Demo")
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "执行两步")
@@ -104,7 +119,11 @@ async def test_multiple_iterations_streaming_final_markdown_and_usage(tmp_path):
 
 async def test_loop_limit_notice_is_local_and_input_recovers(tmp_path):
     provider = SequenceProvider(response(calls=[call("write_file", path="a", content="x")]))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False), max_iterations=1)
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        max_iterations=1,
+    )
     app = MossCodeApp(conv, "Demo")
     async with app.run_test() as pilot:
         await send(app, pilot, "任务")
@@ -119,9 +138,18 @@ async def test_loop_limit_notice_is_local_and_input_recovers(tmp_path):
 
 
 async def test_tool_only_next_iteration_does_not_erase_preceding_assistant_text(tmp_path):
-    provider = SequenceProvider(response("先创建文件", [call("write_file", path="a", content="x")]),
-                                response(calls=[call("read_file", path="a")]), response("检查完成"))
-    app = MossCodeApp(Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)), "Demo")
+    provider = SequenceProvider(
+        response("先创建文件", [call("write_file", path="a", content="x")]),
+        response(calls=[call("read_file", path="a")]),
+        response("检查完成"),
+    )
+    app = MossCodeApp(
+        Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        ),
+        "Demo",
+    )
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "创建并检查")
         await app._reply_task
@@ -137,17 +165,30 @@ async def test_tool_only_next_iteration_does_not_erase_preceding_assistant_text(
 
 async def test_repeated_escape_waits_for_file_io_outcome_and_pairs_later_calls(tmp_path, monkeypatch):
     import threading
+
     from mosscode.tools import files
+
     entered, release = threading.Event(), threading.Event()
     original = files.atomic_write
+
     def slow_write(path, content):
         entered.set()
         release.wait(3)
         original(path, content)
+
     monkeypatch.setattr(files, "atomic_write", slow_write)
-    provider = SequenceProvider(response(calls=[call("write_file", "first", path="a", content="x"),
-                                               call("write_file", "later", path="b", content="y")]))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    provider = SequenceProvider(
+        response(
+            calls=[
+                call("write_file", "first", path="a", content="x"),
+                call("write_file", "later", path="b", content="y"),
+            ]
+        )
+    )
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     app = MossCodeApp(conv, "Demo")
     async with app.run_test() as pilot:
         try:
@@ -172,12 +213,14 @@ async def test_repeated_escape_waits_for_file_io_outcome_and_pairs_later_calls(t
 
 async def test_retry_status_and_max_tokens_notice(tmp_path):
     arrived, release = asyncio.Event(), asyncio.Event()
+
     async def flaky():
         yield Retrying(1, 4, 2.0, "服务过载")
         arrived.set()
         await release.wait()
         yield Delta("text", "很长的回答")
         yield replace(response("很长的回答"), stop_reason="max_tokens")
+
     conv = Conversation(SequenceProvider(flaky))
     app = MossCodeApp(conv, "Demo")
     async with app.run_test(size=(100, 36)) as pilot:

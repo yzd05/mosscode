@@ -7,23 +7,22 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from mosscode.tui import PromptArea
+from preview_agent import AgentPreviewProvider, exercise_do, exercise_plan
+from preview_permissions import approval_app, exercise_approval
+from preview_tools import ToolPreviewProvider, exercise_tools
+from preview_tui import ThinkingPreviewProvider
 from textual.drivers.win32 import get_console_mode
 
 from mosscode.appearance import USER_MESSAGE_BACKGROUND
-from mosscode.conversation import Conversation
+from mosscode.builtin_commands import mcp_report
 from mosscode.config import ProviderConfig, Settings
-from mosscode.tui import ChatEntry, MossCodeApp, ProviderSelectApp
-from mosscode.messages import Completed, ContentBlock, Delta, Message, ToolCall
+from mosscode.conversation import Conversation
 from mosscode.mcp_client import MCPManager
 from mosscode.mcp_config import MCPSettings, ServerConfig
-from mosscode.windows_inline import WindowsInlineDriver
-from preview_tui import ThinkingPreviewProvider
-from preview_tools import ToolPreviewProvider, exercise_tools
-from preview_agent import AgentPreviewProvider, exercise_plan, exercise_do
-from preview_permissions import approval_app, exercise_approval
+from mosscode.messages import Completed, ContentBlock, Delta, Message, ToolCall
 from mosscode.tools import create_default_registry
-from mosscode.builtin_commands import mcp_report
+from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ProviderSelectApp
+from mosscode.windows_inline import WindowsInlineDriver
 
 
 class RecordingStream:
@@ -123,8 +122,12 @@ class MCPPreviewProvider:
     async def stream(self, messages, system, tools=(), **kwargs):
         self.requests += 1
         if self.requests == 1:
-            yield Completed(Message("assistant", (), tool_calls=(ToolCall(
-                "mcp-test", "mcp__console__echo", '{"text":"console MCP"}'),)), "tool_calls")
+            yield Completed(
+                Message(
+                    "assistant", (), tool_calls=(ToolCall("mcp-test", "mcp__console__echo", '{"text":"console MCP"}'),)
+                ),
+                "tool_calls",
+            )
         else:
             assert messages[-1].tool_results[0].output == "console MCP"
             yield Completed(Message("assistant", (ContentBlock("text", "**MCP 已完成**"),)), "stop")
@@ -149,7 +152,7 @@ async def exercise_mcp(pilot):
     app.query_one("#prompt", PromptArea).value = "调用外部工具"
     await pilot.press("enter")
     for _ in range(80):
-        await pilot.pause(.02)
+        await pilot.pause(0.02)
         if app._approval_request:
             break
     assert app._approval_request and not app._reply_task.done()
@@ -175,8 +178,13 @@ if __name__ == "__main__":
         raise SystemExit("Run this smoke test in a Windows terminal.")
     print("MOSSCODE_SHELL_SENTINEL: content before the app stays in the main buffer.", flush=True)
     modes_before = tuple(get_console_mode(stream) for stream in (sys.__stdin__, sys.__stdout__))
-    settings = Settings((ProviderConfig("first", "openai-chat-completions", "first-model"),
-                         ProviderConfig("second", "openai-chat-completions", "second-model")), None)
+    settings = Settings(
+        (
+            ProviderConfig("first", "openai-chat-completions", "first-model"),
+            ProviderConfig("second", "openai-chat-completions", "second-model"),
+        ),
+        None,
+    )
     picker = ProviderSelectApp(settings)
     picker.driver_class = RecordingDriver
     assert picker.run(inline=True, mouse=False, auto_pilot=choose_provider) == settings.providers[1]
@@ -191,7 +199,13 @@ if __name__ == "__main__":
     with TemporaryDirectory(prefix="mosscode-console-") as temporary:
         root = Path(temporary)
         (root / "demo.py").write_text('def greet():\n    return "Hello, MossCode!"\n', encoding="utf-8")
-        tool_app = MossCodeApp(Conversation(ToolPreviewProvider(), registry=create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False)), "Demo Provider")
+        tool_app = MossCodeApp(
+            Conversation(
+                ToolPreviewProvider(),
+                registry=create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False),
+            ),
+            "Demo Provider",
+        )
         tool_app.driver_class = RecordingDriver
 
         async def exercise_and_exit(pilot):
@@ -199,27 +213,43 @@ if __name__ == "__main__":
             await pilot.press("ctrl+q")
 
         tool_app.run(inline=True, inline_no_clear=True, mouse=False, auto_pilot=exercise_and_exit)
-        loop_app = MossCodeApp(Conversation(AgentPreviewProvider(), registry=create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False)), "Demo Provider")
+        loop_app = MossCodeApp(
+            Conversation(
+                AgentPreviewProvider(),
+                registry=create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False),
+            ),
+            "Demo Provider",
+        )
         loop_app.driver_class = RecordingDriver
 
         async def exercise_loop_and_exit(pilot):
             await exercise_plan(pilot)
             await exercise_do(pilot)
-            assert 'Hello, Agent!' in (root / "demo.py").read_text()
+            assert "Hello, Agent!" in (root / "demo.py").read_text()
             await pilot.press("ctrl+q")
 
         loop_app.run(inline=True, inline_no_clear=True, mouse=False, auto_pilot=exercise_loop_and_exit)
         permission_app = approval_app(root)
         permission_app.driver_class = RecordingDriver
+
         async def exercise_approval_and_exit(pilot):
             await exercise_approval(pilot)
             await pilot.press("ctrl+q")
+
         permission_app.run(inline=True, inline_no_clear=True, mouse=False, auto_pilot=exercise_approval_and_exit)
         fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/mcp_stdio_server.py"
-        mcp_manager = MCPManager(root, MCPSettings((ServerConfig(
-            "console", "stdio", sys.executable, (str(fixture), str(root / "mcp.log"))),)))
-        mcp_app = MossCodeApp(Conversation(MCPPreviewProvider(), registry=create_default_registry(
-            root, load_permissions=False), mcp_manager=mcp_manager), "Demo Provider")
+        mcp_manager = MCPManager(
+            root,
+            MCPSettings((ServerConfig("console", "stdio", sys.executable, (str(fixture), str(root / "mcp.log"))),)),
+        )
+        mcp_app = MossCodeApp(
+            Conversation(
+                MCPPreviewProvider(),
+                registry=create_default_registry(root, load_permissions=False),
+                mcp_manager=mcp_manager,
+            ),
+            "Demo Provider",
+        )
         mcp_app.driver_class = RecordingDriver
         mcp_app.run(inline=True, inline_no_clear=True, mouse=False, auto_pilot=exercise_mcp)
         assert mcp_manager.connections[0].task.done() and (root / "mcp.closed").exists()
@@ -240,7 +270,7 @@ if __name__ == "__main__":
         index = 0
         while index < len(codes):
             code = codes[index]
-            if codes[index:index + 5] == user_background:
+            if codes[index : index + 5] == user_background:
                 index += 5
                 continue
             assert code != 48 and not 40 <= code <= 47 and not 100 <= code <= 107, sgr
@@ -248,15 +278,25 @@ if __name__ == "__main__":
             # RGB / indexed foreground payload values are not SGR commands.
             index += (5 if codes[index + 1] == 2 else 3) if code == 38 else 1
     assert tuple(get_console_mode(stream) for stream in (sys.__stdin__, sys.__stdout__)) == modes_before
-    print(json.dumps({"inline": True, "alternate_screen": False, "clear_screen": False,
-                      "terminal_background": True, "console_modes_restored": True,
-                      "command_completion": "passed",
-                      "inline_model_panel": True, "normal_text_brightness": True,
-                      "thinking_streaming_markdown": "passed",
-                      "tools_and_final_markdown": "passed",
-                      "plan_then_execute_multi_iteration_and_usage": "passed",
-                      "native_scrollback_across_restarts": "passed",
-                      "mouse_reporting_disabled": True,
-                      "inline_keyboard_permission_approval": "passed",
-                      "mcp_discovery_approval_call_cleanup": "passed",
-                      "picker_dialogue_model_exit": "passed"}))
+    print(
+        json.dumps(
+            {
+                "inline": True,
+                "alternate_screen": False,
+                "clear_screen": False,
+                "terminal_background": True,
+                "console_modes_restored": True,
+                "command_completion": "passed",
+                "inline_model_panel": True,
+                "normal_text_brightness": True,
+                "thinking_streaming_markdown": "passed",
+                "tools_and_final_markdown": "passed",
+                "plan_then_execute_multi_iteration_and_usage": "passed",
+                "native_scrollback_across_restarts": "passed",
+                "mouse_reporting_disabled": True,
+                "inline_keyboard_permission_approval": "passed",
+                "mcp_discovery_approval_call_cleanup": "passed",
+                "picker_dialogue_model_exit": "passed",
+            }
+        )
+    )

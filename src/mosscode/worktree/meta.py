@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields
 import json
 import os
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
@@ -55,6 +55,7 @@ def process_alive(pid: int) -> bool:
     if os.name == "nt":
         import ctypes
         from ctypes import wintypes
+
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.OpenProcess.restype = wintypes.HANDLE
         kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)

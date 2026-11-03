@@ -3,10 +3,11 @@
 import asyncio
 from pathlib import Path
 
+from preview_tui import PreviewProvider, capture
+
 from mosscode import tui
 from mosscode.conversation import Conversation
 from mosscode.messages import ContentBlock, Message, ToolCall, ToolProgress, ToolResult
-from preview_tui import PreviewProvider, capture
 
 
 async def main():
@@ -27,7 +28,9 @@ async def main():
         await reply.finish(Message("assistant", (ContentBlock("text", answer),)))
         await chat.mount(tui.ChatEntry("You", "检查 app.py，并运行测试。"))
         missing = tui.ToolEntry(ToolProgress(ToolCall("missing", "read_file", '{"path":"app.py"}'), "running"))
-        shell = tui.ToolEntry(ToolProgress(ToolCall("shell", "execute_command", '{"command":"python -m pytest"}'), "running"))
+        shell = tui.ToolEntry(
+            ToolProgress(ToolCall("shell", "execute_command", '{"command":"python -m pytest"}'), "running")
+        )
         await chat.mount(missing, shell)
         missing.complete(ToolResult("missing", "read_file", "文件不存在，请检查路径。", True, "not_found"), 0.0)
         app._generating = True

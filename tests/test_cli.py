@@ -10,6 +10,7 @@ from test_conversation import FakeProvider
 
 def setup_cli(monkeypatch, args, *, multiple=True, selection="second", default="first"):
     from mosscode.mcp_config import MCPSettings
+
     monkeypatch.setattr(cli, "load_mcp_settings", lambda root: MCPSettings())
     configs = (
         ProviderConfig("first", "anthropic-messages", "model-a"),
@@ -52,13 +53,16 @@ def setup_cli(monkeypatch, args, *, multiple=True, selection="second", default="
     return provider, calls
 
 
-@pytest.mark.parametrize("multiple,args,default,expected,pickers", [
-    (False, [], None, "first", 0),
-    (True, [], None, "second", 1),
-    (True, [], "second", "second", 0),
-    (True, ["--provider", "first"], "second", "first", 0),
-    (True, ["--provider", "first"], None, "first", 0),
-])
+@pytest.mark.parametrize(
+    "multiple,args,default,expected,pickers",
+    [
+        (False, [], None, "first", 0),
+        (True, [], None, "second", 1),
+        (True, [], "second", "second", 0),
+        (True, ["--provider", "first"], "second", "first", 0),
+        (True, ["--provider", "first"], None, "first", 0),
+    ],
+)
 def test_interactive_startup_uses_selected_configuration(monkeypatch, multiple, args, default, expected, pickers):
     _, calls = setup_cli(monkeypatch, args, multiple=multiple, default=default)
     cli.main()

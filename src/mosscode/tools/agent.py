@@ -29,10 +29,12 @@ class AgentTool(Tool):
     permission_kind = "agent"  # No approval: every call the sub-agent makes is checked on its own.
     plan_allowed = True  # In plan mode its sub-agents are in plan mode too.
     timeout = None  # Foreground sub-agents end on their own, or move to the background.
-    description = ("把一段可以独立完成的工作交给子 Agent，你只收到它的结论。系统提示的“子 Agent”一节列出了可用的类型。"
-                   "agent_type 写类型名时，子 Agent 从空白对话开始，prompt 必须写清楚完整的任务、背景和期望的结果；"
-                   "省略 agent_type 时为 Fork：它继承当前对话的全部内容，总在后台运行，完成后你会收到 <task-notification>。"
-                   "description 是 3–10 个字的任务标签。isolation 为 worktree 时，子 Agent 在独立的 git 工作树中运行。")
+    description = (
+        "把一段可以独立完成的工作交给子 Agent，你只收到它的结论。系统提示的“子 Agent”一节列出了可用的类型。"
+        "agent_type 写类型名时，子 Agent 从空白对话开始，prompt 必须写清楚完整的任务、背景和期望的结果；"
+        "省略 agent_type 时为 Fork：它继承当前对话的全部内容，总在后台运行，完成后你会收到 <task-notification>。"
+        "description 是 3–10 个字的任务标签。isolation 为 worktree 时，子 Agent 在独立的 git 工作树中运行。"
+    )
     prompt_summary = "把独立的子任务交给子 Agent"
     prompt_guidelines = (
         "适合委派：需要大量搜索或阅读、但只需要结论的调查；互不依赖的多个子任务（在一次回复中同时发起，它们会并行运行）。",
@@ -50,9 +52,14 @@ class AgentTool(Tool):
 
     async def execute(self, params: AgentParams):
         call = CURRENT_CALL.get()
-        return await self.runner.call(params.description.strip(), params.prompt, params.agent_type.strip(),
-                                      params.run_in_background, call.id if call is not None else "",
-                                      isolation=params.isolation)
+        return await self.runner.call(
+            params.description.strip(),
+            params.prompt,
+            params.agent_type.strip(),
+            params.run_in_background,
+            call.id if call is not None else "",
+            isolation=params.isolation,
+        )
 
 
 class TaskOutputParams(Params):
@@ -65,8 +72,10 @@ class TaskOutput(Tool):
     permission_kind = "agent"
     read_only = True
     timeout = WAIT_LIMIT + 10
-    description = ("查看后台任务（子 Agent）的状态与结果。wait 为等待完成的秒数（最多 300），0 表示立即返回；"
-                   "任务完成时你也会自动收到 <task-notification>，一般不需要轮询。")
+    description = (
+        "查看后台任务（子 Agent）的状态与结果。wait 为等待完成的秒数（最多 300），0 表示立即返回；"
+        "任务完成时你也会自动收到 <task-notification>，一般不需要轮询。"
+    )
     prompt_summary = "查看后台任务的状态与结果"
     params_model = TaskOutputParams
 
@@ -82,6 +91,7 @@ class TaskOutput(Tool):
             await asyncio.wait({task.job}, timeout=params.wait)
         from ..agents.runtime import stats
         from ..agents.tasks import STATUS_LABELS
+
         head = f"任务 {task.id}（{task.label}）：{STATUS_LABELS[task.status]}，{stats(task)}。"
         if task.status == "running":
             last = f"最近一次工具调用：{task.last_tool}。" if task.last_tool else "尚未调用工具。"
@@ -112,5 +122,6 @@ class TaskStop(Tool):
             raise ToolFailure("unknown_task", f"没有任务 {task_id}。")
         if not await self.runner.tasks.stop(task_id):
             from ..agents.tasks import STATUS_LABELS
+
             return f"任务 {task_id} 已结束（{STATUS_LABELS[task.status]}），无需停止。", {"task": task_id}
         return f"已停止任务 {task_id}。", {"task": task_id, "stopped": True}

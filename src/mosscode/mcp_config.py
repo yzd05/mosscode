@@ -1,10 +1,10 @@
 """Two-layer MCP configuration plus opt-in .mcp.json; credentials stay out of repr and diagnostics."""
 
-from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
@@ -79,6 +79,7 @@ def substitute_env(value: str) -> str:
     """${VAR} must be set; ${VAR:-default} falls back when VAR is unset or empty."""
     if "${" in re.sub(PLACEHOLDER, "", value):
         raise MCPConfigError("环境变量占位符需为 ${VAR} 或 ${VAR:-默认值} 格式。")
+
     def replace(match):
         value = os.environ.get(match[1])
         if match[2] is not None and not value:
@@ -86,6 +87,7 @@ def substitute_env(value: str) -> str:
         if value is None:
             raise MCPConfigError("配置引用的环境变量未设置。")
         return value
+
     return re.sub(PLACEHOLDER, replace, value)
 
 
@@ -134,13 +136,23 @@ def _server(name, raw):
             if not isinstance(url, str) or any(c.isspace() or ord(c) < 32 for c in url):
                 raise ValueError
             parsed = urlsplit(url) if isinstance(url, str) else None
-            if not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            if (
+                not parsed
+                or parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.fragment
+            ):
                 raise ValueError
-            parsed.port
+            _ = parsed.port  # Raises ValueError for a port out of range.
         except ValueError:
             raise MCPConfigError("url 必须是无嵌入凭据和 fragment 的 HTTP(S) 地址。") from None
         headers = _expand(raw.get("headers", {}), "headers")
-        if any(not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", k) or any(c in v for c in "\r\n\0") for k, v in headers.items()):
+        if any(
+            not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", k) or any(c in v for c in "\r\n\0")
+            for k, v in headers.items()
+        ):
             raise MCPConfigError("headers 含非法字段或换行。")
         return ServerConfig(name, kind, url=url, headers=headers, **options)
     raise MCPConfigError("type 必须是 stdio 或 http（Streamable HTTP）。")

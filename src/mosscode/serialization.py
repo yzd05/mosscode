@@ -29,8 +29,10 @@ def jsonable(value: Any) -> Any:
 
 
 def message_to_json(message: Message) -> dict:
-    data: dict[str, Any] = {"role": message.role,
-                            "content": [{"kind": b.kind, "text": b.text} for b in message.content]}
+    data: dict[str, Any] = {
+        "role": message.role,
+        "content": [{"kind": b.kind, "text": b.text} for b in message.content],
+    }
     if message.protocol is not None:
         data["protocol"] = message.protocol
     if message.native:
@@ -38,8 +40,17 @@ def message_to_json(message: Message) -> dict:
     if message.tool_calls:
         data["tool_calls"] = [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in message.tool_calls]
     if message.tool_results:
-        data["tool_results"] = [{"call_id": r.call_id, "name": r.name, "output": r.output, "is_error": r.is_error,
-                                 "code": r.code, "details": jsonable(r.details)} for r in message.tool_results]
+        data["tool_results"] = [
+            {
+                "call_id": r.call_id,
+                "name": r.name,
+                "output": r.output,
+                "is_error": r.is_error,
+                "code": r.code,
+                "details": jsonable(r.details),
+            }
+            for r in message.tool_results
+        ]
     if message.synthetic is not None:
         data["synthetic"] = message.synthetic
     if message.command is not None:
@@ -76,17 +87,35 @@ def message_from_json(data: Any) -> Message:
     calls = []
     for item in _list(data, "tool_calls"):
         _check(isinstance(item, dict), "tool_calls")
-        calls.append(ToolCall(_string(item.get("id"), "tool_calls.id"), _string(item.get("name"), "tool_calls.name"),
-                              _string(item.get("arguments"), "tool_calls.arguments")))
+        calls.append(
+            ToolCall(
+                _string(item.get("id"), "tool_calls.id"),
+                _string(item.get("name"), "tool_calls.name"),
+                _string(item.get("arguments"), "tool_calls.arguments"),
+            )
+        )
     results = []
     for item in _list(data, "tool_results"):
         _check(isinstance(item, dict) and isinstance(item.get("is_error"), bool), "tool_results")
         details = item.get("details", {})
         _check(isinstance(details, dict), "tool_results.details")
-        results.append(ToolResult(_string(item.get("call_id"), "tool_results.call_id"),
-                                  _string(item.get("name"), "tool_results.name"),
-                                  _string(item.get("output"), "tool_results.output"), item["is_error"],
-                                  _string(item.get("code"), "tool_results.code", optional=True), details))
-    return Message(role, tuple(content), _string(data.get("protocol"), "protocol", optional=True), tuple(native),
-                   tuple(calls), tuple(results), _string(data.get("synthetic"), "synthetic", optional=True),
-                   _string(data.get("command"), "command", optional=True))
+        results.append(
+            ToolResult(
+                _string(item.get("call_id"), "tool_results.call_id"),
+                _string(item.get("name"), "tool_results.name"),
+                _string(item.get("output"), "tool_results.output"),
+                item["is_error"],
+                _string(item.get("code"), "tool_results.code", optional=True),
+                details,
+            )
+        )
+    return Message(
+        role,
+        tuple(content),
+        _string(data.get("protocol"), "protocol", optional=True),
+        tuple(native),
+        tuple(calls),
+        tuple(results),
+        _string(data.get("synthetic"), "synthetic", optional=True),
+        _string(data.get("command"), "command", optional=True),
+    )

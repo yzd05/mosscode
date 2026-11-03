@@ -7,8 +7,7 @@ from rich.console import Console
 
 from mosscode import cli
 from mosscode.builtin_commands import BUILTIN, dispatch, help_text, session_report, status_report
-from mosscode.commands import (Command, CommandConflict, CommandContext, CommandRegistry, parse_input,
-                               unknown_note)
+from mosscode.commands import Command, CommandConflict, CommandContext, CommandRegistry, parse_input, unknown_note
 from mosscode.config import ProviderConfig, Settings
 from mosscode.conversation import Conversation
 from mosscode.memory import MemoryStore
@@ -19,14 +18,24 @@ from mosscode.session import list_sessions, load_session
 from mosscode.tools import create_default_registry
 from test_cli import setup_cli
 from test_conversation import FakeProvider
-from test_sessions import make, records, write_session, user, assistant
-
+from test_sessions import assistant, make, records, user, write_session
 
 REVIEW_TEMPLATE = "请审查当前仓库中尚未提交的改动。\n\n1. 先用 git status 和 git diff HEAD 查看改动范围。"
 # The built-in /review is a skill now; prompt commands are still tested with this one.
-PROMPTS = CommandRegistry([*BUILTIN.visible(), Command(
-    "review", "让模型审查尚未提交的改动（只读）", "/review [范围或侧重点]", "prompt", argument="optional",
-    argument_hint="[范围或侧重点]", template=REVIEW_TEMPLATE)])
+PROMPTS = CommandRegistry(
+    [
+        *BUILTIN.visible(),
+        Command(
+            "review",
+            "让模型审查尚未提交的改动（只读）",
+            "/review [范围或侧重点]",
+            "prompt",
+            argument="optional",
+            argument_hint="[范围或侧重点]",
+            template=REVIEW_TEMPLATE,
+        ),
+    ]
+)
 
 
 async def noop(ctx, argument):
@@ -88,13 +97,15 @@ def tools(tmp_path, mode="default"):
     return create_default_registry(tmp_path, permission_mode=mode, load_permissions=False)
 
 
-
-@pytest.mark.parametrize("second", [
-    Command("help", "x", "/help", "local", handler=noop),
-    Command("other", "x", "/other", "local", aliases=("help",), handler=noop),
-    Command("other", "x", "/other", "local", aliases=("h",), handler=noop),
-    Command("h", "x", "/h", "local", handler=noop),
-])
+@pytest.mark.parametrize(
+    "second",
+    [
+        Command("help", "x", "/help", "local", handler=noop),
+        Command("other", "x", "/other", "local", aliases=("help",), handler=noop),
+        Command("other", "x", "/other", "local", aliases=("h",), handler=noop),
+        Command("h", "x", "/h", "local", handler=noop),
+    ],
+)
 def test_names_and_aliases_must_be_unique(second):
     registry = CommandRegistry([Command("help", "x", "/help", "local", aliases=("h",), handler=noop)])
     with pytest.raises(CommandConflict) as exc:
@@ -102,14 +113,17 @@ def test_names_and_aliases_must_be_unique(second):
     assert "/help" in str(exc.value) and f"/{second.name}" in str(exc.value)
 
 
-@pytest.mark.parametrize("command", [
-    Command("Help", "x", "/Help", "local", handler=noop),
-    Command("1st", "x", "/1st", "local", handler=noop),
-    Command("ok", "x", "/ok", "local", aliases=("Ok",), handler=noop),
-    Command("ok", "x", "/ok", "local", aliases=("ok",), handler=noop),
-    Command("ok", "x", "/ok", "local"),
-    Command("ok", "x", "/ok", "prompt", template="  "),
-])
+@pytest.mark.parametrize(
+    "command",
+    [
+        Command("Help", "x", "/Help", "local", handler=noop),
+        Command("1st", "x", "/1st", "local", handler=noop),
+        Command("ok", "x", "/ok", "local", aliases=("Ok",), handler=noop),
+        Command("ok", "x", "/ok", "local", aliases=("ok",), handler=noop),
+        Command("ok", "x", "/ok", "local"),
+        Command("ok", "x", "/ok", "prompt", template="  "),
+    ],
+)
 def test_malformed_commands_are_rejected(command):
     with pytest.raises(CommandConflict):
         CommandRegistry([command])
@@ -117,10 +131,27 @@ def test_malformed_commands_are_rejected(command):
 
 def test_builtin_registry_has_nineteen_visible_commands():
     assert [c.name for c in BUILTIN.visible()] == [
-        "help", "clear", "compact", "resume", "session", "memory", "model", "plan", "do", "permissions",
-        "status", "mcp", "skills", "hooks", "agents", "tasks", "worktree", "team", "exit"]
+        "help",
+        "clear",
+        "compact",
+        "resume",
+        "session",
+        "memory",
+        "model",
+        "plan",
+        "do",
+        "permissions",
+        "status",
+        "mcp",
+        "skills",
+        "hooks",
+        "agents",
+        "tasks",
+        "worktree",
+        "team",
+        "exit",
+    ]
     assert BUILTIN.get("/PERMISSION").name == "permissions" and BUILTIN.get("quit").name == "exit"
-
 
 
 def test_parsing():
@@ -140,7 +171,6 @@ def test_parsing():
     assert unknown_note(parse_input("/", BUILTIN), BUILTIN) == "输入 /help 查看命令。"
 
 
-
 def test_completion(tmp_path):
     store = MemoryStore(tmp_path / "u", tmp_path / "p")
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
@@ -151,7 +181,11 @@ def test_completion(tmp_path):
     assert len(hidden.matches(ctx, "/")) == 19 and hidden.get("/debug") is not None
     assert [tuple(h) for h in BUILTIN.matches(ctx, "/q")] == [("/exit", "退出 MossCode（别名 /quit）", "/exit")]
     assert [h.value for h in BUILTIN.matches(ctx, "/permissions ")] == [
-        "/permissions default", "/permissions acceptEdits", "/permissions plan", "/permissions bypassPermissions"]
+        "/permissions default",
+        "/permissions acceptEdits",
+        "/permissions plan",
+        "/permissions bypassPermissions",
+    ]
     assert [h.value for h in BUILTIN.matches(ctx, "/memory ")] == ["/memory style-guide"]
     assert BUILTIN.matches(ctx, "/model ") == [] and not BUILTIN.takes_completion(ctx, "/model")
     assert BUILTIN.takes_completion(ctx, "/permissions") and BUILTIN.takes_completion(ctx, "/memory")
@@ -159,11 +193,15 @@ def test_completion(tmp_path):
     assert BUILTIN.matches(ctx, "/comp")[0].label == "/compact [说明]"
 
 
-
 async def test_migrated_commands_keep_their_behaviour(tmp_path):
     conv = Conversation(FakeProvider(), registry=tools(tmp_path))
-    two = Settings((ProviderConfig("main", "anthropic-messages", "model-a"),
-                    ProviderConfig("other", "openai-chat-completions", "model-b")), "main")
+    two = Settings(
+        (
+            ProviderConfig("main", "anthropic-messages", "model-a"),
+            ProviderConfig("other", "openai-chat-completions", "model-b"),
+        ),
+        "main",
+    )
     ui = await run(context(conv, two), "/permissions acceptEdits")
     assert conv.registry.permissions.mode == "acceptEdits" and ("refresh",) in ui.calls
     assert ui.notes == ["└ 权限档位：接受编辑（acceptEdits）；硬限制和显式拒绝仍生效。"]
@@ -207,6 +245,7 @@ async def test_resume_picker_and_argument(tmp_path):
 
 # /plan and /do ----------------------------------------------------------------------------------
 
+
 async def test_do_returns_to_the_mode_plan_was_entered_from(tmp_path):
     conv = Conversation(FakeProvider(), registry=tools(tmp_path, "acceptEdits"))
     ui = await run(context(conv), "/do 继续")
@@ -236,14 +275,18 @@ def test_status_without_requests_tools_or_mcp():
 
 async def test_status_after_a_request(tmp_path):
     from mosscode.context import ContextBudget
-    conv = Conversation(FakeProvider(), registry=tools(tmp_path, "acceptEdits"),
-                        budget=ContextBudget.for_provider(None, 4_096))
+
+    conv = Conversation(
+        FakeProvider(), registry=tools(tmp_path, "acceptEdits"), budget=ContextBudget.for_provider(None, 4_096)
+    )
     async for _ in conv.reply("hello"):
         pass
     conv.instruction_files = ("AGENTS.md", "CLAUDE.md")
     report = status_report(context(conv))
     assert "  权限档位    ⏵⏵ 接受编辑（acceptEdits）" in report
-    assert f"/ {conv.budget.effective:,} Token" in report and "已压缩 0 次；未配置 context_window，按 128K 估算" in report
+    assert (
+        f"/ {conv.budget.effective:,} Token" in report and "已压缩 0 次；未配置 context_window，按 128K 估算" in report
+    )
     assert "· 请求 1 次" in report and "  项目指令    2 个文件（/memory 查看）" in report
 
 
@@ -262,14 +305,17 @@ async def test_session_report_and_help_for_one_command(tmp_path):
     ui = await run(context(conv), "/session")
     assert ui.notes[0].startswith("会话 ")
     shown = help_text(PROMPTS, "review")
-    assert shown.splitlines()[:3] == ["/review [范围或侧重点]", "让模型审查尚未提交的改动（只读）", "提示词命令：把预设的请求发给模型"]
+    assert shown.splitlines()[:3] == [
+        "/review [范围或侧重点]",
+        "让模型审查尚未提交的改动（只读）",
+        "提示词命令：把预设的请求发给模型",
+    ]
     assert "模板首行：请审查当前仓库中尚未提交的改动。" in shown
     assert "别名：/quit" in help_text(BUILTIN, "exit") and help_text(BUILTIN, "nope").startswith("未知命令 /nope")
     listing = help_text(BUILTIN)
     assert "/permissions [档位]    查看或切换工具权限档位（别名 /permission）" in listing and "\n\n按键\n" in listing
     await conv.close()
     await off.close()
-
 
 
 def test_message_command_round_trips_and_old_records_load():
@@ -285,6 +331,7 @@ def test_message_command_round_trips_and_old_records_load():
 async def test_review_in_the_tui_is_shown_saved_titled_and_replayed(tmp_path):
     from mosscode.tui import ChatEntry, MossCodeApp, resumed_rows
     from test_tui import send
+
     provider = FakeProvider()
     conv = make(tmp_path, provider)
     app = MossCodeApp(conv, "test", commands=PROMPTS)
@@ -310,9 +357,11 @@ async def test_review_in_the_tui_is_shown_saved_titled_and_replayed(tmp_path):
 
 # Commands in the TUI ---------------------------------------------------------------------------
 
+
 async def test_argument_check_running_commands_and_forced_messages(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
     from test_tui import send
+
     provider = FakeProvider()
     conv = Conversation(provider)
     app = MossCodeApp(conv, "test")
@@ -338,8 +387,10 @@ async def test_argument_check_running_commands_and_forced_messages(tmp_path):
 
 async def test_plan_and_do_update_the_status_badge(tmp_path):
     from textual.widgets import Static
+
     from mosscode.tui import MossCodeApp
     from test_tui import send
+
     provider = FakeProvider()
     conv = Conversation(provider, registry=tools(tmp_path, "acceptEdits"))
     app = MossCodeApp(conv, "test")
@@ -357,6 +408,7 @@ async def test_plan_and_do_update_the_status_badge(tmp_path):
 
 async def test_tab_completes_a_unique_prefix_after_escape():
     from mosscode.tui import MossCodeApp, PromptArea
+
     app = MossCodeApp(Conversation(FakeProvider()), "test")
     async with app.run_test() as pilot:
         field = app.query_one("#prompt", PromptArea)
@@ -368,7 +420,6 @@ async def test_tab_completes_a_unique_prefix_after_escape():
         await pilot.press("tab")
         await pilot.pause()
         assert field.value == "/status"
-
 
 
 def test_headless_prompt_commands(monkeypatch, capsys):
@@ -385,11 +436,14 @@ def test_headless_prompt_commands(monkeypatch, capsys):
     capsys.readouterr()
 
 
-@pytest.mark.parametrize("text,error", [
-    ("/clear", "/clear 只能在交互界面中使用。"),
-    ("/QUIT", "/exit 只能在交互界面中使用。"),
-    ("/compcat", "是不是想输入 /compact？未知命令 /compcat。"),
-])
+@pytest.mark.parametrize(
+    "text,error",
+    [
+        ("/clear", "/clear 只能在交互界面中使用。"),
+        ("/QUIT", "/exit 只能在交互界面中使用。"),
+        ("/compcat", "是不是想输入 /compact？未知命令 /compcat。"),
+    ],
+)
 def test_headless_local_and_unknown_commands_exit_with_code_2(monkeypatch, capsys, text, error):
     provider, calls = setup_cli(monkeypatch, ["-p", text])
     with pytest.raises(SystemExit) as exc:

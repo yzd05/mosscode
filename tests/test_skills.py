@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from mosscode.skills import (SkillCatalog, SkillError, expand_arguments, missing_tools, parse_skill,
-                             split_tool_list)
+from mosscode.skills import SkillCatalog, SkillError, expand_arguments, missing_tools, parse_skill, split_tool_list
 
 
-def write_skill(base: Path, name: str, front: str = "", body: str = "按步骤执行。", *, tools=None,
-                description: str | None = None) -> Path:
+def write_skill(
+    base: Path, name: str, front: str = "", body: str = "按步骤执行。", *, tools=None, description: str | None = None
+) -> Path:
     directory = base / name
     directory.mkdir(parents=True, exist_ok=True)
     description = f"{name} 的说明" if description is None else description
@@ -23,8 +23,13 @@ def write_skill(base: Path, name: str, front: str = "", body: str = "按步骤�
 
 
 def tool(name="detect", **extra):
-    return {"name": name, "description": "检测", "input_schema": {"type": "object", "properties": {}},
-            "command": ["${PYTHON}", "${SKILL_DIR}/run.py"], **extra}
+    return {
+        "name": name,
+        "description": "检测",
+        "input_schema": {"type": "object", "properties": {}},
+        "command": ["${PYTHON}", "${SKILL_DIR}/run.py"],
+        **extra,
+    }
 
 
 @pytest.fixture
@@ -43,10 +48,16 @@ def load(places, **kwargs):
 
 # Parsing ----------------------------------------------------------------------------------
 
+
 def test_parse_fields_and_claude_code_spelling(tmp_path):
-    directory = write_skill(tmp_path, "check-api", (
-        "allowed-tools: Read, Grep, Bash(git commit:*)\ncontext: fork\nfork_context: recent\nmodel: fast\n"
-        "argument-hint: \"[路径]\"\ndisable-model-invocation: true\nuser-invocable: false\nversion: 3\n"))
+    directory = write_skill(
+        tmp_path,
+        "check-api",
+        (
+            "allowed-tools: Read, Grep, Bash(git commit:*)\ncontext: fork\nfork_context: recent\nmodel: fast\n"
+            'argument-hint: "[路径]"\ndisable-model-invocation: true\nuser-invocable: false\nversion: 3\n'
+        ),
+    )
     skill = parse_skill(directory, "project")
     assert skill.allowed_tools == ("read_file", "grep", "execute_command")
     assert (skill.mode, skill.fork_context, skill.model, skill.argument_hint) == ("fork", "recent", "fast", "[路径]")
@@ -55,31 +66,40 @@ def test_parse_fields_and_claude_code_spelling(tmp_path):
 
 
 def test_parse_defaults_and_list_form(tmp_path):
-    skill = parse_skill(write_skill(tmp_path, "a", "allowed_tools: [read_file, load_skill, mcp__docs__search]\n"), "user")
+    skill = parse_skill(
+        write_skill(tmp_path, "a", "allowed_tools: [read_file, load_skill, mcp__docs__search]\n"), "user"
+    )
     assert skill.mode == "inline" and skill.fork_context == "none" and skill.model is None
     assert skill.allowed_tools == ("read_file", "mcp__docs__search")  # load_skill is never narrowed
     assert skill.model_invocable and skill.user_invocable and skill.tools == ()
 
 
 def test_split_tool_list_keeps_arguments_together():
-    assert split_tool_list("Bash(git add:*), Bash(git status:*) Read") == ["Bash(git add:*)", "Bash(git status:*)", "Read"]
+    assert split_tool_list("Bash(git add:*), Bash(git status:*) Read") == [
+        "Bash(git add:*)",
+        "Bash(git status:*)",
+        "Read",
+    ]
 
 
-@pytest.mark.parametrize("front, body, message", [
-    ("", "正文", "缺少 YAML frontmatter"),
-    ("---\ndescription: x\n---\n", "正文", "缺少 name"),
-    ("---\nname: bad\n---\n", "正文", "缺少 description"),
-    ("---\nname: bad\ndescription: \"\"\n---\n", "正文", "description 必须是非空字符串"),
-    ("---\nname: Bad\ndescription: x\n---\n", "正文", "name 须以小写字母开头"),
-    ("---\nname: other\ndescription: x\n---\n", "正文", "必须与目录名"),
-    ("---\nname: bad\ndescription: x\nmode: async\n---\n", "正文", "mode 只能是"),
-    ("---\nname: bad\ndescription: x\nmode: inline\ncontext: fork\n---\n", "正文", "矛盾"),
-    ("---\nname: bad\ndescription: x\nuser-invocable: no thanks\n---\n", "正文", "true 或 false"),
-    ("---\nname: bad\ndescription: x\nallowed_tools: 3\n---\n", "正文", "allowed_tools 必须是"),
-    ("---\nname: bad\ndescription: x\n---\n", "", "正文为空"),
-    ("---\nname: bad\ndescription: [x\n---\n", "正文", "不是合法的 YAML"),
-    ("---\nname: bad\ndescription: x\n", "正文", "没有结束"),
-])
+@pytest.mark.parametrize(
+    "front, body, message",
+    [
+        ("", "正文", "缺少 YAML frontmatter"),
+        ("---\ndescription: x\n---\n", "正文", "缺少 name"),
+        ("---\nname: bad\n---\n", "正文", "缺少 description"),
+        ('---\nname: bad\ndescription: ""\n---\n', "正文", "description 必须是非空字符串"),
+        ("---\nname: Bad\ndescription: x\n---\n", "正文", "name 须以小写字母开头"),
+        ("---\nname: other\ndescription: x\n---\n", "正文", "必须与目录名"),
+        ("---\nname: bad\ndescription: x\nmode: async\n---\n", "正文", "mode 只能是"),
+        ("---\nname: bad\ndescription: x\nmode: inline\ncontext: fork\n---\n", "正文", "矛盾"),
+        ("---\nname: bad\ndescription: x\nuser-invocable: no thanks\n---\n", "正文", "true 或 false"),
+        ("---\nname: bad\ndescription: x\nallowed_tools: 3\n---\n", "正文", "allowed_tools 必须是"),
+        ("---\nname: bad\ndescription: x\n---\n", "", "正文为空"),
+        ("---\nname: bad\ndescription: [x\n---\n", "正文", "不是合法的 YAML"),
+        ("---\nname: bad\ndescription: x\n", "正文", "没有结束"),
+    ],
+)
 def test_parse_rejects(tmp_path, front, body, message):
     directory = tmp_path / "bad"
     directory.mkdir()
@@ -106,28 +126,32 @@ def test_parse_accepts_bom(tmp_path):
 
 
 def test_tool_json(tmp_path):
-    directory = write_skill(tmp_path, "my-test", "allowed_tools: [detect, execute_command]\n",
-                            tools=[tool(timeout=30), tool("report")])
+    directory = write_skill(
+        tmp_path, "my-test", "allowed_tools: [detect, execute_command]\n", tools=[tool(timeout=30), tool("report")]
+    )
     skill = parse_skill(directory, "builtin")
     assert [t.full_name for t in skill.tools] == ["skill__my_test__detect", "skill__my_test__report"]
     assert skill.tools[0].timeout == 30 and skill.tools[1].timeout == 120
     assert skill.allowed_tools == ("skill__my_test__detect", "execute_command")
 
 
-@pytest.mark.parametrize("tools, message", [
-    ("{", "不是合法的 JSON"),
-    ({"name": "x"}, "数组"),
-    ([tool("Bad")], "name 须以小写字母开头"),
-    ([tool(description="")], "description"),
-    ([tool(input_schema={"type": "string"})], "input_schema 不合法"),
-    ([tool(input_schema={"type": "object", "properties": 3})], "input_schema 不合法"),
-    ([tool(command=[])], "command"),
-    ([tool(command=["python", 3])], "command"),
-    ([tool(timeout=0)], "timeout"),
-    ([tool(timeout=601)], "timeout"),
-    ([tool(), tool()], "重复"),
-    ([tool("x" * 32)], "超过 64 个字符"),
-])
+@pytest.mark.parametrize(
+    "tools, message",
+    [
+        ("{", "不是合法的 JSON"),
+        ({"name": "x"}, "数组"),
+        ([tool("Bad")], "name 须以小写字母开头"),
+        ([tool(description="")], "description"),
+        ([tool(input_schema={"type": "string"})], "input_schema 不合法"),
+        ([tool(input_schema={"type": "object", "properties": 3})], "input_schema 不合法"),
+        ([tool(command=[])], "command"),
+        ([tool(command=["python", 3])], "command"),
+        ([tool(timeout=0)], "timeout"),
+        ([tool(timeout=601)], "timeout"),
+        ([tool(), tool()], "重复"),
+        ([tool("x" * 32)], "超过 64 个字符"),
+    ],
+)
 def test_tool_json_rejects(tmp_path, tools, message):
     name = "n" * 30 if message.startswith("超过") else "t"
     directory = write_skill(tmp_path, name)
@@ -145,16 +169,21 @@ def test_arguments():
 
 
 def test_render(tmp_path):
-    skill = parse_skill(write_skill(tmp_path, "t", "allowed_tools: [read_file, detect]\n", "跑 $ARGUMENTS",
-                                    tools=[tool()]), "project")
+    skill = parse_skill(
+        write_skill(tmp_path, "t", "allowed_tools: [read_file, detect]\n", "跑 $ARGUMENTS", tools=[tool()]), "project"
+    )
     text = skill.render("tests/a.py")
-    assert text.splitlines()[:3] == [f"Skill t（目录：{tmp_path / 't'}）", "专属工具：skill__t__detect",
-                                      "本 Skill 建议使用的工具：read_file、skill__t__detect"]
+    assert text.splitlines()[:3] == [
+        f"Skill t（目录：{tmp_path / 't'}）",
+        "专属工具：skill__t__detect",
+        "本 Skill 建议使用的工具：read_file、skill__t__detect",
+    ]
     assert text.endswith("\n\n跑 tests/a.py")
     assert "建议使用的工具" not in skill.render("", fork=True)
 
 
 # Places, overrides and start-time checks ------------------------------------------------
+
 
 def test_project_overrides_user_overrides_builtin(places):
     builtin, user, project_skills, _ = places
@@ -211,12 +240,14 @@ def test_missing_places_are_silent(tmp_path):
 
 
 def test_missing_tools_counts_own_tools(tmp_path):
-    skill = parse_skill(write_skill(tmp_path, "s", "allowed_tools: [detect, read_file, mcp__x__y, memory]\n",
-                                    tools=[tool()]), "user")
+    skill = parse_skill(
+        write_skill(tmp_path, "s", "allowed_tools: [detect, read_file, mcp__x__y, memory]\n", tools=[tool()]), "user"
+    )
     assert missing_tools(skill, {"read_file", "grep"}) == ["mcp__x__y", "memory"]
 
 
 # Re-reading ----------------------------------------------------------------------------
+
 
 def test_fresh_reads_again_and_falls_back(places):
     _, _, project_skills, _ = places
@@ -266,15 +297,18 @@ def test_empty_catalog_section():
 
 # Commands ---------------------------------------------------------------------------
 
+
 def commands_for(catalog):
     from mosscode.builtin_commands import BUILTIN
+
     return BUILTIN.with_skills(catalog)
 
 
 def conversation_for(tmp_path, places, provider=None):
+    from mosscode.builtin_commands import BUILTIN
     from test_conversation import FakeProvider
     from test_sessions import make
-    from mosscode.builtin_commands import BUILTIN
+
     return make(tmp_path, provider or FakeProvider(), skills=load(places, reserved=BUILTIN.names()))
 
 
@@ -282,6 +316,7 @@ async def run_command(conversation, text, ui=None):
     from mosscode.builtin_commands import dispatch
     from mosscode.commands import CommandContext, parse_input
     from test_commands import FakeUI
+
     if ui is None:
         ui = FakeUI()
         ui.registry = commands_for(conversation.skills)[0]
@@ -294,8 +329,9 @@ async def run_command(conversation, text, ui=None):
 def test_skill_commands_are_registered_on_a_copy(places):
     from mosscode.builtin_commands import BUILTIN
     from mosscode.commands import CommandContext, parse_input
+
     _, _, project_skills, _ = places
-    write_skill(project_skills, "foo", "argument-hint: \"[路径]\"\n")
+    write_skill(project_skills, "foo", 'argument-hint: "[路径]"\n')
     write_skill(project_skills, "quiet", "user-invocable: false\n")
     commands, problems = commands_for(load(places))
     assert problems == () and BUILTIN.get("foo") is None
@@ -304,13 +340,16 @@ def test_skill_commands_are_registered_on_a_copy(places):
     assert command.usage == "/foo [路径]"
     ctx = CommandContext(None, None, commands)
     hints = commands.matches(ctx, "/fo")
-    assert [(hint.value, hint.description, hint.label) for hint in hints] == [("/foo", "foo 的说明 [skill]", "/foo [路径]")]
+    assert [(hint.value, hint.description, hint.label) for hint in hints] == [
+        ("/foo", "foo 的说明 [skill]", "/foo [路径]")
+    ]
     assert [hint.value for hint in commands.matches(ctx, "/qu")] == ["/exit"]  # The alias /quit, not the skill.
     assert parse_input("/quiet 现在", commands).command.skill == "quiet"  # Not listed, still callable.
 
 
 def test_skill_name_taken_by_a_command_is_a_problem_not_an_error(tmp_path):
     from mosscode.builtin_commands import BUILTIN
+
     skill = parse_skill(write_skill(tmp_path, "help"), "project")
     commands, problems = BUILTIN.with_skills(SkillCatalog({"help": skill}))
     assert commands.get("help").kind == "local" and len(problems) == 1 and "/help" in problems[0]
@@ -321,7 +360,7 @@ async def test_inline_skill_sends_the_rendered_sop(tmp_path, places):
     write_skill(project_skills, "foo", "allowed-tools: Read, Grep\n", body="检查 $ARGUMENTS 的接口。")
     conversation = conversation_for(tmp_path, places)
     ui = await run_command(conversation, "/foo  src/api ")
-    (_, prompt, command), = ui.calls
+    ((_, prompt, command),) = ui.calls
     assert command == "/foo src/api" and ui.notes == []
     assert prompt.startswith(f"Skill foo（目录：{project_skills / 'foo'}）\n")
     assert "本 Skill 建议使用的工具：read_file、grep" in prompt and prompt.endswith("\n\n检查 src/api 的接口。")
@@ -352,10 +391,12 @@ async def test_inline_skill_reads_the_file_again(tmp_path, places):
 
 async def test_skills_list_details_and_help(tmp_path, places):
     from mosscode.builtin_commands import help_text
+
     builtin, user, project_skills, _ = places
     write_skill(builtin, "foo", body="内置版")
-    write_skill(project_skills, "foo", "context: fork\nfork_context: recent\n", body="第一步：读接口。\n第二步",
-                tools=[tool()])
+    write_skill(
+        project_skills, "foo", "context: fork\nfork_context: recent\n", body="第一步：读接口。\n第二步", tools=[tool()]
+    )
     write_skill(user, "quiet", "user-invocable: false\ndisable-model-invocation: true\n")
     write_skill(project_skills, "bad", "mode: async\n")
     conversation = conversation_for(tmp_path, places)
@@ -367,9 +408,13 @@ async def test_skills_list_details_and_help(tmp_path, places):
     assert lines[3].startswith("! Skill 已跳过：") and "bad" in lines[3]
     assert lines[-1].startswith("输入 /<名称> 调用")
     detail = (await run_command(conversation, "/skill foo")).notes[0]
-    for text in (str(project_skills / "foo" / "SKILL.md"), str(builtin / "foo" / "SKILL.md"),
-                 "fork（fork_context: recent）", "规程首行    第一步：读接口。",
-                 "skill__foo__detect  ${PYTHON} ${SKILL_DIR}/run.py  超时 120 秒"):
+    for text in (
+        str(project_skills / "foo" / "SKILL.md"),
+        str(builtin / "foo" / "SKILL.md"),
+        "fork（fork_context: recent）",
+        "规程首行    第一步：读接口。",
+        "skill__foo__detect  ${PYTHON} ${SKILL_DIR}/run.py  超时 120 秒",
+    ):
         assert text in detail
     assert "仍可输入调用" in (await run_command(conversation, "/skills quiet")).notes[0]
     assert (await run_command(conversation, "/skills nope")).notes[0] == "未找到 Skill nope。已加载：foo、quiet"
@@ -393,6 +438,7 @@ async def test_skills_reload_updates_the_run_table(tmp_path, places):
     from mosscode.builtin_commands import BUILTIN
     from mosscode.commands import CommandContext
     from test_commands import FakeUI
+
     _, _, project_skills, _ = places
     write_skill(project_skills, "old")
     conversation = conversation_for(tmp_path, places)
@@ -414,11 +460,13 @@ async def test_skills_reload_updates_the_run_table(tmp_path, places):
 
 async def test_skill_in_the_tui_is_shown_saved_and_replayed(tmp_path, places):
     from rich.console import Console
+
     from mosscode.session import load_session
     from mosscode.tui import ChatEntry, MossCodeApp, resumed_rows
     from test_conversation import FakeProvider
     from test_sessions import records
     from test_tui import send
+
     _, _, project_skills, _ = places
     write_skill(project_skills, "foo", body="按接口规范检查。")
     provider = FakeProvider()
@@ -443,6 +491,7 @@ async def test_skill_in_the_tui_is_shown_saved_and_replayed(tmp_path, places):
 def test_headless_skill(monkeypatch, capsys, tmp_path):
     from mosscode import cli
     from test_cli import setup_cli
+
     write_skill(tmp_path / ".mosscode" / "skills", "foo", body="规程正文")
     monkeypatch.chdir(tmp_path)
     provider, _ = setup_cli(monkeypatch, ["-p", "/foo x"])
@@ -456,6 +505,7 @@ def test_headless_skill(monkeypatch, capsys, tmp_path):
 def test_headless_skills_command_and_missing_tool(monkeypatch, capsys, tmp_path):
     from mosscode import cli
     from test_cli import setup_cli
+
     write_skill(tmp_path / ".mosscode" / "skills", "docs", "allowed_tools: [mcp__docs__search]\n")
     write_skill(tmp_path / ".mosscode" / "skills", "help")
     monkeypatch.chdir(tmp_path)
@@ -476,6 +526,7 @@ def test_headless_skills_command_and_missing_tool(monkeypatch, capsys, tmp_path)
 def test_headless_unknown_skill_reports_why_it_was_skipped(monkeypatch, capsys, tmp_path):
     from mosscode import cli
     from test_cli import setup_cli
+
     write_skill(tmp_path / ".mosscode" / "skills", "docs", "allowed_tools: [read_file, reed_file]\n")
     monkeypatch.chdir(tmp_path)
     provider, calls = setup_cli(monkeypatch, ["-p", "/docs"])
@@ -488,11 +539,13 @@ def test_headless_unknown_skill_reports_why_it_was_skipped(monkeypatch, capsys, 
 
 # Two-stage loading ---------------------------------------------------------------------
 
+
 def scripted(tmp_path, places, *responses, mode="bypassPermissions"):
     from mosscode.builtin_commands import BUILTIN
     from mosscode.tools import create_default_registry
     from test_agent import SequenceProvider
     from test_sessions import make
+
     provider = SequenceProvider(*responses)
     project = tmp_path / "project"
     registry = create_default_registry(project, permission_mode=mode, load_permissions=False)
@@ -501,6 +554,7 @@ def scripted(tmp_path, places, *responses, mode="bypassPermissions"):
 
 def load_call(name, arguments=""):
     from mosscode.messages import ToolCall
+
     return ToolCall("load", "load_skill", json.dumps({"name": name, "arguments": arguments}))
 
 
@@ -517,12 +571,18 @@ async def test_catalog_and_load_skill_pin_the_sop(tmp_path, places):
     from mosscode.commands import CommandContext
     from test_agent import response
     from test_commands import FakeUI
+
     _, _, project_skills, _ = places
     write_skill(project_skills, "api-check", body="按接口规范检查 $ARGUMENTS。", description="检查接口")
     write_skill(project_skills, "manual", "disable-model-invocation: true\n")
     provider, conversation = scripted(
-        tmp_path, places, response(calls=[load_call("api-check", "v2")]), response("好"),
-        response("还在"), response("清空后"))
+        tmp_path,
+        places,
+        response(calls=[load_call("api-check", "v2")]),
+        response("好"),
+        response("还在"),
+        response("清空后"),
+    )
     await drain(conversation.reply("检查接口"))
     first, second = provider.requests[:2]
     stable = first[1].stable
@@ -566,6 +626,7 @@ async def test_active_skills_keep_their_order_and_refresh_in_place(tmp_path, pla
 
 async def test_load_skill_failures(tmp_path, places):
     from mosscode.tools.base import ToolFailure
+
     _, _, project_skills, _ = places
     write_skill(project_skills, "api-check")
     write_skill(project_skills, "manual", "disable-model-invocation: true\n")
@@ -573,9 +634,11 @@ async def test_load_skill_failures(tmp_path, places):
     write_skill(project_skills, "big", body="x" * 30000)
     write_skill(project_skills, "huge", body="y" * 15000)
     _, conversation = scripted(tmp_path, places)
-    for name, code, text in (("api-chek", "skill_unknown", "相近的名称：api-check"),
-                             ("manual", "skill_unavailable", "只能由用户输入 /manual"),
-                             ("docs", "skill_unavailable", "mcp__docs__search")):
+    for name, code, text in (
+        ("api-chek", "skill_unknown", "相近的名称：api-check"),
+        ("manual", "skill_unavailable", "只能由用户输入 /manual"),
+        ("docs", "skill_unavailable", "mcp__docs__search"),
+    ):
         with pytest.raises(ToolFailure) as exc:
             conversation._load_skill(name, "")
         assert exc.value.code == code and text in str(exc.value)
@@ -599,6 +662,7 @@ async def test_fork_skill_loaded_by_the_model_says_how_to_isolate(tmp_path, plac
 async def test_catalog_limit_is_a_startup_notice_and_no_tools_means_no_catalog(tmp_path, places):
     from mosscode.conversation import Conversation
     from test_conversation import FakeProvider
+
     _, _, project_skills, _ = places
     for index in range(40):
         write_skill(project_skills, f"skill-{index:02}", description="很长的描述" * 60)
@@ -614,11 +678,18 @@ async def test_catalog_limit_is_a_startup_notice_and_no_tools_means_no_catalog(t
 async def test_compaction_keeps_active_skills(tmp_path, places):
     from test_agent import response
     from test_context import summary_reply
+
     _, _, project_skills, _ = places
     write_skill(project_skills, "a", body="规程 A")
     provider, conversation = scripted(
-        tmp_path, places, response(calls=[load_call("a")]), response("好"), response("第二"), summary_reply(),
-        response("压缩后"))
+        tmp_path,
+        places,
+        response(calls=[load_call("a")]),
+        response("好"),
+        response("第二"),
+        summary_reply(),
+        response("压缩后"),
+    )
     await drain(conversation.reply("开始"))
     await drain(conversation.reply("第二个问题"))
     await drain(conversation.compact())
@@ -673,6 +744,7 @@ async def test_active_skills_sit_in_the_prefix_for_every_protocol(index):
     from mosscode.messages import ContentBlock, Message
     from mosscode.prompts import PromptRequest, Supplement, active_skills
     from test_providers import CASES, SSEBody, adapter
+
     protocol, cls, frames, _ = CASES[index]
     provider, requests, _ = adapter(protocol, cls, lambda: SSEBody(frames()))
     active = active_skills(["Skill a（目录：x）\n\n规程 A"])
@@ -696,7 +768,7 @@ async def test_active_skills_sit_in_the_prefix_for_every_protocol(index):
 
 # Skill tools ---------------------------------------------------------------------------
 
-SCRIPT = '''import json, os, sys, time
+SCRIPT = """import json, os, sys, time
 data = json.load(sys.stdin)
 open(os.path.join(os.environ["MOSSCODE_SKILL_DIR"], "ran.txt"), "a", encoding="utf-8").write("ran")
 if data.get("sleep"):
@@ -709,10 +781,13 @@ if data.get("fail"):
 print(json.dumps({"args": data, "cwd": os.getcwd(), "dir": os.environ["MOSSCODE_SKILL_DIR"],
                   "root": os.environ["MOSSCODE_PROJECT_ROOT"], "utf8": os.environ["PYTHONUTF8"],
                   "encoding": os.environ["PYTHONIOENCODING"], "text": "检测到 pytest"}, ensure_ascii=False))
-'''
+"""
 
-SCHEMA = {"type": "object", "properties": {"path": {"type": "string"}, "fail": {"type": "boolean"},
-                                           "sleep": {"type": "number"}}, "additionalProperties": False}
+SCHEMA = {
+    "type": "object",
+    "properties": {"path": {"type": "string"}, "fail": {"type": "boolean"}, "sleep": {"type": "number"}},
+    "additionalProperties": False,
+}
 
 
 def script_skill(base, name="foo", **extra):
@@ -724,6 +799,7 @@ def script_skill(base, name="foo", **extra):
 def skill_registry(tmp_path, directory, mode="bypassPermissions"):
     from mosscode.tools import create_default_registry
     from mosscode.tools.skill import SkillTool
+
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
     registry = create_default_registry(project, permission_mode=mode, load_permissions=False)
@@ -734,6 +810,7 @@ def skill_registry(tmp_path, directory, mode="bypassPermissions"):
 
 def skill_call(name, **args):
     from mosscode.messages import ToolCall
+
     return ToolCall("c", name, json.dumps(args))
 
 
@@ -779,7 +856,9 @@ async def test_skill_tool_timeout_ends_the_process(tmp_path):
 
 async def test_skill_tool_permissions(tmp_path):
     import yaml
+
     from mosscode.permissions import parse_rule
+
     directory = script_skill(tmp_path / "skills")
     registry, name = skill_registry(tmp_path, directory, mode="default")
     policy = registry.permissions
@@ -791,7 +870,11 @@ async def test_skill_tool_permissions(tmp_path):
     request = await asyncio.wait_for(policy.requests.get(), 2)
     assert request.operation.skill == "foo" and request.operation.target == '{"path":"a"}'
     preview = request.operation.preview
-    assert preview.startswith("Skill foo 的专属工具 detect\n命令：") and str(directory.resolve()) in preview and "run.py" in preview
+    assert (
+        preview.startswith("Skill foo 的专属工具 detect\n命令：")
+        and str(directory.resolve()) in preview
+        and "run.py" in preview
+    )
     assert '参数：{"path":"a"}' in preview and not (directory / "ran.txt").exists()
     policy.respond(request.id, "deny")
     assert (await job).code == "permission_denied" and not (directory / "ran.txt").exists()
@@ -822,6 +905,7 @@ async def test_skill_tool_permissions(tmp_path):
 
 async def test_skill_tools_are_registered_on_use_and_removed(tmp_path, places):
     from mosscode.messages import ToolCall
+
     _, _, project_skills, _ = places
     script_skill(project_skills, "foo")
     script_skill(project_skills, "bar")
@@ -850,22 +934,33 @@ async def test_skill_tools_are_registered_on_use_and_removed(tmp_path, places):
 
 # Transcripts --------------------------------------------------------------------------------
 
+
 async def test_resume_restores_skills(tmp_path, places):
     import shutil
+
     from mosscode.conversation import Resumed
     from test_agent import response
     from test_sessions import records
+
     _, _, project_skills, _ = places
     write_skill(project_skills, "pin", body="按规程 $ARGUMENTS", tools=[tool()])
     write_skill(project_skills, "inline", tools=[tool()])
     write_skill(project_skills, "gone", tools=[tool()])
-    _, first = scripted(tmp_path, places, response(calls=[load_call("pin", "v1")]), response("好"),
-                        response(calls=[load_call("gone")]), response("好"), response("内联"))
+    _, first = scripted(
+        tmp_path,
+        places,
+        response(calls=[load_call("pin", "v1")]),
+        response("好"),
+        response(calls=[load_call("gone")]),
+        response("好"),
+        response("内联"),
+    )
     await drain(first.reply("一"))
     await drain(first.reply("二"))
     await run_command(first, "/inline 参数")
-    saved = [(r["name"], r["arguments"], r["pinned"])
-             for r in records(first.session.transcript_path) if r["type"] == "skill"]
+    saved = [
+        (r["name"], r["arguments"], r["pinned"]) for r in records(first.session.transcript_path) if r["type"] == "skill"
+    ]
     assert saved == [("pin", "v1", True), ("gone", "", True), ("inline", "参数", False)]
     session_id = first.session_id
     await first.close()
@@ -886,17 +981,20 @@ async def test_resume_restores_skills(tmp_path, places):
 def test_skill_records_load_and_old_sessions_still_work(tmp_path):
     from mosscode.session import load_session, skill_record
     from test_sessions import assistant, user, write_session
+
     messages = [user("问"), assistant("答")]
     old = load_session(write_session(tmp_path, messages).transcript_path)
     assert old.skills == () and old.skipped == 0 and len(old.history) == 2
     bad = {"type": "skill", "time": "2026-10-26T10:00:00+08:00", "name": "x", "arguments": "", "pinned": "yes"}
-    path = write_session(tmp_path, messages, extra=(skill_record("a", "参数", True), bad,
-                                                       skill_record("b", "", False))).transcript_path
+    path = write_session(
+        tmp_path, messages, extra=(skill_record("a", "参数", True), bad, skill_record("b", "", False))
+    ).transcript_path
     restored = load_session(path)
     assert restored.skills == (("a", "参数", True), ("b", "", False)) and restored.skipped == 1
 
 
 # Fork skills ---------------------------------------------------------------------------
+
 
 def fork_skill(base, name="rev", front="", **kwargs):
     return write_skill(base, name, "mode: fork\n" + front, body="审查 $ARGUMENTS", **kwargs)
@@ -920,12 +1018,14 @@ async def test_fork_runs_apart_and_adds_one_exchange(tmp_path, places):
     from mosscode.messages import Completed, RunStopped, Usage
     from mosscode.session import load_session
     from test_agent import response
+
     _, _, project_skills, _ = places
     fork_skill(project_skills, front="fork_context: recent\n", tools=[tool()])
     write_skill(project_skills, "visible")
     turns = [response(f"答{i}", usage=Usage(10, 1)) for i in range(4)]
-    provider, conversation = scripted(tmp_path, places, *turns, response("审查结果", usage=Usage(100, 5)),
-                                      response("好"))
+    provider, conversation = scripted(
+        tmp_path, places, *turns, response("审查结果", usage=Usage(100, 5)), response("好")
+    )
     for text in "一二三四":
         await drain(conversation.reply(text))
     ui, fork, events = await fork_run(conversation, "/rev a.py")
@@ -954,7 +1054,9 @@ async def test_fork_runs_apart_and_adds_one_exchange(tmp_path, places):
 
 async def test_fork_context_tools_and_model(tmp_path, places):
     from types import SimpleNamespace
+
     from test_agent import SequenceProvider, response
+
     _, _, project_skills, _ = places
     fork_skill(project_skills, "none", "allowed_tools: [read_file, skill__none__detect]\n", tools=[tool(), tool("x")])
     fork_skill(project_skills, "full", "fork_context: full\nmodel: other\n")
@@ -966,6 +1068,7 @@ async def test_fork_context_tools_and_model(tmp_path, places):
 
     async def close():
         other.shut += 1
+
     other.close = close
     conversation.provider_configs = (SimpleNamespace(name="other", budget=lambda: conversation._agent.budget),)
     conversation.provider_factory = lambda config: other
@@ -978,8 +1081,10 @@ async def test_fork_context_tools_and_model(tmp_path, places):
     note = "/none\n\n（以上命令在独立上下文中运行了 Skill none，结果见下一条回复。）"
     assert texts_of(other.requests[0][0])[:4] == ["一", "答", note, "无上下文"]
     assert other.shut == 1 and len(provider.requests) == 2 and conversation.history[-1].text == "另一个模型"
-    for text, problem in (("/lost", "Skill lost 未运行：工具不可用：mcp__srv__echo"),
-                          ("/nomodel", "Skill nomodel 未运行：没有名为 missing 的提供商（可用：other）。")):
+    for text, problem in (
+        ("/lost", "Skill lost 未运行：工具不可用：mcp__srv__echo"),
+        ("/nomodel", "Skill nomodel 未运行：没有名为 missing 的提供商（可用：other）。"),
+    ):
         ui = await run_command(conversation, text)
         assert not [item for item in ui.calls if item[0] == "submit"]
         assert len(ui.notes) == 1 and ui.notes[0].startswith(problem), ui.notes
@@ -989,6 +1094,7 @@ async def test_fork_context_tools_and_model(tmp_path, places):
 async def test_fork_failures_leave_a_marked_exchange(tmp_path, places):
     from mosscode.messages import ProviderError, RunStopped
     from test_agent import call, response
+
     _, _, project_skills, _ = places
     fork_skill(project_skills)
     gate = asyncio.Event()
@@ -996,9 +1102,15 @@ async def test_fork_failures_leave_a_marked_exchange(tmp_path, places):
     async def hang():
         await gate.wait()
         yield response("不会到达")
+
     provider, conversation = scripted(
-        tmp_path, places, ProviderError("服务不可用"), response(calls=[call("no_such_tool", "u1")]),
-        hang, response("主对话还在"))
+        tmp_path,
+        places,
+        ProviderError("服务不可用"),
+        response(calls=[call("no_such_tool", "u1")]),
+        hang,
+        response("主对话还在"),
+    )
     with pytest.raises(ProviderError, match="服务不可用"):
         await fork_run(conversation, "/rev")
     assert conversation.history[-1].text == "[Skill rev 未完成：服务不可用]"
@@ -1014,8 +1126,9 @@ async def test_fork_failures_leave_a_marked_exchange(tmp_path, places):
     async def consume():
         async for event in conversation.reply(prompt, command=command, fork=fork):
             seen.append(event)
+
     task = asyncio.create_task(consume())
-    await asyncio.sleep(.1)
+    await asyncio.sleep(0.1)
     assert conversation._busy
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -1032,13 +1145,20 @@ async def test_fork_failures_leave_a_marked_exchange(tmp_path, places):
 async def test_fork_shares_the_permission_policy(tmp_path, places):
     from mosscode.permissions import ApprovalRequest
     from test_agent import call, response
+
     _, _, project_skills, _ = places
     fork_skill(project_skills)
     provider, conversation = scripted(
-        tmp_path, places,
-        response(calls=[call("write_file", "w1", path="plan.txt", content="x")]), response("计划模式完"),
-        response(calls=[call("execute_command", "c1", command="echo hi")]), response("无界面完"),
-        response(calls=[call("execute_command", "c2", command="echo hi")]), response("审批完"), mode="plan")
+        tmp_path,
+        places,
+        response(calls=[call("write_file", "w1", path="plan.txt", content="x")]),
+        response("计划模式完"),
+        response(calls=[call("execute_command", "c1", command="echo hi")]),
+        response("无界面完"),
+        response(calls=[call("execute_command", "c2", command="echo hi")]),
+        response("审批完"),
+        mode="plan",
+    )
     policy = conversation.registry.permissions
     await fork_run(conversation, "/rev")
     assert provider.requests[1][0][-1].tool_results[0].code == "plan_blocked"
@@ -1065,6 +1185,7 @@ async def test_fork_in_the_tui(tmp_path, places):
     from test_conversation import FakeProvider
     from test_mcp_manager import notes_text
     from test_tui import send
+
     _, _, project_skills, _ = places
     fork_skill(project_skills)
     provider = FakeProvider()
@@ -1087,6 +1208,7 @@ async def test_fork_in_the_tui(tmp_path, places):
 def test_headless_fork_uses_its_model(monkeypatch, capsys, tmp_path):
     from mosscode import cli
     from test_cli import setup_cli
+
     fork_skill(tmp_path / ".mosscode" / "skills", front="model: second\n")
     monkeypatch.chdir(tmp_path)
     provider, calls = setup_cli(monkeypatch, ["-p", "/rev x", "--output-format", "json"])
@@ -1101,9 +1223,11 @@ def test_headless_fork_uses_its_model(monkeypatch, capsys, tmp_path):
 
 # Built-in skills ----------------------------------------------------------------------------
 
+
 def test_builtin_skills(tmp_path, isolated_home):
     from mosscode.builtin_commands import BUILTIN, help_text
     from mosscode.skills import builtin_dir
+
     catalog = SkillCatalog.load(tmp_path, reserved=BUILTIN.names())
     assert catalog.problems == () and [catalog.get(n).source for n in ("commit", "review", "test")] == ["builtin"] * 3
     commit, review, test = (catalog.get(name) for name in ("commit", "review", "test"))
@@ -1112,7 +1236,9 @@ def test_builtin_skills(tmp_path, isolated_home):
     assert (review.mode, review.fork_context) == ("fork", "none")
     assert review.allowed_tools == ("read_file", "glob", "grep", "execute_command")
     assert review.body.startswith("请审查当前仓库中尚未提交的改动。")
-    assert test.allowed_tools[0] == "skill__test__detect" and [t.full_name for t in test.tools] == ["skill__test__detect"]
+    assert test.allowed_tools[0] == "skill__test__detect" and [t.full_name for t in test.tools] == [
+        "skill__test__detect"
+    ]
     assert test.tools[0].command == ("${PYTHON}", "${SKILL_DIR}/scripts/detect.py") and test.tools[0].timeout == 30
     commands, problems = BUILTIN.with_skills(catalog)
     assert problems == () and commands.get("review").kind == "skill" and BUILTIN.get("review") is None
@@ -1123,38 +1249,49 @@ def test_builtin_skills(tmp_path, isolated_home):
     assert replaced.source == "project" and replaced.mode == "inline" and replaced.overrides == (review.path,)
     # The wheel carries the files the catalog reads.
     import tomllib
+
     data = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = data["tool"]["setuptools"]["package-data"]["mosscode.skills"]
-    files = {path.relative_to(builtin_dir().parent).as_posix() for path in builtin_dir().rglob("*")
-             if path.is_file() and "__pycache__" not in path.parts}
+    files = {
+        path.relative_to(builtin_dir().parent).as_posix()
+        for path in builtin_dir().rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
     assert files and all(any(Path(name).match(pattern) for pattern in patterns) for name in files)
 
 
 def detect_module():
     import importlib.util
+
     from mosscode.skills import builtin_dir
+
     spec = importlib.util.spec_from_file_location("detect", builtin_dir() / "test" / "scripts" / "detect.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.detect
 
 
-@pytest.mark.parametrize("files,expected", [
-    ({}, []),
-    ({"pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-q'\n", ".venv/Scripts/python.exe": ""},
-     [("python", ".venv/Scripts/python -m pytest")]),
-    ({"setup.cfg": "[tool:pytest]\n", ".venv/bin/python": ""}, [("python", ".venv/bin/python -m pytest")]),
-    ({"tox.ini": "[pytest]\n"}, [("python", "python -m pytest")]),
-    ({"pyproject.toml": "[project]\nname = 'x'\n"}, []),
-    ({"package.json": '{"scripts": {"test": "vitest"}}', "pnpm-lock.yaml": ""}, [("node", "pnpm test")]),
-    ({"package.json": '{"scripts": {"test": "jest"}}', "yarn.lock": ""}, [("node", "yarn test")]),
-    ({"package.json": '{"scripts": {"test": "jest"}}'}, [("node", "npm test")]),
-    ({"package.json": '{"scripts": {"test": "echo \\"Error: no test specified\\" && exit 1"}}'}, []),
-    ({"go.mod": "module x\n", "Cargo.toml": ""}, [("go", "go test ./..."), ("rust", "cargo test")]),
-    ({"pom.xml": ""}, [("maven", "mvn test")]),
-    ({"build.gradle.kts": "", "gradlew": ""}, [("gradle", "./gradlew test")]),
-    ({"build.gradle": ""}, [("gradle", "gradle test")]),
-])
+@pytest.mark.parametrize(
+    "files,expected",
+    [
+        ({}, []),
+        (
+            {"pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-q'\n", ".venv/Scripts/python.exe": ""},
+            [("python", ".venv/Scripts/python -m pytest")],
+        ),
+        ({"setup.cfg": "[tool:pytest]\n", ".venv/bin/python": ""}, [("python", ".venv/bin/python -m pytest")]),
+        ({"tox.ini": "[pytest]\n"}, [("python", "python -m pytest")]),
+        ({"pyproject.toml": "[project]\nname = 'x'\n"}, []),
+        ({"package.json": '{"scripts": {"test": "vitest"}}', "pnpm-lock.yaml": ""}, [("node", "pnpm test")]),
+        ({"package.json": '{"scripts": {"test": "jest"}}', "yarn.lock": ""}, [("node", "yarn test")]),
+        ({"package.json": '{"scripts": {"test": "jest"}}'}, [("node", "npm test")]),
+        ({"package.json": '{"scripts": {"test": "echo \\"Error: no test specified\\" && exit 1"}}'}, []),
+        ({"go.mod": "module x\n", "Cargo.toml": ""}, [("go", "go test ./..."), ("rust", "cargo test")]),
+        ({"pom.xml": ""}, [("maven", "mvn test")]),
+        ({"build.gradle.kts": "", "gradlew": ""}, [("gradle", "./gradlew test")]),
+        ({"build.gradle": ""}, [("gradle", "gradle test")]),
+    ],
+)
 def test_detect_suggests_test_commands(tmp_path, files, expected):
     for name, text in files.items():
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
@@ -1168,6 +1305,7 @@ async def test_builtin_test_skill_runs_detect(tmp_path, isolated_home):
     from mosscode.messages import ToolCall
     from mosscode.tools import create_default_registry
     from mosscode.tools.skill import SkillTool
+
     (tmp_path / "tests").mkdir()
     skill = SkillCatalog.load(tmp_path).get("test")
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)

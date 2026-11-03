@@ -1,16 +1,17 @@
 """Session storage: the directory of stored tool results and compaction records,
 and the JSONL transcript that lets a session be resumed."""
 
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
-from importlib.metadata import version
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import shutil
-from typing import Any, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from importlib.metadata import version
+from pathlib import Path
+from typing import Any
 
 from .messages import Message, ToolResult
 from .paths import SESSION_ID, mosscode_home, new_session_id, project_dir
@@ -98,6 +99,7 @@ class Session:
 
 # Transcript records -------------------------------------------------------------------------
 
+
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -123,6 +125,7 @@ def provider_record(name: str, protocol: str, model: str) -> dict:
 
 # Locks --------------------------------------------------------------------------------------
 
+
 class SessionLocked(Exception):
     pass
 
@@ -130,10 +133,12 @@ class SessionLocked(Exception):
 def _lock(stream) -> None:
     if os.name == "nt":
         import msvcrt
+
         stream.seek(0)
         msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
     else:
         import fcntl
+
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
@@ -166,6 +171,7 @@ class Lock:
             return
         if os.name == "nt":
             import msvcrt
+
             try:
                 stream.seek(0)
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
@@ -187,6 +193,7 @@ def is_locked(lock_path: Path) -> bool:
 
 
 # Transcript ---------------------------------------------------------------------------------
+
 
 def _repair_tail(path: Path) -> None:
     """Cut a half-written last line so the next record starts on its own line."""
@@ -233,8 +240,16 @@ class Transcript:
     def _create(self) -> None:
         self.lock.acquire()
         self._stream = self.path.open("xb")
-        self._write({"type": "session", "v": 1, "id": self.session.id, "cwd": str(self.cwd),
-                     "created": _now(), "mosscode": version("mosscode")})
+        self._write(
+            {
+                "type": "session",
+                "v": 1,
+                "id": self.session.id,
+                "cwd": str(self.cwd),
+                "created": _now(),
+                "mosscode": version("mosscode"),
+            }
+        )
 
     def _write(self, record: dict) -> None:
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -267,6 +282,7 @@ class Transcript:
 
 # Listing ------------------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class SessionSummary:
     id: str
@@ -282,9 +298,15 @@ def _first_user_line(data: Any) -> str | None:
     if not isinstance(message, dict) or message.get("role") != "user" or message.get("synthetic") is not None:
         return None
     command = message.get("command")
-    text = command.strip() if isinstance(command, str) else "".join(
-        b.get("text", "") for b in message.get("content", [])
-        if isinstance(b, dict) and b.get("kind") == "text" and isinstance(b.get("text"), str)).strip()
+    text = (
+        command.strip()
+        if isinstance(command, str)
+        else "".join(
+            b.get("text", "")
+            for b in message.get("content", [])
+            if isinstance(b, dict) and b.get("kind") == "text" and isinstance(b.get("text"), str)
+        ).strip()
+    )
     return text.splitlines()[0][:TITLE_CHARS] if text else None
 
 
@@ -318,7 +340,7 @@ def count_messages(path: Path) -> int:
                     first = False
                 data = tail + chunk
                 count += data.count(pattern)
-                tail = data[-(len(pattern) - 1):]
+                tail = data[-(len(pattern) - 1) :]
     except OSError:
         return 0
     return count
@@ -337,9 +359,17 @@ def list_sessions(root: Path, *, home: Path | None = None, limit: int = 20) -> l
         except OSError:
             continue
     stamped.sort(key=lambda item: item[0], reverse=True)
-    return [SessionSummary(path.stem, path, datetime.fromtimestamp(mtime), read_title(path), count_messages(path),
-                           is_locked(path.with_suffix(".lock")))
-            for mtime, path in stamped[:limit]]
+    return [
+        SessionSummary(
+            path.stem,
+            path,
+            datetime.fromtimestamp(mtime),
+            read_title(path),
+            count_messages(path),
+            is_locked(path.with_suffix(".lock")),
+        )
+        for mtime, path in stamped[:limit]
+    ]
 
 
 def find_session(root: Path, id: str, *, home: Path | None = None) -> Path | None:
@@ -348,6 +378,7 @@ def find_session(root: Path, id: str, *, home: Path | None = None) -> Path | Non
 
 
 # Restoring ----------------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class Restored:
@@ -425,7 +456,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     if type(keep) is not int or keep < 0:
                         raise ValueError("keep 不合法")
                     boundary = message_from_json(record.get("boundary"))
-                    history = [boundary] + (history[len(history) - min(keep, len(history)):] if keep else [])
+                    history = [boundary] + (history[len(history) - min(keep, len(history)) :] if keep else [])
                 elif kind == "provider":
                     if not isinstance(record.get("name"), str) or not isinstance(record.get("protocol"), str):
                         raise ValueError("provider 记录不合法")
@@ -433,8 +464,12 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     last_provider = (record["name"], record["protocol"])
                 elif kind == "skill":
                     name, arguments, pinned = record.get("name"), record.get("arguments", ""), record.get("pinned")
-                    if not isinstance(name, str) or not name or not isinstance(arguments, str) \
-                            or not isinstance(pinned, bool):
+                    if (
+                        not isinstance(name, str)
+                        or not name
+                        or not isinstance(arguments, str)
+                        or not isinstance(pinned, bool)
+                    ):
                         raise ValueError("skill 记录不合法")
                     skills.append((name, arguments, pinned))
                 elif kind != "session":
@@ -456,11 +491,13 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     unanswered = []
     while history and history[-1].role == "user" and history[-1].synthetic is None:
         unanswered.insert(0, history.pop().shown)
-    return Restored(path.stem, history, skipped, filled, tuple(unanswered), last_time, read_title(path), stripped,
-                    tuple(skills))
+    return Restored(
+        path.stem, history, skipped, filled, tuple(unanswered), last_time, read_title(path), stripped, tuple(skills)
+    )
 
 
 # Pruning ------------------------------------------------------------------------------------
+
 
 def prune_sessions(base: Path | None = None, now: datetime | None = None, days: int = KEEP_DAYS) -> int:
     """Delete old session directories this program created (marked); anything else is left alone."""

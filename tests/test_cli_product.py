@@ -1,18 +1,18 @@
 """The moss command, setup and doctor."""
 
 import asyncio
-from importlib.metadata import version
 import io
 import os
-from pathlib import Path
 import subprocess
 import sys
+from importlib.metadata import version
+from pathlib import Path
 
 import pytest
 import yaml
 
 from mosscode import cli, doctor, launcher
-from mosscode.config import ConfigError, ProviderConfig, Settings, find_config, load_settings, render_config
+from mosscode.config import ConfigError, find_config, load_settings, render_config
 from mosscode.conversation import Conversation
 from mosscode.setup import Wizard, run_setup, setup, user_config
 from mosscode.tui import MossCodeApp
@@ -24,7 +24,6 @@ def modules_after(code: str) -> str:
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
-
 
 
 @pytest.mark.parametrize("flag", ["--version", "-v"])
@@ -47,22 +46,26 @@ def test_launcher_loads_no_interface_or_sdk():
     loaded = modules_after(
         "import sys\nfrom mosscode import launcher\n"
         "try:\n    launcher.main(['--version'])\nexcept SystemExit:\n    pass\n"
-        "print([m for m in ('textual', 'anthropic', 'openai', 'mosscode.cli', 'mosscode.tui') if m in sys.modules])")
+        "print([m for m in ('textual', 'anthropic', 'openai', 'mosscode.cli', 'mosscode.tui') if m in sys.modules])"
+    )
     assert loaded.splitlines()[-1] == "[]"
 
 
-@pytest.mark.parametrize("protocol,loaded,absent", [
-    ("openai-chat-completions", "openai", "anthropic"),
-    ("openai-responses", "openai", "anthropic"),
-    ("anthropic-messages", "anthropic", "openai"),
-])
+@pytest.mark.parametrize(
+    "protocol,loaded,absent",
+    [
+        ("openai-chat-completions", "openai", "anthropic"),
+        ("openai-responses", "openai", "anthropic"),
+        ("anthropic-messages", "anthropic", "openai"),
+    ],
+)
 def test_a_provider_imports_only_its_sdk(protocol, loaded, absent):
     out = modules_after(
         "import sys\nfrom mosscode.config import ProviderConfig\nfrom mosscode.providers import create_provider\n"
         f"create_provider(ProviderConfig('p', {protocol!r}, 'm', api_key='k'))\n"
-        f"print({loaded!r} in sys.modules, {absent!r} in sys.modules)")
+        f"print({loaded!r} in sys.modules, {absent!r} in sys.modules)"
+    )
     assert out == "True False"
-
 
 
 def test_arguments_positional_prompt_and_print_mode():
@@ -75,13 +78,16 @@ def test_arguments_positional_prompt_and_print_mode():
     assert launcher.parse_arguments(["--", "doctor"]).initial == "doctor"
 
 
-@pytest.mark.parametrize("argv", [
-    ["-p", "a", "b"],
-    ["hi", "--resume"],
-    ["--output-format", "json", "hi"],
-    ["-c", "--resume", "id"],
-    ["--team-dir", "x"],
-])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["-p", "a", "b"],
+        ["hi", "--resume"],
+        ["--output-format", "json", "hi"],
+        ["-c", "--resume", "id"],
+        ["--team-dir", "x"],
+    ],
+)
 def test_argument_mistakes_exit_with_2(argv, capsys):
     with pytest.raises(SystemExit) as exit:
         launcher.parse_arguments(argv)
@@ -157,6 +163,7 @@ async def test_initial_prompt_is_sent_once_started():
 
 # SU, CF --------------------------------------------------------------------
 
+
 def wizard(answers, *, secret=None, environ=None):
     answers, out = iter(answers), []
 
@@ -167,14 +174,19 @@ def wizard(answers, *, secret=None, environ=None):
             raise answer
         return answer
 
-    return Wizard(read=read, secret=secret or (lambda question: pytest.fail("no secret asked")),
-                  write=out.append, environ=environ or {}), out
+    return Wizard(
+        read=read,
+        secret=secret or (lambda question: pytest.fail("no secret asked")),
+        write=out.append,
+        environ=environ or {},
+    ), out
 
 
 def test_setup_writes_an_environment_variable_config(tmp_path):
     # Invalid answers are asked again: protocol 9, an ftp address, a window of "abc".
-    w, out = wizard(["9", "1", "ftp://x", "", "claude-model", "abc", "200k", "", "", ""],
-                    environ={"ANTHROPIC_API_KEY": "set"})
+    w, out = wizard(
+        ["9", "1", "ftp://x", "", "claude-model", "abc", "200k", "", "", ""], environ={"ANTHROPIC_API_KEY": "set"}
+    )
     assert setup(tmp_path, w) == "ready"
     settings = load_settings(user_config(tmp_path))
     provider = settings.providers[0]
@@ -221,6 +233,7 @@ def test_setup_never_overwrites_and_writes_nothing_when_left(tmp_path):
 
 def test_setup_command_needs_a_terminal(monkeypatch, capsys):
     from mosscode import setup as module
+
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     assert module.main([]) == 2
     assert "终端" in capsys.readouterr().err
@@ -255,14 +268,28 @@ def test_first_run_starts_setup_only_in_a_terminal(monkeypatch):
 
 # DR ------------------------------------------------------------------------
 
+
 def test_doctor_reports_credentials_without_values(tmp_path, monkeypatch):
     secret = "sk-doctor-secret-456"
     path = tmp_path / "c.yaml"
-    path.write_text(yaml.safe_dump({"default_provider": "a", "providers": [
-        {"name": "a", "protocol": "anthropic-messages", "model": "m", "api_key": secret,
-         "base_url": "https://gateway.example/v1?token=x"},
-        {"name": "b", "protocol": "openai-responses", "model": "m", "api_key_env": "MOSS_TEST_UNSET_KEY"},
-    ]}), encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "default_provider": "a",
+                "providers": [
+                    {
+                        "name": "a",
+                        "protocol": "anthropic-messages",
+                        "model": "m",
+                        "api_key": secret,
+                        "base_url": "https://gateway.example/v1?token=x",
+                    },
+                    {"name": "b", "protocol": "openai-responses", "model": "m", "api_key_env": "MOSS_TEST_UNSET_KEY"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.delenv("MOSS_TEST_UNSET_KEY", raising=False)
     items = doctor.check_config(str(path), cwd=tmp_path)
     text = doctor.report(items)
@@ -298,8 +325,9 @@ def test_doctor_exit_code(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "check_home", lambda: [])
     assert doctor.main(["--config", str(tmp_path / "missing.yaml")]) == 1
     good = tmp_path / "good.yaml"
-    good.write_text(render_config({"name": "p", "protocol": "openai-responses", "model": "m", "api_key": "k"}),
-                    encoding="utf-8")
+    good.write_text(
+        render_config({"name": "p", "protocol": "openai-responses", "model": "m", "api_key": "k"}), encoding="utf-8"
+    )
     assert doctor.main(["--config", str(good)]) == 0
     assert "✓ 配置" in capsys.readouterr().out
 

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from importlib import resources
-import json
 from pathlib import Path
-import re
-from typing import Iterable, Literal
+from typing import Literal
 
 import yaml
 
@@ -24,10 +25,17 @@ DESCRIPTION_LIMIT = 250
 CATALOG_LIMIT = 8000
 LOAD_SKILL = "load_skill"
 # Names known before MCP connects. load_skill is a system tool and always allowed.
-BUILTIN_TOOLS = frozenset({"read_file", "write_file", "edit_file", "execute_command", "glob", "grep", "memory",
-                           "exit_plan_mode"})
-CLAUDE_TOOLS = {"Read": "read_file", "Write": "write_file", "Edit": "edit_file", "Bash": "execute_command",
-                "Glob": "glob", "Grep": "grep"}
+BUILTIN_TOOLS = frozenset(
+    {"read_file", "write_file", "edit_file", "execute_command", "glob", "grep", "memory", "exit_plan_mode"}
+)
+CLAUDE_TOOLS = {
+    "Read": "read_file",
+    "Write": "write_file",
+    "Edit": "edit_file",
+    "Bash": "execute_command",
+    "Glob": "glob",
+    "Grep": "grep",
+}
 Source = Literal["builtin", "user", "project"]
 SOURCE_LABELS = {"builtin": "内置", "user": "用户", "project": "项目"}
 
@@ -90,6 +98,7 @@ def tool_full_name(skill: str, tool: str) -> str:
 
 # Parsing ----------------------------------------------------------------------------------
 
+
 def _read(path: Path) -> str:
     try:
         data = path.read_bytes()
@@ -116,7 +125,7 @@ def _split(text: str, path: Path) -> tuple[dict, str]:
         raise SkillError(f"{path}：frontmatter 不是合法的 YAML（{getattr(exc, 'problem', None) or exc}）。") from None
     if not isinstance(meta, dict):
         raise SkillError(f"{path}：frontmatter 必须是键值对。")
-    return meta, "\n".join(lines[end + 1:]).strip()
+    return meta, "\n".join(lines[end + 1 :]).strip()
 
 
 def _field(meta: dict, path: Path, *names: str):
@@ -205,12 +214,14 @@ def _tool(item, index: int, skill: str, path: Path) -> SkillToolDef:
     schema = item.get("input_schema")
     try:
         from ..mcp_client import check_schema
+
         check_schema(schema)
     except Exception as exc:  # ValueError or jsonschema.SchemaError
-        raise SkillError(f"{where}（{name}）：input_schema 不合法（{getattr(exc, 'message', None) or exc}）。") from None
+        raise SkillError(
+            f"{where}（{name}）：input_schema 不合法（{getattr(exc, 'message', None) or exc}）。"
+        ) from None
     command = item.get("command")
-    if (not isinstance(command, list) or not command
-            or not all(isinstance(part, str) and part for part in command)):
+    if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
         raise SkillError(f"{where}（{name}）：command 必须是非空字符串组成的非空数组。")
     timeout = item.get("timeout", DEFAULT_TIMEOUT)
     if type(timeout) not in (int, float) or not 0 < timeout <= MAX_TIMEOUT:
@@ -267,14 +278,24 @@ def parse_skill(directory: Path, source: Source) -> SkillDef:
             raise SkillError(f"Skill {name}：allowed_tools 中的 {item} 不是已知工具（{path}）。")
         allowed.append(item)
     return SkillDef(
-        name, description, body, path, source, mode,
+        name,
+        description,
+        body,
+        path,
+        source,
+        mode,
         _choice(meta, path, "fork_context", ("none", "recent", "full"), "none"),
-        tuple(allowed), model, _text(meta, path, "argument-hint", "argument_hint"),
+        tuple(allowed),
+        model,
+        _text(meta, path, "argument-hint", "argument_hint"),
         not _flag(meta, path, "disable-model-invocation", "disable_model_invocation", default=False),
-        _flag(meta, path, "user-invocable", "user_invocable", default=True), tools)
+        _flag(meta, path, "user-invocable", "user_invocable", default=True),
+        tools,
+    )
 
 
 # Catalog ----------------------------------------------------------------------------------
+
 
 def builtin_dir() -> Path:
     return Path(str(resources.files(__name__).joinpath("builtin")))
@@ -282,9 +303,11 @@ def builtin_dir() -> Path:
 
 def skill_dirs(root: Path, home: Path | None = None, builtin: Path | None = None) -> list[tuple[Source, Path]]:
     """Lowest priority first."""
-    return [("builtin", builtin if builtin is not None else builtin_dir()),
-            ("user", mosscode_home(home) / "skills"),
-            ("project", root / ".mosscode" / "skills")]
+    return [
+        ("builtin", builtin if builtin is not None else builtin_dir()),
+        ("user", mosscode_home(home) / "skills"),
+        ("project", root / ".mosscode" / "skills"),
+    ]
 
 
 @dataclass
@@ -295,15 +318,18 @@ class SkillCatalog:
     _origin: tuple = field(default=(), repr=False)  # load() arguments, for reload().
 
     @classmethod
-    def load(cls, root: Path, home: Path | None = None, *, reserved: Iterable[str] = (),
-             builtin: Path | None = None) -> SkillCatalog:
+    def load(
+        cls, root: Path, home: Path | None = None, *, reserved: Iterable[str] = (), builtin: Path | None = None
+    ) -> SkillCatalog:
         """Scan the three places; a later place replaces a same-named skill of an earlier one."""
         reserved = set(reserved)
         skills: dict[str, SkillDef] = {}
         problems: list[str] = []
         for source, base in skill_dirs(root, home, builtin):
             try:
-                children = sorted(child for child in base.iterdir() if child.is_dir() and not child.name.startswith("."))
+                children = sorted(
+                    child for child in base.iterdir() if child.is_dir() and not child.name.startswith(".")
+                )
             except OSError:
                 continue  # A missing place is not a problem.
             for directory in children:
@@ -352,7 +378,7 @@ class SkillCatalog:
                 continue
             description = skill.description
             if len(description) > DESCRIPTION_LIMIT:
-                description = description[:DESCRIPTION_LIMIT - 1] + "…"
+                description = description[: DESCRIPTION_LIMIT - 1] + "…"
             line = f"- {skill.name}：{description}"
             if size + len(line) + 1 > CATALOG_LIMIT:
                 left += 1
@@ -361,9 +387,11 @@ class SkillCatalog:
             size += len(line) + 1
         if not lines:
             return "", None
-        text = ("## Skill\nSkill 是可复用的操作规程。用户的请求与下列某个 Skill 的描述相符时，先调用 load_skill 加载它，"
-                "再按加载后的规程执行；不要凭描述猜测规程的内容。用户用 /<名称> 直接调用的 Skill 已附带规程，不需要再加载。\n\n"
-                + "\n".join(lines))
+        text = (
+            "## Skill\nSkill 是可复用的操作规程。用户的请求与下列某个 Skill 的描述相符时，先调用 load_skill 加载它，"
+            "再按加载后的规程执行；不要凭描述猜测规程的内容。用户用 /<名称> 直接调用的 Skill 已附带规程，不需要再加载。\n\n"
+            + "\n".join(lines)
+        )
         notice = f"有 {left} 个 Skill 未列入模型可见的目录，仍可用命令调用。" if left else None
         return text, notice
 
@@ -377,6 +405,7 @@ def missing_tools(skill: SkillDef, available: Iterable[str]) -> list[str]:
 @dataclass(frozen=True)
 class ForkRequest:
     """An explicit /<name> of a fork skill; prompt is its rendered SOP."""
+
     skill: SkillDef
     prompt: str
 

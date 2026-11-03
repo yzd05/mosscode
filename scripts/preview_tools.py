@@ -1,17 +1,15 @@
 """Visual check of real tools + Textual; fixed model, temporary files, no API config."""
 
 import asyncio
-import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from mosscode.tui import PromptArea
+from preview_tui import capture
 
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Delta, Message, ToolCall
 from mosscode.tools import create_default_registry
-from mosscode.tui import MossCodeApp, ToolEntry
-from preview_tui import capture
+from mosscode.tui import MossCodeApp, PromptArea, ToolEntry
 
 
 class ToolPreviewProvider:
@@ -21,14 +19,21 @@ class ToolPreviewProvider:
 
     async def stream(self, messages, system, tools=(), *, allow_tools=True):
         if messages[-1].role == "user":
-            yield Completed(Message("assistant", (), tool_calls=(
-                ToolCall("read-demo", "read_file", '{"path":"demo.py"}'),
-                ToolCall("grep-demo", "grep", '{"pattern":"greet","glob":"*.py"}'),
-            )), "tool_calls")
+            yield Completed(
+                Message(
+                    "assistant",
+                    (),
+                    tool_calls=(
+                        ToolCall("read-demo", "read_file", '{"path":"demo.py"}'),
+                        ToolCall("grep-demo", "grep", '{"pattern":"greet","glob":"*.py"}'),
+                    ),
+                ),
+                "tool_calls",
+            )
         else:
             self.continuing.set()
             await self.advance.wait()
-            answer = "入口文件定义了 **`greet()`**，返回问候语。\n\n```python\ndef greet():\n    return \"Hello, MossCode!\"\n```\n\n- 已读取 `demo.py`\n- 已找到 `greet` 的定义"
+            answer = '入口文件定义了 **`greet()`**，返回问候语。\n\n```python\ndef greet():\n    return "Hello, MossCode!"\n```\n\n- 已读取 `demo.py`\n- 已找到 `greet` 的定义'
             yield Delta("text", answer[:23])
             yield Delta("text", answer[23:])
             yield Completed(Message("assistant", (ContentBlock("text", answer),)), "stop")
@@ -60,7 +65,13 @@ async def main():
         root = Path(temporary)
         (root / "demo.py").write_text('def greet():\n    return "Hello, MossCode!"\n', encoding="utf-8")
         provider = ToolPreviewProvider()
-        app = MossCodeApp(Conversation(provider, registry=create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False)), "Demo Provider")
+        app = MossCodeApp(
+            Conversation(
+                provider,
+                registry=create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False),
+            ),
+            "Demo Provider",
+        )
         async with app.run_test(size=(100, 36)) as pilot:
             await exercise_tools(pilot)
             capture(app, output / "tool-dialogue")

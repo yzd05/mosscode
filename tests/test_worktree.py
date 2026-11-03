@@ -3,16 +3,16 @@
 import asyncio
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 import yaml
 
 from mosscode import cli
-from mosscode.agents import AgentCatalog, AgentError, parse_agent
+from mosscode.agents import AgentError, parse_agent
 from mosscode.agents.runtime import WORKSPACE_TOOLS
 from mosscode.builtin_commands import BUILTIN
 from mosscode.commands import parse_input
@@ -20,22 +20,45 @@ from mosscode.config import ConfigError, load_settings
 from mosscode.messages import ToolCall
 from mosscode.prompts import instruction_candidates
 from mosscode.tools import create_default_registry
-from mosscode.worktree import (WorktreeChanged, WorktreeError, WorktreeManager, count_changes, flatten, load_meta,
-                               read_head, validate_name)
+from mosscode.worktree import (
+    WorktreeChanged,
+    WorktreeError,
+    WorktreeManager,
+    count_changes,
+    flatten,
+    load_meta,
+    read_head,
+    validate_name,
+)
 from mosscode.worktree import git as worktree_git
 from mosscode.worktree import manager as manager_module
 from test_agent import call, response
 from test_commands import context, run
 from test_sessions import drain
-from test_subagents import (ScriptProvider, agents_dir, conversation, hook_engine, main_requests, project_of,
-                                    settle, tool_results_of, write_agent)
-
+from test_subagents import (
+    ScriptProvider,
+    agents_dir,
+    conversation,
+    hook_engine,
+    main_requests,
+    project_of,
+    settle,
+    tool_results_of,
+    write_agent,
+)
 
 # Helpers ------------------------------------------------------------------------------------------
 
+
 def git(cwd, *args):
-    done = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
-                           *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    done = subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     assert done.returncode == 0, done.stderr
     return done.stdout.strip()
 
@@ -61,13 +84,33 @@ def branches(project) -> list[str]:
 
 # Names ----------------------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("name", ["feature/a", "agent-1a2b3c4d", "v1.2", "a_b"])
 def test_valid_names(name):
     assert validate_name(name) is None
 
 
-@pytest.mark.parametrize("name", ["", "x" * 65, "..", "a/../b", "a..b", "a//b", "/a", "a/", ".hidden", "-x", "a.lock", "a.",
-                                  "nul", "COM1.txt", "a b", "中文"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "x" * 65,
+        "..",
+        "a/../b",
+        "a..b",
+        "a//b",
+        "/a",
+        "a/",
+        ".hidden",
+        "-x",
+        "a.lock",
+        "a.",
+        "nul",
+        "COM1.txt",
+        "a b",
+        "中文",
+    ],
+)
 def test_invalid_names(name):
     assert validate_name(name)
 
@@ -85,6 +128,7 @@ async def test_flat_names_and_case_clash(tmp_path):
 
 
 # Creating -------------------------------------------------------------------------------------
+
 
 async def test_create_records_everything_and_keeps_the_main_status_clean(tmp_path):
     project = repo(tmp_path)
@@ -136,6 +180,7 @@ async def test_subdirectory_project(tmp_path):
 
 # Resuming -----------------------------------------------------------------------------------------
 
+
 async def test_resume_reads_the_filesystem_only(tmp_path, monkeypatch):
     project = repo(tmp_path)
     manager = manager_of(project)
@@ -145,6 +190,7 @@ async def test_resume_reads_the_filesystem_only(tmp_path, monkeypatch):
 
     def refuse(*args, **kwargs):
         raise AssertionError("git must not run")
+
     monkeypatch.setattr(worktree_git, "run_git", refuse)
     again = await manager.create("demo")
     assert again.resumed and again.meta.path == first.meta.path
@@ -160,6 +206,7 @@ async def test_broken_worktree_is_reported_not_deleted_and_setup_finishes(tmp_pa
     (project / ".mosscode").mkdir(exist_ok=True)
     (project / ".mosscode" / "permissions.local.yaml").write_text("allow: []\n", encoding="utf-8")
     from mosscode.worktree.meta import save_meta
+
     save_meta(meta, manager.meta_path("demo"))
     again = await manager.create("demo")
     assert again.resumed and (path / ".mosscode" / "permissions.local.yaml").is_file()
@@ -172,6 +219,7 @@ async def test_broken_worktree_is_reported_not_deleted_and_setup_finishes(tmp_pa
 
 
 # Setup ----------------------------------------------------------------------------------------
+
 
 async def test_local_files_include_and_links(tmp_path):
     project = repo(tmp_path)
@@ -203,6 +251,7 @@ async def test_links_fall_back_to_a_junction_without_the_symlink_privilege(tmp_p
 
     def refuse(*args, **kwargs):  # What Windows says without Developer Mode or the privilege.
         raise OSError(None, "客户端没有所需的特权。", None, 1314)
+
     monkeypatch.setattr("mosscode.worktree.setup.os.symlink", refuse)
     manager = manager_of(project, links=["node_modules", "local.bin"])
     created = await manager.create("demo")
@@ -235,6 +284,7 @@ async def test_failed_step_is_a_warning(tmp_path, monkeypatch):
 
     def broken(*args):
         raise OSError("boom")
+
     monkeypatch.setattr(manager_module, "copy_included", broken)
     created = await manager_of(project).create("demo")
     assert Path(created.meta.path).is_dir() and any("boom" in item for item in created.warnings)
@@ -256,6 +306,7 @@ async def test_git_hooks_run_and_config_stays(tmp_path):
 
 
 # Changes and deleting -------------------------------------------------------------------------
+
 
 async def test_change_counting(tmp_path):
     project = repo(tmp_path)
@@ -295,6 +346,7 @@ async def test_delete_keeps_link_targets_and_never_uses_worktree_remove(tmp_path
     def recording(args, cwd, **kwargs):
         calls.append(list(args))
         return original(args, cwd, **kwargs)
+
     monkeypatch.setattr(worktree_git, "run_git", recording)
     changes = await manager.remove("demo", discard=True)
     assert changes.uncommitted == 1
@@ -317,6 +369,7 @@ async def test_failed_delete_is_retried_by_clean(tmp_path, monkeypatch):
 
     def failing(*args, **kwargs):
         raise PermissionError(13, "busy")
+
     monkeypatch.setattr(manager_module.shutil, "rmtree", failing)
     finished = await manager.finish(created.meta)
     assert not finished.kept and "未完成" in finished.error
@@ -331,6 +384,7 @@ async def test_failed_delete_is_retried_by_clean(tmp_path, monkeypatch):
 
 # Cleaning -----------------------------------------------------------------------------------------
 
+
 async def test_clean_removes_only_old_unused_unchanged_ephemeral_worktrees(tmp_path):
     project = repo(tmp_path)
     manager = manager_of(project)
@@ -344,11 +398,15 @@ async def test_clean_removes_only_old_unused_unchanged_ephemeral_worktrees(tmp_p
     odd = await manager.create("agent-odd")
     for item in (stale, fresh, changed, busy, dead, manual, odd):
         meta = load_meta(manager.meta_path(item.meta.flat))
-        meta.in_use = {"pid": os.getpid(), "task": "t4"} if item is busy else (
-            {"pid": 999999999, "task": "t5"} if item is dead else None)
+        meta.in_use = (
+            {"pid": os.getpid(), "task": "t4"}
+            if item is busy
+            else ({"pid": 999999999, "task": "t5"} if item is dead else None)
+        )
         if item is odd:
             meta.manual = False
         from mosscode.worktree.meta import save_meta
+
         save_meta(meta, manager.meta_path(item.meta.flat))
         if item is not fresh:
             os.utime(manager.meta_path(item.meta.flat), (old, old))
@@ -372,8 +430,10 @@ async def test_stale_hours_zero_starts_no_cleanup(tmp_path):
 
 # Isolated sub-agents ---------------------------------------------------------------------------
 
+
 def isolated_script(kind, *, agent_type="writer", isolation=None, background=False):
     """The main agent calls one sub-agent; `kind` decides what the sub-agent does."""
+
     def script(messages, system, tools):
         if "SUB-" in system.stable:
             if len(messages) == 1:
@@ -387,14 +447,16 @@ def isolated_script(kind, *, agent_type="writer", isolation=None, background=Fal
                 args["run_in_background"] = True
             return response(calls=[call("agent", "a1", **args)])
         return response("主对话完成")
+
     return script
 
 
 async def test_writer_keeps_its_worktree_and_main_is_untouched(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-WRITER")
-    provider = ScriptProvider(isolated_script(lambda *a: response(calls=[
-        call("write_file", "w1", path="b.txt", content="from worktree\n")])))
+    provider = ScriptProvider(
+        isolated_script(lambda *a: response(calls=[call("write_file", "w1", path="b.txt", content="from worktree\n")]))
+    )
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
     result = tool_results_of(main_requests(provider)[1])[0]
@@ -425,9 +487,16 @@ async def test_boundaries(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-W")
     outside = str(project / "c.txt")
-    provider = ScriptProvider(isolated_script(lambda *a: response(calls=[
-        call("write_file", "w1", path=outside, content="x"),
-        call("write_file", "w2", path=".mosscode/permissions.yaml", content="allow: ['*']\n")])))
+    provider = ScriptProvider(
+        isolated_script(
+            lambda *a: response(
+                calls=[
+                    call("write_file", "w1", path=outside, content="x"),
+                    call("write_file", "w2", path=".mosscode/permissions.yaml", content="allow: ['*']\n"),
+                ]
+            )
+        )
+    )
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
     child = [r for r in provider.requests if "SUB-W" in r[1].stable]
@@ -449,8 +518,11 @@ async def test_boundaries(tmp_path):
 async def test_parameter_fork_plan_and_definition(tmp_path):
     project = repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "", "SUB-PLAIN")
-    provider = ScriptProvider(isolated_script(lambda *a: response(calls=[
-        call("write_file", "w1", path="b.txt", content="x")]), isolation="worktree"))
+    provider = ScriptProvider(
+        isolated_script(
+            lambda *a: response(calls=[call("write_file", "w1", path="b.txt", content="x")]), isolation="worktree"
+        )
+    )
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
     assert conv.tasks.get("t1").worktree is not None and not (project / "b.txt").exists()
@@ -460,6 +532,7 @@ async def test_parameter_fork_plan_and_definition(tmp_path):
         if messages[-1].role == "user":
             return response(calls=[call("agent", "f1", description="x", prompt="p", isolation="worktree")])
         return response("好")
+
     provider = ScriptProvider(fork)
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
@@ -479,7 +552,9 @@ async def test_parameter_fork_plan_and_definition(tmp_path):
 
     with pytest.raises(AgentError, match="isolation"):
         parse_agent(write_agent(tmp_path / "defs", "bad", "isolation: docker\n"), "project")
-    assert parse_agent(write_agent(tmp_path / "defs", "good", "isolation: worktree\n"), "project").isolation == "worktree"
+    assert (
+        parse_agent(write_agent(tmp_path / "defs", "good", "isolation: worktree\n"), "project").isolation == "worktree"
+    )
 
 
 async def test_outside_a_repository(tmp_path, monkeypatch):
@@ -509,18 +584,24 @@ async def test_background_cancel_and_parallel(tmp_path):
                 return response(calls=[call("write_file", "w", path=name, content=name)])
             return slow(messages, system, tools)
         if messages[-1].role == "user":
-            return response(calls=[
-                call("agent", "a1", description="一", prompt="第一", agent_type="writer", run_in_background=True),
-                call("agent", "a2", description="二", prompt="第二", agent_type="writer", run_in_background=True)])
+            return response(
+                calls=[
+                    call("agent", "a1", description="一", prompt="第一", agent_type="writer", run_in_background=True),
+                    call("agent", "a2", description="二", prompt="第二", agent_type="writer", run_in_background=True),
+                ]
+            )
         return response("好")
+
     provider = ScriptProvider(script)
     conv = conversation(tmp_path, provider)
     await drain(conv.reply("开始"))
     started = tool_results_of(main_requests(provider)[1])
     assert [r.details["task"] for r in started] == ["t1", "t2"]
     for _ in range(200):
-        if all(len([r for r in provider.requests if "SUB-W" in r[1].stable and r[0][0].text.endswith(word)]) == 2
-               for word in ("第一", "第二")):
+        if all(
+            len([r for r in provider.requests if "SUB-W" in r[1].stable and r[0][0].text.endswith(word)]) == 2
+            for word in ("第一", "第二")
+        ):
             break
         await asyncio.sleep(0.05)
     one, two = conv.tasks.get("t1"), conv.tasks.get("t2")
@@ -549,6 +630,7 @@ async def test_dirty_main_directory_is_mentioned(tmp_path):
 
 # Search and instructions -----------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("ripgrep", [True, False])
 async def test_search_skips_worktrees_unless_asked(tmp_path, monkeypatch, ripgrep):
     if ripgrep and shutil.which("rg") is None:
@@ -562,10 +644,12 @@ async def test_search_skips_worktrees_unless_asked(tmp_path, monkeypatch, ripgre
     tools = create_default_registry(project, permission_mode="bypassPermissions", load_permissions=False)
     if not ripgrep:  # After the registry: the shell is found with shutil.which too.
         from mosscode.tools import search
+
         monkeypatch.setattr(search.shutil, "which", lambda name: None)
 
     async def execute(name, **args):
         return (await tools.execute(ToolCall("c", name, json.dumps(args)))).output
+
     assert "copy.txt" not in await execute("glob", pattern="**/*.txt")
     assert "copy.txt" not in await execute("grep", pattern="needle")
     assert "main.txt" in await execute("grep", pattern="needle")
@@ -606,21 +690,26 @@ def test_instructions_above_the_main_project_still_load_in_a_worktree(tmp_path):
 
 # Hooks ------------------------------------------------------------------------------------------------
 
+
 async def test_hook_fields(tmp_path):
-    project = repo(tmp_path)
+    repo(tmp_path)
     write_agent(agents_dir(tmp_path), "writer", "isolation: worktree\n", "SUB-W")
-    hooks = hook_engine(tmp_path, {"id": "after", "event": "post_tool_use", "action": {"type": "command",
-                                                                                     "command": "echo ok"}},
-                        {"id": "hi", "event": "subagent_start", "action": {"type": "prompt", "message": "HI"}},
-                        {"id": "bye", "event": "subagent_stop", "action": {"type": "command", "command": "echo bye"}})
+    hooks = hook_engine(
+        tmp_path,
+        {"id": "after", "event": "post_tool_use", "action": {"type": "command", "command": "echo ok"}},
+        {"id": "hi", "event": "subagent_start", "action": {"type": "prompt", "message": "HI"}},
+        {"id": "bye", "event": "subagent_stop", "action": {"type": "command", "command": "echo bye"}},
+    )
     seen, original = [], hooks.fire
 
     async def fire(event):
         seen.append(event)
         return await original(event)
+
     hooks.fire = fire
-    provider = ScriptProvider(isolated_script(lambda *a: response(calls=[
-        call("write_file", "w1", path="b.txt", content="x")])))
+    provider = ScriptProvider(
+        isolated_script(lambda *a: response(calls=[call("write_file", "w1", path="b.txt", content="x")]))
+    )
     conv = conversation(tmp_path, provider, hooks=hooks)
     await drain(conv.reply("开始"))
     await hooks.drain(1)
@@ -637,6 +726,7 @@ async def test_hook_fields(tmp_path):
 
 
 # Commands ------------------------------------------------------------------------------------------
+
 
 async def test_worktree_command(tmp_path, monkeypatch):
     project = repo(tmp_path)
@@ -688,6 +778,7 @@ async def test_tasks_detail_and_headless(tmp_path):
 
 # Configuration ---------------------------------------------------------------------------------------
 
+
 def write_config(tmp_path, **extra):
     provider = {"name": "p", "protocol": "anthropic-messages", "model": "m", "api_key_env": "MOSS_TEST_KEY"}
     path = tmp_path / "config.yaml"
@@ -698,36 +789,51 @@ def write_config(tmp_path, **extra):
 def test_configuration(tmp_path):
     settings = load_settings(write_config(tmp_path))
     assert settings.worktree_links == () and settings.worktree_stale_hours == 24.0
-    settings = load_settings(write_config(tmp_path, worktree_links=["node_modules/", "a\\b", "node_modules"],
-                                          worktree_stale_hours=0))
+    settings = load_settings(
+        write_config(tmp_path, worktree_links=["node_modules/", "a\\b", "node_modules"], worktree_stale_hours=0)
+    )
     assert settings.worktree_links == ("node_modules", "a/b") and settings.worktree_stale_hours == 0
-    for bad in ({"worktree_links": ["/abs"]}, {"worktree_links": ["C:/abs"]}, {"worktree_links": ["../up"]},
-                {"worktree_links": "node_modules"}, {"worktree_links": [".git/hooks"]},
-                {"worktree_stale_hours": -1}, {"worktree_stale_hours": 9000}, {"worktree_stale_hours": "1"}):
+    for bad in (
+        {"worktree_links": ["/abs"]},
+        {"worktree_links": ["C:/abs"]},
+        {"worktree_links": ["../up"]},
+        {"worktree_links": "node_modules"},
+        {"worktree_links": [".git/hooks"]},
+        {"worktree_stale_hours": -1},
+        {"worktree_stale_hours": 9000},
+        {"worktree_stale_hours": "1"},
+    ):
         with pytest.raises(ConfigError, match="worktree_"):
             load_settings(write_config(tmp_path, **bad))
 
 
 def test_tool_row_names_the_worktree():
     from mosscode.tui import describe_call
-    name, detail, _ = describe_call(call("agent", "a1", description="改", prompt="p", agent_type="general",
-                                         isolation="worktree"))
+
+    name, detail, _ = describe_call(
+        call("agent", "a1", description="改", prompt="p", agent_type="general", isolation="worktree")
+    )
     assert (name, detail) == ("Agent", "general · 工作树 · 改")
     assert describe_call(call("agent", "a1", description="改", prompt="p"))[1] == "fork · 改"
 
 
 async def test_live_row_names_the_worktree_only_when_the_task_has_one():
     from textual.app import App
+
     from mosscode.agents.tasks import Task
     from mosscode.messages import ToolProgress
     from mosscode.tui import ToolEntry
+
     async with App().run_test() as pilot:
-        for asked, isolated, expected in [(True, False, "writer · 改"),  # Plan mode skipped the worktree.
-                                          (False, True, "writer · 工作树 · 改"),  # The definition asked for it.
-                                          (True, True, "writer · 工作树 · 改")]:
+        for asked, isolated, expected in [
+            (True, False, "writer · 改"),  # Plan mode skipped the worktree.
+            (False, True, "writer · 工作树 · 改"),  # The definition asked for it.
+            (True, True, "writer · 工作树 · 改"),
+        ]:
             extra = {"isolation": "worktree"} if asked else {}
-            row = ToolEntry(ToolProgress(call("agent", "a1", description="改", prompt="p", agent_type="writer",
-                                              **extra), "running"))
+            row = ToolEntry(
+                ToolProgress(call("agent", "a1", description="改", prompt="p", agent_type="writer", **extra), "running")
+            )
             await pilot.app.mount(row)
             assert row.detail == "writer · 改"  # Nothing is claimed before the task starts.
             row.progress(Task("t1", "agent", "subagent", "writer", "改", "p", isolated=isolated))

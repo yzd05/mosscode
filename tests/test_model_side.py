@@ -13,7 +13,7 @@ import yaml
 
 from mosscode.config import ConfigError, ProviderConfig, find_config, load_settings
 from mosscode.conversation import Conversation
-from mosscode.messages import Completed, ContentBlock, Delta, Message, ProviderError, Retrying, RunStopped, ToolCall
+from mosscode.messages import Completed, Delta, Message, ProviderError, Retrying, RunStopped, ToolCall
 from mosscode.prompts import INSTRUCTION_LIMIT, git_snapshot, load_instructions
 from mosscode.providers import AnthropicProvider, SDKProvider
 from mosscode.tools import create_default_registry
@@ -21,13 +21,20 @@ from test_agent import SequenceProvider, call, response
 from test_providers import SSEBody, anthropic_frames
 from test_tools import python_command
 
-
 # Plain-text tool results.
+
 
 async def test_command_failure_is_plain_text_with_stdout_once(tmp_path):
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
-    failure = await registry.execute(call("execute_command", command=python_command(
-        "import sys; print('marker-out'); print('marker-err', file=sys.stderr); sys.exit(3)"), timeout=10))
+    failure = await registry.execute(
+        call(
+            "execute_command",
+            command=python_command(
+                "import sys; print('marker-out'); print('marker-err', file=sys.stderr); sys.exit(3)"
+            ),
+            timeout=10,
+        )
+    )
     text = failure.model_text()
     assert text.startswith("错误 [nonzero_exit]：命令退出码为 3。")
     assert text.count("marker-out") == 1 and text.count("marker-err") == 1
@@ -45,11 +52,16 @@ async def test_invalid_arguments_list_fields_for_the_model(tmp_path):
 
 # Truncated tool calls are never executed.
 
+
 async def test_truncated_tool_call_is_not_executed_and_loop_continues(tmp_path):
-    cut = Completed(Message("assistant", (), tool_calls=(ToolCall("w", "write_file", '{"path": "big.txt", "con'),)),
-                    "max_tokens")
+    cut = Completed(
+        Message("assistant", (), tool_calls=(ToolCall("w", "write_file", '{"path": "big.txt", "con'),)), "max_tokens"
+    )
     provider = SequenceProvider(cut, response("改为分段写入"))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     events = [e async for e in conv.reply("写一个大文件")]
     assert not (tmp_path / "big.txt").exists()
     result = conv.history[2].tool_results[0]
@@ -59,6 +71,7 @@ async def test_truncated_tool_call_is_not_executed_and_loop_continues(tmp_path):
 
 
 # Retry only before the first event of a request.
+
 
 class FlakyProvider(SDKProvider):
     def __init__(self, plan, retries=4):
@@ -87,7 +100,9 @@ async def test_retries_connection_drops_before_any_event():
     provider = FlakyProvider(["drop", "drop", "ok"])
     events = await collect(provider)
     assert [(e.attempt, e.max_attempts, e.reason) for e in events if isinstance(e, Retrying)] == [
-        (1, 4, "连接中断"), (2, 4, "连接中断")]
+        (1, 4, "连接中断"),
+        (2, 4, "连接中断"),
+    ]
     assert isinstance(events[-1], Completed) and provider.calls == 3
 
 
@@ -111,6 +126,7 @@ async def test_retry_wait_is_cancellable():
         async for event in provider.stream([], "system"):
             if isinstance(event, Retrying):
                 seen.set()
+
     task = asyncio.create_task(consume())
     await asyncio.wait_for(seen.wait(), timeout=2)
     task.cancel()
@@ -125,11 +141,17 @@ async def test_real_sdk_overloaded_529_then_success():
     async def handler(request):
         requests.append(request)
         if len(requests) == 1:
-            return httpx2.Response(529, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}})
+            return httpx2.Response(
+                529, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}
+            )
         return httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=SSEBody(anthropic_frames()))
 
-    sdk = anthropic.AsyncAnthropic(api_key="private-test-key", base_url="https://gateway.example/proxy",
-                                   http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)), max_retries=0)
+    sdk = anthropic.AsyncAnthropic(
+        api_key="private-test-key",
+        base_url="https://gateway.example/proxy",
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+        max_retries=0,
+    )
     provider = AnthropicProvider(ProviderConfig("gateway", "anthropic-messages", "custom-model"), sdk)
     provider.retry_base_delay = 0
     try:
@@ -144,9 +166,14 @@ async def test_real_sdk_overloaded_529_then_success():
 
 # Config lookup and limits.
 
+
 def write_yaml(path, **extra):
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"providers": [{"name": path.parent.name or "p", "protocol": "anthropic-messages", "model": "m", "api_key_env": "K"}]}
+    data = {
+        "providers": [
+            {"name": path.parent.name or "p", "protocol": "anthropic-messages", "model": "m", "api_key_env": "K"}
+        ]
+    }
     path.write_text(yaml.safe_dump({**data, **extra}), encoding="utf-8")
     return path
 
@@ -183,14 +210,18 @@ async def test_configured_iteration_limit_applies(tmp_path):
     (tmp_path / "a").write_text("x")
     steps = [response(calls=[call("read_file", str(i), path="a")]) for i in range(5)]
     provider = SequenceProvider(*steps)
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
-                        max_iterations=3)
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        max_iterations=3,
+    )
     events = [e async for e in conv.reply("循环")]
     assert isinstance(events[-1], RunStopped) and events[-1].reason == "max_iterations"
     assert len(provider.requests) == 3
 
 
 # AGENTS.md / CLAUDE.md project instructions.
+
 
 def instruction_tree(tmp_path):
     home, parent = tmp_path / "home", tmp_path / "repo"
@@ -208,8 +239,11 @@ def test_instruction_order_priority_and_truncation(tmp_path):
     home, parent, project = instruction_tree(tmp_path)
     files, problems = load_instructions(project, home)
     ours = [f for f in files if tmp_path in f.path.resolve().parents]
-    assert [f.path.resolve() for f in ours] == [(home / ".mosscode" / "AGENTS.md").resolve(),
-                                              (parent / "CLAUDE.md").resolve(), (project / "AGENTS.md").resolve()]
+    assert [f.path.resolve() for f in ours] == [
+        (home / ".mosscode" / "AGENTS.md").resolve(),
+        (parent / "CLAUDE.md").resolve(),
+        (project / "AGENTS.md").resolve(),
+    ]
     assert files[0] == ours[0] and files[-2:] == ours[1:] and not problems  # The checkout's own may sit between.
     assert all("取代" not in f.text for f in files)
     # A multibyte character cut at the size limit is dropped, not reported.
@@ -250,6 +284,7 @@ async def test_without_context_root_nothing_is_loaded(tmp_path):
 
 # Git snapshot.
 
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 def test_git_snapshot_repo_and_non_repo(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))  # Git still searches the ceiling itself.
@@ -269,6 +304,7 @@ def test_git_snapshot_repo_and_non_repo(tmp_path, monkeypatch):
 def test_git_failure_does_not_interrupt(tmp_path, monkeypatch):
     def broken(*args, **kwargs):
         raise subprocess.TimeoutExpired("git", 3)
+
     monkeypatch.setattr(subprocess, "run", broken)
     assert git_snapshot(tmp_path) == {"available": False}
 

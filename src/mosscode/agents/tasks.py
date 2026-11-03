@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-import time
-from typing import Awaitable, Callable, Literal
+from typing import Literal
 
 from ..messages import UsageTotals
 

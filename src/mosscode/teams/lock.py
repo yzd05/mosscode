@@ -6,15 +6,16 @@ held only for the file work, never across a model call.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import datetime
 import json
 import os
-from pathlib import Path
 import random
 import secrets
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 LOCK_RETRIES = 10
 BACKOFF = (0.005, 0.1)  # Seconds, random within.
@@ -51,8 +52,14 @@ def _holder(lock: Path) -> str:
 
 
 @contextmanager
-def file_lock(path: Path, *, busy: str = "team_busy", retries: int = LOCK_RETRIES, stale: float = STALE_AFTER,
-              deadline: float = DEADLINE):
+def file_lock(
+    path: Path,
+    *,
+    busy: str = "team_busy",
+    retries: int = LOCK_RETRIES,
+    stale: float = STALE_AFTER,
+    deadline: float = DEADLINE,
+):
     """O_CREAT|O_EXCL on <file>.lock; retries with random backoff, then TeamError(busy).
 
     The count starts again whenever the lock changed hands (others are making progress, it is not stuck),
@@ -76,7 +83,9 @@ def file_lock(path: Path, *, busy: str = "team_busy", retries: int = LOCK_RETRIE
                 attempt = 0
             seen = holder or seen
             if attempt >= retries or time.monotonic() - start > deadline:
-                raise TeamError(busy, f"{path.name} 正被其他进程使用，重试 {retries} 次后仍拿不到锁；稍后再试。") from None
+                raise TeamError(
+                    busy, f"{path.name} 正被其他进程使用，重试 {retries} 次后仍拿不到锁；稍后再试。"
+                ) from None
             attempt += 1
             time.sleep(random.uniform(*BACKOFF))
             continue
@@ -139,8 +148,9 @@ def read_text(path: Path) -> str:
             time.sleep(0.02)
 
 
-def load_json(path: Path, default: Callable[[], Any], valid: Callable[[Any], bool],
-              on_notice: Callable[[str], None] | None = None) -> Any:
+def load_json(
+    path: Path, default: Callable[[], Any], valid: Callable[[Any], bool], on_notice: Callable[[str], None] | None = None
+) -> Any:
     """Missing -> default; unreadable or the wrong shape -> kept as <file>.corrupt-<time>, then default."""
     try:
         text = read_text(path)

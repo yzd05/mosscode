@@ -60,6 +60,9 @@ def cache_summary(total: UsageTotals) -> str:
 def request_usage_text(usage: Usage, iteration: int) -> str:
     def show(value):
         return "未提供" if value is None else str(value)
-    return (f"第 {iteration} 次请求 · Token 入 {show(usage.input_tokens)} / 出 {show(usage.output_tokens)}"
-            f" · 缓存读 {show(usage.cached_input_tokens)} / 写 {show(usage.cache_write_tokens)}"
-            f" · 未缓存输入 {show(usage.uncached_input_tokens)}")
+
+    return (
+        f"第 {iteration} 次请求 · Token 入 {show(usage.input_tokens)} / 出 {show(usage.output_tokens)}"
+        f" · 缓存读 {show(usage.cached_input_tokens)} / 写 {show(usage.cache_write_tokens)}"
+        f" · 未缓存输入 {show(usage.uncached_input_tokens)}"
+    )

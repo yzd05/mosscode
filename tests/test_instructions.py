@@ -32,7 +32,6 @@ def load(project, home, tmp_path):
     return [f for f in files if tmp_path in f.path.resolve().parents], problems
 
 
-
 def test_layers_run_from_user_to_dot_mosscode(tmp_path):
     home, project = tree(tmp_path)
     write(home / ".mosscode" / "AGENTS.md", "用户级")
@@ -46,7 +45,6 @@ def test_layers_run_from_user_to_dot_mosscode(tmp_path):
     (project.parent / "AGENTS.md").unlink()
     files, _ = load(project, home, tmp_path)
     assert [f.text for f in files] == ["用户级", "专用"]
-
 
 
 def test_references_expand_relative_to_their_own_file(tmp_path):
@@ -63,8 +61,7 @@ def test_references_expand_relative_to_their_own_file(tmp_path):
 def test_code_fences_and_inline_mentions_are_left_alone(tmp_path):
     home, project = tree(tmp_path)
     write(project / "x.md", "不应出现")
-    text = ("```python\n@x.md\n@dataclass\n```\n~~~\n@x.md\n~~~\n@dataclass\n"
-            "联系 a@b.com，参考 @x.md 一节\n`@x.md`")
+    text = "```python\n@x.md\n@dataclass\n```\n~~~\n@x.md\n~~~\n@dataclass\n联系 a@b.com，参考 @x.md 一节\n`@x.md`"
     write(project / "AGENTS.md", text)
     [file], problems = load(project, home, tmp_path)
     assert file.text == text and not file.includes and not problems
@@ -81,7 +78,6 @@ def test_user_file_may_reference_its_own_directory_with_tilde(tmp_path):
     assert problems == [f"项目指令引用未展开：{home / '.mosscode' / 'AGENTS.md'} 中的 @~/other.md（超出允许的目录）"]
 
 
-
 def test_reference_depth_is_limited(tmp_path):
     home, project = tree(tmp_path)
     write(project / "AGENTS.md", "@c1.md")
@@ -90,8 +86,9 @@ def test_reference_depth_is_limited(tmp_path):
     [file], problems = load(project, home, tmp_path)
     assert f"第{INCLUDE_DEPTH}层" in file.text and f"第{INCLUDE_DEPTH + 1}层" not in file.text
     assert file.text.endswith(f"（引用层级超过 {INCLUDE_DEPTH} 层，未展开：c{INCLUDE_DEPTH + 1}.md）")
-    assert problems == [f"项目指令引用未展开：c{INCLUDE_DEPTH}.md 中的 @c{INCLUDE_DEPTH + 1}.md"
-                        f"（引用层级超过 {INCLUDE_DEPTH} 层）"]
+    assert problems == [
+        f"项目指令引用未展开：c{INCLUDE_DEPTH}.md 中的 @c{INCLUDE_DEPTH + 1}.md（引用层级超过 {INCLUDE_DEPTH} 层）"
+    ]
 
 
 def test_cycles_are_reported_and_shared_files_load_once(tmp_path):
@@ -108,9 +105,10 @@ def test_cycles_are_reported_and_shared_files_load_once(tmp_path):
     assert "（已在其他位置加载：shared.md）" in root_file.text
     assert "（已在其他位置加载：.mosscode/AGENTS.md）" in root_file.text
     assert "（已在其他位置加载：b.md）" in root_file.text  # AGENTS.md's own @b.md after a.md pulled it in
-    assert sorted(problems) == ["项目指令引用未展开：b.md 中的 @AGENTS.md（循环引用）",
-                                "项目指令引用未展开：b.md 中的 @a.md（循环引用）"]
-
+    assert sorted(problems) == [
+        "项目指令引用未展开：b.md 中的 @AGENTS.md（循环引用）",
+        "项目指令引用未展开：b.md 中的 @a.md（循环引用）",
+    ]
 
 
 def test_references_cannot_leave_their_layer_boundary(tmp_path):
@@ -148,7 +146,6 @@ def test_junction_out_of_the_project_is_not_followed(tmp_path):
         os.rmdir(link)
 
 
-
 def test_unreadable_references_are_replaced_and_the_rest_loads(tmp_path):
     home, project = tree(tmp_path)
     write(project / "AGENTS.md", "开头\n@missing.md\n@docs/\n@bin.dat\n@gbk.md\n@ok.md")
@@ -157,10 +154,16 @@ def test_unreadable_references_are_replaced_and_the_rest_loads(tmp_path):
     write(project / "gbk.md", "中文".encode("gbk"))
     write(project / "ok.md", "正常")
     [file], problems = load(project, home, tmp_path)
-    assert file.text == ("开头\n（引用无法读取：missing.md）\n（引用无法读取：docs/）\n（引用无法读取：bin.dat）\n"
-                         "（引用无法读取：gbk.md）\n正常")
-    assert [p.rsplit("（", 1)[1] for p in problems] == ["文件不存在或不是文件）", "文件不存在或不是文件）",
-                                                         "不是文本文件）", "不是 UTF-8 文本）"]
+    assert file.text == (
+        "开头\n（引用无法读取：missing.md）\n（引用无法读取：docs/）\n（引用无法读取：bin.dat）\n"
+        "（引用无法读取：gbk.md）\n正常"
+    )
+    assert [p.rsplit("（", 1)[1] for p in problems] == [
+        "文件不存在或不是文件）",
+        "文件不存在或不是文件）",
+        "不是文本文件）",
+        "不是 UTF-8 文本）",
+    ]
 
 
 def test_expanded_text_is_capped(tmp_path):
@@ -172,7 +175,6 @@ def test_expanded_text_is_capped(tmp_path):
     assert file.overflow and not file.truncated
     body, note = file.text.rsplit("\n", 1)
     assert note == "（引用展开后超过 64 KiB，其余内容已截断）" and len(body.encode()) <= EXPANDED_LIMIT
-
 
 
 async def test_notices_list_references_and_instructions_stay_frozen(tmp_path):

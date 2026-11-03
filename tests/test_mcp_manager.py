@@ -1,12 +1,11 @@
 """MCP: background MCP startup, /mcp, server rules, read-only trust, .mcp.json, timeouts."""
 
 import asyncio
-from dataclasses import replace
 import json
 import sys
+from dataclasses import replace
 
 import pytest
-import yaml
 
 from mosscode.conversation import Conversation
 from mosscode.mcp_client import MCPManager, tool_name
@@ -24,14 +23,15 @@ def notes_text(app):
 
 def status_text(app):
     from textual.widgets import Static
+
     return str(app.query_one("#status", Static).render())
 
 
 async def until(predicate, pilot=None, timeout=8.0):
-    for _ in range(int(timeout / .02)):
+    for _ in range(int(timeout / 0.02)):
         if predicate():
             return
-        await (pilot.pause(.02) if pilot else asyncio.sleep(.02))
+        await (pilot.pause(0.02) if pilot else asyncio.sleep(0.02))
     raise AssertionError("条件未满足")
 
 
@@ -39,6 +39,7 @@ async def until(predicate, pilot=None, timeout=8.0):
 async def test_tui_background_startup_registers_between_requests(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
     from test_tui import send
+
     reg = create_default_registry(tmp_path, load_permissions=False)
     hang = replace(stdio_config("hang", tmp_path / "hang.log", "hang"), startup_timeout=60)
     manager = MCPManager(tmp_path, MCPSettings((stdio_config("notes", tmp_path / "calls.log"), hang)))
@@ -48,7 +49,7 @@ async def test_tui_background_startup_registers_between_requests(tmp_path):
     async def first():
         # The server becomes ready while this task runs; its notice must wait.
         await until(lambda: reg.get("mcp__notes__echo") is not None)
-        await asyncio.sleep(.2)
+        await asyncio.sleep(0.2)
         seen_mid_task.append(any("MCP notes" in text for text in notes_text(app)))
         yield response("第一轮")
 
@@ -76,6 +77,7 @@ async def test_tui_background_startup_registers_between_requests(tmp_path):
 async def test_pending_counts_a_reported_server_as_settled(tmp_path):
     # A server reports from inside its task; the status bar must not stay at "连接中 n-1/n" afterwards.
     from mosscode.mcp_client import ServerStatus
+
     manager = MCPManager(tmp_path, MCPSettings((stdio_config("notes", tmp_path / "calls.log"),)))
     gate = asyncio.Event()
     manager._tasks = [asyncio.create_task(gate.wait())]
@@ -102,13 +104,16 @@ async def test_conversation_start_still_waits_by_default(tmp_path):
 async def test_mcp_command_lists_status_reasons_and_tools(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
     from test_tui import send
+
     reg = create_default_registry(tmp_path, load_permissions=False)
     with http_server(status=503) as (url, _):
         servers = (
             replace(stdio_config("notes", tmp_path / "calls.log"), trust_read_only_hint=True),
             ServerConfig("missing", "stdio", "mosscode-missing-command-s5"),
-            ServerConfig("web", "http", url=url + "?token=fake-secret", headers={"Authorization": "Bearer fake-secret"}),
-            replace(stdio_config("hang", tmp_path / "hang.log", "hang"), startup_timeout=.5),
+            ServerConfig(
+                "web", "http", url=url + "?token=fake-secret", headers={"Authorization": "Bearer fake-secret"}
+            ),
+            replace(stdio_config("hang", tmp_path / "hang.log", "hang"), startup_timeout=0.5),
         )
         manager = MCPManager(tmp_path, MCPSettings(servers, ("MCP bad 不可用：timeout 需在 0 到 600 秒之间。",)))
         app = MossCodeApp(Conversation(SequenceProvider(), registry=reg, mcp_manager=manager), "Demo")
@@ -136,13 +141,16 @@ async def test_mcp_command_lists_status_reasons_and_tools(tmp_path):
             await pilot.press("tab")
             await pilot.pause()
             assert field.value == "/mcp "
-            assert [hint[:2] for hint in app._hint_choices] == [(f"/mcp {name}", "查看该 Server 的工具") for name in ("notes", "missing", "web", "hang")]
+            assert [hint[:2] for hint in app._hint_choices] == [
+                (f"/mcp {name}", "查看该 Server 的工具") for name in ("notes", "missing", "web", "hang")
+            ]
 
 
 async def test_mcp_command_without_servers_points_to_configuration():
     from mosscode.tui import MossCodeApp
     from test_conversation import FakeProvider
     from test_tui import send
+
     app = MossCodeApp(Conversation(FakeProvider()), "Demo")
     async with app.run_test() as pilot:
         await send(app, pilot, "/mcp")
@@ -181,6 +189,7 @@ def test_server_rule_loads_from_permission_file(tmp_path):
 # Real stdio approval offers four choices worded as any-argument grants; session stays in session.
 async def test_mcp_session_grant_covers_any_arguments_only_in_session(tmp_path):
     from mosscode.tui import choice_label
+
     reg = create_default_registry(tmp_path, load_permissions=False)
     manager = MCPManager(tmp_path, MCPSettings((stdio_config("notes", tmp_path / "calls.log"),)))
     try:
@@ -230,14 +239,23 @@ def test_mcp_json_import(tmp_path, monkeypatch):
     monkeypatch.delenv("MCP_S5_UNSET", raising=False)
     monkeypatch.setenv("MCP_S5_SET", "from-env")
     user = tmp_path / "home/mcp.yaml"
-    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {
-        "local": {"command": sys.executable, "args": ["${MCP_S5_UNSET:-fallback}", "${MCP_S5_SET}"]},
-        "web": {"type": "http", "url": "https://localhost:8443/mcp"},
-        "old": {"type": "sse", "url": "https://localhost:8443/sse"},
-        "shared": {"command": "from-mcp-json"},
-    }}), encoding="utf-8")
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "local": {"command": sys.executable, "args": ["${MCP_S5_UNSET:-fallback}", "${MCP_S5_SET}"]},
+                    "web": {"type": "http", "url": "https://localhost:8443/mcp"},
+                    "old": {"type": "sse", "url": "https://localhost:8443/sse"},
+                    "shared": {"command": "from-mcp-json"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     write_yaml(user, {"mcp_servers": {"local": {"type": "stdio", "command": "from-user"}}})
-    write_yaml(tmp_path / ".mosscode/mcp.yaml", {"mcp_servers": {"shared": {"type": "stdio", "command": "from-project"}}})
+    write_yaml(
+        tmp_path / ".mosscode/mcp.yaml", {"mcp_servers": {"shared": {"type": "stdio", "command": "from-project"}}}
+    )
     ignored = load_mcp_settings(tmp_path, user_path=user)
     assert {s.name: s.command for s in ignored.servers} == {"local": "from-user", "shared": "from-project"}
     write_yaml(user, {"import_mcp_json": True, "mcp_servers": {"local": {"type": "stdio", "command": "from-user"}}})
@@ -258,8 +276,8 @@ async def test_model_cannot_write_mcp_json(tmp_path):
 # Per-server tool timeout and startup timeout; out-of-range values become notices.
 async def test_per_server_timeouts(tmp_path):
     reg = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
-    quick = replace(stdio_config("notes", tmp_path / "calls.log"), timeout=.3)
-    hang = replace(stdio_config("hang", tmp_path / "hang.log", "hang"), startup_timeout=.4)
+    quick = replace(stdio_config("notes", tmp_path / "calls.log"), timeout=0.3)
+    hang = replace(stdio_config("hang", tmp_path / "hang.log", "hang"), startup_timeout=0.4)
     manager = MCPManager(tmp_path, MCPSettings((quick, hang)))
     try:
         started = asyncio.get_running_loop().time()
@@ -272,12 +290,20 @@ async def test_per_server_timeouts(tmp_path):
         await manager.close()
 
 
-@pytest.mark.parametrize("option", [{"timeout": 0}, {"timeout": 601}, {"startup_timeout": 121},
-                                    {"trust_read_only_hint": "yes"}])
+@pytest.mark.parametrize(
+    "option", [{"timeout": 0}, {"timeout": 601}, {"startup_timeout": 121}, {"trust_read_only_hint": "yes"}]
+)
 def test_out_of_range_options_become_notices(tmp_path, option):
     user = tmp_path / "user.yaml"
-    write_yaml(user, {"mcp_servers": {"bad": {"type": "stdio", "command": "python", **option},
-                                      "good": {"type": "stdio", "command": "python", "timeout": 5}}})
+    write_yaml(
+        user,
+        {
+            "mcp_servers": {
+                "bad": {"type": "stdio", "command": "python", **option},
+                "good": {"type": "stdio", "command": "python", "timeout": 5},
+            }
+        },
+    )
     settings = load_mcp_settings(tmp_path, user_path=user)
     assert [s.name for s in settings.servers] == ["good"] and settings.servers[0].timeout == 5
     assert len(settings.notices) == 1 and settings.notices[0].startswith("MCP bad 不可用")

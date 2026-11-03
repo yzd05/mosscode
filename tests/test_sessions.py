@@ -11,12 +11,34 @@ from mosscode import session as session_module
 from mosscode.config import ConfigError, load_settings
 from mosscode.context import ContextBudget
 from mosscode.conversation import Conversation, Notice, Resumed
-from mosscode.messages import (CompactFailed, CompactFinished, CompactStarted, Completed, ContentBlock, Message,
-                               ProviderError, ToolCall, ToolResult)
+from mosscode.messages import (
+    CompactFailed,
+    CompactFinished,
+    CompactStarted,
+    Completed,
+    ContentBlock,
+    Message,
+    ProviderError,
+    ToolCall,
+    ToolResult,
+)
 from mosscode.paths import SESSION_ID, project_key
 from mosscode.serialization import message_from_json, message_to_json
-from mosscode.session import (INTERRUPTED, MARKER, Lock, Session, Transcript, compact_record, list_sessions,
-                              load_session, message_record, project_sessions, provider_record, prune_all, repair)
+from mosscode.session import (
+    INTERRUPTED,
+    MARKER,
+    Lock,
+    Session,
+    Transcript,
+    compact_record,
+    list_sessions,
+    load_session,
+    message_record,
+    project_sessions,
+    provider_record,
+    prune_all,
+    repair,
+)
 from mosscode.tools import create_default_registry
 from test_agent import SequenceProvider, call, response
 from test_context import NO_SUMMARY, chat, summary_reply
@@ -46,9 +68,17 @@ def make(tmp_path, provider, *, persist=True, registry=None, **options):
     project, home = tmp_path / "project", tmp_path / "home"
     project.mkdir(exist_ok=True)
     registry = registry or create_default_registry(project, permission_mode="bypassPermissions", load_permissions=False)
-    return Conversation(provider, registry=registry, context_root=project, instructions_home=home,
-                        session=Session.new(project, home=home), persist=persist, sessions_home=home,
-                        provider_info=options.pop("provider_info", INFO), **options)
+    return Conversation(
+        provider,
+        registry=registry,
+        context_root=project,
+        instructions_home=home,
+        session=Session.new(project, home=home),
+        persist=persist,
+        sessions_home=home,
+        provider_info=options.pop("provider_info", INFO),
+        **options,
+    )
 
 
 def write_session(tmp_path, messages, *, when=None, extra=()):
@@ -69,19 +99,27 @@ async def drain(stream):
     return [event async for event in stream]
 
 
-
 def test_messages_round_trip_and_odd_details_never_fail(tmp_path):
     call_a = ToolCall("c1", "edit_file", json.dumps({"path": "a.txt"}))
     history = [
         user("你好"),
-        Message("assistant", (ContentBlock("thinking", "想一想"), ContentBlock("text", "好的")), "anthropic-messages",
-                ({"type": "thinking", "signature": "sig"},), (call_a,)),
-        results(ToolResult("c1", "edit_file", "已修改", details={"diff": "-a\n+b", "path": "a.txt", "lines": [1, 2]}),),
+        Message(
+            "assistant",
+            (ContentBlock("thinking", "想一想"), ContentBlock("text", "好的")),
+            "anthropic-messages",
+            ({"type": "thinking", "signature": "sig"},),
+            (call_a,),
+        ),
+        results(
+            ToolResult("c1", "edit_file", "已修改", details={"diff": "-a\n+b", "path": "a.txt", "lines": [1, 2]}),
+        ),
         user("摘要", synthetic="compact"),
     ]
     for message in history:
         assert message_from_json(json.loads(json.dumps(message_to_json(message)))) == message
-    odd = ToolResult("c2", "read_file", "x", details={"path": tmp_path / "a.txt", "set": {1}, "obj": object(), 3: (1, 2)})
+    odd = ToolResult(
+        "c2", "read_file", "x", details={"path": tmp_path / "a.txt", "set": {1}, "obj": object(), 3: (1, 2)}
+    )
     data = json.loads(json.dumps(message_to_json(results(odd)), ensure_ascii=False))
     details = data["tool_results"][0]["details"]
     assert details["path"] == str(tmp_path / "a.txt") and details["3"] == [1, 2] and isinstance(details["obj"], str)
@@ -91,19 +129,25 @@ def test_messages_round_trip_and_odd_details_never_fail(tmp_path):
 
 
 def test_strict_loading_rejects_bad_fields():
-    for bad in ({"role": "robot"}, {"role": "user", "content": [{"kind": "image"}]},
-                {"role": "tool", "tool_results": [{"call_id": "x", "name": "n", "output": "o", "is_error": "no"}]},
-                {"role": "assistant", "tool_calls": [{"id": 1, "name": "n", "arguments": "{}"}]}, "text"):
+    for bad in (
+        {"role": "robot"},
+        {"role": "user", "content": [{"kind": "image"}]},
+        {"role": "tool", "tool_results": [{"call_id": "x", "name": "n", "output": "o", "is_error": "no"}]},
+        {"role": "assistant", "tool_calls": [{"id": 1, "name": "n", "arguments": "{}"}]},
+        "text",
+    ):
         with pytest.raises(ValueError):
             message_from_json(bad)
-
 
 
 async def test_records_follow_history_commits_and_batches_are_final(tmp_path):
     (tmp_path / "project").mkdir()
     (tmp_path / "project" / "a.txt").write_text("alpha", encoding="utf-8")
-    provider = SequenceProvider(response("先读", [call("read_file", "r1", path="a.txt"), call("glob", "g1", pattern="*.txt")]),
-                                response("再读", [call("read_file", "r2", path="a.txt")]), response("完成"))
+    provider = SequenceProvider(
+        response("先读", [call("read_file", "r1", path="a.txt"), call("glob", "g1", pattern="*.txt")]),
+        response("再读", [call("read_file", "r2", path="a.txt")]),
+        response("完成"),
+    )
     conv = make(tmp_path, provider)
     path = conv.session.transcript_path
     assert not path.exists()
@@ -135,10 +179,10 @@ async def test_no_messages_no_file_and_half_lines_are_cut(tmp_path):
     assert [message_from_json(r["message"]).text for r in lines[1:]] == ["一", "二", "三"]
 
 
-
 async def test_write_failure_is_reported_once_and_the_chat_goes_on(tmp_path, monkeypatch):
     def full(self):
         raise OSError(28, "磁盘空间不足")
+
     monkeypatch.setattr(Transcript, "_create", full)
     conv = make(tmp_path, SequenceProvider(response("一"), response("二")))
     first = await drain(conv.reply("你好"))
@@ -188,7 +232,6 @@ def test_settings_accept_the_new_switches(tmp_path):
             load_settings(path)
 
 
-
 def _raw_session(tmp_path, lines):
     project, home = tmp_path / "project", tmp_path / "home"
     session = Session.new(project, home=home)
@@ -201,35 +244,50 @@ def _raw_session(tmp_path, lines):
 def test_replay_skips_bad_lines_and_applies_compact_and_provider_records(tmp_path):
     native = ({"type": "thinking", "signature": "sig"},)
     boundary = user("（摘要）", synthetic="compact")
-    path = _raw_session(tmp_path, [
-        message_record(user("u1")), message_record(assistant("a1", protocol="anthropic-messages", native=native)),
-        "{bad json", {"type": "message", "message": {"role": "robot"}}, {"type": "compact", "keep": -1},
-        {"type": "from-the-future", "x": 1},
-        message_record(user("u2")), message_record(assistant("a2", protocol="anthropic-messages", native=native)),
-        compact_record(boundary, 2, None),
-        message_record(user("u3")), message_record(assistant("a3", protocol="anthropic-messages", native=native)),
-    ])
+    path = _raw_session(
+        tmp_path,
+        [
+            message_record(user("u1")),
+            message_record(assistant("a1", protocol="anthropic-messages", native=native)),
+            "{bad json",
+            {"type": "message", "message": {"role": "robot"}},
+            {"type": "compact", "keep": -1},
+            {"type": "from-the-future", "x": 1},
+            message_record(user("u2")),
+            message_record(assistant("a2", protocol="anthropic-messages", native=native)),
+            compact_record(boundary, 2, None),
+            message_record(user("u3")),
+            message_record(assistant("a3", protocol="anthropic-messages", native=native)),
+        ],
+    )
     same = load_session(path, ("main", "anthropic-messages"))
     assert same.skipped == 3 and not same.stripped
     assert [m.text for m in same.history] == ["（摘要）", "u2", "a2", "u3", "a3"] and same.history[-1].native == native
     other = load_session(path, ("other", "openai-responses"))
     assert other.stripped and all(not m.native and m.protocol is None for m in other.history)
-    whole = load_session(_raw_session(tmp_path, [message_record(user("u")), message_record(assistant("a")),
-                                                 compact_record(boundary, 99, None)]))
+    whole = load_session(
+        _raw_session(
+            tmp_path, [message_record(user("u")), message_record(assistant("a")), compact_record(boundary, 99, None)]
+        )
+    )
     assert [m.text for m in whole.history] == ["（摘要）", "u", "a"]
 
 
 def test_provider_records_strip_earlier_messages_and_name_the_model(tmp_path):
     native = ({"type": "thinking", "signature": "sig"},)
-    path = _raw_session(tmp_path, [
-        message_record(user("u1")), message_record(assistant("a1", protocol="openai-responses", native=native)),
-        provider_record("main", "anthropic-messages", "model-a"),
-        message_record(user("u2")), message_record(assistant("a2", protocol="anthropic-messages", native=native)),
-    ])
+    path = _raw_session(
+        tmp_path,
+        [
+            message_record(user("u1")),
+            message_record(assistant("a1", protocol="openai-responses", native=native)),
+            provider_record("main", "anthropic-messages", "model-a"),
+            message_record(user("u2")),
+            message_record(assistant("a2", protocol="anthropic-messages", native=native)),
+        ],
+    )
     restored = load_session(path, ("main", "anthropic-messages"))
     assert not restored.stripped and restored.history[1].native == () and restored.history[3].native == native
     assert load_session(path, ("second", "anthropic-messages")).stripped
-
 
 
 THREE = [ToolCall(f"c{i}", "read_file", json.dumps({"path": f"{i}.txt"})) for i in (1, 2, 3)]
@@ -238,16 +296,23 @@ THREE = [ToolCall(f"c{i}", "read_file", json.dumps({"path": f"{i}.txt"})) for i 
 def test_missing_results_are_filled_orphans_dropped_and_trailing_users_returned(tmp_path):
     history, filled = repair([user("做"), assistant("我先看三个文件", THREE)])
     assert filled == 3 and history[1].text == "我先看三个文件"
-    assert [(r.call_id, r.code, r.output) for r in history[2].tool_results] == [(f"c{i}", "interrupted", INTERRUPTED)
-                                                                                for i in (1, 2, 3)]
-    partial, filled = repair([user("做"), assistant("", THREE),
-                              results(ToolResult("c2", "read_file", "二"), ToolResult("zz", "read_file", "孤立"))])
+    assert [(r.call_id, r.code, r.output) for r in history[2].tool_results] == [
+        (f"c{i}", "interrupted", INTERRUPTED) for i in (1, 2, 3)
+    ]
+    partial, filled = repair(
+        [
+            user("做"),
+            assistant("", THREE),
+            results(ToolResult("c2", "read_file", "二"), ToolResult("zz", "read_file", "孤立")),
+        ]
+    )
     assert filled == 2 and [r.call_id for r in partial[2].tool_results] == ["c1", "c2", "c3"]
     assert partial[2].tool_results[1].output == "二"
     orphan, _ = repair([user("一"), results(ToolResult("x", "read_file", "孤立")), assistant("二")])
     assert [m.role for m in orphan] == ["user", "assistant"]
-    path = _raw_session(tmp_path, [message_record(m) for m in
-                                   (user("做"), assistant("看", THREE), user("排队一"), user("排队二"))])
+    path = _raw_session(
+        tmp_path, [message_record(m) for m in (user("做"), assistant("看", THREE), user("排队一"), user("排队二"))]
+    )
     restored = load_session(path)
     assert restored.unanswered == ("排队一", "排队二") and restored.interrupted == 3
     assert [m.role for m in restored.history] == ["user", "assistant", "tool"]
@@ -256,6 +321,7 @@ def test_missing_results_are_filled_orphans_dropped_and_trailing_users_returned(
 @pytest.mark.parametrize("case", range(3))
 async def test_every_protocol_accepts_the_repaired_history(case):
     from test_providers import CASES, SSEBody, adapter
+
     protocol, cls, frames, _ = CASES[case]
     provider, requests, _ = adapter(protocol, cls, lambda: SSEBody(frames()))
     history, _ = repair([user("做"), assistant("我先看三个文件", THREE)])
@@ -267,7 +333,6 @@ async def test_every_protocol_accepts_the_repaired_history(case):
         assert all(payload.count(f'"c{i}"') >= 2 for i in (1, 2, 3)) and INTERRUPTED in payload
     finally:
         await provider.close()
-
 
 
 def test_lists_twenty_newest_with_titles_counts_and_locks(tmp_path, monkeypatch):
@@ -305,7 +370,6 @@ async def test_empty_project_and_unknown_ids_are_explained(tmp_path):
         conv.resolve_session("20990101-000000-abcd")
 
 
-
 @pytest.mark.parametrize("auto_compact", [True, False])
 async def test_an_oversized_session_is_compacted_before_input(tmp_path, auto_compact):
     saved = write_session(tmp_path, chat(8))
@@ -326,10 +390,11 @@ async def test_failed_compaction_still_restores(tmp_path):
     events = await drain(conv.resume(saved.id))
     failed = events[-1]
     assert isinstance(failed, CompactFailed) and failed.code == "restore"
-    assert failed.reason.startswith("恢复的会话超出上下文窗口，压缩失败：") and failed.reason.endswith("可以 /compact 重试或 /clear")
+    assert failed.reason.startswith("恢复的会话超出上下文窗口，压缩失败：") and failed.reason.endswith(
+        "可以 /compact 重试或 /clear"
+    )
     assert len(conv.history) == 16 and conv._agent.compact_failures == 0
     await conv.close()
-
 
 
 def _supplements(request):
@@ -356,9 +421,12 @@ async def test_reads_session_rules_and_usage_reset_but_the_mode_stays(tmp_path):
     (tmp_path / "project").mkdir()
     (tmp_path / "project" / "a.txt").write_text("alpha", encoding="utf-8")
     saved = write_session(tmp_path, [user("一"), assistant("二")])
-    provider = SequenceProvider(response("", [call("read_file", "r", path="a.txt")]), response("读了"),
-                                response("", [call("edit_file", "e", path="a.txt", old_text="alpha", new_text="beta")]),
-                                response("没改成"))
+    provider = SequenceProvider(
+        response("", [call("read_file", "r", path="a.txt")]),
+        response("读了"),
+        response("", [call("edit_file", "e", path="a.txt", old_text="alpha", new_text="beta")]),
+        response("没改成"),
+    )
     registry = create_default_registry(tmp_path / "project", permission_mode="acceptEdits", load_permissions=False)
     conv = make(tmp_path, provider, registry=registry)
     await conv.ask("读")
@@ -372,9 +440,9 @@ async def test_reads_session_rules_and_usage_reset_but_the_mode_stays(tmp_path):
     await conv.close()
 
 
-
 async def test_resume_appends_to_the_same_file_and_clear_starts_a_new_one(tmp_path):
     from test_context import Dump, dump
+
     project = tmp_path / "project"
     project.mkdir()
     registry = create_default_registry(project, permission_mode="bypassPermissions", load_permissions=False)
@@ -393,7 +461,9 @@ async def test_resume_appends_to_the_same_file_and_clear_starts_a_new_one(tmp_pa
     await conv.clear()
     assert conv.session_id != old_id and conv.session.directory != directory
     await conv.ask("新话题")
-    assert conv.session.transcript_path.is_file() and records(conv.session.transcript_path)[1]["message"]["role"] == "user"
+    assert (
+        conv.session.transcript_path.is_file() and records(conv.session.transcript_path)[1]["message"]["role"] == "user"
+    )
     assert old_id in {s.id for s in list_sessions(project, home=tmp_path / "home")}
     await conv.close()
 
@@ -403,9 +473,12 @@ async def test_model_switch_writes_a_provider_record(tmp_path):
     await conv.ask("你好")
     await conv.set_provider(SequenceProvider(), info=("other", "openai-responses", "model-b"))
     last = records(conv.session.transcript_path)[-1]
-    assert last["type"] == "provider" and (last["name"], last["protocol"], last["model"]) == ("other", "openai-responses", "model-b")
+    assert last["type"] == "provider" and (last["name"], last["protocol"], last["model"]) == (
+        "other",
+        "openai-responses",
+        "model-b",
+    )
     await conv.close()
-
 
 
 def test_cleanup_removes_old_sessions_together_and_skips_the_rest(tmp_path):
@@ -453,10 +526,10 @@ def test_project_keys_are_readable_hashed_and_case_folded_on_windows(tmp_path):
     assert project_key(tmp_path / "a-b") != project_key(tmp_path / "a" / "b")
 
 
-
 def _cli(monkeypatch, capsys, args, provider):
     from mosscode import cli
     from test_cli import setup_cli
+
     setup_cli(monkeypatch, args)
     monkeypatch.setattr(cli, "create_provider", lambda config: provider)
     code = 0
@@ -469,8 +542,9 @@ def _cli(monkeypatch, capsys, args, provider):
 
 
 def test_cli_continue_and_resume_answer_in_the_restored_context(monkeypatch, capsys):
-    code, out, _ = _cli(monkeypatch, capsys, ["-p", "记住数字 42", "--output-format", "json"],
-                        SequenceProvider(response("记住了")))
+    code, out, _ = _cli(
+        monkeypatch, capsys, ["-p", "记住数字 42", "--output-format", "json"], SequenceProvider(response("记住了"))
+    )
     first = json.loads(out)
     assert code == 0 and SESSION_ID.fullmatch(first["session_id"])
     provider = SequenceProvider(response("是 42"))
@@ -478,8 +552,12 @@ def test_cli_continue_and_resume_answer_in_the_restored_context(monkeypatch, cap
     assert code == 0 and json.loads(out)["session_id"] == first["session_id"]
     assert [m.text for m in provider.requests[0][0]] == ["记住数字 42", "记住了", "数字是几"]
     provider = SequenceProvider(response("还是 42"))
-    code, out, _ = _cli(monkeypatch, capsys, ["--resume", first["session_id"], "-p", "再说一次",
-                                              "--output-format", "stream-json"], provider)
+    code, out, _ = _cli(
+        monkeypatch,
+        capsys,
+        ["--resume", first["session_id"], "-p", "再说一次", "--output-format", "stream-json"],
+        provider,
+    )
     events = [json.loads(line) for line in out.splitlines()]
     assert events[0] == {"type": "session", "id": first["session_id"], "resumed": True}
     assert len(provider.requests[0][0]) == 5
@@ -497,11 +575,19 @@ def test_cli_rejects_resume_without_id_in_print_mode_and_unknown_ids(monkeypatch
 async def test_tui_lists_resumes_renders_and_returns_unanswered_text(tmp_path):
     from rich.console import Console
     from textual.widgets import OptionList, Static
+
     from mosscode.tui import MossCodeApp, PromptArea
     from test_tui import send
+
     old = write_session(tmp_path, [user("第一个会话"), assistant("好")])
-    target = write_session(tmp_path, [user("修改 notes.txt"), assistant("先读", [ToolCall("r", "read_file", '{"path": "notes.txt"}')]),
-                                      user("排队的追问")])
+    target = write_session(
+        tmp_path,
+        [
+            user("修改 notes.txt"),
+            assistant("先读", [ToolCall("r", "read_file", '{"path": "notes.txt"}')]),
+            user("排队的追问"),
+        ],
+    )
     stamp = (datetime.now() - timedelta(hours=1)).timestamp()
     os.utime(old.transcript_path, (stamp, stamp))
     conv = make(tmp_path, SequenceProvider())
@@ -512,11 +598,13 @@ async def test_tui_lists_resumes_renders_and_returns_unanswered_text(tmp_path):
         assert app.query_one("#model-panel").display and options.option_count == 2 and options.highlighted == 0
         assert "修改 notes.txt" in str(options.get_option_at_index(0).prompt)
         await pilot.press("enter")
+
         def rendered():
             console = Console(record=True, width=100)
             for widget in app.query(Static):
                 console.print(getattr(widget, "transcript", None) or widget.render())
             return console.export_text()
+
         for _ in range(200):  # Under a loaded test run the resume task may start a few frames late.
             await pilot.pause()
             if not app._task_running and "最后 1 条消息没有得到回复" in rendered():
@@ -532,9 +620,11 @@ async def test_tui_lists_resumes_renders_and_returns_unanswered_text(tmp_path):
 
 async def test_tui_refuses_resume_while_running(tmp_path):
     import asyncio
+
     from mosscode.tui import MossCodeApp, PromptArea
     from test_conversation import FakeProvider
     from test_tui import send
+
     provider = FakeProvider()
     provider.hold = True
     conv = make(tmp_path, provider)

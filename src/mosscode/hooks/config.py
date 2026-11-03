@@ -1,12 +1,12 @@
 """Read the three hook files, validate each hook, trust records."""
 
-from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import tempfile
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -22,8 +22,12 @@ TEXT_LIMIT = 8000
 REJECT_LIMIT = 2000
 HOOK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 HOOK_KEYS = {"id", "event", "if", "action", "reject", "on_error", "once", "async"}
-ACTION_KEYS = {"command": {"type", "command", "timeout", "feedback"}, "prompt": {"type", "message"},
-               "http": {"type", "url", "method", "headers", "json", "timeout"}, "agent": {"type", "prompt", "agent_type", "timeout"}}
+ACTION_KEYS = {
+    "command": {"type", "command", "timeout", "feedback"},
+    "prompt": {"type", "message"},
+    "http": {"type", "url", "method", "headers", "json", "timeout"},
+    "agent": {"type", "prompt", "agent_type", "timeout"},
+}
 METHODS = ("POST", "GET", "PUT", "PATCH", "DELETE")
 ARGV_PLACEHOLDERS = ("FILE_PATH", "PROJECT_ROOT", "PYTHON", "TOOL_NAME", "EVENT")
 ARGV_PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
@@ -80,9 +84,16 @@ class Hook:
         return self.action.summary()
 
     def flags(self) -> tuple[str, ...]:
-        return tuple(name for name, on in (("reject", self.reject is not None), ("once", self.once),
-                                            ("async", self.background), ("on_error: block", self.on_error == "block"))
-                     if on)
+        return tuple(
+            name
+            for name, on in (
+                ("reject", self.reject is not None),
+                ("once", self.once),
+                ("async", self.background),
+                ("on_error: block", self.on_error == "block"),
+            )
+            if on
+        )
 
 
 @dataclass(frozen=True)
@@ -116,8 +127,11 @@ class HookConfig:
 
 def hook_paths(root: Path, home: Path | None = None) -> tuple[tuple[str, Path], ...]:
     root = Path(root).resolve()
-    return (("user", mosscode_home(home) / "hooks.yaml"), ("project", root / ".mosscode" / "hooks.yaml"),
-            ("local", root / ".mosscode" / "hooks.local.yaml"))
+    return (
+        ("user", mosscode_home(home) / "hooks.yaml"),
+        ("project", root / ".mosscode" / "hooks.yaml"),
+        ("local", root / ".mosscode" / "hooks.local.yaml"),
+    )
 
 
 class TrustStore:
@@ -200,21 +214,27 @@ def _action(raw, event: str) -> Action:
         agent_type = raw.get("agent_type", "general")
         if not isinstance(agent_type, str) or not AGENT_TYPE.fullmatch(agent_type):
             raise HookConfigError("agent_type 需为子 Agent 定义的名称（小写字母开头，只含小写字母、数字和 -）。")
-        return Action("agent", prompt=_text(raw.get("prompt"), "prompt", TEXT_LIMIT), agent_type=agent_type,
-                      timeout=_timeout(raw, AGENT_TIMEOUT))
+        return Action(
+            "agent",
+            prompt=_text(raw.get("prompt"), "prompt", TEXT_LIMIT),
+            agent_type=agent_type,
+            timeout=_timeout(raw, AGENT_TIMEOUT),
+        )
     if kind == "command":
         command = raw.get("command")
         if isinstance(command, list):
             # YAML reads bare `-3` or `8080` as numbers; argv wants their text.
-            command = [str(part) if isinstance(part, (int, float)) and not isinstance(part, bool) else part
-                       for part in command]
+            command = [
+                str(part) if isinstance(part, (int, float)) and not isinstance(part, bool) else part for part in command
+            ]
             if not command or any(not isinstance(part, str) or not part for part in command):
                 raise HookConfigError("command 数组需由非空字符串组成。")
             for part in command:
                 for match in ARGV_PLACEHOLDER.finditer(part):
                     if match[1] not in ARGV_PLACEHOLDERS:
-                        raise HookConfigError(f"command 数组只支持 {', '.join('${' + p + '}' for p in ARGV_PLACEHOLDERS)}："
-                                              f"{match[0]}")
+                        raise HookConfigError(
+                            f"command 数组只支持 {', '.join('${' + p + '}' for p in ARGV_PLACEHOLDERS)}：{match[0]}"
+                        )
             command = tuple(command)
         elif not isinstance(command, str) or not command.strip():
             raise HookConfigError("command 需为字符串或非空字符串数组。")
@@ -230,7 +250,9 @@ def _action(raw, event: str) -> Action:
     try:
         url = substitute_env(url)
         headers = raw.get("headers", {})
-        if not isinstance(headers, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()):
+        if not isinstance(headers, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()
+        ):
             raise HookConfigError("headers 需为字符串键值对象。")
         headers = tuple((k, substitute_env(v)) for k, v in headers.items())
     except MCPConfigError as exc:
@@ -252,8 +274,15 @@ def _action(raw, event: str) -> Action:
             json.dumps(raw["json"], allow_nan=False)
         except (TypeError, ValueError):
             raise HookConfigError("json 需为可序列化为 JSON 的值。") from None
-    return Action("http", url=url, method=method.upper(), headers=headers, json_body=raw.get("json"),
-                  has_json=has_json, timeout=_timeout(raw))
+    return Action(
+        "http",
+        url=url,
+        method=method.upper(),
+        headers=headers,
+        json_body=raw.get("json"),
+        has_json=has_json,
+        timeout=_timeout(raw),
+    )
 
 
 def parse_hook(raw, source: str, path: Path) -> Hook:
@@ -308,8 +337,9 @@ def parse_hook(raw, source: str, path: Path) -> Hook:
         # The sub-agent always runs in the background; it can neither reject nor block a call.
         raise HookConfigError("agent 动作总在后台执行，不能写 async: false、reject 或 on_error: block。")
     background = asynchronous or agent or (spec.background and action is not None and action.type != "prompt")
-    return Hook(hook_id, event, source, path, condition, action, reject, on_error, raw.get("once", False),
-                background, raw=raw)
+    return Hook(
+        hook_id, event, source, path, condition, action, reject, on_error, raw.get("once", False), background, raw=raw
+    )
 
 
 def read_file(source: str, path: Path) -> tuple[HookFile, list[str]]:
@@ -343,13 +373,16 @@ def read_file(source: str, path: Path) -> tuple[HookFile, list[str]]:
         try:
             hooks.append(parse_hook(entry, source, path))
         except HookConfigError as exc:
-            label = entry.get("id") if isinstance(entry, dict) and isinstance(entry.get("id"), str) else f"第 {index} 项"
+            label = (
+                entry.get("id") if isinstance(entry, dict) and isinstance(entry.get("id"), str) else f"第 {index} 项"
+            )
             problems.append(f"{path} · {label} · {exc}")
     return HookFile(source, path, digest, tuple(hooks)), problems
 
 
-def load_hooks(root: Path, home: Path | None = None, *, store: TrustStore | None = None,
-               trust_project: bool = False) -> HookConfig:
+def load_hooks(
+    root: Path, home: Path | None = None, *, store: TrustStore | None = None, trust_project: bool = False
+) -> HookConfig:
     files, problems, seen = [], [], set()
     for source, path in hook_paths(root, home):
         file, issues = read_file(source, path)
@@ -361,7 +394,11 @@ def load_hooks(root: Path, home: Path | None = None, *, store: TrustStore | None
                 continue
             seen.add(hook.id)
             unique.append(hook)
-        trusted = (source == "user" or trust_project or file.digest is None
-                   or (store is not None and store.trusted(path.name, file.digest)))
+        trusted = (
+            source == "user"
+            or trust_project
+            or file.digest is None
+            or (store is not None and store.trusted(path.name, file.digest))
+        )
         files.append(replace(file, hooks=tuple(unique), trusted=trusted))
     return HookConfig(tuple(files), tuple(problems))

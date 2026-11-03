@@ -11,8 +11,8 @@ from ctypes import byref, wintypes
 from textual import constants, events
 from textual._xterm_parser import XTermParser
 from textual.drivers import win32
-from textual.drivers.windows_driver import WindowsDriver
 from textual.drivers._writer_thread import WriterThread
+from textual.drivers.windows_driver import WindowsDriver
 
 KEY_EVENT, WINDOW_BUFFER_SIZE_EVENT = 0x0001, 0x0004
 VK_RETURN, VK_SHIFT = 0x0D, 0x10
@@ -35,8 +35,12 @@ def _shift_enter(records, index: int, shift_down) -> bool:
         # conhost keeps the modifiers on the key-up record when it follows in the
         # same batch; Windows Terminal leaves them out there too.
         following = records[index + 1] if index + 1 < len(records) else None
-        if (following is not None and following.EventType == KEY_EVENT
-                and not following.Event.KeyEvent.bKeyDown and following.Event.KeyEvent.wVirtualKeyCode == VK_RETURN):
+        if (
+            following is not None
+            and following.EventType == KEY_EVENT
+            and not following.Event.KeyEvent.bKeyDown
+            and following.Event.KeyEvent.wVirtualKeyCode == VK_RETURN
+        ):
             state = following.Event.KeyEvent.dwControlKeyState
     # A record may omit Shift; the keyboard state read right after the key press
     # covers that, so either source is enough.

@@ -1,21 +1,30 @@
 """Pane backends. wt and tmux are command doubles; the member process is real."""
 
 import asyncio
-import json
 import os
-from pathlib import Path
 import shlex
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from mosscode.config import ConfigError, load_settings
 from mosscode.teams import LEAD, Member, TeamError, TeamStore
-from mosscode.teams.backends import (IN_PROCESS, TMUX, WINDOWS_TERMINAL, TmuxBackend, WindowsTerminalBackend,
-                                     detect_backend, escape_wt, kill_tree, member_alive, member_arguments,
-                                     team_window)
+from mosscode.teams.backends import (
+    IN_PROCESS,
+    TMUX,
+    WINDOWS_TERMINAL,
+    TmuxBackend,
+    WindowsTerminalBackend,
+    detect_backend,
+    escape_wt,
+    kill_tree,
+    member_alive,
+    member_arguments,
+    team_window,
+)
 from mosscode.teams.lock import now
 from mosscode.teams.mailbox import Message
 from mosscode.teams.runtime import PaneRunner
@@ -29,6 +38,7 @@ def which(*found):
 
 
 # Auto --------------------------------------------------------------------------------------
+
 
 def test_auto_order_and_reasons():
     choice = detect_backend("auto", {"TMUX": "/tmp/s,1,0", "WT_SESSION": "x"}, which("tmux", "wt"))
@@ -58,12 +68,16 @@ async def test_auto_reason_in_the_result_and_team_detail(tmp_path):
 
 # Explicit and missing ----------------------------------------------------------------------
 
-@pytest.mark.parametrize("mode, env, found, missing", [
-    ("tmux", {}, which("tmux"), "TMUX 为空"),
-    ("tmux", {"TMUX": "x"}, which(), "找不到 tmux"),
-    ("windows-terminal", {}, which("wt"), "WT_SESSION 为空"),
-    ("windows-terminal", {"WT_SESSION": "x"}, which(), "找不到 wt.exe"),
-])
+
+@pytest.mark.parametrize(
+    "mode, env, found, missing",
+    [
+        ("tmux", {}, which("tmux"), "TMUX 为空"),
+        ("tmux", {"TMUX": "x"}, which(), "找不到 tmux"),
+        ("windows-terminal", {}, which("wt"), "WT_SESSION 为空"),
+        ("windows-terminal", {"WT_SESSION": "x"}, which(), "找不到 wt.exe"),
+    ],
+)
 def test_explicit_backend_unavailable(mode, env, found, missing):
     with pytest.raises(TeamError) as caught:
         detect_backend(mode, env, found)
@@ -87,9 +101,11 @@ async def test_spawn_creates_nothing(tmp_path):
 def test_config_values(tmp_path):
     def config(extra):
         path = tmp_path / "c.yaml"
-        path.write_text("providers:\n  - {name: p, protocol: openai-compat, model: m, api_key: k}\n" + extra,
-                        encoding="utf-8")
+        path.write_text(
+            "providers:\n  - {name: p, protocol: openai-compat, model: m, api_key: k}\n" + extra, encoding="utf-8"
+        )
         return path
+
     settings = load_settings(config(""))
     assert (settings.teammate_mode, settings.coordinator_mode) == ("auto", False)
     settings = load_settings(config("teammate_mode: windows-terminal\ncoordinator_mode: true\n"))
@@ -101,14 +117,24 @@ def test_config_values(tmp_path):
 
 # Command lines -----------------------------------------------------------------------------
 
+
 def test_windows_terminal_command():
     backend = WindowsTerminalBackend(which=which("wt"), python="py")
     cwd = Path("work;tree")
     arguments = member_arguments(Path("teams") / "t", "alice", None, "deep;seek")
     command = backend.command(cwd, arguments, member="alice", team="t", window="mosscode-t-abc123")
     # A tab of the team's window, titled for the member; the lead's window is not split.
-    assert command[:9] == ["/bin/wt", "-w", "mosscode-t-abc123", "new-tab", "--title", "alice · t",
-                           "--suppressApplicationTitle", "-d", str(cwd).replace(";", "\\;")]
+    assert command[:9] == [
+        "/bin/wt",
+        "-w",
+        "mosscode-t-abc123",
+        "new-tab",
+        "--title",
+        "alice · t",
+        "--suppressApplicationTitle",
+        "-d",
+        str(cwd).replace(";", "\\;"),
+    ]
     assert command[9:12] == ["--", "py", "-m"] and command[12] == "mosscode.teams.pane"
     rest = command[13:]
     assert rest[:4] == ["--team-dir", str(Path("teams") / "t"), "--team-member", "alice"]
@@ -119,8 +145,16 @@ def test_windows_terminal_command():
 def test_config_path_is_passed_never_a_key(tmp_path):
     config = tmp_path / "config.yaml"
     arguments = member_arguments(tmp_path / "t", "alice", config, "p")
-    assert arguments == ["--team-dir", str(tmp_path / "t"), "--team-member", "alice", "--config",
-                         str(config.resolve()), "--provider", "p"]
+    assert arguments == [
+        "--team-dir",
+        str(tmp_path / "t"),
+        "--team-member",
+        "alice",
+        "--config",
+        str(config.resolve()),
+        "--provider",
+        "p",
+    ]
 
 
 def test_tmux_command_pane_and_kill():
@@ -129,11 +163,22 @@ def test_tmux_command_pane_and_kill():
     def run(command, **kwargs):
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "%7 4242\n", "")
+
     backend = TmuxBackend(run, which("tmux"), python="py")
     command = backend.command(Path("/w"), ["--team-dir", "/t", "--team-member", "bob"], member="bob", team="t")
     # A window of its own, not switched to.
-    assert command[:10] == ["/bin/tmux", "new-window", "-d", "-n", "bob", "-P", "-F", "#{pane_id} #{pane_pid}",
-                            "-c", str(Path("/w"))]
+    assert command[:10] == [
+        "/bin/tmux",
+        "new-window",
+        "-d",
+        "-n",
+        "bob",
+        "-P",
+        "-F",
+        "#{pane_id} #{pane_pid}",
+        "-c",
+        str(Path("/w")),
+    ]
     assert command[10] == "py -m mosscode --team-dir /t --team-member bob"
     assert backend.launch(Path("/w"), []) == "%7"
     backend.kill(None, "%7")
@@ -143,6 +188,7 @@ def test_tmux_command_pane_and_kill():
 def test_launch_failure_is_backend_failed():
     def run(command, **kwargs):
         return subprocess.CompletedProcess(command, 1, "", "no server running")
+
     with pytest.raises(TeamError) as caught:
         TmuxBackend(run, which("tmux")).launch(Path("."), [])
     assert caught.value.code == "backend_failed" and "no server running" in caught.value.message
@@ -168,7 +214,7 @@ class Terminal:
         tmux = "new-window" in command
         if self.child is not None:
             words = shlex.split(command[-1]) if tmux else command
-            arguments = words[words.index("--team-dir"):]
+            arguments = words[words.index("--team-dir") :]
             store = TeamStore(Path(arguments[1]))
             self.child(self, store, arguments[3])
         return subprocess.CompletedProcess(command, 0, "%1 4242\n" if tmux else "", "")
@@ -182,6 +228,7 @@ class Terminal:
             member.pid, member.heartbeat, member.status = process.pid, now(), "idle"
             for key, value in fields.items():
                 setattr(member, key, value)
+
         store.modify(write)
         return process
 
@@ -201,6 +248,7 @@ def pane_conversation(tmp_path, terminal, mode="windows-terminal"):
 
 
 # No pid in time ----------------------------------------------------------------------------
+
 
 async def test_no_pid_is_backend_failed_and_stopped(tmp_path):
     repo(tmp_path)
@@ -222,7 +270,9 @@ async def test_child_error_is_reported(tmp_path):
     def child(terminal, store, name):
         def write(team):
             team.member(name).error = "窗格中缺少环境变量 DEEPSEEK_API_KEY：设为用户环境变量，或改用 in-process"
+
         store.modify(write)
+
     conv = pane_conversation(tmp_path, Terminal(child))
     conv.teams.start_timeout = 10
     await conv.teams.create("t")
@@ -297,11 +347,31 @@ async def test_live_pane_member_is_kept_on_reopen(tmp_path):
         store = TeamStore(conv.teams.root / "t")
         live = subprocess.Popen(SLEEPER)
         terminal.processes.append(live)
-        store.modify(lambda team: team.members.extend([
-            Member("alice", "general", WINDOWS_TERMINAL, "auto：检测到 Windows Terminal", "running", pid=live.pid,
-                   heartbeat=now()),
-            Member("bob", "general", WINDOWS_TERMINAL, "", "idle", pid=live.pid, heartbeat="2020-01-01T00:00:00+00:00"),
-            Member("carol", "general", IN_PROCESS, "", "idle")]))
+        store.modify(
+            lambda team: team.members.extend(
+                [
+                    Member(
+                        "alice",
+                        "general",
+                        WINDOWS_TERMINAL,
+                        "auto：检测到 Windows Terminal",
+                        "running",
+                        pid=live.pid,
+                        heartbeat=now(),
+                    ),
+                    Member(
+                        "bob",
+                        "general",
+                        WINDOWS_TERMINAL,
+                        "",
+                        "idle",
+                        pid=live.pid,
+                        heartbeat="2020-01-01T00:00:00+00:00",
+                    ),
+                    Member("carol", "general", IN_PROCESS, "", "idle"),
+                ]
+            )
+        )
         assert member_alive(live.pid, now()) and not member_alive(live.pid, "2020-01-01T00:00:00+00:00")
         text, details = await conv.teams.create("t")
         assert details["live"] == ["alice"] and "仍在窗格中运行的成员 alice" in text
@@ -330,7 +400,7 @@ async def test_session_mode_is_written_for_pane_members(tmp_path):
 
 # The member process itself -----------------------------------------------------------------
 
-DRIVER = '''
+DRIVER = """
 import re, sys
 import mosscode.providers as providers
 import mosscode.teams.process as process
@@ -367,7 +437,7 @@ providers.create_provider = lambda config: Scripted(config)
 from mosscode.cli import main
 sys.argv = ["mosscode", *sys.argv[1:]]
 main()
-'''
+"""
 
 
 def child_env(tmp_path):
@@ -383,19 +453,38 @@ def member_setup(tmp_path, key_line="api_key: test-only"):
     project = tmp_path / "project"
     project.mkdir()
     config = tmp_path / "config.yaml"
-    config.write_text("providers:\n  - name: p\n    protocol: openai-compat\n    model: m\n    " + key_line + "\n",
-                      encoding="utf-8")
+    config.write_text(
+        "providers:\n  - name: p\n    protocol: openai-compat\n    model: m\n    " + key_line + "\n", encoding="utf-8"
+    )
     store = TeamStore(tmp_path / "teams" / "t")
     store.create()
     store.acquire(os.getpid(), "", str(project))
-    store.modify(lambda team: team.members.append(
-        Member("alice", "general", WINDOWS_TERMINAL, "test", "stopped", transcript="transcripts/alice.jsonl",
-               mode="bypassPermissions")))
+    store.modify(
+        lambda team: team.members.append(
+            Member(
+                "alice",
+                "general",
+                WINDOWS_TERMINAL,
+                "test",
+                "stopped",
+                transcript="transcripts/alice.jsonl",
+                mode="bypassPermissions",
+            )
+        )
+    )
     store.mailbox.send("alice", Message(LEAD, "text", "实现登录", "初始任务"))
     driver = tmp_path / "driver.py"
     driver.write_text(DRIVER, encoding="utf-8")
-    command = [sys.executable, str(driver), "--team-dir", str(store.directory), "--team-member", "alice",
-               "--config", str(config)]
+    command = [
+        sys.executable,
+        str(driver),
+        "--team-dir",
+        str(store.directory),
+        "--team-member",
+        "alice",
+        "--config",
+        str(config),
+    ]
     return project, store, command
 
 
@@ -408,8 +497,14 @@ def wait_for(predicate, timeout=30.0):
 
 def test_member_process_runs_a_turn_and_stops_on_request(tmp_path):
     project, store, command = member_setup(tmp_path)
-    child = subprocess.Popen(command, cwd=project, env=child_env(tmp_path), stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    child = subprocess.Popen(
+        command,
+        cwd=project,
+        env=child_env(tmp_path),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     try:
         wait_for(lambda: store.load().member("alice").pid or child.poll() is not None)
         assert child.poll() is None, child.communicate()[1].decode("utf-8", "replace")
@@ -449,8 +544,12 @@ def test_missing_environment_variable(tmp_path):
 
 
 def test_pane_wrapper_always_exits_zero(tmp_path):
-    done = subprocess.run([sys.executable, "-m", "mosscode.teams.pane", "--team-dir", str(tmp_path / "none"),
-                           "--team-member", "alice"], capture_output=True, timeout=60, env=child_env(tmp_path))
+    done = subprocess.run(
+        [sys.executable, "-m", "mosscode.teams.pane", "--team-dir", str(tmp_path / "none"), "--team-member", "alice"],
+        capture_output=True,
+        timeout=60,
+        env=child_env(tmp_path),
+    )
     assert done.returncode == 0  # The member failed (no team), the pane still closes.
 
 
@@ -461,10 +560,15 @@ def test_member_arguments_are_hidden_from_help():
 
 @pytest.mark.skipif(os.name != "nt", reason="taskkill is Windows-only")
 def test_kill_tree_ends_the_process_and_its_children(tmp_path):
-    parent = subprocess.Popen([sys.executable, "-c",
-                               "import subprocess, sys, time; "
-                               "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
-                               "time.sleep(120)"])
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+            "time.sleep(120)",
+        ]
+    )
     try:
         time.sleep(1.0)
         kill_tree(parent.pid)
@@ -477,11 +581,13 @@ def test_kill_tree_ends_the_process_and_its_children(tmp_path):
 
 # The member's own window ----------------------------------------------------------------------
 
+
 class StubProcess:
     name, team = "alice", "t"
 
     def __init__(self):
         from types import SimpleNamespace
+
         self.on_event = self.on_approval = self.runner = None
         self.exit_code, self.answered = 0, []
         self.release = asyncio.Event()
@@ -493,6 +599,7 @@ class StubProcess:
 
     async def serve(self):
         from mosscode.permissions import ApprovalRequest, Operation
+
         self.on_event([Message(LEAD, "text", "实现登录", "初始任务")])
         self.on_approval(ApprovalRequest("r1", "c1", Operation("execute_command", "npm test"), "需要确认"))
         self.on_approval(ApprovalRequest("r2", "c2", Operation("execute_command", "npm run lint"), "需要确认"))
@@ -502,7 +609,9 @@ class StubProcess:
 
 async def test_member_window_answers_approvals_and_refuses_new_tasks():
     from textual.widgets import RichLog, Static
+
     from mosscode.teams.pane_app import INPUT_HINT, MemberApp
+
     process = StubProcess()
     app = MemberApp(process)
     async with app.run_test() as pilot:
@@ -517,7 +626,9 @@ async def test_member_window_answers_approvals_and_refuses_new_tasks():
         assert process.answered[-1] == ("r2", "deny") and not app.query_one("#approval").display
         app.query_one("#input").focus()
         await pilot.press("h", "i", "enter")  # Not a new task.
-        lines = "".join(str(line.text) for line in app.query_one("#log", RichLog).lines).replace(" ", "")  # Wrapped rows.
+        lines = "".join(str(line.text) for line in app.query_one("#log", RichLog).lines).replace(
+            " ", ""
+        )  # Wrapped rows.
         assert "←lead·消息：初始任务" in lines and INPUT_HINT.replace(" ", "") in lines
         process.release.set()
         await pilot.pause()
@@ -526,12 +637,14 @@ async def test_member_window_answers_approvals_and_refuses_new_tasks():
 
 async def test_interrupt_ends_the_turn_and_tells_the_lead(tmp_path):
     from test_agent import call, response
+
     command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
 
     def slow(messages, tools):
         if messages[-1].role == "tool":
             return response("不该到这里")
         return response(calls=[call("execute_command", "c1", command=command)])
+
     provider, conv = team_conversation(tmp_path, Script(alice=slow))
     await conv.teams.create("t")
     await conv.teams.spawn("alice", "general", "做事", isolation="none")

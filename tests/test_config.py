@@ -6,7 +6,12 @@ from mosscode.providers import create_provider
 
 
 def write_config(tmp_path, **overrides):
-    provider = {"name": "custom", "protocol": "anthropic-messages", "model": "arbitrary-model", "api_key_env": "MOSS_TEST_KEY"}
+    provider = {
+        "name": "custom",
+        "protocol": "anthropic-messages",
+        "model": "arbitrary-model",
+        "api_key_env": "MOSS_TEST_KEY",
+    }
     provider.update(overrides)
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump({"providers": [provider]}), encoding="utf-8")
@@ -16,7 +21,9 @@ def write_config(tmp_path, **overrides):
 @pytest.mark.parametrize("protocol", ["anthropic-messages", "openai-responses", "openai-chat-completions"])
 async def test_custom_endpoint_model_and_credential_reach_sdk(tmp_path, monkeypatch, protocol):
     monkeypatch.setenv("MOSS_TEST_KEY", "private-test-key")
-    config = load_settings(write_config(tmp_path, protocol=protocol, base_url="https://gateway.example/custom/v1")).select()
+    config = load_settings(
+        write_config(tmp_path, protocol=protocol, base_url="https://gateway.example/custom/v1")
+    ).select()
     provider = create_provider(config)
     assert str(provider.client.base_url) == "https://gateway.example/custom/v1/"
     assert provider.client.api_key == "private-test-key"
@@ -42,21 +49,30 @@ def test_missing_env_is_safe_and_listing_needs_no_key(tmp_path, monkeypatch):
 
 def test_literal_key_not_in_repr(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text("providers:\n- name: test\n  protocol: openai\n  model: x\n  api_key: private-test-key\n", encoding="utf-8")
+    path.write_text(
+        "providers:\n- name: test\n  protocol: openai\n  model: x\n  api_key: private-test-key\n", encoding="utf-8"
+    )
     config = load_settings(path).select()
     assert config.credential() == "private-test-key"
     assert "private-test-key" not in repr(config)
     assert config.protocol == "openai-responses"
 
 
-@pytest.mark.parametrize("change", [
-    {"protocol": "unknown"}, {"base_url": "file:///local"}, {"timeout": float("inf")},
-    {"max_output_tokens": True}, {"stream_usage": "false"}, {"prompt_cache": "true"},
-    {"thinking": {"type": "enabled", "budget_tokens": 0}},
-    {"thinking": {"type": "adaptive", "budget_tokens": 2000}},
-    {"protocol": "openai-responses", "thinking": True},
-    {"api_key": "secret", "api_key_env": "MOSS_TEST_KEY"},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"protocol": "unknown"},
+        {"base_url": "file:///local"},
+        {"timeout": float("inf")},
+        {"max_output_tokens": True},
+        {"stream_usage": "false"},
+        {"prompt_cache": "true"},
+        {"thinking": {"type": "enabled", "budget_tokens": 0}},
+        {"thinking": {"type": "adaptive", "budget_tokens": 2000}},
+        {"protocol": "openai-responses", "thinking": True},
+        {"api_key": "secret", "api_key_env": "MOSS_TEST_KEY"},
+    ],
+)
 def test_invalid_configuration_fails_before_request(tmp_path, change):
     with pytest.raises(ConfigError):
         load_settings(write_config(tmp_path, **change))
@@ -82,9 +98,14 @@ def test_key_in_environment_name_gets_clear_error_without_disclosing_key(tmp_pat
     assert secret not in str(exc.value)
 
 
-@pytest.mark.parametrize("default_config,expected", [
-    ({}, None), ({"default_provider": None}, None), ({"default_provider": "custom"}, "custom"),
-])
+@pytest.mark.parametrize(
+    "default_config,expected",
+    [
+        ({}, None),
+        ({"default_provider": None}, None),
+        ({"default_provider": "custom"}, "custom"),
+    ],
+)
 def test_loading_preserves_explicit_default_and_falls_back_to_first(tmp_path, default_config, expected):
     path = write_config(tmp_path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -98,6 +119,7 @@ def test_loading_preserves_explicit_default_and_falls_back_to_first(tmp_path, de
 @pytest.mark.parametrize("old", [None, "", "You are MossCode, a helpful coding assistant."])
 def test_default_and_legacy_config_use_rewritten_modules(tmp_path, old):
     from mosscode.prompts import DEFAULT_SYSTEM_PROMPT
+
     path = write_config(tmp_path, prompt_cache=True)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if old is not None:

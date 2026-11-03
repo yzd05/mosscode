@@ -24,8 +24,12 @@ VIEW_MESSAGES = 200
 VIEW_SHARE = 1.0  # Of the rows left by the status line (and a card).
 STOP_CONFIRM = 2.0  # Seconds between the two presses of x.
 ASKING = "待审批"
-SYMBOLS = {"running": ("●", TOOL_SUCCESS_COLOR), "idle": ("○", "dim"), "stopped": ("·", "dim"),
-           "asking": ("◆", OPERATION_COLOR)}
+SYMBOLS = {
+    "running": ("●", TOOL_SUCCESS_COLOR),
+    "idle": ("○", "dim"),
+    "stopped": ("·", "dim"),
+    "asking": ("◆", OPERATION_COLOR),
+}
 PANEL_HELP = "↑ / ↓ 选择 · Enter 查看对话 · x 停止成员 · Esc 收起"
 VIEW_HELP = "PgUp / PgDn 滚动 · ← / → 切换成员 · Esc 返回 Lead"
 
@@ -69,8 +73,12 @@ def _cells(row: MemberRow, asking: dict[str, int], now: float) -> tuple[Text, Te
         tail.append(elapsed(now - row.since))
     if row.pane:
         tail.append("窗格")
-    return (name, Text(state_name(row, asking), style=style if state != "idle" else "dim"),
-            Text(detail, style="dim"), Text(" · ".join(tail), style="dim"))
+    return (
+        name,
+        Text(state_name(row, asking), style=style if state != "idle" else "dim"),
+        Text(detail, style="dim"),
+        Text(" · ".join(tail), style="dim"),
+    )
 
 
 def row_line(row: MemberRow, asking: dict[str, int], now: float) -> Table:
@@ -90,12 +98,13 @@ def compact_rows(rows: list[MemberRow], asking: dict[str, int], now: float, limi
         if len(idle) > 1:
             entries = [(row, 1) for row in live if row not in idle]
             names = "、".join(row.name for row in idle)
-            entries.append((Text(f"○ 空闲 {len(idle)}：{names}", style="dim", no_wrap=True, overflow="ellipsis"),
-                            len(idle)))
+            entries.append(
+                (Text(f"○ 空闲 {len(idle)}：{names}", style="dim", no_wrap=True, overflow="ellipsis"), len(idle))
+            )
     entries += tail
     if len(entries) > limit:
-        hidden = sum(count for _, count in entries[limit - 1:])
-        entries = entries[:limit - 1] + [(Text(f"另有 {hidden} 个成员 · Ctrl+T 展开", style="dim"), hidden)]
+        hidden = sum(count for _, count in entries[limit - 1 :])
+        entries = entries[: limit - 1] + [(Text(f"另有 {hidden} 个成员 · Ctrl+T 展开", style="dim"), hidden)]
     grid = _grid()
     for entry, _ in entries:
         if isinstance(entry, MemberRow):
@@ -260,6 +269,21 @@ class MemberView(Vertical):
             self.help()
 
 
-__all__ = ["ASKING", "COMPACT_ROWS", "EXPANDED_ROWS", "MemberList", "MemberLog", "MemberPanel",
-           "MemberView", "PANEL_HELP", "STOP_CONFIRM", "VIEW_HELP", "VIEW_MESSAGES", "VIEW_SHARE", "compact_rows", "elapsed",
-           "row_line", "state_name"]
+__all__ = [
+    "ASKING",
+    "COMPACT_ROWS",
+    "EXPANDED_ROWS",
+    "MemberList",
+    "MemberLog",
+    "MemberPanel",
+    "MemberView",
+    "PANEL_HELP",
+    "STOP_CONFIRM",
+    "VIEW_HELP",
+    "VIEW_MESSAGES",
+    "VIEW_SHARE",
+    "compact_rows",
+    "elapsed",
+    "row_line",
+    "state_name",
+]

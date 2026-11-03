@@ -1,17 +1,17 @@
 """Match hooks to an event, run them in order, log and report."""
 
 import asyncio
-from collections import deque
-from dataclasses import dataclass, field, replace
-from datetime import datetime
 import json
-import os
-from pathlib import Path
 import sys
 import time
-from typing import Any, Awaitable, Callable, Mapping
+from collections import deque
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field, replace
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-from .actions import ActionResult, public_url, run_command, run_http, render, short, stdin_json
+from .actions import ActionResult, public_url, render, run_command, run_http, short, stdin_json
 from .config import Hook, HookConfig, HookFile, TrustStore, load_hooks
 from .events import EVENTS
 
@@ -67,8 +67,17 @@ def _canonical(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
-def tool_event(name: str, agent: str, tool: str, args: Mapping[str, Any], operation, root: Path,
-               result=None, *, agent_type: str = "") -> HookEvent:
+def tool_event(
+    name: str,
+    agent: str,
+    tool: str,
+    args: Mapping[str, Any],
+    operation,
+    root: Path,
+    result=None,
+    *,
+    agent_type: str = "",
+) -> HookEvent:
     """Fields of the tool events: path and command are what the permission rules see."""
     args = args if isinstance(args, Mapping) else {}
     path = command = ""
@@ -78,8 +87,12 @@ def tool_event(name: str, agent: str, tool: str, args: Mapping[str, Any], operat
         file_path = Path(path) if operation.outside else root / path
     elif operation is not None and tool == "execute_command":
         command = operation.target
-    fields = {"tool": tool, "path": path, "command": command,
-              **{f"args.{key}": _canonical(value) for key, value in args.items()}}
+    fields = {
+        "tool": tool,
+        "path": path,
+        "command": command,
+        **{f"args.{key}": _canonical(value) for key, value in args.items()},
+    }
     payload = {"tool": tool, "args": dict(args), "path": path, "command": command}
     if name == "permission_request" and operation is not None:
         fields["risk"] = operation.risk
@@ -92,17 +105,29 @@ def tool_event(name: str, agent: str, tool: str, args: Mapping[str, Any], operat
 
 
 class HookEngine:
-    def __init__(self, root: Path, *, home: Path | None = None, shell=None, enabled: bool = True,
-                 trust_project: bool = False, config: HookConfig | None = None):
+    def __init__(
+        self,
+        root: Path,
+        *,
+        home: Path | None = None,
+        shell=None,
+        enabled: bool = True,
+        trust_project: bool = False,
+        config: HookConfig | None = None,
+    ):
         self.root = Path(root).resolve()
         self.home = home
         self.shell = shell
         self.enabled = enabled
         self.trust_project = trust_project
         self.store = TrustStore(self.root, home)
-        self.config = config if config is not None else (load_hooks(self.root, home, store=self.store,
-                                                                     trust_project=trust_project)
-                                                         if enabled else HookConfig())
+        self.config = (
+            config
+            if config is not None
+            else (
+                load_hooks(self.root, home, store=self.store, trust_project=trust_project) if enabled else HookConfig()
+            )
+        )
         self.declined: set[Path] = set()  # Files the user chose not to enable this run.
         self.recent: deque[HookRun] = deque(maxlen=RECENT)
         self.session = None
@@ -141,8 +166,9 @@ class HookEngine:
         if file.digest is not None:
             self.store.trust(file.path.name, file.digest)
         self.declined.discard(file.path)
-        self.config = replace(self.config, files=tuple(replace(f, trusted=True) if f.path == file.path else f
-                                                        for f in self.config.files))
+        self.config = replace(
+            self.config, files=tuple(replace(f, trusted=True) if f.path == file.path else f for f in self.config.files)
+        )
 
     def decline(self, file: HookFile) -> None:
         self.declined.add(file.path)
@@ -151,8 +177,11 @@ class HookEngine:
         """Reread the files; once state is kept by id. Returns (added, removed) ids."""
         before = {hook.id for hook in self.hooks}
         self.declined.clear()
-        self.config = load_hooks(self.root, self.home, store=self.store, trust_project=self.trust_project) \
-            if self.enabled else HookConfig()
+        self.config = (
+            load_hooks(self.root, self.home, store=self.store, trust_project=self.trust_project)
+            if self.enabled
+            else HookConfig()
+        )
         after = {hook.id for hook in self.hooks}
         return sorted(after - before), sorted(before - after)
 
@@ -208,7 +237,9 @@ class HookEngine:
                 continue
             if hook.action is None:  # Static rejection without an action.
                 self._log(hook, event, "reject", ActionResult("rejected", short(hook.reject)), 0)
-                return HookOutcome((hook.id, f"Hook {hook.id} 拒绝了此调用：{hook.reject}"), tuple(notes), (*ran, hook.id))
+                return HookOutcome(
+                    (hook.id, f"Hook {hook.id} 拒绝了此调用：{hook.reject}"), tuple(notes), (*ran, hook.id)
+                )
             blocking = hook.reject is None and hook.on_error == "block"
             result = await self._run(hook, event, fields, quiet=blocking)
             ran.append(hook.id)
@@ -217,8 +248,9 @@ class HookEngine:
             if result.outcome == "rejected":
                 return HookOutcome((hook.id, f"Hook {hook.id} 拒绝了此调用：{result.reason}"), tuple(notes), tuple(ran))
             if result.outcome in {"failed", "timeout"} and blocking:
-                return HookOutcome((hook.id, f"Hook {hook.id} 执行失败，按配置阻止此调用：{result.detail}"),
-                                   tuple(notes), tuple(ran))
+                return HookOutcome(
+                    (hook.id, f"Hook {hook.id} 执行失败，按配置阻止此调用：{result.detail}"), tuple(notes), tuple(ran)
+                )
             if result.outcome == "ok" and result.output:
                 notes.append((hook.id, result.output))
         return HookOutcome(None, tuple(notes), tuple(ran))
@@ -246,17 +278,28 @@ class HookEngine:
             await asyncio.gather(*late, return_exceptions=True)
 
     def _context(self, hook: Hook, event: HookEvent, fields) -> dict:
-        context = {"event": event.name, "hook_id": hook.id, "session_id": self.session_id,
-                   "project_root": str(self.root), "agent": event.agent}
+        context = {
+            "event": event.name,
+            "hook_id": hook.id,
+            "session_id": self.session_id,
+            "project_root": str(self.root),
+            "agent": event.agent,
+        }
         context.update({key: value for key, value in fields.items() if not key.startswith("args.")})
         context.update(event.payload)
         return context
 
     def _env(self, hook: Hook, event: HookEvent) -> dict[str, str]:
-        env = {"MOSSCODE_HOOK_ID": hook.id, "MOSSCODE_HOOK_EVENT": event.name, "MOSSCODE_SESSION_ID": self.session_id,
-               "MOSSCODE_PROJECT_ROOT": str(self.root), "MOSSCODE_AGENT": event.agent,
-               "MOSSCODE_AGENT_TYPE": event.fields.get("agent_type", event.agent_type),
-               "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        env = {
+            "MOSSCODE_HOOK_ID": hook.id,
+            "MOSSCODE_HOOK_EVENT": event.name,
+            "MOSSCODE_SESSION_ID": self.session_id,
+            "MOSSCODE_PROJECT_ROOT": str(self.root),
+            "MOSSCODE_AGENT": event.agent,
+            "MOSSCODE_AGENT_TYPE": event.fields.get("agent_type", event.agent_type),
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
         if EVENTS[event.name].tool:
             env["MOSSCODE_TOOL_NAME"] = event.tool
             env["MOSSCODE_FILE_PATH"] = str(event.file_path) if event.file_path is not None else ""
@@ -275,11 +318,22 @@ class HookEngine:
         context = self._context(hook, event, fields)
         if action.type == "http":
             return await run_http(action, fields=fields, context=context)
-        values = {"FILE_PATH": str(event.file_path) if event.file_path is not None else "",
-                  "PROJECT_ROOT": str(self.root), "PYTHON": sys.executable, "TOOL_NAME": event.tool,
-                  "EVENT": event.name}
-        return await run_command(action, root=self.root, shell=self.shell, env=self._env(hook, event), values=values,
-                                 stdin=stdin_json(context), rejecting=event.name == "pre_tool_use")
+        values = {
+            "FILE_PATH": str(event.file_path) if event.file_path is not None else "",
+            "PROJECT_ROOT": str(self.root),
+            "PYTHON": sys.executable,
+            "TOOL_NAME": event.tool,
+            "EVENT": event.name,
+        }
+        return await run_command(
+            action,
+            root=self.root,
+            shell=self.shell,
+            env=self._env(hook, event),
+            values=values,
+            stdin=stdin_json(context),
+            rejecting=event.name == "pre_tool_use",
+        )
 
     async def _run(self, hook: Hook, event: HookEvent, fields, *, quiet: bool = False) -> ActionResult:
         started = time.monotonic()
@@ -322,9 +376,19 @@ class HookEngine:
         detail = result.detail
         if hook.action is not None and hook.action.type == "http":
             detail = detail.replace(hook.action.url, public_url(hook.action.url))
-        run = HookRun(datetime.now().astimezone().isoformat(timespec="milliseconds"), hook.id, hook.source, event.name,
-                      event.agent, action, result.outcome, duration, result.exit_code, result.status,
-                      short(detail, 500))
+        run = HookRun(
+            datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            hook.id,
+            hook.source,
+            event.name,
+            event.agent,
+            action,
+            result.outcome,
+            duration,
+            result.exit_code,
+            result.status,
+            short(detail, 500),
+        )
         self.recent.append(run)
         path = self.log_path
         if path is None:

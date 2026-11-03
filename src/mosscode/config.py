@@ -1,10 +1,10 @@
 """Endpoint configuration is independent of the service's vendor name."""
 
-from dataclasses import dataclass, field
 import math
 import os
-from pathlib import Path
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -30,8 +30,7 @@ TEAMMATE_MODES = ("auto", "in-process", "windows-terminal", "tmux")
 def _validate_env_name(value: str | None) -> None:
     if value is not None and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is None:
         raise ConfigError(
-            "api_key_env 请填写环境变量名称（例如 DEEPSEEK_API_KEY），不能填写密钥；"
-            "直接填写密钥请使用 api_key。"
+            "api_key_env 请填写环境变量名称（例如 DEEPSEEK_API_KEY），不能填写密钥；直接填写密钥请使用 api_key。"
         )
 
 
@@ -65,7 +64,8 @@ class ProviderConfig:
         if not value:
             hint = (
                 f"请设置环境变量 {self.api_key_env}（api_key_env 只填写变量名；直接填写密钥请使用 api_key）"
-                if self.api_key_env else "请配置 api_key_env（环境变量名）或 api_key（密钥）"
+                if self.api_key_env
+                else "请配置 api_key_env（环境变量名）或 api_key（密钥）"
             )
             raise ConfigError(f"{self.name}：{hint}。")
         return value
@@ -117,9 +117,16 @@ def _links(raw: Any) -> tuple[str, ...]:
             raise ConfigError(problem)
         text = item.strip().replace("\\", "/").strip("/")
         parts = text.split("/")
-        if (not text or Path(item.strip()).is_absolute() or item.strip().startswith(("/", "\\")) or ":" in text
-                or ".." in parts or "." in parts or parts[0] == ".git"
-                or parts[:2] == [".mosscode", "worktrees"]):
+        if (
+            not text
+            or Path(item.strip()).is_absolute()
+            or item.strip().startswith(("/", "\\"))
+            or ":" in text
+            or ".." in parts
+            or "." in parts
+            or parts[0] == ".git"
+            or parts[:2] == [".mosscode", "worktrees"]
+        ):
             raise ConfigError(problem)
         if text not in links:
             links.append(text)
@@ -153,9 +160,13 @@ def _provider(raw: Any) -> ProviderConfig:
         raise ConfigError("api_key 和 api_key_env 只选择一种。")
     _validate_env_name(data.get("api_key_env"))
     headers = data.get("headers", {})
-    if not isinstance(headers, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()):
+    if not isinstance(headers, dict) or any(
+        not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()
+    ):
         raise ConfigError("headers 必须是字符串键值对象。")
-    data["max_output_tokens"] = _positive_int(data.get("max_output_tokens", ProviderConfig.max_output_tokens), "max_output_tokens")
+    data["max_output_tokens"] = _positive_int(
+        data.get("max_output_tokens", ProviderConfig.max_output_tokens), "max_output_tokens"
+    )
     retries = data.get("max_retries", ProviderConfig.max_retries)
     if type(retries) is not int or retries < 0:
         raise ConfigError("max_retries 必须是非负整数。")
@@ -218,16 +229,22 @@ def find_config(cwd: Path | None = None, home: Path | None = None) -> Path:
     for path in candidates:
         if path.is_file():
             return path
-    raise ConfigError("找不到配置文件，已查找：" + "、".join(str(p) for p in candidates)
-                      + "。运行 moss setup 创建配置，或用 --config 指定。")
+    raise ConfigError(
+        "找不到配置文件，已查找："
+        + "、".join(str(p) for p in candidates)
+        + "。运行 moss setup 创建配置，或用 --config 指定。"
+    )
 
 
 def render_config(provider: dict[str, Any]) -> str:
     """The file `moss setup` writes, with one provider made the default."""
-    body = yaml.safe_dump({"default_provider": provider["name"], "providers": [provider]},
-                          sort_keys=False, allow_unicode=True)
-    return ("# MossCode 配置，由 moss setup 生成。\n"
-            "# 字段说明见 config.example.yaml；追加 Provider：在 providers 下再写一项。\n" + body)
+    body = yaml.safe_dump(
+        {"default_provider": provider["name"], "providers": [provider]}, sort_keys=False, allow_unicode=True
+    )
+    return (
+        "# MossCode 配置，由 moss setup 生成。\n"
+        "# 字段说明见 config.example.yaml；追加 Provider：在 providers 下再写一项。\n" + body
+    )
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -239,10 +256,25 @@ def load_settings(path: str | Path) -> Settings:
         raise ConfigError("配置文件需为有效的 UTF-8 YAML。") from None
     if not isinstance(raw, dict) or not isinstance(raw.get("providers"), list) or not raw["providers"]:
         raise ConfigError("配置需包含非空 providers 列表。")
-    if set(raw) - {"providers", "default_provider", "system_prompt", "max_iterations", "shell", "auto_compact",
-                   "persist_sessions", "memory", "auto_memory", "memory_provider", "agent_auto_background",
-                   "agent_max_background", "worktree_links", "worktree_stale_hours", "team_max_members",
-                   "teammate_mode", "coordinator_mode"}:
+    if set(raw) - {
+        "providers",
+        "default_provider",
+        "system_prompt",
+        "max_iterations",
+        "shell",
+        "auto_compact",
+        "persist_sessions",
+        "memory",
+        "auto_memory",
+        "memory_provider",
+        "agent_auto_background",
+        "agent_max_background",
+        "worktree_links",
+        "worktree_stale_hours",
+        "team_max_members",
+        "teammate_mode",
+        "coordinator_mode",
+    }:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
     if len({p.name for p in providers}) != len(providers):
@@ -268,8 +300,9 @@ def load_settings(path: str | Path) -> Settings:
     auto_background = raw.get("agent_auto_background", Settings.agent_auto_background)
     if type(auto_background) not in {int, float} or not 0 <= auto_background <= 3600:
         raise ConfigError("agent_auto_background 需为 0–3600 之间的秒数（0 表示不自动转入后台）。")
-    max_background = _positive_int(raw.get("agent_max_background", Settings.agent_max_background),
-                                   "agent_max_background")
+    max_background = _positive_int(
+        raw.get("agent_max_background", Settings.agent_max_background), "agent_max_background"
+    )
     links = _links(raw.get("worktree_links", []))
     stale = raw.get("worktree_stale_hours", Settings.worktree_stale_hours)
     if type(stale) not in {int, float} or not 0 <= stale <= 8760:
@@ -283,10 +316,22 @@ def load_settings(path: str | Path) -> Settings:
     coordinator = raw.get("coordinator_mode", Settings.coordinator_mode)
     if type(coordinator) is not bool:
         raise ConfigError("coordinator_mode 必须是布尔值。")
-    settings = Settings(providers, default, stable_prompt(system), iterations, Path(path), shell.strip(),
-                        memory_provider=memory_provider, agent_auto_background=float(auto_background),
-                        agent_max_background=max_background, worktree_links=links,
-                        worktree_stale_hours=float(stale), team_max_members=members,
-                        teammate_mode=teammate_mode, coordinator_mode=coordinator, **switches)
+    settings = Settings(
+        providers,
+        default,
+        stable_prompt(system),
+        iterations,
+        Path(path),
+        shell.strip(),
+        memory_provider=memory_provider,
+        agent_auto_background=float(auto_background),
+        agent_max_background=max_background,
+        worktree_links=links,
+        worktree_stale_hours=float(stale),
+        team_max_members=members,
+        teammate_mode=teammate_mode,
+        coordinator_mode=coordinator,
+        **switches,
+    )
     settings.select()
     return settings

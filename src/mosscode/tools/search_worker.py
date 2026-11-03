@@ -4,14 +4,13 @@ Output mirrors the ripgrep invocations in search.py: relative paths for glob,
 `--json` match/context events for grep content, `path NUL count` for counts.
 """
 
-from collections import deque
 import fnmatch
 import json
 import os
-from pathlib import Path
 import re
 import sys
-
+from collections import deque
+from pathlib import Path
 
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 FOLD = os.name == "nt"  # Git for Windows matches ignore patterns case-insensitively.
@@ -29,7 +28,7 @@ def expand_braces(pattern):
             depth -= 1
             if depth:
                 continue
-            body, rest = pattern[start + 1:index], pattern[index + 1:]
+            body, rest = pattern[start + 1 : index], pattern[index + 1 :]
             alternatives, level, last = [], 0, 0
             for position, inner in enumerate(body):
                 if inner == "{":
@@ -40,13 +39,21 @@ def expand_braces(pattern):
                     alternatives.append(body[last:position])
                     last = position + 1
             if not alternatives:  # `{x}` has no alternatives: keep it, but expand inside and after it.
-                return [pattern[:start] + "{" + inner + "}" + tail
-                        for inner in expand_braces(body) for tail in expand_braces(rest)]
+                return [
+                    pattern[:start] + "{" + inner + "}" + tail
+                    for inner in expand_braces(body)
+                    for tail in expand_braces(rest)
+                ]
             alternatives.append(body[last:])
-            return list(dict.fromkeys(expanded for alternative in alternatives
-                                      for expanded in expand_braces(pattern[:start] + alternative + rest)))
+            return list(
+                dict.fromkeys(
+                    expanded
+                    for alternative in alternatives
+                    for expanded in expand_braces(pattern[:start] + alternative + rest)
+                )
+            )
     if depth:  # The first '{' never closed: literal, but later braces may still pair up.
-        return [pattern[:start + 1] + tail for tail in expand_braces(pattern[start + 1:])]
+        return [pattern[: start + 1] + tail for tail in expand_braces(pattern[start + 1 :])]
     return [pattern]
 
 
@@ -60,7 +67,11 @@ def matches(path, pattern):
             return index == len(parts)
         if patterns[position] == "**":
             return match(index, position + 1) or (index < len(parts) and match(index + 1, position))
-        return index < len(parts) and fnmatch.fnmatchcase(parts[index], patterns[position]) and match(index + 1, position + 1)
+        return (
+            index < len(parts)
+            and fnmatch.fnmatchcase(parts[index], patterns[position])
+            and match(index + 1, position + 1)
+        )
 
     return match(0, 0)
 
@@ -139,8 +150,14 @@ def files(root: Path, base: Path | None):
         kept = []
         for name in folders:
             path = current / name
-            if (name in SKIP_DIRS or (name == "worktrees" and current.name == ".mosscode") or path.is_symlink() or path.is_junction()
-                    or not path.resolve().is_relative_to(boundary) or ignore.ignored(path, True)):
+            if (
+                name in SKIP_DIRS
+                or (name == "worktrees" and current.name == ".mosscode")
+                or path.is_symlink()
+                or path.is_junction()
+                or not path.resolve().is_relative_to(boundary)
+                or ignore.ignored(path, True)
+            ):
                 continue
             kept.append(name)
             ignores[path] = ignore.extend(path)
@@ -187,8 +204,9 @@ def main():
     patterns = expand_braces(pattern) if pattern else []
     for path in files(root, base):
         relative = path.name if root.is_file() else path.relative_to(root).as_posix()
-        if patterns and not any(matches(relative, item) or ("/" not in item and fnmatch.fnmatchcase(path.name, item))
-                                for item in patterns):
+        if patterns and not any(
+            matches(relative, item) or ("/" not in item and fnmatch.fnmatchcase(path.name, item)) for item in patterns
+        ):
             continue
         if mode == "glob":
             print(relative, flush=True)
@@ -201,8 +219,16 @@ def main():
                     sys.stdout.flush()
                 continue
             for kind, number, line in grep_file(path, expression, arguments.get("context", 0)):
-                print(json.dumps({"type": kind, "data": {"path": {"text": str(path)}, "line_number": number,
-                                                         "lines": {"text": line}}}, ensure_ascii=False), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "type": kind,
+                            "data": {"path": {"text": str(path)}, "line_number": number, "lines": {"text": line}},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
         except (UnicodeError, PermissionError, IsADirectoryError):
             continue
 
@@ -214,4 +240,4 @@ if __name__ == "__main__":
         main()
     except (ValueError, OSError, re.error) as exc:
         print(type(exc).__name__, file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(2) from None

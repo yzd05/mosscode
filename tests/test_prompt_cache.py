@@ -7,7 +7,7 @@ from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Message, Usage
 from mosscode.prompts import PromptRequest, Supplement
 from mosscode.tools import create_default_registry
-from mosscode.usage import parse_usage, cache_summary
+from mosscode.usage import cache_summary, parse_usage
 from test_agent import SequenceProvider, response
 from test_providers import CASES, SSEBody, adapter
 
@@ -39,7 +39,10 @@ async def test_actual_sdk_cache_stats_and_separate_system_instructions(tmp_path,
     provider, requests, bodies = adapter(protocol, cls, lambda: SSEBody(with_cache(frames(), protocol)))
     provider.config = replace(provider.config, prompt_cache=True)
     try:
-        conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+        conv = Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        )
         conv.set_mode("plan")
         events = [e async for e in conv.reply("用户任务")]
         usage = next(e.usage for e in events if isinstance(e, Completed))
@@ -62,7 +65,9 @@ async def test_actual_sdk_cache_stats_and_separate_system_instructions(tmp_path,
             stable = blocks[0]["text"]
             assert blocks[0]["cache_control"] == {"type": "ephemeral"}
             assert len(blocks) == 2 and "cache_control" not in blocks[1]
-            assert "<environment>" in blocks[1]["text"] and "<system-reminder>" not in json.dumps(blocks, ensure_ascii=False)
+            assert "<environment>" in blocks[1]["text"] and "<system-reminder>" not in json.dumps(
+                blocks, ensure_ascii=False
+            )
             assert len(payload["messages"]) == 1 and payload["messages"][0]["role"] == "user"
             # History breakpoint on the last history block; the reminder follows it.
             user = payload["messages"][0]["content"]
@@ -85,8 +90,9 @@ async def test_actual_sdk_cache_stats_and_separate_system_instructions(tmp_path,
         await provider.close()
 
 
-@pytest.mark.parametrize("explicit,official,marked", [(None, True, True), (None, False, False),
-                                                      (True, False, True), (False, True, False)])
+@pytest.mark.parametrize(
+    "explicit,official,marked", [(None, True, True), (None, False, False), (True, False, True), (False, True, False)]
+)
 async def test_anthropic_explicit_cache_capability_switch(explicit, official, marked):
     protocol, cls, frames, _ = CASES[0]
     provider, requests, _ = adapter(protocol, cls, lambda: SSEBody(frames()))
@@ -104,26 +110,32 @@ async def test_anthropic_explicit_cache_capability_switch(explicit, official, ma
         await provider.close()
 
 
-@pytest.mark.parametrize("protocol,details,expected", [
-    ("openai-chat-completions", {}, None),
-    ("openai-chat-completions", {"prompt_tokens_details": {"cached_tokens": 0}}, 0),
-    ("openai-chat-completions", {"prompt_tokens_details": {"cached_tokens": -1}}, None),
-    ("openai-chat-completions", {"prompt_cache_hit_tokens": True}, None),
-    ("openai-chat-completions", {"prompt_cache_hit_tokens": "8"}, None),
-    ("openai-responses", {"input_tokens_details": {"cached_tokens": 7}}, 7),
-])
+@pytest.mark.parametrize(
+    "protocol,details,expected",
+    [
+        ("openai-chat-completions", {}, None),
+        ("openai-chat-completions", {"prompt_tokens_details": {"cached_tokens": 0}}, 0),
+        ("openai-chat-completions", {"prompt_tokens_details": {"cached_tokens": -1}}, None),
+        ("openai-chat-completions", {"prompt_cache_hit_tokens": True}, None),
+        ("openai-chat-completions", {"prompt_cache_hit_tokens": "8"}, None),
+        ("openai-responses", {"input_tokens_details": {"cached_tokens": 7}}, 7),
+    ],
+)
 def test_missing_zero_and_invalid_cache_counters(protocol, details, expected):
     assert parse_usage(details, protocol).cached_input_tokens == expected
 
 
 def test_anthropic_partial_measurement_does_not_invent_total_or_creation():
-    assert parse_usage({"input_tokens": 12, "cache_read_input_tokens": 8}, "anthropic-messages") == Usage(None, None, 8, None, 12)
+    assert parse_usage({"input_tokens": 12, "cache_read_input_tokens": 8}, "anthropic-messages") == Usage(
+        None, None, 8, None, 12
+    )
     assert parse_usage({"input_tokens": 12}, "anthropic-messages") == Usage(12)
 
 
 async def test_cache_totals_are_known_lower_bound_after_missing_request():
-    provider = SequenceProvider(response("a", usage=Usage(10, 2, 8, 2)), response("b"),
-                                response("c", usage=Usage(12, 2, 0, 0)))
+    provider = SequenceProvider(
+        response("a", usage=Usage(10, 2, 8, 2)), response("b"), response("c", usage=Usage(12, 2, 0, 0))
+    )
     conv = Conversation(provider)
     for text in ("one", "two", "three"):
         await conv.ask(text)

@@ -1,50 +1,75 @@
 import asyncio
+import json
+import os
+import re
+import sys
+from collections.abc import Callable
 from contextlib import aclosing, suppress
 from time import monotonic
-import sys
-import json
-import re
-import os
-from typing import Callable, TypeVar
+from typing import TypeVar
 
-from rich.text import Text
-from rich.table import Table
 from rich.console import Group
 from rich.padding import Padding
+from rich.table import Table
+from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.css.query import NoMatches
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.message import Message as UIMessage
 from textual.widgets import Markdown, OptionList, Static, TextArea
 from textual.widgets.markdown import MarkdownFence
 
-from .appearance import (COMMAND_HIGHLIGHT_COLOR, TERMINAL_CSS, USER_MESSAGE_BACKGROUND, USER_MESSAGE_COLOR,
-                         TOOL_SUCCESS_COLOR, PARAMETER_COLOR, OPERATION_COLOR, ERROR_COLOR,
-                         compact_notice, moss_themes, startup_banner)
 from .agents.tasks import Announcer
-from .coordinator import BADGE as COORDINATOR_BADGE
+from .appearance import (
+    COMMAND_HIGHLIGHT_COLOR,
+    ERROR_COLOR,
+    OPERATION_COLOR,
+    PARAMETER_COLOR,
+    TERMINAL_CSS,
+    TOOL_SUCCESS_COLOR,
+    USER_MESSAGE_BACKGROUND,
+    USER_MESSAGE_COLOR,
+    compact_notice,
+    moss_themes,
+    startup_banner,
+)
 from .builtin_commands import BUILTIN, clean_text, confirm_tasks, dispatch, offer_trust, open_sessions
 from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, Settings
-from .conversation import Conversation
-from .tools import shell_label
-from .conversation import MemoryUpdated, Notice, Resumed
-from .memory import SCOPE_LABELS
-from .messages import (CompactFailed, CompactFinished, CompactStarted, Completed, Delta, Message, ProviderError,
-                       ResponseBoundary, ToolCall, ToolProgress, ToolResult, IterationProgress, Retrying, UsageUpdate,
-                       UsageTotals, RunStopped, UserInput, NOTIFICATION)
-from .tool_budget import persisted_note
-from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
-from .usage import cache_summary
-from .permissions import EDIT_TOOLS, ApprovalRequest, CHOICES, MODE_BADGES, safe_display
+from .conversation import Conversation, MemoryUpdated, Notice, Resumed
+from .coordinator import BADGE as COORDINATOR_BADGE
 from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, MemberList, MemberPanel, MemberView
+from .memory import SCOPE_LABELS
+from .messages import (
+    NOTIFICATION,
+    CompactFailed,
+    CompactFinished,
+    CompactStarted,
+    Completed,
+    Delta,
+    IterationProgress,
+    Message,
+    ProviderError,
+    ResponseBoundary,
+    Retrying,
+    RunStopped,
+    ToolCall,
+    ToolProgress,
+    ToolResult,
+    UsageUpdate,
+    UserInput,
+)
+from .permissions import CHOICES, EDIT_TOOLS, MODE_BADGES, ApprovalRequest, safe_display
+from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
 from .teams import TeamError
 from .teams.runtime import MemberRow
 from .teams.view import TranscriptTail
-
+from .tool_budget import persisted_note
+from .tools import shell_label
+from .usage import cache_summary
 
 Result = TypeVar("Result")
 
@@ -71,9 +96,12 @@ class TerminalApp(App[Result]):
 
 
 CHOICE_LABELS = {
-    "once": "本次允许 · 仅执行当前调用", "session": "本会话允许 · 同工具与目标，退出后失效",
-    "permanent": "永久允许 · 保存到本项目本地配置", "deny": "拒绝 · 让模型调整策略",
-    "execute": "批准计划并执行 · 恢复为进入计划前的权限", "accept_edits": "批准并自动接受编辑 · 切换为接受编辑档位",
+    "once": "本次允许 · 仅执行当前调用",
+    "session": "本会话允许 · 同工具与目标，退出后失效",
+    "permanent": "永久允许 · 保存到本项目本地配置",
+    "deny": "拒绝 · 让模型调整策略",
+    "execute": "批准计划并执行 · 恢复为进入计划前的权限",
+    "accept_edits": "批准并自动接受编辑 · 切换为接受编辑档位",
     "merge": "合并 · 把成员的提交合并到当前分支",
 }
 
@@ -102,8 +130,9 @@ def choice_label(request: ApprovalRequest, choice: str) -> str:
 def preview_text(preview: str) -> Text:
     """Approval preview; diffs are colored line by line."""
     text = Text()
-    diff = any(line.startswith(("@@", "--- a/", "+++ b/")) for line in preview.splitlines()[:3]) \
-        or preview.startswith("新建文件 ")
+    diff = any(line.startswith(("@@", "--- a/", "+++ b/")) for line in preview.splitlines()[:3]) or preview.startswith(
+        "新建文件 "
+    )
     for index, line in enumerate(preview.splitlines()):
         style = None
         if diff and line.startswith("+") and not line.startswith("+++"):
@@ -244,8 +273,12 @@ class PromptArea(TextArea):
 
     def action_cursor_down(self, select: bool = False) -> None:
         location = self.cursor_location
-        if (not select and self._history_index is not None and self.navigator.is_last_document_line(location)
-                and self.navigator.is_last_wrapped_line(location)):
+        if (
+            not select
+            and self._history_index is not None
+            and self.navigator.is_last_document_line(location)
+            and self.navigator.is_last_wrapped_line(location)
+        ):
             self._browse(1)
             return
         super().action_cursor_down(select)
@@ -274,7 +307,9 @@ class PlanEntry(Static):
 
     def __init__(self, plan: str):
         super().__init__(classes="entry plan-entry")
-        self.transcript = Group(Text("计划", style=f"bold {OPERATION_COLOR}"), message_row("│", TranscriptMarkdown(plan)))
+        self.transcript = Group(
+            Text("计划", style=f"bold {OPERATION_COLOR}"), message_row("│", TranscriptMarkdown(plan))
+        )
         self.update(self.transcript)
 
 
@@ -337,13 +372,16 @@ class DialogueMarkdown(Markdown):
 class ProviderSelectApp(TerminalApp[ProviderConfig]):
     TITLE = "MossCode"
     SUB_TITLE = "选择本次会话的提供商与模型"
-    CSS = TERMINAL_CSS + """
+    CSS = (
+        TERMINAL_CSS
+        + """
     Screen { background: $background; padding: 1 2; }
     Screen:inline { height: auto; border: none; }
     #selection { height: auto; max-height: 50vh; border: none; background: $background; }
     #selection-help { margin: 1 0; height: auto; color: $text-muted; }
     #banner { height: auto; margin-bottom: 1; }
     """
+    )
     BINDINGS = [
         Binding("escape", "quit", "退出", priority=True),
         Binding("ctrl+c", "quit", "退出", priority=True),
@@ -366,8 +404,11 @@ class ProviderSelectApp(TerminalApp[ProviderConfig]):
         super().on_mount()
         options = self.query_one("#selection", OptionList)
         options.highlighted = next(
-            (index for index, item in enumerate(self.settings.providers)
-             if item.name == self.settings.default_provider),
+            (
+                index
+                for index, item in enumerate(self.settings.providers)
+                if item.name == self.settings.default_provider
+            ),
             0,
         )
         options.focus()
@@ -485,8 +526,12 @@ class ChatEntry(Vertical):
 
     def transcript(self):
         if self.speaker == "You":
-            return Padding(message_row("❯", Text(self.body)), 0, expand=True,
-                           style=f"{USER_MESSAGE_COLOR} on {USER_MESSAGE_BACKGROUND}")
+            return Padding(
+                message_row("❯", Text(self.body)),
+                0,
+                expand=True,
+                style=f"{USER_MESSAGE_COLOR} on {USER_MESSAGE_BACKGROUND}",
+            )
         if not self.display:
             return None
         parts = []
@@ -524,9 +569,19 @@ def agent_detail(args: dict, isolated: bool) -> str:
 
 def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, dict]:
     """(display name, main argument, parsed arguments) for one tool line."""
-    names = {"read_file": "Read", "write_file": "Write", "edit_file": "Edit", "memory": "Memory",
-             "execute_command": shell_name(shell), "glob": "Glob", "grep": "Grep", "exit_plan_mode": "Plan",
-             "agent": "Agent", "task_output": "TaskOutput", "task_stop": "TaskStop"}
+    names = {
+        "read_file": "Read",
+        "write_file": "Write",
+        "edit_file": "Edit",
+        "memory": "Memory",
+        "execute_command": shell_name(shell),
+        "glob": "Glob",
+        "grep": "Grep",
+        "exit_plan_mode": "Plan",
+        "agent": "Agent",
+        "task_output": "TaskOutput",
+        "task_stop": "TaskStop",
+    }
     arguments: dict = {}
     try:
         args = json.loads(call.arguments)
@@ -541,7 +596,11 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
         elif call.name in {"task_output", "task_stop"}:
             detail = args.get("task_id", "")
         else:
-            detail = args.get("pattern", "") if call.name in {"glob", "grep"} else args.get("command") or args.get("path") or ""
+            detail = (
+                args.get("pattern", "")
+                if call.name in {"glob", "grep"}
+                else args.get("command") or args.get("path") or ""
+            )
             if call.name == "exit_plan_mode":
                 detail = "提交计划"
     except (ValueError, AttributeError):
@@ -564,8 +623,14 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
             ids = "、".join(re.findall(r"^任务：(\S+)", message.text, re.MULTILINE))
             rows.append(Text(f"└ 已收到后台任务通知：{ids}", style=PARAMETER_COLOR))
         elif message.role == "user":
-            rows.append(Padding(message_row("❯", Text(message.shown)), 0, expand=True,
-                                style=f"{USER_MESSAGE_COLOR} on {USER_MESSAGE_BACKGROUND}"))
+            rows.append(
+                Padding(
+                    message_row("❯", Text(message.shown)),
+                    0,
+                    expand=True,
+                    style=f"{USER_MESSAGE_COLOR} on {USER_MESSAGE_BACKGROUND}",
+                )
+            )
         else:
             parts = [message_row("●", TranscriptMarkdown(message.text))] if message.text.strip() else []
             for call in message.tool_calls:
@@ -611,13 +676,20 @@ class ToolEntry(Static):
 
     def _heading(self, state: str) -> Text:
         marker, color = {
-            "running": ("●", OPERATION_COLOR), "success": ("✓", TOOL_SUCCESS_COLOR),
-            "error": ("×", ERROR_COLOR), "stopped": ("!", OPERATION_COLOR),
+            "running": ("●", OPERATION_COLOR),
+            "success": ("✓", TOOL_SUCCESS_COLOR),
+            "error": ("×", ERROR_COLOR),
+            "stopped": ("!", OPERATION_COLOR),
         }[state]
         if state in {"error", "stopped"}:
             action_color = color
         else:
-            action_color = OPERATION_COLOR if self.operation in {"write_file", "edit_file", "execute_command"} or self.operation.startswith(("mcp__", "skill__")) else TOOL_SUCCESS_COLOR
+            action_color = (
+                OPERATION_COLOR
+                if self.operation in {"write_file", "edit_file", "execute_command"}
+                or self.operation.startswith(("mcp__", "skill__"))
+                else TOOL_SUCCESS_COLOR
+            )
         text = Text()
         text.append(marker + " ", style=color)
         text.append(self.operation_name, style=f"bold {action_color}")
@@ -637,8 +709,12 @@ class ToolEntry(Static):
         if task.background:
             line = f"后台 · {place}任务 {task.id}"
         else:
-            line = (place + f"工具调用 {task.tool_calls} 次" + (f" · 最近 {task.last_tool}" if task.last_tool else "")
-                    + f" · Token {task.tokens:,} · {task.elapsed:.0f}s · Ctrl+B 转入后台")
+            line = (
+                place
+                + f"工具调用 {task.tool_calls} 次"
+                + (f" · 最近 {task.last_tool}" if task.last_tool else "")
+                + f" · Token {task.tokens:,} · {task.elapsed:.0f}s · Ctrl+B 转入后台"
+            )
         self.transcript = self._heading("running") + Text("\n  └ " + line, style=OPERATION_COLOR)
         self.update(self.transcript)
 
@@ -697,8 +773,10 @@ class ToolEntry(Static):
         if stored:
             text.append("\n    " + stored, style=PARAMETER_COLOR)
         if result.details.get("hook_modified"):
-            text.append(f"\n    文件已被 Hook {result.details['hook_modified']} 修改（如格式化），模型再次编辑前会重新读取。",
-                        style=PARAMETER_COLOR)
+            text.append(
+                f"\n    文件已被 Hook {result.details['hook_modified']} 修改（如格式化），模型再次编辑前会重新读取。",
+                style=PARAMETER_COLOR,
+            )
         self.transcript = text
         self.update(text)
 
@@ -706,7 +784,9 @@ class ToolEntry(Static):
 class MossCodeApp(TerminalApp[None]):
     TITLE = "MossCode"
     SUB_TITLE = "第四章 · Agent Loop"
-    CSS = TERMINAL_CSS + """
+    CSS = (
+        TERMINAL_CSS
+        + """
     Screen { background: $background; color: $foreground; padding: 1 2 0 2; overflow: hidden hidden; }
     Screen:inline { height: auto; border: none; }
     #banner { height: auto; margin-bottom: 1; }
@@ -756,8 +836,11 @@ class MossCodeApp(TerminalApp[None]):
     #member-running { height: auto; max-height: 6; }
     #member-view-help { height: 1; }
     OptionList { background: $background; }
-    """.replace("COMMAND_HIGHLIGHT_COLOR", COMMAND_HIGHLIGHT_COLOR).replace("PARAMETER_COLOR", PARAMETER_COLOR) \
-       .replace("USER_MESSAGE_BACKGROUND", USER_MESSAGE_BACKGROUND).replace("USER_MESSAGE_COLOR", USER_MESSAGE_COLOR)
+    """.replace("COMMAND_HIGHLIGHT_COLOR", COMMAND_HIGHLIGHT_COLOR)
+        .replace("PARAMETER_COLOR", PARAMETER_COLOR)
+        .replace("USER_MESSAGE_BACKGROUND", USER_MESSAGE_BACKGROUND)
+        .replace("USER_MESSAGE_COLOR", USER_MESSAGE_COLOR)
+    )
     BINDINGS = [
         Binding("escape", "cancel", "取消生成", priority=True, show=False),
         Binding("ctrl+c", "cancel_task", "取消任务", priority=True, show=False),
@@ -771,9 +854,18 @@ class MossCodeApp(TerminalApp[None]):
         Binding("enter", "complete_hint(False)", priority=True, show=False),
     ]
 
-    def __init__(self, conversation: Conversation, provider_name: str, *, settings: Settings | None = None,
-                 model: str = "", provider_factory=None, resume: str | None = None,
-                 commands: CommandRegistry | None = None, initial_prompt: str | None = None) -> None:
+    def __init__(
+        self,
+        conversation: Conversation,
+        provider_name: str,
+        *,
+        settings: Settings | None = None,
+        model: str = "",
+        provider_factory=None,
+        resume: str | None = None,
+        commands: CommandRegistry | None = None,
+        initial_prompt: str | None = None,
+    ) -> None:
         super().__init__()
         self.conversation = conversation
         # --resume ID / --continue restore at startup; "" opens the session list once started.
@@ -876,7 +968,8 @@ class MossCodeApp(TerminalApp[None]):
             teams.on_commit = self._member_committed
         if self.conversation.context_root is not None:
             self.conversation.start_worktree_cleanup(
-                lambda report: self.conversation._hook_notice(clean_text(report, automatic=True)))
+                lambda report: self.conversation._hook_notice(clean_text(report, automatic=True))
+            )
         self.query_one("#prompt", PromptArea).focus()
         self._width = self.size.width
         self._status("")
@@ -955,7 +1048,9 @@ class MossCodeApp(TerminalApp[None]):
         else:
             text, style = "! " + event.text, OPERATION_COLOR
         if self._task_running:
-            self._reply_task.add_done_callback(lambda _: self._closing or self.call_later(self._local_note, text, style))
+            self._reply_task.add_done_callback(
+                lambda _: self._closing or self.call_later(self._local_note, text, style)
+            )
         else:
             self.call_later(self._local_note, text, style)
         self._usage = self.conversation.total_usage  # Extraction requests are a real cost.
@@ -978,7 +1073,9 @@ class MossCodeApp(TerminalApp[None]):
     def _task_note(self, text: str) -> None:
         """Like memory notes, a running task's output stays contiguous."""
         if self._task_running:
-            self._reply_task.add_done_callback(lambda _: self._closing or self.call_later(self._local_note, "└ " + text))
+            self._reply_task.add_done_callback(
+                lambda _: self._closing or self.call_later(self._local_note, "└ " + text)
+            )
         else:
             self.call_later(self._local_note, "└ " + text)
 
@@ -1137,7 +1234,9 @@ class MossCodeApp(TerminalApp[None]):
             text.append("未启用工具", style="bold")
         else:
             mode = registry.permissions.mode
-            color = {"acceptEdits": TOOL_SUCCESS_COLOR, "plan": OPERATION_COLOR, "bypassPermissions": ERROR_COLOR}.get(mode)
+            color = {"acceptEdits": TOOL_SUCCESS_COLOR, "plan": OPERATION_COLOR, "bypassPermissions": ERROR_COLOR}.get(
+                mode
+            )
             text.append(MODE_BADGES[mode], style=f"bold {color}" if color else "bold")
             if getattr(self.conversation, "coordinator", False):
                 text.append(" " + COORDINATOR_BADGE, style=f"bold {OPERATION_COLOR}")
@@ -1147,7 +1246,13 @@ class MossCodeApp(TerminalApp[None]):
             text.append(" · " + self.model)
         if note:
             stage, separator, rest = note.partition(" · ")
-            stage_color = ERROR_COLOR if stage.startswith("失败") else OPERATION_COLOR if self._generating or stage.startswith(("已取消", "已停止")) else None
+            stage_color = (
+                ERROR_COLOR
+                if stage.startswith("失败")
+                else OPERATION_COLOR
+                if self._generating or stage.startswith(("已取消", "已停止"))
+                else None
+            )
             text.append(" · ")
             text.append(stage, style=stage_color)
             if separator:
@@ -1172,18 +1277,25 @@ class MossCodeApp(TerminalApp[None]):
             asking = sum(self._asking().values())  # Pane members' too.
             if asking:
                 text.append(f" · 成员审批 {asking}", style=OPERATION_COLOR)
-            if self.query("#member-panel") and self.query_one("#member-panel").display \
-                    and not self.query_one("#member-panel", MemberPanel).expanded:
+            if (
+                self.query("#member-panel")
+                and self.query_one("#member-panel").display
+                and not self.query_one("#member-panel", MemberPanel).expanded
+            ):
                 text.append(" · Ctrl+T 成员")
         if self._usage.requests:
+
             def tokens(value, missing):
                 if missing == self._usage.requests:
                     return "—"
                 return ("≥" if missing else "") + str(value)
+
             if self._context_share is not None:
                 percent, near = self._context_share
                 text.append(f" · 上下文 约 {percent}%", style=OPERATION_COLOR if near else None)
-            text.append(f" · Token 入 {tokens(self._usage.input_tokens, self._usage.missing_input)} / 出 {tokens(self._usage.output_tokens, self._usage.missing_output)}")
+            text.append(
+                f" · Token 入 {tokens(self._usage.input_tokens, self._usage.missing_input)} / 出 {tokens(self._usage.output_tokens, self._usage.missing_output)}"
+            )
             text.append(" · " + cache_summary(self._usage))
         status = self.query("#status")
         if not status:  # Timers and MCP callbacks can fire while the screen is torn down.
@@ -1219,8 +1331,12 @@ class MossCodeApp(TerminalApp[None]):
                     row.progress(row.subagent)
             if monotonic() < self._hint_until:
                 return
-            label = {"waiting": "连接中", "thinking": "思考中", "streaming": "输出中", "tools": "执行工具中"}.get(self._active_reply.phase, "处理中")
-            self._status(f"{label} · {self._iteration}/{self._iteration_limit} 轮 · {monotonic() - self.started:.1f}s · Esc 取消")
+            label = {"waiting": "连接中", "thinking": "思考中", "streaming": "输出中", "tools": "执行工具中"}.get(
+                self._active_reply.phase, "处理中"
+            )
+            self._status(
+                f"{label} · {self._iteration}/{self._iteration_limit} 轮 · {monotonic() - self.started:.1f}s · Esc 取消"
+            )
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id == "prompt":
@@ -1258,11 +1374,15 @@ class MossCodeApp(TerminalApp[None]):
     def _refresh_hints(self, value: str) -> None:
         hints = self.query_one("#command-hints", OptionList)
         help_line = self.query_one("#command-help", Static)
-        previous = (self._hint_choices[hints.highlighted][0]
-                    if hints.highlighted is not None and hints.highlighted < len(self._hint_choices) else None)
+        previous = (
+            self._hint_choices[hints.highlighted][0]
+            if hints.highlighted is not None and hints.highlighted < len(self._hint_choices)
+            else None
+        )
         recalled = self.query_one("#prompt", PromptArea).recalled
-        self._hint_choices = ([] if recalled or value == self._dismissed_prompt
-                              else self.commands.matches(self._command_context(), value))
+        self._hint_choices = (
+            [] if recalled or value == self._dismissed_prompt else self.commands.matches(self._command_context(), value)
+        )
         hints.clear_options()
         width = min(24, max(10, (self.size.width - 8) // 2))
         for hint in self._hint_choices:
@@ -1334,13 +1454,18 @@ class MossCodeApp(TerminalApp[None]):
         parsed = parse_input(prompt, self.commands)
         if parsed.kind == "empty":
             return
-        running_ok = (parsed.kind == "command" and parsed.command is not None
-                      and parsed.command.runs_while_running(parsed.argument))
+        running_ok = (
+            parsed.kind == "command"
+            and parsed.command is not None
+            and parsed.command.runs_while_running(parsed.argument)
+        )
         if self._task_running and not running_ok:
             if parsed.kind != "message":
                 # Commands change state the running task depends on; keep the text for later.
                 self._hint_until = monotonic() + 2
-                self._status("运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送 · Esc 取消")
+                self._status(
+                    "运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送 · Esc 取消"
+                )
                 return
             field.remember(prompt)
             field.clear()
@@ -1356,8 +1481,16 @@ class MossCodeApp(TerminalApp[None]):
             return
         await self._start_request(parsed.text)
 
-    async def _start_request(self, prompt: str, *, show_user: bool = True, shown: tuple[str, ...] = (),
-                             command: str | None = None, fork=None, notify: bool = False) -> None:
+    async def _start_request(
+        self,
+        prompt: str,
+        *,
+        show_user: bool = True,
+        shown: tuple[str, ...] = (),
+        command: str | None = None,
+        fork=None,
+        notify: bool = False,
+    ) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         reply = ChatEntry("MossCode")
         self._active_reply = reply
@@ -1587,7 +1720,9 @@ class MossCodeApp(TerminalApp[None]):
             return
         try:
             provider = self.provider_factory(config)
-            await self.conversation.set_provider(provider, config.budget(), (config.name, config.protocol, config.model))
+            await self.conversation.set_provider(
+                provider, config.budget(), (config.name, config.protocol, config.model)
+            )
         except (ProviderError, ConfigError) as exc:
             await self._local_note(f"切换失败：{exc}")
             return
@@ -1642,15 +1777,26 @@ class MossCodeApp(TerminalApp[None]):
             return
         self._approval_request = request
         operation = request.operation
-        labels = {"read_file": "读取文件", "write_file": "写入文件", "edit_file": "修改文件",
-                  "glob": "查找文件", "grep": "搜索内容", "exit_plan_mode": "审阅计划",
-                  "execute_command": shell_name(shell_label(self.conversation.registry))}
+        labels = {
+            "read_file": "读取文件",
+            "write_file": "写入文件",
+            "edit_file": "修改文件",
+            "glob": "查找文件",
+            "grep": "搜索内容",
+            "exit_plan_mode": "审阅计划",
+            "execute_command": shell_name(shell_label(self.conversation.registry)),
+        }
         text = Text()
         if operation.tool == "team_merge":
             text.append(f"需要确认 · 合并成员 {safe_display(operation.target)} 的分支", style=f"bold {OPERATION_COLOR}")
         else:
-            text.append("需要授权 · " + labels.get(operation.tool, operation.tool)
-                        + (f" · {request.source}" if request.source else "") + "\n", style=f"bold {OPERATION_COLOR}")
+            text.append(
+                "需要授权 · "
+                + labels.get(operation.tool, operation.tool)
+                + (f" · {request.source}" if request.source else "")
+                + "\n",
+                style=f"bold {OPERATION_COLOR}",
+            )
             text.append(safe_display(operation.target), style=PARAMETER_COLOR)
         if operation.cwd is not None:
             text.append("\n工作目录：" + operation.cwd)
@@ -1682,8 +1828,11 @@ class MossCodeApp(TerminalApp[None]):
 
     def _hide_approval(self) -> None:
         """The next request still waiting stays or comes up (a member's outlives the lead's turn)."""
-        waiting = [item for item in ([self._approval_request] if self._approval_request else []) + self._approval_queue
-                   if self._waiting(item)]
+        waiting = [
+            item
+            for item in ([self._approval_request] if self._approval_request else []) + self._approval_queue
+            if self._waiting(item)
+        ]
         self._approval_request = None
         self._approval_queue = waiting[1:]
         if waiting and not self._closing:
@@ -1720,8 +1869,9 @@ class MossCodeApp(TerminalApp[None]):
                 self._status("")
             self._tick()
 
-    async def _respond(self, prompt: str, reply: ChatEntry, command: str | None = None, fork=None,
-                       notify: bool = False) -> None:
+    async def _respond(
+        self, prompt: str, reply: ChatEntry, command: str | None = None, fork=None, notify: bool = False
+    ) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         tool_rows: dict[str, ToolEntry] = {}
         continuation = False
@@ -1745,8 +1895,9 @@ class MossCodeApp(TerminalApp[None]):
                         # Before a reply that has not started yet, so the row reads in time order.
                         await self._show_compact(event.manual, None if continuation else reply)
                     elif isinstance(event, (CompactFinished, CompactFailed)):
-                        await self._end_compact(compact_notice(event), self._compact_style(event),
-                                                None if continuation else reply)
+                        await self._end_compact(
+                            compact_notice(event), self._compact_style(event), None if continuation else reply
+                        )
                         self._refresh_context()
                     elif isinstance(event, RunStopped):
                         completed = event.reason == "completed"
@@ -1796,7 +1947,9 @@ class MossCodeApp(TerminalApp[None]):
                                 await chat.mount(row)
                             if event.result is not None:
                                 row.complete(event.result, event.elapsed)
-                                reply.phase = "tools" if any(r.elapsed is None for r in tool_rows.values()) else "waiting"
+                                reply.phase = (
+                                    "tools" if any(r.elapsed is None for r in tool_rows.values()) else "waiting"
+                                )
                             self._tick()
                     elif isinstance(event, Notice):
                         await self._local_note("! " + event.text, OPERATION_COLOR)
@@ -1919,8 +2072,7 @@ class MossCodeApp(TerminalApp[None]):
             panel.collapse(now)
             self._focus_home()
         panel.show(rows, asking, now)
-        shown = (not view.display and not self.query_one("#model-panel").display
-                 and (panel.expanded or panel.live))
+        shown = not view.display and not self.query_one("#model-panel").display and (panel.expanded or panel.live)
         if panel.display != shown:
             panel.display = shown
             if not shown and self.focused is self.query_one("#member-list"):
@@ -2097,7 +2249,7 @@ class MossCodeApp(TerminalApp[None]):
                 messages = [index for index, record in enumerate(records) if record.get("type") == "message"]
                 if len(messages) > VIEW_MESSAGES:
                     skipped = len(messages) - VIEW_MESSAGES
-                    records = records[messages[skipped]:]
+                    records = records[messages[skipped] :]
                     lines.append(Text(f"（更早的 {skipped} 条消息未显示）", style="dim"))
                 if not records and not await asyncio.to_thread(tail.path.exists):
                     lines.append(Text(f"成员 {name} 还没有对话记录", style="dim"))

@@ -23,6 +23,7 @@ def simulate(reg, name="execute_command"):
     async def fake(params):
         executed.append(params.model_dump())
         return "executed", {}
+
     reg.get(name).execute = fake
     return executed
 
@@ -31,7 +32,6 @@ def plan_registry(tmp_path, entered_from="default"):
     reg = registry(tmp_path, entered_from)
     reg.permissions.set_mode("plan")
     return reg
-
 
 
 def test_plan_definitions_are_read_only_plus_exit_plan_mode(tmp_path):
@@ -43,25 +43,30 @@ def test_plan_definitions_are_read_only_plus_exit_plan_mode(tmp_path):
     assert "exit_plan_mode" not in {d.name for d in reg.definitions(read_only=True)}
 
 
-@pytest.mark.parametrize("request_", [
-    call("write_file", path="a", content="x"),
-    call("edit_file", path="a", old_text="old", new_text="new"),
-    call("execute_command", command="echo hi"),
-    call("mcp__demo__echo", text="x"),
-])
+@pytest.mark.parametrize(
+    "request_",
+    [
+        call("write_file", path="a", content="x"),
+        call("edit_file", path="a", old_text="old", new_text="new"),
+        call("execute_command", command="echo hi"),
+        call("mcp__demo__echo", text="x"),
+    ],
+)
 async def test_plan_blocks_non_read_tools_from_bypass_and_with_allow_rules(tmp_path, request_):
     (tmp_path / "a").write_text("old")
     reg = plan_registry(tmp_path, "bypassPermissions")
     reg.register(RemoteTool(tmp_path))
-    reg.permissions.layers[2] = (parse_rule("Write(**)", "allow"), parse_rule("Edit(**)", "allow"),
-                                 parse_rule("Bash(*)", "allow"))
+    reg.permissions.layers[2] = (
+        parse_rule("Write(**)", "allow"),
+        parse_rule("Edit(**)", "allow"),
+        parse_rule("Bash(*)", "allow"),
+    )
     executed = simulate(reg, request_.name)
     result = await reg.execute(request_)
     assert result.code == "plan_blocked" and "exit_plan_mode" in result.output
     assert not executed and (tmp_path / "a").read_text() == "old"
     assert reg.permissions.requests.empty()
     assert not (await reg.execute(call("read_file", path="a"))).is_error
-
 
 
 async def test_exit_plan_mode_outside_plan_is_not_in_plan(tmp_path):
@@ -77,13 +82,16 @@ async def test_exit_plan_mode_headless_requires_approval_and_stays_in_plan(tmp_p
     assert result.code == "approval_required" and reg.permissions.mode == "plan"
 
 
-@pytest.mark.parametrize("entered_from,choice,after", [
-    ("acceptEdits", "execute", "acceptEdits"),
-    ("default", "execute", "default"),
-    ("bypassPermissions", "execute", "bypassPermissions"),
-    ("default", "accept_edits", "acceptEdits"),
-    ("default", "deny", "plan"),
-])
+@pytest.mark.parametrize(
+    "entered_from,choice,after",
+    [
+        ("acceptEdits", "execute", "acceptEdits"),
+        ("default", "execute", "default"),
+        ("bypassPermissions", "execute", "bypassPermissions"),
+        ("default", "accept_edits", "acceptEdits"),
+        ("default", "deny", "plan"),
+    ],
+)
 async def test_plan_choices_set_the_next_mode(tmp_path, entered_from, choice, after):
     reg = plan_registry(tmp_path, entered_from)
     # Rules never decide whether planning ends.
@@ -112,10 +120,12 @@ async def test_plan_approval_is_void_if_mode_changed_meanwhile(tmp_path):
 async def test_plan_approval_switches_tools_within_one_task(tmp_path):
     reg = plan_registry(tmp_path, "acceptEdits")
     reg.permissions.interactive = True
-    provider = SequenceProvider(response(calls=[call("write_file", "early", path="a", content="x")]),
-                                response(calls=[call("exit_plan_mode", "p", plan="写入 a")]),
-                                response(calls=[call("write_file", "w", path="a", content="planned")]),
-                                response("完成"))
+    provider = SequenceProvider(
+        response(calls=[call("write_file", "early", path="a", content="x")]),
+        response(calls=[call("exit_plan_mode", "p", plan="写入 a")]),
+        response(calls=[call("write_file", "w", path="a", content="planned")]),
+        response("完成"),
+    )
     conv = Conversation(provider, registry=reg)
     asked = []
     async for event in conv.reply("规划并实施"):
@@ -133,12 +143,13 @@ async def test_plan_approval_switches_tools_within_one_task(tmp_path):
 
 async def test_headless_cli_prints_plan(tmp_path, capsys):
     reg = plan_registry(tmp_path)
-    provider = SequenceProvider(response(calls=[call("exit_plan_mode", plan="## 步骤\n1. 修改 a")]), response("等待批准"))
+    provider = SequenceProvider(
+        response(calls=[call("exit_plan_mode", plan="## 步骤\n1. 修改 a")]), response("等待批准")
+    )
     await cli._prompt(Conversation(provider, registry=reg), "规划")
     out = capsys.readouterr().out
     assert "计划：\n## 步骤\n1. 修改 a" in out and "approval_required" not in out.split("计划：")[0]
     assert reg.permissions.mode == "plan"
-
 
 
 @pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions"])
@@ -151,7 +162,6 @@ async def test_catastrophic_commands_are_hard_denied_in_every_mode(tmp_path, mod
     executed = simulate(reg)
     result = await reg.execute(call("execute_command", command=command))
     assert result.code == "dangerous_command" and not executed and reg.permissions.requests.empty()
-
 
 
 @pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions"])
@@ -209,7 +219,6 @@ async def test_command_choices_offer_a_prefix_only_when_one_can_be_derived(tmp_p
     assert request.choices == COMMAND_CHOICES and request.operation.prefix == "python -m pytest"
     _, request = await approve(reg, call("execute_command", command="python script.py"), "once")
     assert request.choices == CHOICES and not request.operation.risk
-
 
 
 def test_plan_reminder_points_to_exit_plan_mode():

@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 import sys
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
 from . import Member, TeamError, TeamStore
 from .backends import HEARTBEAT
@@ -32,10 +32,12 @@ def missing_key(config) -> str:
 
 def fail(store: TeamStore, name: str, text: str) -> int:
     """The lead reads the error from the record and reports backend_failed."""
+
     def write(team):
         member = team.member(name)
         if member is not None:
             member.error, member.status, member.pid = text, "stopped", None
+
     try:
         store.modify(write)
     except TeamError:
@@ -47,8 +49,16 @@ def fail(store: TeamStore, name: str, text: str) -> int:
 class MemberProcess:
     """The member side of a pane: its runner, its record and its heartbeat."""
 
-    def __init__(self, store: TeamStore, name: str, conversation, *, heartbeat: float = HEARTBEAT,
-                 poll: float = POLL, interactive: bool = False):
+    def __init__(
+        self,
+        store: TeamStore,
+        name: str,
+        conversation,
+        *,
+        heartbeat: float = HEARTBEAT,
+        poll: float = POLL,
+        interactive: bool = False,
+    ):
         self.store, self.name, self.conversation = store, name, conversation
         self.heartbeat, self.poll, self.interactive = heartbeat, poll, interactive
         self.runner: MemberRunner | None = None
@@ -85,14 +95,17 @@ class MemberProcess:
     def _write(self, change: Callable[[Member], None]) -> None:
         async def write():
             async with self._lock:
+
                 def apply(team):
                     member = team.member(self.name)
                     if member is not None:
                         change(member)
+
                 try:
                     await asyncio.to_thread(self.store.modify, apply)
                 except TeamError:
                     pass
+
         job = asyncio.get_running_loop().create_task(write())
         self._writes.add(job)
         job.add_done_callback(self._writes.discard)
@@ -109,12 +122,14 @@ class MemberProcess:
                 member.usage = fields["usage"]
             if "approved" in fields:
                 member.approved = fields["approved"]
+
         self._write(change)
 
     async def prepare(self) -> MemberRunner:
         """The same runner as an in-process member, restored from its transcript."""
         from ..agents import FORK
         from .runtime import build_runner, load_history, restore_member
+
         member = await asyncio.to_thread(self._record)
         conversation = self.conversation
         await conversation.start()
@@ -130,14 +145,24 @@ class MemberProcess:
         if member.worktree:  # In use while this process lives, even after the lead has gone.
             try:
                 await conversation.worktree_manager().mark_in_use(
-                    member.worktree["flat"], f"团队 {self.team} 成员 {self.name}", pid=os.getpid())
+                    member.worktree["flat"], f"团队 {self.team} 成员 {self.name}", pid=os.getpid()
+                )
             except Exception:
                 pass
         root = Path.cwd().resolve() if member.worktree else None
         relative = (member.worktree or {}).get("relative", "")
         self.mode = member.mode or "default"
-        runner = await build_runner(conversation, self.store, member, agent, root, relative,
-                                    on_approval=self._approval, poll=self.poll, session_mode=self._session_mode)
+        runner = await build_runner(
+            conversation,
+            self.store,
+            member,
+            agent,
+            root,
+            relative,
+            on_approval=self._approval,
+            poll=self.poll,
+            session_mode=self._session_mode,
+        )
         restore_member(runner, member, history)
         runner.on_status = self._status
         runner.on_event = self._event
@@ -152,6 +177,7 @@ class MemberProcess:
         def publish(member: Member) -> None:
             if all(entry.get("id") != request.id for entry in member.approvals if isinstance(entry, dict)):
                 member.approvals.append(item)
+
         self._write(publish)
         if self._answers is None or self._answers.done():
             self._answers = asyncio.get_running_loop().create_task(self._watch_answers())
@@ -185,8 +211,11 @@ class MemberProcess:
                             remote[request_id] = choice
                     except ValueError:
                         pass
-            done = {request_id for request_id in self._asking
-                    if (future := policy.pending.get(request_id)) is None or future.done()}
+            done = {
+                request_id
+                for request_id in self._asking
+                if (future := policy.pending.get(request_id)) is None or future.done()
+            }
             if not done:
                 continue
             for request_id in done:
@@ -194,9 +223,11 @@ class MemberProcess:
                 if self.on_settled is not None:
                     self.on_settled(request_id, remote.get(request_id))
 
-            def drop(member: Member) -> None:
-                member.approvals = [entry for entry in member.approvals
-                                    if not isinstance(entry, dict) or entry.get("id") not in done]
+            def drop(member: Member, done: set = done) -> None:  # Runs later; keep this round's set.
+                member.approvals = [
+                    entry for entry in member.approvals if not isinstance(entry, dict) or entry.get("id") not in done
+                ]
+
             self._write(drop)
 
     def _event(self, event) -> None:
@@ -209,8 +240,9 @@ class MemberProcess:
             await asyncio.sleep(self.heartbeat)
             pid = os.getpid()
 
-            def beat(member: Member) -> None:
+            def beat(member: Member, pid: int = pid) -> None:
                 member.heartbeat, member.pid = now(), pid
+
             self._write(beat)
 
     async def serve(self) -> int:
@@ -227,6 +259,7 @@ class MemberProcess:
         def started(member: Member) -> None:
             member.pid, member.heartbeat, member.error = pid, now(), ""
             member.status, member.approvals = "idle", []  # None left from a process that died.
+
         self._write(started)
         await self.settle()
         beat = asyncio.get_running_loop().create_task(self._beat())
@@ -243,6 +276,7 @@ class MemberProcess:
 
             def stopped(member: Member) -> None:
                 member.status, member.pid, member.last_tool, member.approvals = "stopped", None, "", []
+
             self._write(stopped)
             await self.settle()
             try:
@@ -260,17 +294,29 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
     from ..providers import create_provider
     from ..session import Session
     from ..tools import create_default_registry
+
     registry = create_default_registry(project, shell=settings.shell)
     registry.permissions.interactive = interactive
     tool = registry.get("execute_command")
     hooks = HookEngine(project, shell=getattr(tool, "shell", None), enabled=True, trust_project=False)
-    conversation = Conversation(create_provider(config), settings.system_prompt, registry,
-                                max_iterations=settings.max_iterations, context_root=project,
-                                budget=config.budget(), session=Session.new(project), auto_compact=settings.auto_compact,
-                                persist=False, provider_configs=settings.providers, provider_factory=create_provider,
-                                provider_info=(config.name, config.protocol, config.model), hooks=hooks,
-                                agents=AgentCatalog.load(project), worktree_links=settings.worktree_links,
-                                worktree_stale_hours=0)
+    conversation = Conversation(
+        create_provider(config),
+        settings.system_prompt,
+        registry,
+        max_iterations=settings.max_iterations,
+        context_root=project,
+        budget=config.budget(),
+        session=Session.new(project),
+        auto_compact=settings.auto_compact,
+        persist=False,
+        provider_configs=settings.providers,
+        provider_factory=create_provider,
+        provider_info=(config.name, config.protocol, config.model),
+        hooks=hooks,
+        agents=AgentCatalog.load(project),
+        worktree_links=settings.worktree_links,
+        worktree_stale_hours=0,
+    )
     conversation._session_started = True  # A member is not a new session of the user's (no session_start hooks).
     return conversation
 
@@ -278,6 +324,7 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
 def run_member(team_dir: str, name: str, config_path: str | None, provider: str | None) -> int:
     """cli.main with --team-dir/--team-member: the pane's window, or plain lines when not on a terminal."""
     from ..config import ConfigError, find_config, load_settings
+
     store = TeamStore(Path(team_dir))
     try:
         team = store.load()
@@ -304,6 +351,7 @@ def run_member(team_dir: str, name: str, config_path: str | None, provider: str 
     process = MemberProcess(store, name, conversation, heartbeat=HEARTBEAT, poll=POLL, interactive=interactive)
     if interactive:
         from .pane_app import MemberApp
+
         MemberApp(process).run()
         return process.exit_code
     process.on_event = _print_event
@@ -313,6 +361,7 @@ def run_member(team_dir: str, name: str, config_path: str | None, provider: str 
 def _print_event(event) -> None:
     """Without a terminal (tests, logs): one line per message batch, tool call and reply."""
     from ..messages import Completed, ToolProgress
+
     if isinstance(event, list):
         for message in event:
             print(f"[{message.sender} · {message.type}] {message.summary or message.body[:80]}", flush=True)

@@ -5,27 +5,27 @@ it is ready, so a slow server never holds up the prompt or the other servers.
 """
 
 import asyncio
+import errno
+import hashlib
+import json
+import os
+import re
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
-import errno
-import hashlib
 from itertools import islice
-import json
-import os
 from pathlib import Path
-import re
 
 import anyio
 import httpx
 from jsonschema import SchemaError, validators
-from referencing import Registry
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import StreamableHTTPTransport
 from mcp.shared.exceptions import McpError
 from mcp.shared.message import SessionMessage
+from referencing import Registry
 
 from .mcp_config import MCPSettings, ServerConfig
 from .messages import ToolDefinition
@@ -46,9 +46,19 @@ class ToolsHTTPTransport(StreamableHTTPTransport):
     # hook disables that path as well as the optional notification GET below.
     async def _handle_reconnection(self, ctx, last_event_id, retry_interval_ms, attempt=0):
         request = ctx.session_message.message.root
-        await ctx.read_stream_writer.send(SessionMessage(types.JSONRPCMessage(types.JSONRPCError(
-            jsonrpc="2.0", id=request.id,
-            error=types.ErrorData(code=types.CONNECTION_CLOSED, message="MCP SSE 响应中断；不自动恢复连接。")))))
+        await ctx.read_stream_writer.send(
+            SessionMessage(
+                types.JSONRPCMessage(
+                    types.JSONRPCError(
+                        jsonrpc="2.0",
+                        id=request.id,
+                        error=types.ErrorData(
+                            code=types.CONNECTION_CLOSED, message="MCP SSE 响应中断；不自动恢复连接。"
+                        ),
+                    )
+                )
+            )
+        )
 
 
 @asynccontextmanager
@@ -84,6 +94,7 @@ def check_schema(schema):
         raise ValueError("工具参数 Schema 必须为 object。")
     if len(json.dumps(schema).encode()) > 65536:
         raise ValueError("工具 Schema 过大。")
+
     def walk(value):
         if isinstance(value, dict):
             for key in ("$ref", "$dynamicRef", "$recursiveRef"):
@@ -94,6 +105,7 @@ def check_schema(schema):
         elif isinstance(value, list):
             for child in value:
                 walk(child)
+
     walk(schema)
     validator = validators.validator_for(schema)
     validator.check_schema(schema)
@@ -118,8 +130,9 @@ def json_arguments(validator, raw, kind: str) -> MCPArguments:
         errors = list(islice(validator.iter_errors(raw), 5))
         if errors:
             fields = [".".join(map(str, e.absolute_path)) or "参数对象" for e in errors[:5]]
-            raise ToolFailure("invalid_arguments", f"{kind} 参数不符合工具 JSON Schema，问题字段：" + "、".join(fields),
-                              fields=fields)
+            raise ToolFailure(
+                "invalid_arguments", f"{kind} 参数不符合工具 JSON Schema，问题字段：" + "、".join(fields), fields=fields
+            )
     except ToolFailure:
         raise
     except Exception:
@@ -169,7 +182,9 @@ class MCPTool(Tool):
         self.read_only = bool(config.trust_read_only_hint and hint is True)
         self.name = tool_name(self.server_name, self.remote_name)
         self.description = f"MCP Server {self.server_name} 的工具 {self.remote_name}。" + (remote.description or "")
-        self.prompt_summary = f"外部 MCP 工具：{self.server_name} / {self.remote_name}" + ("（只读）" if self.read_only else "")
+        self.prompt_summary = f"外部 MCP 工具：{self.server_name} / {self.remote_name}" + (
+            "（只读）" if self.read_only else ""
+        )
         self.schema = deepcopy(remote.inputSchema)
         self.validator = check_schema(self.schema)
 
@@ -229,17 +244,33 @@ class ServerConnection:
             async with AsyncExitStack() as stack:
                 if self.config.type == "stdio":
                     errlog = stack.enter_context(open(os.devnull, "w"))
-                    streams = await stack.enter_async_context(stdio_client(StdioServerParameters(
-                        command=self.config.command, args=list(self.config.args), env=self.config.env,
-                        cwd=str(self.root)), errlog=errlog))
+                    streams = await stack.enter_async_context(
+                        stdio_client(
+                            StdioServerParameters(
+                                command=self.config.command,
+                                args=list(self.config.args),
+                                env=self.config.env,
+                                cwd=str(self.root),
+                            ),
+                            errlog=errlog,
+                        )
+                    )
                 else:
-                    client = await stack.enter_async_context(httpx.AsyncClient(
-                        headers=self.config.headers, timeout=httpx.Timeout(30, connect=10),
-                        follow_redirects=False, trust_env=False))
+                    client = await stack.enter_async_context(
+                        httpx.AsyncClient(
+                            headers=self.config.headers,
+                            timeout=httpx.Timeout(30, connect=10),
+                            follow_redirects=False,
+                            trust_env=False,
+                        )
+                    )
                     streams = await stack.enter_async_context(tools_http(self.config.url, client))
                 # Discovery requests share the startup window; tool calls pass config.timeout.
-                session = await stack.enter_async_context(ClientSession(
-                    *streams, read_timeout_seconds=timedelta(seconds=max(self.config.timeout, self.startup_timeout))))
+                session = await stack.enter_async_context(
+                    ClientSession(
+                        *streams, read_timeout_seconds=timedelta(seconds=max(self.config.timeout, self.startup_timeout))
+                    )
+                )
                 await session.initialize()
                 discovered, cursor, seen = [], None, set()
                 for _ in range(100):
@@ -291,8 +322,9 @@ class ServerConnection:
                 self.stop.set()
                 self.state = "closed"
                 raise ToolFailure("timeout", "MCP 工具等待结果超时，可能已有外部效果。") from None
-            raise ToolFailure("mcp_protocol_error", "MCP Server 返回协议错误；未自动重试，可能已有外部效果。",
-                              rpc_code=exc.error.code) from None
+            raise ToolFailure(
+                "mcp_protocol_error", "MCP Server 返回协议错误；未自动重试，可能已有外部效果。", rpc_code=exc.error.code
+            ) from None
         except Exception:
             self.state = "failed"
             self.stop.set()
@@ -321,8 +353,13 @@ class ServerStatus:
     def describe(self) -> str:
         if self.state == "ready":
             return f"已连接 · {len(self.tools)} 个工具"
-        return {"new": "未启动", "connecting": "连接中…", "failed": f"失败：{self.detail}", "skipped": f"已跳过：{self.detail}",
-                "closed": "已关闭（不自动重连）"}.get(self.state, self.state)
+        return {
+            "new": "未启动",
+            "connecting": "连接中…",
+            "failed": f"失败：{self.detail}",
+            "skipped": f"已跳过：{self.detail}",
+            "closed": "已关闭（不自动重连）",
+        }.get(self.state, self.state)
 
     def notice(self) -> str:
         if self.state == "ready":
@@ -342,8 +379,10 @@ class MCPManager:
     @property
     def pending(self) -> int:
         # A server settles when it reports, which happens just before its task finishes.
-        return sum(not task.done() and connection.config.name not in self._outcomes
-                   for task, connection in zip(self._tasks, self.connections))
+        return sum(
+            not task.done() and connection.config.name not in self._outcomes
+            for task, connection in zip(self._tasks, self.connections)
+        )
 
     def statuses(self) -> tuple[ServerStatus, ...]:
         result = []
@@ -363,8 +402,10 @@ class MCPManager:
         """Start discovery in the background; idempotent. on_update(status) runs as each server settles."""
         if self._tasks or self._closed:
             return
-        self._tasks = [asyncio.create_task(self._connect(c, registry, on_update), name=f"mcp-start:{c.config.name}")
-                       for c in self.connections]
+        self._tasks = [
+            asyncio.create_task(self._connect(c, registry, on_update), name=f"mcp-start:{c.config.name}")
+            for c in self.connections
+        ]
 
     async def _connect(self, connection, registry, on_update):
         config = connection.config

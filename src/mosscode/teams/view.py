@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 
 from rich.text import Text
 
@@ -49,7 +49,7 @@ def _incoming(text: str) -> list[Text]:
         sender, label, rest = match.groups()
         rest = rest.removeprefix("摘要：").strip()
         if not rest:  # The body starts on the next line.
-            rest = next((item.strip() for item in lines[index + 1:] if item.strip()), "")
+            rest = next((item.strip() for item in lines[index + 1 :] if item.strip()), "")
             rest = "" if HEAD.match(rest) or rest.startswith("</incoming") else rest
         rows.append(incoming_line(sender, label, rest))
     return rows
@@ -120,9 +120,13 @@ class Feed:
         """A member's own window, as its turn runs."""
         if isinstance(event, list):  # The messages of a new turn.
             return self.flush() + [
-                incoming_line(message.sender, TYPE_LABELS.get(message.type, message.type),
-                              message.summary or (message.body.strip().splitlines() or [""])[0])
-                for message in event]
+                incoming_line(
+                    message.sender,
+                    TYPE_LABELS.get(message.type, message.type),
+                    message.summary or (message.body.strip().splitlines() or [""])[0],
+                )
+                for message in event
+            ]
         if isinstance(event, ToolProgress):
             if event.phase == "running":
                 self.waiting[event.call.id] = event.call
@@ -132,8 +136,9 @@ class Feed:
             return self.flush() + [Text(event.message.text)]
         elif isinstance(event, RunStopped):
             lines = self.flush()
-            return lines + ([Text(event.notice, style=ERROR_COLOR)]
-                            if event.reason not in {"completed", "max_tokens"} else [])
+            return lines + (
+                [Text(event.notice, style=ERROR_COLOR)] if event.reason not in {"completed", "max_tokens"} else []
+            )
         elif isinstance(event, ProviderError):
             return self.flush() + [Text(str(event), style=ERROR_COLOR)]
         return []

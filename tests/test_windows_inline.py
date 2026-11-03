@@ -6,12 +6,12 @@ from mosscode.conversation import Conversation
 from mosscode.tui import ChatEntry, MossCodeApp
 from test_conversation import FakeProvider
 
-
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows inline input adapter")
 
 
 async def test_stale_mouse_reports_cannot_scroll_or_execute_commands():
     from textual._xterm_parser import XTermParser
+
     from mosscode.tui import PromptArea
     from mosscode.windows_inline import WindowsInlineDriver
 

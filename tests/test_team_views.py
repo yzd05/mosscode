@@ -3,13 +3,14 @@
 import asyncio
 import json
 import os
-from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from rich.console import Console
 
 from mosscode.member_ui import compact_rows, elapsed
-from mosscode.messages import ContentBlock, Message as ChatMessage, RunStopped, ToolCall, ToolProgress, ToolResult
+from mosscode.messages import ContentBlock, RunStopped, ToolCall, ToolProgress, ToolResult
+from mosscode.messages import Message as ChatMessage
 from mosscode.permissions import ApprovalRequest, Operation, PermissionPolicy
 from mosscode.serialization import message_to_json
 from mosscode.teams import LEAD, Member, TeamError, TeamStore
@@ -21,8 +22,6 @@ from mosscode.teams.runtime import MemberRow, PaneRunner
 from mosscode.teams.view import COMPACTED, Feed, TranscriptTail, message_lines
 from test_agent import response
 from test_teams import Script, team_conversation, until
-
-import pytest
 
 
 def plain(lines) -> str:
@@ -46,16 +45,28 @@ def record(message: ChatMessage) -> str:
 
 # A member's conversation as lines ------------------------------------------------------
 
+
 def test_transcript_messages_as_lines():
-    incoming = render_incoming([Message(LEAD, "text", "实现登录\n细节", "初始任务"),
-                                Message("bob", "shutdown_request", extra={"reason": "收工"})])
+    incoming = render_incoming(
+        [
+            Message(LEAD, "text", "实现登录\n细节", "初始任务"),
+            Message("bob", "shutdown_request", extra={"reason": "收工"}),
+        ]
+    )
     lines = plain(message_lines(chat("user", incoming)))
     assert lines.splitlines()[0] == "← lead · 消息：初始任务"
     assert lines.splitlines()[1].startswith("← bob · ")
     call = ToolCall("c1", "edit_file", '{"path": "a.py"}')
     assert plain(message_lines(chat("assistant", "我来改", tool_calls=(call,)))) == "我来改"  # Calls go to Feed.
-    results = message_lines(chat("tool", tool_results=(ToolResult("c1", "edit_file", "已修改 a.py\n第二行"),
-                                                       ToolResult("c2", "read_file", "没有", is_error=True))))
+    results = message_lines(
+        chat(
+            "tool",
+            tool_results=(
+                ToolResult("c1", "edit_file", "已修改 a.py\n第二行"),
+                ToolResult("c2", "read_file", "没有", is_error=True),
+            ),
+        )
+    )
     assert plain(results).splitlines() == ["  └ 已修改 a.py", "  └ 没有"]
     assert plain(message_lines(chat("user", "摘要", synthetic="compact"))) == COMPACTED
     feed = Feed()
@@ -77,7 +88,9 @@ def test_parallel_results_sit_under_their_calls():
     # A call whose result never came is written as it was, before what follows.
     feed.record(json.loads(record(chat("assistant", tool_calls=calls[:1]))))
     assert plain(feed.record(json.loads(record(chat("assistant", "算了"))))).splitlines() == [
-        '● read_file {"path": "a"}', "算了"]
+        '● read_file {"path": "a"}',
+        "算了",
+    ]
 
 
 def test_events_of_a_pane_member_pair_calls_and_results():
@@ -113,13 +126,20 @@ def test_tail_reads_what_was_added(tmp_path):
 
 # Panel rows --------------------------------------------------------------------------
 
+
 def row(name, status="idle", **fields) -> MemberRow:
     return MemberRow(name, status, fields.pop("pane", False), **fields)
 
 
 def test_compact_panel_folds_to_four_lines():
-    rows = [row("a", "running", since=0.0, last_tool="edit_file a.py", task="登录"), row("b", "running", since=0.0),
-            row("c"), row("d"), row("e"), row("f", "stopped")]
+    rows = [
+        row("a", "running", since=0.0, last_tool="edit_file a.py", task="登录"),
+        row("b", "running", since=0.0),
+        row("c"),
+        row("d"),
+        row("e"),
+        row("f", "stopped"),
+    ]
     grid, lines = compact_rows(rows, {}, 80.0)
     text = rendered(grid)
     assert lines == 4 and "空闲 3：c、d、e" in text and "已停止 1" in text
@@ -140,15 +160,21 @@ async def test_rows_of_both_backends(tmp_path):
     async def alice(messages, tools):
         await gate.wait()
         return response("完成")
+
     provider, conv = team_conversation(tmp_path, Script(alice=alice))
     await conv.teams.create("t")
     await conv.teams.spawn("alice", "general", "做 A", isolation="none")
     store = conv.teams.current
     task = TeamAccess(store, LEAD).task_create("实现登录", owner="alice")
     TeamAccess(store, "alice").task_update(task.id, status="in_progress")
-    store.modify(lambda team: team.members.extend([Member("bob", "general", WINDOWS_TERMINAL, status="idle",
-                                                          pid=os.getpid(), window="mosscode-t-1"),
-                                                   Member("carol", "general")]))
+    store.modify(
+        lambda team: team.members.extend(
+            [
+                Member("bob", "general", WINDOWS_TERMINAL, status="idle", pid=os.getpid(), window="mosscode-t-1"),
+                Member("carol", "general"),
+            ]
+        )
+    )
     pane = PaneRunner(store, "bob", SimpleNamespace(name=WINDOWS_TERMINAL), os.getpid(), None, status="running")
     pane.last_tool = "execute_command npm test"
     conv.teams.runners["bob"] = pane
@@ -157,7 +183,11 @@ async def test_rows_of_both_backends(tmp_path):
     assert list(rows) == ["alice", "bob", "carol"]
     assert rows["alice"].status == "running" and rows["alice"].task == "实现登录" and not rows["alice"].pane
     assert rows["alice"].since is not None
-    assert rows["bob"].pane and rows["bob"].last_tool == "execute_command npm test" and rows["bob"].window == "mosscode-t-1"
+    assert (
+        rows["bob"].pane
+        and rows["bob"].last_tool == "execute_command npm test"
+        and rows["bob"].window == "mosscode-t-1"
+    )
     assert rows["carol"].status == "stopped" and rows["carol"].since is None
     del conv.teams.runners["bob"]
     gate.set()
@@ -165,6 +195,7 @@ async def test_rows_of_both_backends(tmp_path):
 
 
 # Team windows -----------------------------------------------------------------------
+
 
 def test_team_window_names(tmp_path):
     one, other = tmp_path / "p1" / "teams" / "demo", tmp_path / "p2" / "teams" / "demo"
@@ -174,6 +205,7 @@ def test_team_window_names(tmp_path):
 
 
 # Pane approvals in the lead ------------------------------------------------------------
+
 
 def test_take_only_the_kinds_asked_and_the_model_cannot_answer(tmp_path):
     store = TeamStore(tmp_path / "t")
@@ -192,8 +224,9 @@ def test_take_only_the_kinds_asked_and_the_model_cannot_answer(tmp_path):
 
 
 def test_record_round_trip():
-    request = ApprovalRequest("r1", "c1", Operation("execute_command", "npm test", cwd="/w"), "需要确认",
-                              ("once", "session", "deny"))
+    request = ApprovalRequest(
+        "r1", "c1", Operation("execute_command", "npm test", cwd="/w"), "需要确认", ("once", "session", "deny")
+    )
     back = approval_from_record(json.loads(json.dumps(approval_record(request))), "成员 bob（窗格）")
     assert back == ApprovalRequest("r1", "c1", request.operation, "需要确认", request.choices, "成员 bob（窗格）")
     assert approval_from_record({"id": "r", "operation": {}, "choices": ["sudo"]}, "x") is None
@@ -203,8 +236,9 @@ def test_record_round_trip():
 def pane_store(tmp_path, name="bob") -> TeamStore:
     store = TeamStore(tmp_path / "teams" / "t")
     store.create()
-    store.modify(lambda team: team.members.append(Member(name, "general", WINDOWS_TERMINAL, status="idle",
-                                                         pid=os.getpid())))
+    store.modify(
+        lambda team: team.members.append(Member(name, "general", WINDOWS_TERMINAL, status="idle", pid=os.getpid()))
+    )
     return store
 
 
@@ -242,6 +276,7 @@ async def test_member_takes_the_leads_answer(tmp_path):
 def publish(store, name, *requests) -> None:
     def write(team):
         team.member(name).approvals = [approval_record(request) for request in requests]
+
     store.modify(write)
 
 
@@ -253,8 +288,9 @@ async def attached(tmp_path, **options):
     provider, conv = team_conversation(tmp_path, Script(), mode="default", **options)
     await conv.teams.create("t")
     store = conv.teams.current
-    store.modify(lambda team: team.members.append(Member("bob", "general", WINDOWS_TERMINAL, status="idle",
-                                                         pid=os.getpid())))
+    store.modify(
+        lambda team: team.members.append(Member("bob", "general", WINDOWS_TERMINAL, status="idle", pid=os.getpid()))
+    )
     runner = conv.teams._attach(store, store.load().member("bob"))
     return conv, store, runner
 
@@ -277,8 +313,11 @@ async def test_lead_shows_and_answers_a_pane_request(tmp_path):
     assert conv.registry.permissions.respond("r1", "once")
     await until(lambda: store.mailbox.peek("bob"))
     answer = store.mailbox.peek("bob")[-1]
-    assert (answer.sender, answer.type, answer.extra) == (LEAD, "permission_response",
-                                                         {"request_id": "r1", "choice": "once"})
+    assert (answer.sender, answer.type, answer.extra) == (
+        LEAD,
+        "permission_response",
+        {"request_id": "r1", "choice": "once"},
+    )
     await until(lambda: "r1" not in conv.registry.permissions.pending)
     await stop_attached(conv, runner)
 
@@ -302,14 +341,17 @@ async def test_answered_in_its_window_or_stopped_withdraws_the_card(tmp_path):
 
 def test_turn_drops_left_over_answers(tmp_path):
     from mosscode.teams.member import MemberRunner
+
     store = pane_store(tmp_path)
     TeamAccess(store, LEAD).send("bob", "permission_response", runtime=True, request_id="old", choice="once")
     turns = []
-    runner = MemberRunner(TeamAccess(store, "bob"), "bob", agent_mode=lambda mode: mode, session_mode=lambda: "default",
-                          poll=0.01)
+    runner = MemberRunner(
+        TeamAccess(store, "bob"), "bob", agent_mode=lambda mode: mode, session_mode=lambda: "default", poll=0.01
+    )
 
     async def turn(messages):
         turns.append(messages)
+
     runner.turn = turn
 
     async def main():
@@ -318,11 +360,13 @@ def test_turn_drops_left_over_answers(tmp_path):
         runner.shutdown = True
         runner.wake()
         await asyncio.wait_for(job, 2)
+
     asyncio.run(main())
     assert turns == [] and store.mailbox.unread_count("bob") == 0
 
 
 # The panel and the view in the lead's window ---------------------------------------------------
+
 
 async def pause_until(pilot, predicate, steps=300):
     for _ in range(steps):
@@ -339,6 +383,7 @@ def view_text(app) -> str:
 
 async def test_t4_panel_and_view_of_an_in_process_member(tmp_path):
     from mosscode.tui import MossCodeApp, PromptArea
+
     gate = asyncio.Event()
 
     async def alice(messages, tools):
@@ -347,6 +392,7 @@ async def test_t4_panel_and_view_of_an_in_process_member(tmp_path):
 
     def bob(messages, tools):
         return response("好")
+
     provider, conv = team_conversation(tmp_path, Script(alice=alice, bob=bob))
     app = MossCodeApp(conv, "Demo")
     async with app.run_test(size=(100, 30)) as pilot:
@@ -355,8 +401,14 @@ async def test_t4_panel_and_view_of_an_in_process_member(tmp_path):
         await conv.teams.spawn("alice", "general", "实现登录", isolation="none")
         await conv.teams.spawn("bob", "general", "写文档", isolation="none")
         panel = app.query_one("#member-panel")
-        await pause_until(pilot, lambda: panel.display and {row.name for row in panel.rows} == {"alice", "bob"}
-                          and panel.rows[0].status == "running")
+        await pause_until(
+            pilot,
+            lambda: (
+                panel.display
+                and {row.name for row in panel.rows} == {"alice", "bob"}
+                and panel.rows[0].status == "running"
+            ),
+        )
         text = rendered(app.query_one("#member-compact").content)
         assert "alice" in text and "运行中" in text
         assert "Ctrl+T 成员" in str(app.query_one("#status").render())
@@ -392,6 +444,7 @@ async def test_x_twice_stops_the_member(tmp_path):
     async def alice(messages, tools):
         await asyncio.sleep(30)
         return response("不会到这里")
+
     provider, conv = team_conversation(tmp_path, Script(alice=alice))
     app = MossCodeApp(conv, "Demo")
     async with app.run_test(size=(100, 30)) as pilot:
@@ -411,6 +464,7 @@ async def test_x_twice_stops_the_member(tmp_path):
 
 async def test_view_of_a_pane_member_follows_its_transcript(tmp_path):
     from mosscode.tui import MossCodeApp
+
     conv, store, runner = await attached(tmp_path)
     app = MossCodeApp(conv, "Demo")
     async with app.run_test(size=(100, 30)) as pilot:
@@ -429,6 +483,7 @@ async def test_view_of_a_pane_member_follows_its_transcript(tmp_path):
 
 async def test_forwarded_card_in_the_view_and_withdrawn(tmp_path):
     from mosscode.tui import MossCodeApp
+
     conv, store, runner = await attached(tmp_path, interactive=True)
     app = MossCodeApp(conv, "Demo")
     notes = []

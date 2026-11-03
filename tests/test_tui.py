@@ -2,24 +2,31 @@ import asyncio
 
 import pytest
 from textual.widgets import Footer, Header, Markdown, OptionList, Static
-from mosscode.tui import PromptArea
 
 from mosscode.builtin_commands import BUILTIN
 from mosscode.config import ProviderConfig, Settings
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Delta, Message
-from mosscode.tui import ChatEntry, MossCodeApp, ProviderSelectApp
+from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ProviderSelectApp
 from test_conversation import FakeProvider
 
 
-@pytest.mark.parametrize("default,keys,selected_index", [
-    ("second", ('enter',), 1), ("second", ('up', 'enter'), 0), (None, ('down', 'enter'), 1),
-])
+@pytest.mark.parametrize(
+    "default,keys,selected_index",
+    [
+        ("second", ("enter",), 1),
+        ("second", ("up", "enter"), 0),
+        (None, ("down", "enter"), 1),
+    ],
+)
 async def test_startup_picker_selects_model_and_chat_shows_choice(default, keys, selected_index):
-    settings = Settings((
-        ProviderConfig("first", "anthropic-messages", "model-a"),
-        ProviderConfig("second", "openai-chat-completions", "model-b"),
-    ), default)
+    settings = Settings(
+        (
+            ProviderConfig("first", "anthropic-messages", "model-a"),
+            ProviderConfig("second", "openai-chat-completions", "model-b"),
+        ),
+        default,
+    )
     picker = ProviderSelectApp(settings)
     async with picker.run_test() as pilot:
         assert picker.query_one(OptionList).highlighted == (1 if default == "second" else 0)
@@ -160,8 +167,13 @@ async def test_help_and_unknown_commands_stay_local_and_do_not_change_history():
         assert provider.requests[0][0].text == "hello"
 
 
-TWO_PROVIDERS = Settings((ProviderConfig("test", "anthropic-messages", "model-a"),
-                          ProviderConfig("other", "openai-chat-completions", "model-b")), "test")
+TWO_PROVIDERS = Settings(
+    (
+        ProviderConfig("test", "anthropic-messages", "model-a"),
+        ProviderConfig("other", "openai-chat-completions", "model-b"),
+    ),
+    "test",
+)
 
 
 async def test_model_picker_is_keyboard_only_and_escape_returns_to_input():
@@ -232,6 +244,7 @@ def terminal_background(segment) -> bool:
     """Default background, or the deliberate exceptions: the user-message bar, and the mascot's pixels
     (the lower half of a ▀ cell is its background)."""
     from mosscode.appearance import MASCOT_COLORS, USER_MESSAGE_BACKGROUND
+
     bgcolor = segment.style.bgcolor if segment.style else None
     if bgcolor is None or bgcolor.is_default or bgcolor.name.lower() == USER_MESSAGE_BACKGROUND:
         return True
@@ -256,9 +269,18 @@ async def test_terminal_background_survives_markdown_model_menu_and_generation(m
         await send(app, pilot, "/help")
         entry = ChatEntry("MossCode")
         await app.query_one("#chat").mount(entry)
-        await entry.finish(Message("assistant", (ContentBlock("text",
-            "# Heading\n\nA `code` example.\n\n> Quote\n\n```python\ndef hello():\n    return 42\n```\n\n"
-            "| A | B |\n|---|---|\n| 1 | 2 |"),)))
+        await entry.finish(
+            Message(
+                "assistant",
+                (
+                    ContentBlock(
+                        "text",
+                        "# Heading\n\nA `code` example.\n\n> Quote\n\n```python\ndef hello():\n    return 42\n```\n\n"
+                        "| A | B |\n|---|---|\n| 1 | 2 |",
+                    ),
+                ),
+            )
+        )
         await pilot.pause()
         assert_terminal_background(app)
         await send(app, pilot, "/model")
@@ -385,21 +407,38 @@ async def test_normal_brightness_and_native_background_with_semantic_accents(mon
     async with app.run_test(size=(100, 60)) as pilot:
         entry = ChatEntry("MossCode")
         await app.query_one("#chat").mount(entry)
-        await entry.finish(Message("assistant", (ContentBlock("text",
-            "# Title\n\nA `code` sample.\n\n```python\n# comment\nreturn 42\n```"),)))
+        await entry.finish(
+            Message(
+                "assistant",
+                (ContentBlock("text", "# Title\n\nA `code` sample.\n\n```python\n# comment\nreturn 42\n```"),),
+            )
+        )
         app.query_one("#prompt", PromptArea).value = "/"
         await pilot.pause()
         segments = [segment for strip in app.screen._compositor.render_strips() for segment in strip]
-        assert any(segment.style and segment.style.color and segment.style.color.name == MASCOT_COLORS["w"]
-                   for segment in segments)
+        assert any(
+            segment.style and segment.style.color and segment.style.color.name == MASCOT_COLORS["w"]
+            for segment in segments
+        )
         text_segments = [segment for segment in segments if any(char.isalnum() for char in segment.text)]
         assert text_segments
-        assert all(segment.style and (not segment.style.color or segment.style.color.is_default
-                                     or segment.style.color.name in {COMMAND_HIGHLIGHT_COLOR, TOOL_SUCCESS_COLOR, PARAMETER_COLOR})
-                   and not segment.style.dim for segment in text_segments)
+        assert all(
+            segment.style
+            and (
+                not segment.style.color
+                or segment.style.color.is_default
+                or segment.style.color.name in {COMMAND_HIGHLIGHT_COLOR, TOOL_SUCCESS_COLOR, PARAMETER_COLOR}
+            )
+            and not segment.style.dim
+            for segment in text_segments
+        )
         code = [segment for segment in segments if segment.text == "code"]
         assert code and all(segment.style.color.name == PARAMETER_COLOR for segment in code)
-        ordinary = [segment for segment in segments if "Title" in segment.text or "comment" in segment.text or "return 42" in segment.text]
+        ordinary = [
+            segment
+            for segment in segments
+            if "Title" in segment.text or "comment" in segment.text or "return 42" in segment.text
+        ]
         assert ordinary and all(not s.style.color or s.style.color.is_default for s in ordinary)
         assert_terminal_background(app)
 
@@ -428,9 +467,14 @@ async def test_escape_dismissal_does_not_hide_retyped_slash_and_selected_row_is_
             row = next(strip for strip in app.screen._compositor.render_strips() if command in strip.text)
             text_segments = [segment for segment in row if any(char.isalnum() for char in segment.text)]
             assert text_segments
-            assert all(segment.style and segment.style.color and
-                       (segment.style.color.name == COMMAND_HIGHLIGHT_COLOR if selected
-                        else segment.style.color.is_default) for segment in text_segments)
+            assert all(
+                segment.style
+                and segment.style.color
+                and (
+                    segment.style.color.name == COMMAND_HIGHLIGHT_COLOR if selected else segment.style.color.is_default
+                )
+                for segment in text_segments
+            )
 
         assert_row_color("/help", True)
         assert_row_color("/clear", False)
@@ -461,10 +505,16 @@ class ThinkingProvider(FakeProvider):
             self.text_ready.set()
             await self.advance.wait()
             yield Delta("text", "回复**")
-            yield Completed(Message("assistant", (
-                ContentBlock("thinking", "服务返回的思考片段"),
-                ContentBlock("text", "**分块回复**"),
-            )), "stop")
+            yield Completed(
+                Message(
+                    "assistant",
+                    (
+                        ContentBlock("thinking", "服务返回的思考片段"),
+                        ContentBlock("text", "**分块回复**"),
+                    ),
+                ),
+                "stop",
+            )
         finally:
             self.stream_closed = True
 
@@ -539,8 +589,7 @@ async def test_completed_turns_and_local_commands_remain_in_scrollable_transcrip
         assert len(app.conversation.history) == 12
         assert app.query(ChatEntry)[0].body == "问题 0"
         assert not app.query(".speaker")
-        assert all(not entry.query_one(".thinking-label").display
-                   for entry in app.query(".assistant-entry"))
+        assert all(not entry.query_one(".thinking-label").display for entry in app.query(".assistant-entry"))
         chat = app.query_one("#chat")
         assert app.query_one("#banner").parent is chat
         assert chat.scroll_y > 0
@@ -587,4 +636,3 @@ async def test_history_uses_remaining_terminal_rows_and_can_jump_to_first_and_la
         visible = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         assert "问题 11" in visible
         assert app.query_one("#status").region.bottom <= app.size.height
-

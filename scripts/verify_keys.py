@@ -28,14 +28,20 @@ SHIFT, LEFT_CTRL = 0x0010, 0x0008
 
 
 class KEY_EVENT_RECORD(ctypes.Structure):
-    _fields_ = [("bKeyDown", wintypes.BOOL), ("wRepeatCount", wintypes.WORD), ("wVirtualKeyCode", wintypes.WORD),
-                ("wVirtualScanCode", wintypes.WORD), ("UnicodeChar", wintypes.WCHAR),
-                ("dwControlKeyState", wintypes.DWORD)]
+    _fields_ = [
+        ("bKeyDown", wintypes.BOOL),
+        ("wRepeatCount", wintypes.WORD),
+        ("wVirtualKeyCode", wintypes.WORD),
+        ("wVirtualScanCode", wintypes.WORD),
+        ("UnicodeChar", wintypes.WCHAR),
+        ("dwControlKeyState", wintypes.DWORD),
+    ]
 
 
 class INPUT_RECORD(ctypes.Structure):
     class _Event(ctypes.Union):
         _fields_ = [("KeyEvent", KEY_EVENT_RECORD), ("_pad", ctypes.c_byte * 16)]
+
     _fields_ = [("EventType", wintypes.WORD), ("Event", _Event)]
 
 
@@ -65,14 +71,16 @@ def inject(records):
 
 
 def child(out_path, textual_input):
+    from verify_resize import handle, screen_rows
+
     from mosscode import windows_inline
     from mosscode.conversation import Conversation
     from mosscode.tui import MossCodeApp, PromptArea
     from test_agent import SequenceProvider
-    from verify_resize import handle, screen_rows
 
     if textual_input:
         from textual.drivers import win32
+
         windows_inline.EventMonitor = win32.EventMonitor
 
     h = handle()
@@ -113,8 +121,12 @@ def child(out_path, textual_input):
         results["history"] = steps
         await submit("/clear")
         screen = "\n".join(screen_rows(h))
-        results["clear"] = {"shell_line": screen.count("SHELL-LINE-BEFORE-APP"), "permissions": screen.count("/permissions"),
-                            "banner": screen.count("MossCode v"), "note": screen.count("已开始新会话")}
+        results["clear"] = {
+            "shell_line": screen.count("SHELL-LINE-BEFORE-APP"),
+            "permissions": screen.count("/permissions"),
+            "banner": screen.count("MossCode v"),
+            "note": screen.count("已开始新会话"),
+        }
         results["screen"] = screen.splitlines()
         await pilot.press("ctrl+q")
 
@@ -139,7 +151,9 @@ def parent(textual_input):
     out = REPO / ".test-artifacts" / ("verify_keys_textual.json" if textual_input else "verify_keys.json")
     out.parent.mkdir(exist_ok=True)
     out.unlink(missing_ok=True)
-    args = ["conhost.exe", sys.executable, str(HERE), "--child", str(out)] + (["--textual-input"] if textual_input else [])
+    args = ["conhost.exe", sys.executable, str(HERE), "--child", str(out)] + (
+        ["--textual-input"] if textual_input else []
+    )
     process = subprocess.Popen(args, creationflags=subprocess.CREATE_NEW_CONSOLE, cwd=REPO)
     deadline = time.monotonic() + 60
     while not out.exists() and time.monotonic() < deadline:

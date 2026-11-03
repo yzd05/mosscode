@@ -1,12 +1,11 @@
 import asyncio
 
 from textual.widgets import OptionList, Static
-from mosscode.tui import PromptArea
 
 from mosscode.conversation import Conversation
 from mosscode.permissions import PermissionPolicy
 from mosscode.tools import create_default_registry
-from mosscode.tui import MossCodeApp
+from mosscode.tui import MossCodeApp, PromptArea
 from test_agent import SequenceProvider, call, response
 from test_tui import send
 
@@ -19,7 +18,7 @@ def make_app(root, provider):
 
 async def wait_approval(app, pilot):
     for _ in range(40):
-        await pilot.pause(.02)
+        await pilot.pause(0.02)
         if app._approval_request:
             return
         if app._reply_task.done():
@@ -28,7 +27,9 @@ async def wait_approval(app, pilot):
 
 
 async def test_keyboard_approval_below_input_and_once_scope(tmp_path):
-    provider = SequenceProvider(response(calls=[call("write_file", path="hello.txt", content="Hello")]), response("已创建"))
+    provider = SequenceProvider(
+        response(calls=[call("write_file", path="hello.txt", content="Hello")]), response("已创建")
+    )
     app, policy = make_app(tmp_path, provider)
     async with app.run_test(size=(100, 32)) as pilot:
         await send(app, pilot, "创建文件")
@@ -54,7 +55,9 @@ async def test_keyboard_approval_below_input_and_once_scope(tmp_path):
 
 
 async def test_escape_denies_one_operation_but_model_continues(tmp_path):
-    provider = SequenceProvider(response(calls=[call("write_file", path="no", content="bad")]), response("按要求跳过写入"))
+    provider = SequenceProvider(
+        response(calls=[call("write_file", path="no", content="bad")]), response("按要求跳过写入")
+    )
     app, policy = make_app(tmp_path, provider)
     async with app.run_test(size=(90, 28)) as pilot:
         await send(app, pilot, "任务")
@@ -68,7 +71,9 @@ async def test_escape_denies_one_operation_but_model_continues(tmp_path):
 
 
 async def test_ctrl_c_cancels_pending_approval_and_reuse_has_no_stale_dialog(tmp_path):
-    provider = SequenceProvider(response(calls=[call("write_file", path="no", content="bad")]), response("第二次正常回复"))
+    provider = SequenceProvider(
+        response(calls=[call("write_file", path="no", content="bad")]), response("第二次正常回复")
+    )
     app, policy = make_app(tmp_path, provider)
     async with app.run_test(size=(90, 28)) as pilot:
         await send(app, pilot, "任务")
@@ -111,7 +116,9 @@ async def test_permanent_choice_and_permission_commands(tmp_path):
 
 
 async def test_narrow_approval_keeps_choices_and_status_visible(tmp_path):
-    provider = SequenceProvider(response(calls=[call("write_file", path="hello.txt", content="many lines\n" * 50)]), response("完成"))
+    provider = SequenceProvider(
+        response(calls=[call("write_file", path="hello.txt", content="many lines\n" * 50)]), response("完成")
+    )
     app, policy = make_app(tmp_path, provider)
     async with app.run_test(size=(44, 20)) as pilot:
         await send(app, pilot, "创建")

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import difflib
 import re
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, NamedTuple, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 if TYPE_CHECKING:
     from .config import Settings
@@ -42,9 +43,14 @@ class CommandUI(Protocol):
 
     async def clear_screen(self) -> None: ...
 
-    def choose(self, title: str, options: Sequence[Any], current: int,
-               on_pick: Callable[[int], Awaitable[None]],
-               on_cancel: Callable[[], Awaitable[None]] | None = None) -> None:
+    def choose(
+        self,
+        title: str,
+        options: Sequence[Any],
+        current: int,
+        on_pick: Callable[[int], Awaitable[None]],
+        on_cancel: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Open a picker and return at once; on_pick runs with the chosen index, Esc runs on_cancel (if any)."""
 
     async def compact(self, instructions: str) -> None: ...
@@ -117,7 +123,9 @@ class CommandRegistry:
     def register(self, command: Command) -> None:
         for name in command.names:
             if not NAME.fullmatch(name):
-                raise CommandConflict(f"命令名 /{name} 不合法：须以小写字母开头，只含小写字母、数字、- 和 _（/{command.name}）。")
+                raise CommandConflict(
+                    f"命令名 /{name} 不合法：须以小写字母开头，只含小写字母、数字、- 和 _（/{command.name}）。"
+                )
         folded = [name.lower() for name in command.names]
         if len(set(folded)) != len(folded):
             raise CommandConflict(f"命令 /{command.name} 的名称和别名重复。")
@@ -149,9 +157,16 @@ class CommandRegistry:
         problems = []
         for skill in catalog.skills.values():
             hint = skill.argument_hint or "[参数]"
-            command = Command(skill.name, f"{skill.description} [skill]", f"/{skill.name} {hint}", "skill",
-                              argument="optional", argument_hint=hint, hidden=not skill.user_invocable,
-                              skill=skill.name)
+            command = Command(
+                skill.name,
+                f"{skill.description} [skill]",
+                f"/{skill.name} {hint}",
+                "skill",
+                argument="optional",
+                argument_hint=hint,
+                hidden=not skill.user_invocable,
+                skill=skill.name,
+            )
             try:
                 self.register(command)
             except CommandConflict as exc:
@@ -180,8 +195,11 @@ class CommandRegistry:
             if command is None or command.complete is None:
                 return []
             prefix = argument.lstrip()
-            return [Hint(f"/{command.name} {item}", description) for item, description in command.complete(ctx)
-                    if item.startswith(prefix)]
+            return [
+                Hint(f"/{command.name} {item}", description)
+                for item, description in command.complete(ctx)
+                if item.startswith(prefix)
+            ]
         if not value.startswith("/"):
             return []
         prefix = value[1:].lower()

@@ -5,21 +5,22 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from preview_tui import capture
 from textual.widgets import OptionList
-from mosscode.tui import PromptArea
 
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Delta, Message, ToolCall
 from mosscode.permissions import PermissionPolicy
 from mosscode.tools import create_default_registry
-from mosscode.tui import MossCodeApp
-from preview_tui import capture
+from mosscode.tui import MossCodeApp, PromptArea
 
 
 class PermissionPreviewProvider:
     async def stream(self, messages, system, tools=(), **kwargs):
         if messages[-1].role == "user":
-            call = ToolCall("permission-demo", "write_file", json.dumps({"path": "hello.txt", "content": "Hello World\n"}))
+            call = ToolCall(
+                "permission-demo", "write_file", json.dumps({"path": "hello.txt", "content": "Hello World\n"})
+            )
             yield Completed(Message("assistant", (), tool_calls=(call,)), "tool_calls")
         else:
             assert not messages[-1].tool_results[0].is_error
@@ -43,7 +44,7 @@ async def exercise_approval(pilot, snapshot=None):
     app.query_one("#prompt", PromptArea).value = "创建 hello.txt，写入 Hello World"
     await pilot.press("enter")
     for _ in range(100):
-        await pilot.pause(.02)
+        await pilot.pause(0.02)
         if app._approval_request:
             break
     assert app._approval_request

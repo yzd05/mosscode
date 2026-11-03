@@ -1,12 +1,11 @@
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 from pydantic import Field
 
 from .base import Params, Tool, ToolFailure, file_io
 from .diffing import unified_diff
-
 
 READ_LIMIT = 2000
 LINE_LIMIT = 2000  # Characters per displayed line.
@@ -64,8 +63,9 @@ class FileState:
         if seen is None:
             raise ToolFailure("not_read", "修改已有文件前需要先用 read_file 读取它；文件未修改。")
         if self.stamp(path) != seen:
-            raise ToolFailure("stale_read", "文件在上次读取后被修改（可能来自用户、命令或其他程序）；"
-                                            "请重新读取后再修改。文件未修改。")
+            raise ToolFailure(
+                "stale_read", "文件在上次读取后被修改（可能来自用户、命令或其他程序）；请重新读取后再修改。文件未修改。"
+            )
 
 
 def read_text(path: Path) -> str:
@@ -106,8 +106,10 @@ class FileTool(Tool):
 class ReadFile(FileTool):
     read_only = True
     name = "read_file"
-    description = (f"读取 UTF-8 文本文件。每行格式为“行号 + Tab + 原文”；offset 从 1 开始，limit 默认 {READ_LIMIT} 行。"
-                   f"超过 {LINE_LIMIT} 字符的行会截断，单页还有字节上限并会提示下一页的 offset。项目目录之外的路径需要用户确认。")
+    description = (
+        f"读取 UTF-8 文本文件。每行格式为“行号 + Tab + 原文”；offset 从 1 开始，limit 默认 {READ_LIMIT} 行。"
+        f"超过 {LINE_LIMIT} 字符的行会截断，单页还有字节上限并会提示下一页的 offset。项目目录之外的路径需要用户确认。"
+    )
     prompt_summary = "读取文本文件，可按行分段查看"
     prompt_guidelines = (
         "使用 read_file 查看文本原文，优先于 shell 读取；修改或覆盖已有文件前必须先用 read_file 读取，文件被外部改动后需重新读取。",
@@ -152,8 +154,14 @@ class ReadFile(FileTool):
                 output = "\n".join(selected)
                 if more:
                     output += f"\n（共 {total} 行，还有内容，请从 offset={next_offset} 继续读取）"
-            return output, {"path": str(path), "lines": len(selected), "total_lines": total, "truncated": more,
-                            "long_lines": long_lines, "next_offset": next_offset if more else None}
+            return output, {
+                "path": str(path),
+                "lines": len(selected),
+                "total_lines": total,
+                "truncated": more,
+                "long_lines": long_lines,
+                "next_offset": next_offset if more else None,
+            }
 
         return await file_io(read)
 
@@ -205,8 +213,10 @@ class WriteFile(FileTool):
 
 class EditFile(FileTool):
     name = "edit_file"
-    description = ("将文件中的 old_text 精确替换为 new_text，空格和换行也参与匹配。默认要求恰好匹配一处；"
-                   "replace_all=true 时替换全部匹配。零次或不唯一的匹配不修改文件。编辑前必须先用 read_file 读取。")
+    description = (
+        "将文件中的 old_text 精确替换为 new_text，空格和换行也参与匹配。默认要求恰好匹配一处；"
+        "replace_all=true 时替换全部匹配。零次或不唯一的匹配不修改文件。编辑前必须先用 read_file 读取。"
+    )
     prompt_summary = "以唯一原文匹配精确替换一个片段"
     prompt_guidelines = (
         "局部修改优先 edit_file；编辑前读取相关原文，old_text 不包含读取输出的行号。",
@@ -232,14 +242,21 @@ class EditFile(FileTool):
             start = position + step
         count = len(positions)
         if count == 0:
-            raise ToolFailure("match_count", "原文匹配 0 次；文件未修改。请重新读取文件确认当前内容，old_text 不要包含行号。",
-                              matches=0)
+            raise ToolFailure(
+                "match_count",
+                "原文匹配 0 次；文件未修改。请重新读取文件确认当前内容，old_text 不要包含行号。",
+                matches=0,
+            )
         if count > 1 and not params.replace_all:
-            raise ToolFailure("match_count", f"原文匹配 {count} 次，需要恰好 1 次；文件未修改。"
-                                             "补充邻近上下文使其唯一，或设置 replace_all=true 替换全部。", matches=count)
+            raise ToolFailure(
+                "match_count",
+                f"原文匹配 {count} 次，需要恰好 1 次；文件未修改。"
+                "补充邻近上下文使其唯一，或设置 replace_all=true 替换全部。",
+                matches=count,
+            )
         result = work.replace(old, new) if params.replace_all else work.replace(old, new, 1)
         # Line range of the change in the new text; the prefix before the first match is unchanged.
-        first = work[:positions[0]].count("\n") + 1
+        first = work[: positions[0]].count("\n") + 1
         last_start = positions[-1] + (len(new) - len(old)) * (count - 1)
         last = result[:last_start].count("\n") + 1 + new.count("\n")
         if crlf:
@@ -262,7 +279,9 @@ class EditFile(FileTool):
             self.state.record(path)
             name = self.display(path)
             where = f"第 {first} 行" if last <= first else f"第 {first}–{last} 行"
-            return (f"已修改 {name}：替换 {count} 处，{where}。",
-                    {"path": str(path), "matches": count, "diff": unified_diff(text, result, name)})
+            return (
+                f"已修改 {name}：替换 {count} 处，{where}。",
+                {"path": str(path), "matches": count, "diff": unified_diff(text, result, name)},
+            )
 
         return await file_io(edit)

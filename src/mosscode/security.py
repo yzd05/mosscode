@@ -1,8 +1,8 @@
 """Application-level hard guards, independent of configurable permissions."""
 
-from pathlib import Path
 import re
 import shlex
+from pathlib import Path
 
 
 class SecurityError(Exception):
@@ -42,31 +42,40 @@ def _compile(entries):
 
 
 # System-level damage outside any project: never authorizable.
-CATASTROPHIC_COMMANDS = _compile((
-    (r"\b(?:rm|remove-item|ri|rmdir|rd|del|erase)\b[^\r\n;|&]*\s['\"]?"
-     r"(?:/\*?|~[\\/]?\*?|\$home[\\/]?\*?|\$env:userprofile[\\/]?\*?|%userprofile%[\\/]?\*?|[a-z]:[\\/]?\*?)['\"]?(?:\s|$|[;|&])",
-     "删除文件系统根目录或用户主目录"),
-    (r"--no-preserve-root\b", "关闭根目录保护"),
-    (r"\b(?:format-volume|clear-disk|initialize-disk|diskpart|mkfs(?:\.[\w]+)?)\b", "磁盘格式化或分区操作"),
-    (r"\bformat(?:\.com)?\s+[a-z]:", "磁盘格式化"),
-    (r"\bdd\b[^\r\n;|&]*\bof=/dev/(?:sd|hd|nvme|vd|mmc|disk)", "覆盖块设备"),
-    (r">\s*/dev/(?:sd|hd|nvme|vd|mmc|disk)", "覆盖块设备"),
-    (r"\b(?:shutdown|reboot|halt|poweroff|restart-computer|stop-computer)\b", "关机或重启"),
-    (r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&", "进程炸弹"),
-))
+CATASTROPHIC_COMMANDS = _compile(
+    (
+        (
+            r"\b(?:rm|remove-item|ri|rmdir|rd|del|erase)\b[^\r\n;|&]*\s['\"]?"
+            r"(?:/\*?|~[\\/]?\*?|\$home[\\/]?\*?|\$env:userprofile[\\/]?\*?|%userprofile%[\\/]?\*?|[a-z]:[\\/]?\*?)['\"]?(?:\s|$|[;|&])",
+            "删除文件系统根目录或用户主目录",
+        ),
+        (r"--no-preserve-root\b", "关闭根目录保护"),
+        (r"\b(?:format-volume|clear-disk|initialize-disk|diskpart|mkfs(?:\.[\w]+)?)\b", "磁盘格式化或分区操作"),
+        (r"\bformat(?:\.com)?\s+[a-z]:", "磁盘格式化"),
+        (r"\bdd\b[^\r\n;|&]*\bof=/dev/(?:sd|hd|nvme|vd|mmc|disk)", "覆盖块设备"),
+        (r">\s*/dev/(?:sd|hd|nvme|vd|mmc|disk)", "覆盖块设备"),
+        (r"\b(?:shutdown|reboot|halt|poweroff|restart-computer|stop-computer)\b", "关机或重启"),
+        (r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&", "进程炸弹"),
+    )
+)
 
 # Destructive but sometimes intended: always confirmed, never granted by rules or modes.
-RISKY_COMMANDS = _compile((
-    (r"\b(?:rm|remove-item|ri)\b[^\r\n;|&]*\s-(?:[a-z]*r[a-z]*f[a-z]*|[a-z]*f[a-z]*r[a-z]*|recurse)\b", "递归强制删除"),
-    (r"\b(?:rm|remove-item|ri)\b[^\r\n;|&]*\s-(?:r|recursive)\b[^\r\n;|&]*\s-(?:f|force)\b", "递归强制删除"),
-    (r"\b(?:rm|remove-item|ri)\b[^\r\n;|&]*\s-(?:f|force)\b[^\r\n;|&]*\s-(?:r|recursive)\b", "递归强制删除"),
-    (r"\b(?:rmdir|rd|del|erase)\b[^\r\n;|&]*\s/s\b", "递归删除"),
-    (r"\bgit\b[^\r\n;|&]*\breset\s+[^\r\n;|&]*--hard\b", "丢弃 Git 改动"),
-    (r"\bgit\b[^\r\n;|&]*\bclean\s+[^\r\n;|&]*-(?:[a-z]*f[a-z]*|force)\b", "强制清理 Git 文件"),
-    (r"\bgit\b[^\r\n;|&]*\bpush\s+[^\r\n;|&]*(?:--force(?:-with-lease)?\b|-f\b)", "强制推送"),
-    (r"\b(?:invoke-expression|iex)\b", "动态表达式执行"),
-    (r"\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n;|&]*\s-(?:e|en|enc|encodedcommand)\b", "编码命令执行"),
-))
+RISKY_COMMANDS = _compile(
+    (
+        (
+            r"\b(?:rm|remove-item|ri)\b[^\r\n;|&]*\s-(?:[a-z]*r[a-z]*f[a-z]*|[a-z]*f[a-z]*r[a-z]*|recurse)\b",
+            "递归强制删除",
+        ),
+        (r"\b(?:rm|remove-item|ri)\b[^\r\n;|&]*\s-(?:r|recursive)\b[^\r\n;|&]*\s-(?:f|force)\b", "递归强制删除"),
+        (r"\b(?:rm|remove-item|ri)\b[^\r\n;|&]*\s-(?:f|force)\b[^\r\n;|&]*\s-(?:r|recursive)\b", "递归强制删除"),
+        (r"\b(?:rmdir|rd|del|erase)\b[^\r\n;|&]*\s/s\b", "递归删除"),
+        (r"\bgit\b[^\r\n;|&]*\breset\s+[^\r\n;|&]*--hard\b", "丢弃 Git 改动"),
+        (r"\bgit\b[^\r\n;|&]*\bclean\s+[^\r\n;|&]*-(?:[a-z]*f[a-z]*|force)\b", "强制清理 Git 文件"),
+        (r"\bgit\b[^\r\n;|&]*\bpush\s+[^\r\n;|&]*(?:--force(?:-with-lease)?\b|-f\b)", "强制推送"),
+        (r"\b(?:invoke-expression|iex)\b", "动态表达式执行"),
+        (r"\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n;|&]*\s-(?:e|en|enc|encodedcommand)\b", "编码命令执行"),
+    )
+)
 
 
 def check_command(command: str) -> None:
@@ -99,7 +108,7 @@ def starts_with(command: str, prefix: str) -> bool:
     words, head = command_words(command), command_words(prefix)
     if words is None:
         words = command.split()
-    return bool(head) and words[:len(head)] == head
+    return bool(head) and words[: len(head)] == head
 
 
 # Inspection commands that run without approval. Conservative on purpose: every
@@ -107,9 +116,32 @@ def starts_with(command: str, prefix: str) -> bool:
 READ_ONLY_GIT = {"status", "diff", "log", "show", "blame", "rev-parse", "ls-files", "describe", "shortlog"}
 GIT_LISTING = {"branch", "remote"}
 LISTING_FLAGS = {"-a", "-r", "-v", "-vv", "--list", "--show-current", "--all", "--remotes", "--verbose"}
-READ_ONLY_PROGRAMS = {"ls", "pwd", "cat", "head", "tail", "wc", "stat", "tree", "which", "grep", "egrep", "fgrep",
-                      "rg", "find", "get-childitem", "get-content", "get-location", "select-string", "test-path",
-                      "get-item", "gci", "gc", "sls", "dir"}
+READ_ONLY_PROGRAMS = {
+    "ls",
+    "pwd",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "stat",
+    "tree",
+    "which",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "find",
+    "get-childitem",
+    "get-content",
+    "get-location",
+    "select-string",
+    "test-path",
+    "get-item",
+    "gci",
+    "gc",
+    "sls",
+    "dir",
+}
 FIND_ACTIONS = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
 
 
@@ -156,12 +188,54 @@ def read_only_command(command: str) -> bool:
 
 
 # Never offered as a prefix grant: they run whatever follows.
-WRAPPERS = {"sudo", "doas", "env", "xargs", "nohup", "timeout", "time", "nice", "exec", "eval", "source", ".",
-            "bash", "sh", "zsh", "fish", "cmd", "pwsh", "powershell", "start", "call", "invoke-expression", "iex"}
+WRAPPERS = {
+    "sudo",
+    "doas",
+    "env",
+    "xargs",
+    "nohup",
+    "timeout",
+    "time",
+    "nice",
+    "exec",
+    "eval",
+    "source",
+    ".",
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "cmd",
+    "pwsh",
+    "powershell",
+    "start",
+    "call",
+    "invoke-expression",
+    "iex",
+}
 # Need a following word: `python -m pytest`, `deno test`, `npm run test`.
 INTERPRETERS = {"python", "python3", "py", "node", "ruby", "perl", "php", "deno", "bun"}
-MULTI_COMMANDS = {"git", "npm", "pnpm", "yarn", "npx", "uv", "uvx", "pipx", "poetry", "pip", "cargo", "go", "dotnet",
-                  "docker", "kubectl", "make", "gradle", "mvn", "conda"}
+MULTI_COMMANDS = {
+    "git",
+    "npm",
+    "pnpm",
+    "yarn",
+    "npx",
+    "uv",
+    "uvx",
+    "pipx",
+    "poetry",
+    "pip",
+    "cargo",
+    "go",
+    "dotnet",
+    "docker",
+    "kubectl",
+    "make",
+    "gradle",
+    "mvn",
+    "conda",
+}
 
 
 def command_prefix(command: str) -> str | None:

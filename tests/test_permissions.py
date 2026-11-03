@@ -1,17 +1,21 @@
 import asyncio
 import json
 import os
-from pathlib import Path
-import shutil
 import subprocess
 
 import pytest
 import yaml
 
 from mosscode.conversation import Conversation
-from mosscode.messages import ToolCall, ToolProgress
-from mosscode.permissions import (ApprovalRequest, Operation, PermissionConfigError, PermissionPolicy,
-                                 Rule, parse_rule, path_matches)
+from mosscode.permissions import (
+    ApprovalRequest,
+    Operation,
+    PermissionConfigError,
+    PermissionPolicy,
+    Rule,
+    parse_rule,
+    path_matches,
+)
 from mosscode.security import SecurityError, check_command, command_risk, read_only_command
 from mosscode.tools import create_default_registry
 from test_agent import SequenceProvider, call, response
@@ -50,38 +54,69 @@ async def test_hard_guards_cannot_be_granted(tmp_path, mode):
     assert not (tmp_path / ".mosscode").exists()
 
 
-@pytest.mark.parametrize("command", ["Format-Volume -DriveLetter C", "format C:", "diskpart", "shutdown /s",
-                                    "mkfs.ext4 /dev/sda", "dd if=x of=/dev/sda", "rm -r /", "rm -rf ~",
-                                    "rm -rf --no-preserve-root /x", "Remove-Item C:\\ -Recurse",
-                                    "Remove-Item $HOME -Recurse -Force", ":(){ :|:& };:", "Restart-Computer"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Format-Volume -DriveLetter C",
+        "format C:",
+        "diskpart",
+        "shutdown /s",
+        "mkfs.ext4 /dev/sda",
+        "dd if=x of=/dev/sda",
+        "rm -r /",
+        "rm -rf ~",
+        "rm -rf --no-preserve-root /x",
+        "Remove-Item C:\\ -Recurse",
+        "Remove-Item $HOME -Recurse -Force",
+        ":(){ :|:& };:",
+        "Restart-Computer",
+    ],
+)
 def test_catastrophic_signatures(command):
     with pytest.raises(SecurityError) as error:
         check_command(command)
     assert error.value.code == "dangerous_command"
 
 
-@pytest.mark.parametrize("command,reason", [
-    ("rm -rf build", "递归强制删除"), ("rm -r -f a", "递归强制删除"), ("rm -f -r a", "递归强制删除"),
-    ("Remove-Item a -Recurse -Force", "递归强制删除"), ("rmdir /s /q a", "递归删除"), ("del /s a", "递归删除"),
-    ("git reset --hard", "丢弃 Git 改动"), ("git clean -fdx", "强制清理 Git 文件"),
-    ("git push origin main --force", "强制推送"), ("git push -f", "强制推送"),
-    ("pwsh -EncodedCommand abc", "编码命令执行"), ("iex 'x'", "动态表达式执行"),
-])
+@pytest.mark.parametrize(
+    "command,reason",
+    [
+        ("rm -rf build", "递归强制删除"),
+        ("rm -r -f a", "递归强制删除"),
+        ("rm -f -r a", "递归强制删除"),
+        ("Remove-Item a -Recurse -Force", "递归强制删除"),
+        ("rmdir /s /q a", "递归删除"),
+        ("del /s a", "递归删除"),
+        ("git reset --hard", "丢弃 Git 改动"),
+        ("git clean -fdx", "强制清理 Git 文件"),
+        ("git push origin main --force", "强制推送"),
+        ("git push -f", "强制推送"),
+        ("pwsh -EncodedCommand abc", "编码命令执行"),
+        ("iex 'x'", "动态表达式执行"),
+    ],
+)
 def test_risky_signatures_are_not_hard_denied(command, reason):
     check_command(command)
     assert command_risk(command) == reason
 
 
-@pytest.mark.parametrize("command", ["git status", "git reset --soft HEAD~1", "git clean -n", "git push origin main", "python -m pytest"])
+@pytest.mark.parametrize(
+    "command", ["git status", "git reset --soft HEAD~1", "git clean -n", "git push origin main", "python -m pytest"]
+)
 def test_similar_safe_commands(command):
     check_command(command)
     assert command_risk(command) is None
 
 
-@pytest.mark.parametrize("mode,read_action,write_action", [
-    ("default", "allow", "ask"), ("acceptEdits", "allow", "allow"),
-    ("plan", "allow", "ask"), ("bypassPermissions", "allow", "allow"),
-])
+@pytest.mark.parametrize(
+    "mode,read_action,write_action",
+    [
+        ("default", "allow", "ask"),
+        ("acceptEdits", "allow", "allow"),
+        ("plan", "allow", "ask"),
+        ("bypassPermissions", "allow", "allow"),
+    ],
+)
 def test_modes_and_explicit_denies(tmp_path, mode, read_action, write_action):
     policy = PermissionPolicy(tmp_path, mode=mode, load=False)
     operation = Operation("write_file", "src/a.py")
@@ -113,9 +148,18 @@ def test_config_layers_aliases_and_cwd(tmp_path):
     assert PermissionPolicy(root, mode="plan", user_path=user).resume_mode == "default"
 
 
-@pytest.mark.parametrize("data", [{"unknown": []}, {"mode": "typo"}, {"allow": "Bash(*)"},
-                                  {"deny": ["Write()"]}, {"allow": ["Unknown(*)"]},
-                                  {"allow": ["Read(../*)"]}, {"allow": [{"rule": "Read(*)", "exact": "yes"}]}])
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"unknown": []},
+        {"mode": "typo"},
+        {"allow": "Bash(*)"},
+        {"deny": ["Write()"]},
+        {"allow": ["Unknown(*)"]},
+        {"allow": ["Read(../*)"]},
+        {"allow": [{"rule": "Read(*)", "exact": "yes"}]},
+    ],
+)
 def test_bad_config_is_not_silent_allow(tmp_path, data):
     path = tmp_path / "bad.yaml"
     write_config(path, **data)
@@ -131,8 +175,15 @@ def test_path_globs_and_compound_command_rules():
     assert not path_matches("src-extra/a.py", "src/**")
     rule = parse_rule("Bash(git *)", "allow")
     assert rule.matches(Operation("execute_command", "git status", "."))
-    for command in ["git status; python evil.py", "git status && python evil.py", "git status | python evil.py",
-                    "git status > a", "git $(python evil.py)", "git `python evil.py`", "git status\npython evil.py"]:
+    for command in [
+        "git status; python evil.py",
+        "git status && python evil.py",
+        "git status | python evil.py",
+        "git status > a",
+        "git $(python evil.py)",
+        "git `python evil.py`",
+        "git status\npython evil.py",
+    ]:
         assert not rule.matches(Operation("execute_command", command, "."))
     assert parse_rule("Bash(git *)", "deny").matches(Operation("execute_command", "git status; echo x", "."))
 
@@ -172,11 +223,11 @@ async def test_once_session_and_permanent_scope(tmp_path):
 async def test_approval_wait_does_not_use_execution_timeout_and_cancel_has_no_effect(tmp_path, monkeypatch):
     reg = registry(tmp_path)
     tool = reg.get("write_file")
-    tool.timeout = .01
+    tool.timeout = 0.01
     reg.permissions.interactive = True
     task = asyncio.create_task(reg.execute(call("write_file", path="new", content="yes")))
     request = await asyncio.wait_for(reg.permissions.requests.get(), 2)
-    await asyncio.sleep(.03)
+    await asyncio.sleep(0.03)
     assert not task.done() and not (tmp_path / "new").exists()
     reg.permissions.respond(request.id, "once")
     assert not (await task).is_error
@@ -194,8 +245,10 @@ async def test_save_failure_denies_and_preserves_existing_rules(tmp_path, monkey
     path = reg.permissions.local_file
     write_config(path, mode="default", deny=["Read(secret)"])
     before = path.read_bytes()
+
     def fail(*args):
         raise OSError("no space")
+
     monkeypatch.setattr("mosscode.permissions.os.replace", fail)
     result, _ = await approve(reg, call("write_file", path="no", content="bad"), "permanent")
     assert result.code == "permission_save_failed" and not (tmp_path / "no").exists()
@@ -205,8 +258,10 @@ async def test_save_failure_denies_and_preserves_existing_rules(tmp_path, monkey
 async def test_persistent_command_grant_binds_exact_command_and_cwd(tmp_path):
     (tmp_path / "src").mkdir()
     reg = registry(tmp_path)
+
     async def fake_execute(params):
         return "safe fake command", {}
+
     reg.get("execute_command").execute = fake_execute
     write_config(reg.permissions.local_file, deny=["Read(secret)"])
     result, _ = await approve(reg, call("execute_command", command="git fetch", cwd="src"), "permanent")
@@ -218,7 +273,9 @@ async def test_persistent_command_grant_binds_exact_command_and_cwd(tmp_path):
     restored.get("execute_command").execute = fake_execute
     assert not (await restored.execute(call("execute_command", command="git fetch", cwd="src"))).is_error
     assert (await restored.execute(call("execute_command", command="git fetch"))).code == "approval_required"
-    assert (await restored.execute(call("execute_command", command="git fetch --all", cwd="src"))).code == "approval_required"
+    assert (
+        await restored.execute(call("execute_command", command="git fetch --all", cwd="src"))
+    ).code == "approval_required"
 
 
 async def test_target_change_during_confirmation_does_not_grant_or_execute(tmp_path, monkeypatch):
@@ -228,9 +285,11 @@ async def test_target_change_during_confirmation_does_not_grant_or_execute(tmp_p
     task = asyncio.create_task(reg.execute(request))
     pending = await asyncio.wait_for(reg.permissions.requests.get(), 2)
     original = reg.permissions.operation
+
     def changed(tool, params):
         op = original(tool, params)
         return Operation(op.tool, "different.txt", op.cwd, op.preview)
+
     monkeypatch.setattr(reg.permissions, "operation", changed)
     reg.permissions.respond(pending.id, "permanent")
     result = await task
@@ -252,8 +311,11 @@ async def test_new_deny_on_disk_is_respected_when_saving_grant(tmp_path):
 async def test_denial_is_returned_to_model_and_loop_continues(tmp_path):
     reg = registry(tmp_path)
     reg.permissions.interactive = True
-    provider = SequenceProvider(response(calls=[call("write_file", path="denied", content="bad")]),
-                                response(calls=[call("read_file", path="allowed.txt")]), response("换一种做法完成"))
+    provider = SequenceProvider(
+        response(calls=[call("write_file", path="denied", content="bad")]),
+        response(calls=[call("read_file", path="allowed.txt")]),
+        response("换一种做法完成"),
+    )
     (tmp_path / "allowed.txt").write_text("safe")
     conv = Conversation(provider, registry=reg)
     seen = []
@@ -272,7 +334,9 @@ async def test_explicit_read_only_constraint_and_headless_never_wait(tmp_path):
     reg = registry(tmp_path, "bypassPermissions")
     assert (await reg.execute(call("write_file", path="blocked", content="no"), read_only=True)).code == "plan_blocked"
     reg.permissions.set_mode("default")
-    assert (await asyncio.wait_for(reg.execute(call("write_file", path="blocked", content="no")), 1)).code == "approval_required"
+    assert (
+        await asyncio.wait_for(reg.execute(call("write_file", path="blocked", content="no")), 1)
+    ).code == "approval_required"
     assert not reg.permissions.pending and not (tmp_path / "blocked").exists()
 
 
@@ -281,15 +345,18 @@ async def test_parallel_approvals_are_serialized_and_cancellation_pairs_results(
     reg.permissions.interactive = True
     # Reads outside the project ask, so two parallel reads both need approval.
     outside = [str(tmp_path.parent / name) for name in ("a", "b")]
-    provider = SequenceProvider(response(calls=[call("read_file", "a", path=outside[0]),
-                                                call("read_file", "b", path=outside[1])]))
+    provider = SequenceProvider(
+        response(calls=[call("read_file", "a", path=outside[0]), call("read_file", "b", path=outside[1])])
+    )
     conv = Conversation(provider, registry=reg)
     arrived = asyncio.Event()
+
     async def consume():
         async for event in conv.reply("task"):
             if isinstance(event, ApprovalRequest):
                 assert len(reg.permissions.pending) == 1
                 arrived.set()
+
     task = asyncio.create_task(consume())
     await asyncio.wait_for(arrived.wait(), 2)
     task.cancel()
@@ -348,9 +415,11 @@ async def test_windows_junction_search_and_new_file_escape(tmp_path, monkeypatch
     try:
         reg = registry(root)
         # Through the junction the target is outside: reads need approval, writes never pass.
-        for request in [call("read_file", path="junction/secret.txt"),
-                        call("glob", pattern="**/*", path="junction"),
-                        call("grep", pattern="private", path="junction")]:
+        for request in [
+            call("read_file", path="junction/secret.txt"),
+            call("glob", pattern="**/*", path="junction"),
+            call("grep", pattern="private", path="junction"),
+        ]:
             assert (await reg.execute(request)).code == "approval_required"
         assert (await reg.execute(call("write_file", path="junction/new.txt", content="bad"))).code == "path_blocked"
         reg.permissions.set_mode("bypassPermissions")

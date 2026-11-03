@@ -4,7 +4,7 @@ from io import StringIO
 
 from rich.console import Console
 from rich.control import Control
-from rich.markdown import Markdown, CodeBlock
+from rich.markdown import CodeBlock, Markdown
 from rich.padding import Padding
 from rich.text import Text
 from rich.theme import Theme
@@ -36,18 +36,37 @@ def message_row(marker, body):
 def render_transcript(renderables, width: int) -> str:
     # Rich defaults have backgrounds/dim styles; use the same foreground-only
     # appearance as the live UI, including plain code fences and blue filenames.
-    styles = {name: "none" for name in (
-        "markdown.code_block", "markdown.block_quote", "markdown.list",
-        "markdown.item.number", "markdown.hr", "markdown.table.border",
-        "markdown.table.header", "markdown.link", "markdown.link_url",
-        "markdown.h1.border", "markdown.h5", "markdown.h6", "markdown.h7",
-    )}
+    styles = {
+        name: "none"
+        for name in (
+            "markdown.code_block",
+            "markdown.block_quote",
+            "markdown.list",
+            "markdown.item.number",
+            "markdown.hr",
+            "markdown.table.border",
+            "markdown.table.header",
+            "markdown.link",
+            "markdown.link_url",
+            "markdown.h1.border",
+            "markdown.h5",
+            "markdown.h6",
+            "markdown.h7",
+        )
+    }
     styles.update({f"markdown.h{level}": "bold" for level in range(1, 5)})
     styles["markdown.code"] = f"bold {PARAMETER_COLOR}"
     stream = StringIO()
-    console = Console(file=stream, width=max(8, width), force_terminal=True,
-                      color_system="truecolor", no_color=False, legacy_windows=False,
-                      highlight=False, theme=Theme(styles))
+    console = Console(
+        file=stream,
+        width=max(8, width),
+        force_terminal=True,
+        color_system="truecolor",
+        no_color=False,
+        legacy_windows=False,
+        highlight=False,
+        theme=Theme(styles),
+    )
     for renderable in renderables:
         console.print(Padding(renderable, (0, 2)))
         console.print()
@@ -80,7 +99,7 @@ def _write_above(app, sequence: str) -> None:
     # Match Textual's bounded writes; Windows console writes can reject large
     # strings. Chunking is transport-only, never truncates the transcript.
     for start in range(0, len(sequence), 8192):
-        app._driver.write(sequence[start:start + 8192])
+        app._driver.write(sequence[start : start + 8192])
     app._driver.flush()
     app._previous_cursor_position = Offset(0, 0)
     app._previous_inline_height = None

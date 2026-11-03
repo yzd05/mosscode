@@ -6,17 +6,17 @@ it to write its pid into the team record, and later reads its status and heartbe
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import os
-from pathlib import Path
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 from ..worktree.meta import process_alive
 from .lock import TeamError
@@ -68,14 +68,20 @@ def detect_backend(mode: str, env: Mapping[str, str] | None = None, which=shutil
     if mode == TMUX:
         missing = _tmux_missing(env, which)
         if missing:
-            raise TeamError("backend_unavailable", f"teammate_mode 是 tmux，{_but(missing)}；没有改用其他后端。"
-                                                   "在 tmux 中启动 MossCode，或把 teammate_mode 改为 auto / in-process。")
+            raise TeamError(
+                "backend_unavailable",
+                f"teammate_mode 是 tmux，{_but(missing)}；没有改用其他后端。"
+                "在 tmux 中启动 MossCode，或把 teammate_mode 改为 auto / in-process。",
+            )
         return Choice(TMUX, "teammate_mode: tmux")
     if mode == WINDOWS_TERMINAL:
         missing = _wt_missing(env, which)
         if missing:
-            raise TeamError("backend_unavailable", f"teammate_mode 是 windows-terminal，{_but(missing)}；没有改用其他后端。"
-                                                   "在 Windows Terminal 中启动 MossCode，或把 teammate_mode 改为 auto / in-process。")
+            raise TeamError(
+                "backend_unavailable",
+                f"teammate_mode 是 windows-terminal，{_but(missing)}；没有改用其他后端。"
+                "在 Windows Terminal 中启动 MossCode，或把 teammate_mode 改为 auto / in-process。",
+            )
         return Choice(WINDOWS_TERMINAL, "teammate_mode: windows-terminal")
     if not _tmux_missing(env, which):
         return Choice(TMUX, "auto：检测到 tmux")
@@ -84,8 +90,9 @@ def detect_backend(mode: str, env: Mapping[str, str] | None = None, which=shutil
     return Choice(IN_PROCESS, "auto：不在 tmux 或 Windows Terminal 中；" + IN_PROCESS_REASON)
 
 
-def member_arguments(team_dir: Path, name: str, config: str | Path | None = None,
-                     provider: str | None = None) -> list[str]:
+def member_arguments(
+    team_dir: Path, name: str, config: str | Path | None = None, provider: str | None = None
+) -> list[str]:
     """What follows `python -m mosscode`; the configuration by path, never a key."""
     arguments = ["--team-dir", str(team_dir), "--team-member", name]
     if config:
@@ -143,12 +150,14 @@ class PaneBackend:
         self.run, self.which = run, which
         self.python = python or sys.executable
 
-    def command(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
-                window: str = "") -> list[str]:
+    def command(
+        self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "", window: str = ""
+    ) -> list[str]:
         raise NotImplementedError
 
-    def launch(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
-               window: str = "") -> str | None:
+    def launch(
+        self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "", window: str = ""
+    ) -> str | None:
         """Start the member's pane; the pane id when the terminal reports one."""
         command = self.command(cwd, arguments, member=member, team=team, window=window)
         try:
@@ -157,8 +166,10 @@ class PaneBackend:
             raise TeamError("backend_failed", f"无法启动{LABELS[self.name]}：{exc}") from None
         if done.returncode != 0:
             output = ((done.stderr or "") + (done.stdout or "")).strip()
-            raise TeamError("backend_failed", f"{LABELS[self.name]}启动失败（退出码 {done.returncode}）"
-                                              + (f"：{output}" if output else "。"))
+            raise TeamError(
+                "backend_failed",
+                f"{LABELS[self.name]}启动失败（退出码 {done.returncode}）" + (f"：{output}" if output else "。"),
+            )
         return self.pane(done.stdout or "")
 
     def pane(self, output: str) -> str | None:
@@ -179,12 +190,24 @@ class WindowsTerminalBackend(PaneBackend):
 
     name = WINDOWS_TERMINAL
 
-    def command(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
-                window: str = "") -> list[str]:
+    def command(
+        self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "", window: str = ""
+    ) -> list[str]:
         wt = self.which("wt") or "wt"
         title = ["--title", f"{member} · {team}", "--suppressApplicationTitle"] if member else []
-        rest = ["-w", window or "0", "new-tab", *title, "-d", str(cwd), "--", self.python, "-m",
-                "mosscode.teams.pane", *arguments]
+        rest = [
+            "-w",
+            window or "0",
+            "new-tab",
+            *title,
+            "-d",
+            str(cwd),
+            "--",
+            self.python,
+            "-m",
+            "mosscode.teams.pane",
+            *arguments,
+        ]
         return [wt, *(escape_wt(item) for item in rest)]
 
 
@@ -198,12 +221,23 @@ class TmuxBackend(PaneBackend):
 
     name = TMUX
 
-    def command(self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "",
-                window: str = "") -> list[str]:
+    def command(
+        self, cwd: Path, arguments: list[str], *, member: str = "", team: str = "", window: str = ""
+    ) -> list[str]:
         tmux = self.which("tmux") or "tmux"
         named = ["-n", member] if member else []
-        return [tmux, "new-window", "-d", *named, "-P", "-F", "#{pane_id} #{pane_pid}", "-c", str(cwd),
-                shlex.join([self.python, "-m", "mosscode", *arguments])]
+        return [
+            tmux,
+            "new-window",
+            "-d",
+            *named,
+            "-P",
+            "-F",
+            "#{pane_id} #{pane_pid}",
+            "-c",
+            str(cwd),
+            shlex.join([self.python, "-m", "mosscode", *arguments]),
+        ]
 
     def pane(self, output: str) -> str | None:
         parts = output.strip().split()
@@ -213,8 +247,9 @@ class TmuxBackend(PaneBackend):
         super().kill(pid, pane)
         if pane:
             try:
-                self.run([self.which("tmux") or "tmux", "kill-pane", "-t", pane], capture_output=True,
-                         timeout=LAUNCH_TIMEOUT)
+                self.run(
+                    [self.which("tmux") or "tmux", "kill-pane", "-t", pane], capture_output=True, timeout=LAUNCH_TIMEOUT
+                )
             except (OSError, subprocess.SubprocessError):
                 pass
 

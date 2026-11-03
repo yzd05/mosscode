@@ -9,10 +9,10 @@ import argparse
 import getpass
 import ipaddress
 import os
-from pathlib import Path
 import re
 import sys
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 from urllib.parse import urlsplit
 
 PROTOCOLS = (
@@ -21,10 +21,16 @@ PROTOCOLS = (
     ("openai-chat-completions", "OpenAI Chat Completions（DeepSeek、Qwen 等兼容服务）"),
 )
 NAMES = {"anthropic-messages": "claude", "openai-responses": "openai", "openai-chat-completions": "compat"}
-OFFICIAL = {"anthropic-messages": "https://api.anthropic.com", "openai-responses": "https://api.openai.com/v1",
-            "openai-chat-completions": "https://api.openai.com/v1"}  # Where the SDK goes without base_url.
-KEYS = {"anthropic-messages": "ANTHROPIC_API_KEY", "openai-responses": "OPENAI_API_KEY",
-        "openai-chat-completions": "OPENAI_API_KEY"}
+OFFICIAL = {
+    "anthropic-messages": "https://api.anthropic.com",
+    "openai-responses": "https://api.openai.com/v1",
+    "openai-chat-completions": "https://api.openai.com/v1",
+}  # Where the SDK goes without base_url.
+KEYS = {
+    "anthropic-messages": "ANTHROPIC_API_KEY",
+    "openai-responses": "OPENAI_API_KEY",
+    "openai-chat-completions": "OPENAI_API_KEY",
+}
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 PLAINTEXT_WARNING = "密钥会以明文写入配置文件，能读取这个文件的程序和人都能看到它。"
 
@@ -70,8 +76,13 @@ def _window(value: str) -> int | None:
 
 
 class Wizard:
-    def __init__(self, read: Callable[[str], str] = input, secret: Callable[[str], str] = getpass.getpass,
-                 write: Callable[[str], None] = print, environ=None):
+    def __init__(
+        self,
+        read: Callable[[str], str] = input,
+        secret: Callable[[str], str] = getpass.getpass,
+        write: Callable[[str], None] = print,
+        environ=None,
+    ):
         self.read, self.secret, self.write = read, secret, write
         self.environ = os.environ if environ is None else environ
 
@@ -116,8 +127,9 @@ class Wizard:
         if base_url:
             provider["base_url"] = base_url
         self.write("5/5 凭据")
-        method = self.choose("保存方式", ["环境变量（推荐）：配置文件只写变量名，密钥放在环境变量中",
-                                       "直接输入密钥：写入配置文件"])
+        method = self.choose(
+            "保存方式", ["环境变量（推荐）：配置文件只写变量名，密钥放在环境变量中", "直接输入密钥：写入配置文件"]
+        )
         if method == 1:
             default = f"{name.upper().replace('-', '_')}_API_KEY" if _host_name(base_url) else KEYS[protocol]
             while not ENV_NAME.fullmatch(variable := self.ask("环境变量名", default)):
@@ -145,9 +157,13 @@ class Wizard:
 
 def summary(provider: dict) -> list[str]:
     """What will be written, the key itself never shown."""
-    lines = [f"名称 {provider['name']}（默认 Provider）", f"协议 {provider['protocol']}",
-             f"模型 {provider['model']}", f"服务地址 {provider.get('base_url') or '官方地址 ' + OFFICIAL[provider['protocol']]}",
-             f"上下文窗口 {provider.get('context_window') or '未填写，按 128K 估算'}"]
+    lines = [
+        f"名称 {provider['name']}（默认 Provider）",
+        f"协议 {provider['protocol']}",
+        f"模型 {provider['model']}",
+        f"服务地址 {provider.get('base_url') or '官方地址 ' + OFFICIAL[provider['protocol']]}",
+        f"上下文窗口 {provider.get('context_window') or '未填写，按 128K 估算'}",
+    ]
     if "api_key_env" in provider:
         lines.append(f"凭据 环境变量 {provider['api_key_env']}")
     else:
@@ -158,6 +174,7 @@ def summary(provider: dict) -> list[str]:
 def write_config(path: Path, provider: dict) -> None:
     """Never replaces a file: the exclusive create fails if one appeared meanwhile."""
     from .config import render_config
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(render_config(provider))
@@ -168,6 +185,7 @@ def write_config(path: Path, provider: dict) -> None:
 def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: bool = True) -> str:
     """One of ready, written (a credential is still to be set), exists, cancelled, failed; each is reported."""
     from .config import ConfigError, load_settings
+
     wizard = wizard or Wizard()
     path = user_config(home)
     if path.exists():
@@ -214,10 +232,13 @@ def run_setup(home: Path | None = None, wizard: Wizard | None = None) -> Path | 
 
 def main(argv: list[str] | None = None) -> int:
     command = argparse.ArgumentParser(
-        prog="moss setup", description="创建用户级配置 ~/.mosscode/config.yaml：逐项询问协议、地址、模型、上下文窗口和凭据。"
-                                       "已有配置时不修改它。")
+        prog="moss setup",
+        description="创建用户级配置 ~/.mosscode/config.yaml：逐项询问协议、地址、模型、上下文窗口和凭据。"
+        "已有配置时不修改它。",
+    )
     command.parse_args(argv)
     from .launcher import is_terminal
+
     if not (is_terminal(sys.stdin) and is_terminal(sys.stdout)):
         print("moss setup 需要在终端中运行。", file=sys.stderr)
         return 2

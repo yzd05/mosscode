@@ -1,9 +1,9 @@
 """Pick the command shell once per registry: Git Bash on Windows when present."""
 
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import shutil
+from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,9 @@ def resolve_shell(preference: str = "auto") -> Shell:
             if found is not None:
                 return Shell("bash", str(found), "Git Bash")
             if lowered == "bash":
-                raise ShellNotFound("配置要求使用 bash，但没有找到 Git Bash；可安装 Git for Windows，或在 shell 中填写 bash.exe 的路径。")
+                raise ShellNotFound(
+                    "配置要求使用 bash，但没有找到 Git Bash；可安装 Git for Windows，或在 shell 中填写 bash.exe 的路径。"
+                )
             shell = _powershell()
             if shell is None:
                 raise ShellNotFound("找不到 Git Bash，也找不到 PowerShell。")

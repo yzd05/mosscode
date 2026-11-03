@@ -1,22 +1,28 @@
 import asyncio
 
 from textual.widgets import Static
-from mosscode.tui import PromptArea
 
 from mosscode import cli
 from mosscode.conversation import Conversation
 from mosscode.messages import ToolCall
 from mosscode.tools import create_default_registry
-from mosscode.tui import ChatEntry, MossCodeApp, ToolEntry
-from test_tui import terminal_background
+from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_tool_conversation import ToolProvider, write_call
+from test_tui import terminal_background
 
 
 async def test_tool_rows_and_final_markdown_preserve_prompt_and_history(tmp_path, monkeypatch):
-    from mosscode.appearance import PARAMETER_COLOR, OPERATION_COLOR, TOOL_SUCCESS_COLOR
+    from mosscode.appearance import OPERATION_COLOR, PARAMETER_COLOR, TOOL_SUCCESS_COLOR
+
     monkeypatch.delenv("NO_COLOR", raising=False)
     provider = ToolProvider((write_call(), ToolCall("read", "read_file", '{"path":"result.txt"}')))
-    app = MossCodeApp(Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)), "Demo")
+    app = MossCodeApp(
+        Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        ),
+        "Demo",
+    )
     async with app.run_test(size=(100, 36)) as pilot:
         await pilot.pause()
         field = app.query_one("#prompt", PromptArea)
@@ -53,7 +59,13 @@ async def test_tool_rows_and_final_markdown_preserve_prompt_and_history(tmp_path
 
 async def test_cancel_continuation_keeps_finished_tool_row(tmp_path):
     provider = ToolProvider((write_call(),), hold=True)
-    app = MossCodeApp(Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)), "Demo")
+    app = MossCodeApp(
+        Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        ),
+        "Demo",
+    )
     async with app.run_test(size=(80, 28)) as pilot:
         await pilot.pause()
         app.query_one("#prompt", PromptArea).value = "写文件"
@@ -72,7 +84,13 @@ async def test_cancel_continuation_keeps_finished_tool_row(tmp_path):
 
 async def test_final_failure_still_shows_error_after_hidden_tool_request(tmp_path):
     provider = ToolProvider((write_call(),), fail=True)
-    app = MossCodeApp(Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)), "Demo")
+    app = MossCodeApp(
+        Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        ),
+        "Demo",
+    )
     async with app.run_test(size=(80, 28)) as pilot:
         await pilot.pause()
         app.query_one("#prompt", PromptArea).value = "写文件"
@@ -87,7 +105,10 @@ async def test_final_failure_still_shows_error_after_hidden_tool_request(tmp_pat
 
 async def test_headless_uses_same_tool_flow_and_prints_results(tmp_path, capsys):
     provider = ToolProvider((write_call(),))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     await cli._prompt(conv, "写文件")
     output = capsys.readouterr().out
     assert "● write_file" in output and "└ 已创建 result.txt" in output and "结果" in output

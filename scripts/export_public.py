@@ -29,10 +29,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 ALLOW = [
-    "src", "tests", "docs/reference", "docs/pypi.md", ".github",
-    "README.md", "LICENSE", "CHANGELOG.md", "CONTRIBUTING.md", "AGENTS.md", "SECURITY.md",
-    "pyproject.toml", "MANIFEST.in", "requirements-lock.txt",
-    "config.example.yaml", "mcp.example.yaml", "permissions.example.yaml",
+    "src",
+    "tests",
+    "docs/reference",
+    "docs/pypi.md",
+    ".github",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+    "SECURITY.md",
+    "pyproject.toml",
+    "MANIFEST.in",
+    "requirements-lock.txt",
+    "config.example.yaml",
+    "mcp.example.yaml",
+    "permissions.example.yaml",
 ]
 
 # Written instead of the development .gitignore, which names private material.
@@ -62,10 +75,12 @@ PRIVATE = re.compile(
     r"code-storage|PyCharm[\\/]MossCode"
     r"|docs/(?:specs|research|ui)\b|docs/acceptance|acceptance_setup|verify_(?:keys|resize|inline)"
     r"|code-spec|_local/|\brtk\b|\bLEGION\b",
-    re.I)
+    re.I,
+)
 SECRET = re.compile(
     r"sk-(?:ant-)?[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[bp]-[A-Za-z0-9-]{10,}"
-    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----\s*\n\s*[A-Za-z0-9+/]{20,}")
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----\s*\n\s*[A-Za-z0-9+/]{20,}"
+)
 EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|cn|io|dev|edu|me)\b")
 EMAIL_OK = re.compile(r"@(?:example\.(?:com|org|net)|users\.noreply\.github\.com)$|^a@b\.com$|^git@github\.com$")
 # Files that describe the patterns above rather than contain them, and the fake keys tests use.

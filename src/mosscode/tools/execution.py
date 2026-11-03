@@ -8,7 +8,6 @@ from ..messages import Message, ResponseBoundary, ToolProgress, ToolResult
 from ..tool_budget import bound_message
 from .base import ExecutionCancelled, ToolRegistry
 
-
 PARALLEL_AGENTS = "agent"  # Adjacent agent calls run together like adjacent reads.
 
 
@@ -88,9 +87,13 @@ async def execute_batch(message: Message, registry: ToolRegistry, history: list[
             except asyncio.CancelledError:
                 results[index] = ToolResult(calls[index].id, calls[index].name, "调用已取消。", True, "cancelled")
             except Exception:
-                results[index] = ToolResult(calls[index].id, calls[index].name, "工具执行出现内部错误。", True, "internal_error")
+                results[index] = ToolResult(
+                    calls[index].id, calls[index].name, "工具执行出现内部错误。", True, "internal_error"
+                )
         for index, result in enumerate(results):
             if result is None:
-                results[index] = ToolResult(calls[index].id, calls[index].name, "本轮已停止；此调用未执行。", True, "not_executed")
+                results[index] = ToolResult(
+                    calls[index].id, calls[index].name, "本轮已停止；此调用未执行。", True, "not_executed"
+                )
         save()
         history[position] = bound_message(history[position], registry.session)

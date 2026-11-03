@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields
 import json
-from pathlib import Path
 import re
-from typing import Callable, Literal
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
+from typing import Literal
 
 from ..paths import project_dir
 from ..worktree.meta import process_alive
@@ -15,8 +16,18 @@ from .board import TaskBoard
 from .lock import TeamError, atomic_write, file_lock, now, read_text
 from .mailbox import BROADCAST, LEAD, Mailbox
 
-__all__ = ["BROADCAST", "LEAD", "Member", "Team", "TeamError", "TeamStore", "list_teams", "teams_root",
-           "validate_member_name", "validate_team_name"]
+__all__ = [
+    "BROADCAST",
+    "LEAD",
+    "Member",
+    "Team",
+    "TeamError",
+    "TeamStore",
+    "list_teams",
+    "teams_root",
+    "validate_member_name",
+    "validate_team_name",
+]
 
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 VERSION = 1
@@ -104,9 +115,14 @@ class Team:
     @classmethod
     def from_dict(cls, data: dict) -> Team:
         members = [Member.from_dict(item) for item in data.get("members", []) if isinstance(item, dict)]
-        return cls(name=str(data["name"]), description=str(data.get("description", "")),
-                   created=str(data.get("created", "")), lead=data.get("lead") or None, members=members,
-                   project=str(data.get("project", "")))
+        return cls(
+            name=str(data["name"]),
+            description=str(data.get("description", "")),
+            created=str(data.get("created", "")),
+            lead=data.get("lead") or None,
+            members=members,
+            project=str(data.get("project", "")),
+        )
 
 
 def _valid(data) -> bool:
@@ -171,20 +187,25 @@ class TeamStore:
 
     def acquire(self, pid: int, session: str = "", project: str = "") -> Team:
         """The lead process takes the team; team_held while another live process has it."""
+
         def take(team: Team) -> None:
             holder = team.lead or {}
             other = int(holder.get("pid") or 0)
             if other and other != pid and process_alive(other):
-                raise TeamError("team_held", f"团队 {team.name} 正由另一个 MossCode 进程（PID {other}）作为 Lead 使用。")
+                raise TeamError(
+                    "team_held", f"团队 {team.name} 正由另一个 MossCode 进程（PID {other}）作为 Lead 使用。"
+                )
             team.lead = {"pid": pid, "session": session, "since": now()}
             if project:
                 team.project = project
+
         return self.modify(take)
 
     def release(self, pid: int) -> Team:
         def drop(team: Team) -> None:
             if team.lead and int(team.lead.get("pid") or 0) == pid:
                 team.lead = None
+
         return self.modify(drop)
 
 

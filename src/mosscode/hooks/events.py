@@ -31,10 +31,12 @@ EVENTS: dict[str, EventSpec] = {
     "compact": EventSpec(("trigger",), EXTERNAL),
     "error": EventSpec(("error",), EXTERNAL),
     # Fired on the side that started the sub-agent; agent_type here is the sub-agent's.
-    "subagent_start": EventSpec(("task_id", "description", "background", "worktree"), ("command", "http", "prompt"),
-                                feedback=True),
-    "subagent_stop": EventSpec(("task_id", "status", "background", "worktree", "worktree_kept"), EXTERNAL,
-                               background=True),
+    "subagent_start": EventSpec(
+        ("task_id", "description", "background", "worktree"), ("command", "http", "prompt"), feedback=True
+    ),
+    "subagent_stop": EventSpec(
+        ("task_id", "status", "background", "worktree", "worktree_kept"), EXTERNAL, background=True
+    ),
 }
 
 # The only events a fork sub-agent fires.

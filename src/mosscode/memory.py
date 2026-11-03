@@ -4,13 +4,13 @@ The memory tool and the background extractor share every check here, so neither 
 outside the two note directories, store a credential, or leave an index out of step with its notes.
 """
 
-from dataclasses import dataclass
-from datetime import date
 import os
-from pathlib import Path
 import re
 import secrets
 import threading
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
 
 from .context import estimate_text
 from .paths import mosscode_home, project_dir
@@ -67,14 +67,15 @@ class Note:
 
 
 def render_note(name: str, type_: str, description: str, updated: str, body: str) -> str:
-    return (f"---\nname: {name}\ndescription: {description}\ntype: {type_}\nupdated: {updated}\n---\n\n"
-            f"{body.strip()}\n")
+    return f"---\nname: {name}\ndescription: {description}\ntype: {type_}\nupdated: {updated}\n---\n\n{body.strip()}\n"
 
 
 def parse_note(scope: str, path: Path, text: str) -> Note:
     """The frontmatter this module writes; anything else is marked as a format error."""
+
     def broken(reason: str) -> Note:
         return Note(scope, path.stem, "", "", "", text, path, reason)
+
     lines = text.lstrip("﻿").replace("\r\n", "\n").split("\n")
     if not lines or lines[0].strip() != "---":
         return broken("缺少 frontmatter")
@@ -87,7 +88,7 @@ def parse_note(scope: str, path: Path, text: str) -> Note:
         key, sep, value = line.partition(":")
         if sep and key.strip():
             fields[key.strip()] = value.strip()
-    body = "\n".join(lines[end + 1:]).strip()
+    body = "\n".join(lines[end + 1 :]).strip()
     name, type_ = fields.get("name", ""), fields.get("type", "")
     description, updated = fields.get("description", ""), fields.get("updated", "")
     if name != path.stem or not SLUG.fullmatch(name):
@@ -122,7 +123,9 @@ def validate(scope, name, type_, description, body) -> None:
     if "\n" in description.strip() or "\r" in description:
         raise MemoryFailure("invalid_description", "description 只能写一行。")
     if len(description.strip()) > DESCRIPTION_LIMIT:
-        raise MemoryFailure("description_too_long", f"description 最多 {DESCRIPTION_LIMIT} 字符，当前 {len(description.strip())}。")
+        raise MemoryFailure(
+            "description_too_long", f"description 最多 {DESCRIPTION_LIMIT} 字符，当前 {len(description.strip())}。"
+        )
     if not isinstance(body, str) or not body.strip():
         raise MemoryFailure("invalid_body", "body 不能为空。")
     size = len(body.strip().encode("utf-8"))
@@ -267,8 +270,13 @@ class MemoryStore:
             op = operation.get("op")
             try:
                 if op == "save":
-                    note, _ = self.save(operation.get("scope"), operation.get("name"), operation.get("type"),
-                                        operation.get("description"), operation.get("body"))
+                    note, _ = self.save(
+                        operation.get("scope"),
+                        operation.get("name"),
+                        operation.get("type"),
+                        operation.get("description"),
+                        operation.get("body"),
+                    )
                     applied.append(("save", note, note.name))
                 elif op == "delete":
                     path = self.delete(operation.get("scope"), operation.get("name"))

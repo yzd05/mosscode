@@ -21,12 +21,14 @@ class Memory(Tool):
     name = "memory"
     permission_kind = "memory"  # No approval: it writes only the two note directories.
     plan_allowed = True  # Offered in plan mode too; not read-only, so it never runs concurrently.
-    description = ("保存或删除跨会话的记忆笔记。save 写入或覆盖同名笔记（更新日期），delete 删除笔记；"
-                   "成功后返回文件路径，索引由程序重新生成，下次会话开始时出现在系统提示中。"
-                   "只写笔记目录，不需要审批，计划模式中也可以直接调用。"
-                   "scope：user 为用户级（所有项目通用），project 为项目级（只用于当前项目）。"
-                   "type：user（用户本人的偏好、习惯）、feedback（用户纠正或确认过的做法）、"
-                   "project（代码和 git 历史看不出的项目知识，只能写到 project）、reference（外部资源的位置）。")
+    description = (
+        "保存或删除跨会话的记忆笔记。save 写入或覆盖同名笔记（更新日期），delete 删除笔记；"
+        "成功后返回文件路径，索引由程序重新生成，下次会话开始时出现在系统提示中。"
+        "只写笔记目录，不需要审批，计划模式中也可以直接调用。"
+        "scope：user 为用户级（所有项目通用），project 为项目级（只用于当前项目）。"
+        "type：user（用户本人的偏好、习惯）、feedback（用户纠正或确认过的做法）、"
+        "project（代码和 git 历史看不出的项目知识，只能写到 project）、reference（外部资源的位置）。"
+    )
     prompt_summary = "保存或删除跨会话的记忆笔记"
     prompt_guidelines = (
         "用户明确要求“记住……”“以后……”“不要再……”时立即调用 memory 保存；发现已有笔记有误时更新或删除。"
@@ -47,12 +49,17 @@ class Memory(Tool):
         try:
             if params.action == "delete":
                 path = await file_io(self.store.delete, params.scope, params.name)
-                return (f"已删除{label}笔记 {params.name}：{path}",
-                        {"action": "delete", "scope": params.scope, "name": params.name, "path": str(path)})
-            note, created = await file_io(self.store.save, params.scope, params.name, params.type,
-                                          params.description, params.body)
+                return (
+                    f"已删除{label}笔记 {params.name}：{path}",
+                    {"action": "delete", "scope": params.scope, "name": params.name, "path": str(path)},
+                )
+            note, created = await file_io(
+                self.store.save, params.scope, params.name, params.type, params.description, params.body
+            )
         except MemoryFailure as exc:
             raise ToolFailure(exc.code, str(exc)) from None
         verb = "已保存" if created else "已更新"
-        return (f"{verb}{label}笔记 {note.name}：{note.path}\n索引已重新生成；本会话的系统提示不会变化，下次会话开始时生效。",
-                {"action": "save", "scope": params.scope, "name": note.name, "path": str(note.path), "created": created})
+        return (
+            f"{verb}{label}笔记 {note.name}：{note.path}\n索引已重新生成；本会话的系统提示不会变化，下次会话开始时生效。",
+            {"action": "save", "scope": params.scope, "name": note.name, "path": str(note.path), "created": created},
+        )

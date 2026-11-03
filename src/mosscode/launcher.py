@@ -7,8 +7,8 @@ imports the rest through cli.run.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 OUTPUT_FORMATS = ("text", "json", "stream-json")
 SUBCOMMANDS = ("setup", "doctor")
@@ -32,7 +32,9 @@ moss 与 mosscode 是同一个命令。要把 setup 或 doctor 当作消息发�
 
 
 def version() -> str:
-    from importlib.metadata import PackageNotFoundError, version as installed
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as installed
+
     try:
         return installed("mosscode")
     except PackageNotFoundError:  # Run from a source tree that was never installed.
@@ -46,6 +48,7 @@ def program() -> str:
 
 def _permission_mode(value: str) -> str:
     from .permissions import PermissionConfigError, normalize_mode
+
     try:
         return normalize_mode(value)
     except PermissionConfigError as exc:
@@ -53,29 +56,48 @@ def _permission_mode(value: str) -> str:
 
 
 def parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=program(), usage=USAGE, description=DESCRIPTION, epilog=EXAMPLES,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("initial", nargs="?", metavar="PROMPT",
-                        help="启动后立即发送的第一条消息；与 -p 一起用时是无界面执行的任务")
-    parser.add_argument("-v", "--version", action="version", version=f"mosscode {version()}",
-                        help="显示版本后退出")
-    parser.add_argument("-p", "--prompt", nargs="?", const="",
-                        help="无界面执行一次任务并输出结果；管道输入附在任务之后")
-    parser.add_argument("-c", "--continue", dest="continue_session", action="store_true",
-                        help="恢复本项目最近活动的会话")
-    parser.add_argument("--resume", nargs="?", const="", metavar="ID",
-                        help="恢复指定会话；不带 ID 时在交互界面中打开会话列表")
+    parser = argparse.ArgumentParser(
+        prog=program(),
+        usage=USAGE,
+        description=DESCRIPTION,
+        epilog=EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "initial", nargs="?", metavar="PROMPT", help="启动后立即发送的第一条消息；与 -p 一起用时是无界面执行的任务"
+    )
+    parser.add_argument("-v", "--version", action="version", version=f"mosscode {version()}", help="显示版本后退出")
+    parser.add_argument(
+        "-p", "--prompt", nargs="?", const="", help="无界面执行一次任务并输出结果；管道输入附在任务之后"
+    )
+    parser.add_argument(
+        "-c", "--continue", dest="continue_session", action="store_true", help="恢复本项目最近活动的会话"
+    )
+    parser.add_argument(
+        "--resume", nargs="?", const="", metavar="ID", help="恢复指定会话；不带 ID 时在交互界面中打开会话列表"
+    )
     parser.add_argument("--config", help="YAML 配置路径；默认依次查找 .mosscode/config.yaml、~/.mosscode/config.yaml")
     parser.add_argument("--provider", help="指定命名 Provider，跳过启动选择；无界面模式默认使用 default_provider")
-    parser.add_argument("--permission-mode", type=_permission_mode, metavar="MODE",
-                        help="权限档位：default/acceptEdits/plan/bypassPermissions；仍遵守硬限制和显式拒绝")
-    parser.add_argument("--output-format", choices=OUTPUT_FORMATS, default="text",
-                        help="无界面输出格式：text（默认，流式正文）、json（结束时输出一个结果对象）、stream-json（每行一个 JSON 事件）")
+    parser.add_argument(
+        "--permission-mode",
+        type=_permission_mode,
+        metavar="MODE",
+        help="权限档位：default/acceptEdits/plan/bypassPermissions；仍遵守硬限制和显式拒绝",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=OUTPUT_FORMATS,
+        default="text",
+        help="无界面输出格式：text（默认，流式正文）、json（结束时输出一个结果对象）、stream-json（每行一个 JSON 事件）",
+    )
     parser.add_argument("--show-usage", action="store_true", help="text 格式在 stderr 显示逐次请求的 Token 与缓存用量")
     parser.add_argument("--list-providers", action="store_true", help="列出配置，不发请求")
     parser.add_argument("--no-hooks", action="store_true", help="本次运行不加载任何 Hook")
-    parser.add_argument("--trust-project-hooks", action="store_true",
-                        help="本次运行信任项目级 Hook 文件（不写入确认记录），用于无界面模式")
+    parser.add_argument(
+        "--trust-project-hooks",
+        action="store_true",
+        help="本次运行信任项目级 Hook 文件（不写入确认记录），用于无界面模式",
+    )
     # A team member in a pane of its own; started by the lead, not by hand.
     parser.add_argument("--team-dir", help=argparse.SUPPRESS)
     parser.add_argument("--team-member", help=argparse.SUPPRESS)
@@ -130,8 +152,10 @@ def with_stdin(prompt: str, stdin=None) -> str:
 def _subcommand(name: str, argv: list[str]) -> int:
     if name == "setup":
         from .setup import main as setup
+
         return setup(argv)
     from .doctor import main as doctor
+
     return doctor(argv)
 
 
@@ -149,4 +173,5 @@ def main(argv: list[str] | None = None) -> None:
             print("MossCode: 交互界面需要终端；无界面执行请用 -p。", file=sys.stderr)
             raise SystemExit(2)
     from .cli import run
+
     run(args)

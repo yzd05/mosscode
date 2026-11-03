@@ -24,11 +24,15 @@ def preview(text: str, tokens: int, path: Path | None) -> str:
     if path is None:
         lead = f"{size}，本次未能保存完整内容。"
     else:
-        lead = (f"{size}，完整内容已保存到：\n{path}\n"
-                "需要完整内容时用 read_file 读取这个文件（可用 offset 和 limit 分页）。")
+        lead = (
+            f"{size}，完整内容已保存到：\n{path}\n"
+            "需要完整内容时用 read_file 读取这个文件（可用 offset 和 limit 分页）。"
+        )
     omitted = len(text) - HEAD - TAIL
-    return (f"{lead}\n以下是开头 {HEAD} 字符和末尾 {TAIL} 字符：\n{text[:HEAD]}\n"
-            f"…（中间省略 {omitted} 字符）…\n{text[-TAIL:]}")
+    return (
+        f"{lead}\n以下是开头 {HEAD} 字符和末尾 {TAIL} 字符：\n{text[:HEAD]}\n"
+        f"…（中间省略 {omitted} 字符）…\n{text[-TAIL:]}"
+    )
 
 
 def store(text: str, details: dict[str, Any], session: Session | None, call_id: str) -> tuple[str, dict[str, Any]]:
@@ -44,8 +48,9 @@ def store(text: str, details: dict[str, Any], session: Session | None, call_id: 
     return preview(text, tokens, path), {**details, **extra}
 
 
-def bound_result(name: str, call_id: str, text: str, details: dict[str, Any],
-                 session: Session | None) -> tuple[str, dict[str, Any]]:
+def bound_result(
+    name: str, call_id: str, text: str, details: dict[str, Any], session: Session | None
+) -> tuple[str, dict[str, Any]]:
     """One result over the threshold is stored."""
     if name in EXEMPT or estimate_text(text) <= RESULT_TOKENS:
         return text, details
@@ -59,9 +64,11 @@ def bound_message(message: Message, session: Session | None) -> Message:
     total = sum(sizes)
     if total <= MESSAGE_TOKENS:
         return message
-    candidates = sorted((i for i, r in enumerate(results)
-                         if r.name not in EXEMPT and not r.details.get("budgeted")),
-                        key=lambda i: sizes[i], reverse=True)
+    candidates = sorted(
+        (i for i, r in enumerate(results) if r.name not in EXEMPT and not r.details.get("budgeted")),
+        key=lambda i: sizes[i],
+        reverse=True,
+    )
     for index in candidates:
         if total <= MESSAGE_TOKENS:
             break

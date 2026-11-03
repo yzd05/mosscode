@@ -22,21 +22,25 @@ from .skills import SOURCE_LABELS, ForkRequest
 
 USAGE_WIDTH = 22
 
-PLAN_ENTERED = ("└ 已进入计划模式：只读调查和规划（含只读命令），模型提交计划后由你批准执行。"
-                "/do、Shift+Tab 或 /permissions 可手动退出。")
+PLAN_ENTERED = (
+    "└ 已进入计划模式：只读调查和规划（含只读命令），模型提交计划后由你批准执行。"
+    "/do、Shift+Tab 或 /permissions 可手动退出。"
+)
 CLEARED = "└ 已开始新会话：屏幕、模型上下文和 Token 统计已清空，权限档位与会话授权保留。"
 PERMISSION_HELP = (
     "/permissions default：读取自动通过，写入和命令默认确认\n"
     "/permissions acceptEdits：文件写入和编辑自动通过，命令默认确认\n"
     "/permissions plan：只读调查，批准计划后执行\n"
     "/permissions bypassPermissions：跳过未匹配规则的确认；硬限制、高风险确认和拒绝仍生效\n"
-    "Shift+Tab 依次切换 default → acceptEdits → plan")
+    "Shift+Tab 依次切换 default → acceptEdits → plan"
+)
 MODE_CHOICES = (
     ("default", "默认：读取自动通过，写入和命令确认"),
     ("acceptEdits", "接受编辑：文件写入/编辑自动通过，命令确认"),
     ("plan", "计划：只读调查，批准计划后执行"),
     ("bypassPermissions", "跳过审批：仍遵守硬限制和拒绝规则"),
 )
+
 
 async def dispatch(ctx: CommandContext, parsed: Parsed) -> None:
     """Check the argument, then run the handler or send the expanded template."""
@@ -75,6 +79,7 @@ async def run_skill(ctx: CommandContext, command: Command, argument: str) -> Non
 
 # Help -------------------------------------------------------------------------------------
 
+
 def help_text(registry: CommandRegistry, name: str = "", skills=None) -> str:
     if name:
         command = registry.get(name)
@@ -87,8 +92,12 @@ def help_text(registry: CommandRegistry, name: str = "", skills=None) -> str:
             kind = "提示词命令：把预设的请求发给模型"
         else:
             kind = "本地命令：不经过模型"
-        lines = [command.usage, command.description, kind,
-                 "别名：" + ("、".join(f"/{alias}" for alias in command.aliases) or "无")]
+        lines = [
+            command.usage,
+            command.description,
+            kind,
+            "别名：" + ("、".join(f"/{alias}" for alias in command.aliases) or "无"),
+        ]
         if command.details:
             lines.append(command.details)
         if command.kind == "prompt":
@@ -98,8 +107,14 @@ def help_text(registry: CommandRegistry, name: str = "", skills=None) -> str:
         return "\n".join(lines)
     commands = registry.visible()
     width = max([USAGE_WIDTH, *(cell_len(command.usage) + 2 for command in commands)])
-    rows = [(command.usage, command.description + ("（别名 " + "、".join(f"/{alias}" for alias in command.aliases)
-                                                   + "）" if command.aliases else "")) for command in commands]
+    rows = [
+        (
+            command.usage,
+            command.description
+            + ("（别名 " + "、".join(f"/{alias}" for alias in command.aliases) + "）" if command.aliases else ""),
+        )
+        for command in commands
+    ]
     rows.append(("/help 命令", "查看该命令的用法和别名；// 开头的文字直接发给模型"))
     lines = ["命令", *(usage + " " * (width - cell_len(usage)) + description for usage, description in rows)]
     return "\n".join(lines) + "\n\n" + KEY_HELP
@@ -179,14 +194,20 @@ async def open_sessions(ctx: CommandContext) -> None:
     rows = []
     for item in sessions:
         mark = "  （当前）" if item.id == current else "  （使用中）" if item.locked else ""
-        rows.append(Text(f"{item.modified:%m-%d %H:%M}  {item.title}  · {item.messages} 条 · {item.id[-4:]}{mark}",
-                         no_wrap=True, overflow="ellipsis"))
+        rows.append(
+            Text(
+                f"{item.modified:%m-%d %H:%M}  {item.title}  · {item.messages} 条 · {item.id[-4:]}{mark}",
+                no_wrap=True,
+                overflow="ellipsis",
+            )
+        )
 
     async def pick(index: int) -> None:
         await confirm_tasks(ctx.ui, conversation, lambda: _resume_now(ctx, sessions[index].id))
 
-    ctx.ui.choose("恢复会话 · 本项目最近的会话", rows,
-                  next((i for i, item in enumerate(sessions) if item.id != current), 0), pick)
+    ctx.ui.choose(
+        "恢复会话 · 本项目最近的会话", rows, next((i for i, item in enumerate(sessions) if item.id != current), 0), pick
+    )
 
 
 def session_report(conversation, sessions=()) -> str:
@@ -198,16 +219,21 @@ def session_report(conversation, sessions=()) -> str:
         started = datetime.strptime(session.id[:15], "%Y%m%d-%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
         started = "未知"
-    archive = (str(session.transcript_path) if conversation.persist and session.transcript_path is not None
-               else "未存档（persist_sessions: false）")
-    return "\n".join([
-        f"会话 {session.id}",
-        f"  存档    {archive}",
-        f"  标题    {current.title if current else '（尚无消息）'}",
-        f"  消息    {current.messages if current else 0} 条",
-        f"  开始    {started}",
-        "/resume 恢复其他会话。",
-    ])
+    archive = (
+        str(session.transcript_path)
+        if conversation.persist and session.transcript_path is not None
+        else "未存档（persist_sessions: false）"
+    )
+    return "\n".join(
+        [
+            f"会话 {session.id}",
+            f"  存档    {archive}",
+            f"  标题    {current.title if current else '（尚无消息）'}",
+            f"  消息    {current.messages if current else 0} 条",
+            f"  开始    {started}",
+            "/resume 恢复其他会话。",
+        ]
+    )
 
 
 async def _session(ctx: CommandContext, argument: str) -> None:
@@ -217,11 +243,14 @@ async def _session(ctx: CommandContext, argument: str) -> None:
 
 # Memory -----------------------------------------------------------------------------------
 
+
 def memory_report(conversation, name: str = "") -> str:
     store = conversation.memory
     files = conversation.instruction_files
-    instructions = ["项目指令（启动、/clear 和恢复会话时加载）",
-                    *(f"  {item}" for item in files or ("（未找到 AGENTS.md 或 CLAUDE.md）",))]
+    instructions = [
+        "项目指令（启动、/clear 和恢复会话时加载）",
+        *(f"  {item}" for item in files or ("（未找到 AGENTS.md 或 CLAUDE.md）",)),
+    ]
     if store is None:
         return "\n".join([*instructions, "记忆已关闭（memory: false）。"])
     notes = store.load()
@@ -248,8 +277,10 @@ def memory_report(conversation, name: str = "") -> str:
                 lines.append(f"  {note.updated}  {note.type:<9} {note.name} — {note.description}")
         if not scoped:
             lines.append("  （暂无）")
-    lines.append(f"自动笔记：{extraction_state(conversation)}。/memory 名称 查看全文；修改或删除可以直接编辑文件，"
-                 "或让模型用 memory 工具完成。")
+    lines.append(
+        f"自动笔记：{extraction_state(conversation)}。/memory 名称 查看全文；修改或删除可以直接编辑文件，"
+        "或让模型用 memory 工具完成。"
+    )
     return "\n".join(lines)
 
 
@@ -276,6 +307,7 @@ def _note_names(ctx: CommandContext):
 
 # Model and modes --------------------------------------------------------------------------
 
+
 def _providers(ctx: CommandContext):
     return ctx.settings.providers if ctx.settings else ()
 
@@ -291,17 +323,27 @@ async def _model(ctx: CommandContext, argument: str) -> None:
         return
     current = ctx.ui.provider_name
     if len(providers) < 2:
-        await ctx.ui.note(f"当前模型：{current}" + (f"（{ctx.ui.model}）" if ctx.ui.model else "")
-                          + "。在配置文件的 providers 中添加更多提供商后可以切换。")
+        await ctx.ui.note(
+            f"当前模型：{current}"
+            + (f"（{ctx.ui.model}）" if ctx.ui.model else "")
+            + "。在配置文件的 providers 中添加更多提供商后可以切换。"
+        )
         return
-    rows = [Text(f"{item.name}{'  ✓' if item.name == current else ''}  {item.protocol} / {item.model}",
-                 no_wrap=True, overflow="ellipsis") for item in providers]
+    rows = [
+        Text(
+            f"{item.name}{'  ✓' if item.name == current else ''}  {item.protocol} / {item.model}",
+            no_wrap=True,
+            overflow="ellipsis",
+        )
+        for item in providers
+    ]
 
     async def pick(index: int) -> None:
         await ctx.ui.switch_model(providers[index].name)
 
-    ctx.ui.choose("切换模型 · 对话历史保留", rows,
-                  next((i for i, item in enumerate(providers) if item.name == current), 0), pick)
+    ctx.ui.choose(
+        "切换模型 · 对话历史保留", rows, next((i for i, item in enumerate(providers) if item.name == current), 0), pick
+    )
 
 
 def _provider_names(ctx: CommandContext):
@@ -354,10 +396,13 @@ async def _permissions(ctx: CommandContext, argument: str) -> None:
 
 # Status -----------------------------------------------------------------------------------
 
+
 def _model_line(ctx: CommandContext) -> str:
     name, model = ctx.ui.provider_name, ctx.ui.model
     config = next((item for item in _providers(ctx) if item.name == name), None)
-    protocol = config.protocol if config else ctx.conversation.provider_info[1] if ctx.conversation.provider_info else ""
+    protocol = (
+        config.protocol if config else ctx.conversation.provider_info[1] if ctx.conversation.provider_info else ""
+    )
     detail = " / ".join(part for part in (protocol, model) if part)
     return name + (f"（{detail}）" if detail else "")
 
@@ -368,8 +413,10 @@ def _context_line(conversation) -> str:
     if estimate is None:
         return "尚未发送请求"
     budget = conversation.budget
-    line = (f"约 {estimate:,} / {budget.effective:,} Token（{round(100 * estimate / budget.effective)}%），"
-            f"自动压缩阈值 {budget.auto_threshold:,}；已压缩 {conversation.compactions} 次")
+    line = (
+        f"约 {estimate:,} / {budget.effective:,} Token（{round(100 * estimate / budget.effective)}%），"
+        f"自动压缩阈值 {budget.auto_threshold:,}；已压缩 {conversation.compactions} 次"
+    )
     return line + ("；未配置 context_window，按 128K 估算" if not budget.configured else "")
 
 
@@ -377,8 +424,10 @@ def _usage_line(conversation) -> str:
     usage = conversation.total_usage
     if not usage.requests:
         return "尚未发送请求"
-    return (f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）· 输出 {usage.output_tokens:,}"
-            f" · 请求 {usage.requests} 次")
+    return (
+        f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）· 输出 {usage.output_tokens:,}"
+        f" · 请求 {usage.requests} 次"
+    )
 
 
 def _mcp_line(conversation) -> str:
@@ -389,8 +438,12 @@ def _mcp_line(conversation) -> str:
     ready = states.count("ready")
     waiting = sum(state in {"new", "connecting"} for state in states)
     failed = len(states) - ready - waiting
-    parts = [f"{ready} 个已连接"] + ([f"{waiting} 个连接中"] if waiting else []) \
-        + ([f"{failed} 个失败"] if failed else []) + ([f"{len(manager.notices)} 条配置问题"] if manager.notices else [])
+    parts = (
+        [f"{ready} 个已连接"]
+        + ([f"{waiting} 个连接中"] if waiting else [])
+        + ([f"{failed} 个失败"] if failed else [])
+        + ([f"{len(manager.notices)} 条配置问题"] if manager.notices else [])
+    )
     return "，".join(parts) + "（/mcp 查看）"
 
 
@@ -403,8 +456,9 @@ def status_report(ctx: CommandContext) -> str:
         current = registry.permissions.mode
         mode = f"{MODE_BADGES[current]}（{current}）"
     files = conversation.instruction_files
-    memory = ("关闭（memory: false）" if conversation.memory is None
-              else f"开启，自动笔记{extraction_state(conversation)}")
+    memory = (
+        "关闭（memory: false）" if conversation.memory is None else f"开启，自动笔记{extraction_state(conversation)}"
+    )
     rows = [
         ("模型", _model_line(ctx)),
         ("权限档位", mode),
@@ -424,6 +478,7 @@ def status_report(ctx: CommandContext) -> str:
         rows.append(("子 Agent", agents_line(conversation)))
     if getattr(conversation, "coordinator", False):
         from .coordinator import STATUS
+
         rows.append(("角色", STATUS))
     width = max(12, *(cell_len(label) + 2 for label, _ in rows))
     return "状态\n" + "\n".join(f"  {label}{' ' * (width - cell_len(label))}{value}" for label, value in rows)
@@ -435,11 +490,14 @@ async def _status(ctx: CommandContext, argument: str) -> None:
 
 # MCP --------------------------------------------------------------------------------------
 
+
 def mcp_report(conversation, name: str = "") -> str:
     manager = conversation.mcp_manager
     if manager is None or not (manager.connections or manager.notices):
-        return ("未配置 MCP Server。在 ~/.mosscode/mcp.yaml 或项目 .mosscode/mcp.yaml 的 mcp_servers 中添加；"
-                "设置 import_mcp_json: true 可读取项目的 .mcp.json。")
+        return (
+            "未配置 MCP Server。在 ~/.mosscode/mcp.yaml 或项目 .mosscode/mcp.yaml 的 mcp_servers 中添加；"
+            "设置 import_mcp_json: true 可读取项目的 .mcp.json。"
+        )
     statuses = manager.statuses()
     if name:
         status = next((item for item in statuses if item.name == name), None)
@@ -447,16 +505,24 @@ def mcp_report(conversation, name: str = "") -> str:
             return f"未找到 MCP Server {name}。已配置：" + ("、".join(item.name for item in statuses) or "无")
         lines = [f"MCP {status.name}（{status.type}）· {status.describe()}"]
         for tool in status.tools:
-            summary = (tool.description.removeprefix(f"MCP Server {tool.server_name} 的工具 {tool.remote_name}。")
-                       .strip().splitlines() or [""])[0]
-            lines.append(f"  {tool.name}" + ("  [只读]" if tool.read_only else "") + (f"  {summary[:80]}" if summary else ""))
+            summary = (
+                tool.description.removeprefix(f"MCP Server {tool.server_name} 的工具 {tool.remote_name}。")
+                .strip()
+                .splitlines()
+                or [""]
+            )[0]
+            lines.append(
+                f"  {tool.name}" + ("  [只读]" if tool.read_only else "") + (f"  {summary[:80]}" if summary else "")
+            )
         if status.state in {"ready", "closed"} and not status.tools:
             lines.append("  （Server 没有提供工具）")
         return "\n".join(lines)
     marks = {"ready": "●", "connecting": "○", "new": "○"}
     lines = [f"MCP Server（{len(statuses)}）"]
     width = max((len(item.name) for item in statuses), default=0)
-    lines.extend(f"{marks.get(item.state, '×')} {item.name.ljust(width)}  {item.type:<5}  {item.describe()}" for item in statuses)
+    lines.extend(
+        f"{marks.get(item.state, '×')} {item.name.ljust(width)}  {item.type:<5}  {item.describe()}" for item in statuses
+    )
     lines.extend("! " + notice for notice in manager.notices)
     lines.append("/mcp 名称 查看工具；修改配置后重新启动生效，不自动重连。")
     return "\n".join(lines)
@@ -474,6 +540,7 @@ def _server_names(ctx: CommandContext):
 
 
 # Skills -----------------------------------------------------------------------------------
+
 
 def _first_line(text: str) -> str:
     return next((line.strip() for line in text.splitlines() if line.strip()), "（空）")
@@ -509,8 +576,10 @@ def skills_report(catalog, name: str = "", active=()) -> str:
     width = max((cell_len(f"/{item}") for item in catalog.skills), default=0)
     for skill in catalog.skills.values():
         label = f"/{skill.name}"
-        lines.append(f"{label}{' ' * (width - cell_len(label))}  {SOURCE_LABELS[skill.source]}  {skill.mode:<6}  "
-                     f"{skill.description}")
+        lines.append(
+            f"{label}{' ' * (width - cell_len(label))}  {SOURCE_LABELS[skill.source]}  {skill.mode:<6}  "
+            f"{skill.description}"
+        )
     lines.extend("! " + problem for problem in catalog.problems)
     lines.append("输入 /<名称> 调用；/skills 名称 查看详情；/skills reload 重新扫描。")
     return "\n".join(lines)
@@ -526,23 +595,34 @@ async def _skills(ctx: CommandContext, argument: str) -> None:
     notices = ctx.conversation.use_skills(catalog)
     added = [name for name in catalog.skills if name not in old.skills]
     removed = [name for name in old.skills if name not in catalog.skills]
-    lines = [f"└ 已重新扫描 Skill：共 {len(catalog.skills)} 个"
-             + (f"，新增 {'、'.join(added)}" if added else "") + (f"，移除 {'、'.join(removed)}" if removed else "")
-             + "。"]
+    lines = [
+        f"└ 已重新扫描 Skill：共 {len(catalog.skills)} 个"
+        + (f"，新增 {'、'.join(added)}" if added else "")
+        + (f"，移除 {'、'.join(removed)}" if removed else "")
+        + "。"
+    ]
     lines.extend("  ! " + problem for problem in (*catalog.problems, *problems, *notices))
     await ctx.ui.note("\n".join(lines))
 
 
 def _skill_names(ctx: CommandContext):
-    return [("reload", "重新扫描 Skill 目录"),
-            *((skill.name, skill.description) for skill in ctx.conversation.skills.skills.values())]
+    return [
+        ("reload", "重新扫描 Skill 目录"),
+        *((skill.name, skill.description) for skill in ctx.conversation.skills.skills.values()),
+    ]
 
 
 # Hooks ------------------------------------------------------------------------------
 
 TRUST_OPTIONS = ("信任并启用", "本次不启用")
-OUTCOME_LABELS = {"ok": "成功", "failed": "失败", "rejected": "拒绝", "timeout": "超时", "cancelled": "已取消",
-                  "skipped": "跳过"}
+OUTCOME_LABELS = {
+    "ok": "成功",
+    "failed": "失败",
+    "rejected": "拒绝",
+    "timeout": "超时",
+    "cancelled": "已取消",
+    "skipped": "跳过",
+}
 
 
 def hooks_line(engine) -> str:
@@ -589,8 +669,10 @@ def _hook_row(engine, hook) -> list[str]:
 
 def _run_row(run) -> str:
     detail = f"  {run.detail.splitlines()[0][:80]}" if run.detail.strip() else ""
-    return (f"  {run.time[11:19]}  {run.hook}  {run.event}  {OUTCOME_LABELS.get(run.outcome, run.outcome)}"
-            f"  {run.duration_ms} ms{detail}")
+    return (
+        f"  {run.time[11:19]}  {run.hook}  {run.event}  {OUTCOME_LABELS.get(run.outcome, run.outcome)}"
+        f"  {run.duration_ms} ms{detail}"
+    )
 
 
 def _masked(raw: dict) -> dict:
@@ -603,6 +685,7 @@ def _masked(raw: dict) -> dict:
 
 def hooks_report(engine, name: str = "") -> str:
     import yaml
+
     if engine is None or not engine.enabled:
         return "Hook 已关闭（本次运行使用了 --no-hooks）。"
     if name:
@@ -610,9 +693,11 @@ def hooks_report(engine, name: str = "") -> str:
         if hook is None:
             known = "、".join(h.id for f in engine.config.files for h in f.hooks) or "无"
             return f"未找到 Hook {name}。已加载：{known}"
-        lines = [f"Hook {hook.id} · {HOOK_SOURCES[hook.source]} · {engine.status(hook)}",
-                 f"  文件  {_shown(hook.path, engine.root)}",
-                 "  配置"]
+        lines = [
+            f"Hook {hook.id} · {HOOK_SOURCES[hook.source]} · {engine.status(hook)}",
+            f"  文件  {_shown(hook.path, engine.root)}",
+            "  配置",
+        ]
         dumped = yaml.safe_dump(_masked(hook.raw), allow_unicode=True, sort_keys=False).rstrip()
         lines.extend("    " + line for line in dumped.splitlines())
         runs = [run for run in engine.recent if run.hook == hook.id]
@@ -622,8 +707,10 @@ def hooks_report(engine, name: str = "") -> str:
         return "\n".join(lines)
     files = [file for file in engine.config.files if file.hooks]
     if not files and not engine.problems:
-        return ("没有 Hook。可以在 ~/.mosscode/hooks.yaml 或项目 .mosscode/hooks.yaml、.mosscode/hooks.local.yaml 中添加，"
-                "格式见 docs/reference/hooks.md。")
+        return (
+            "没有 Hook。可以在 ~/.mosscode/hooks.yaml 或项目 .mosscode/hooks.yaml、.mosscode/hooks.local.yaml 中添加，"
+            "格式见 docs/reference/hooks.md。"
+        )
     lines = [f"Hook（已启用 {len(engine.hooks)} 条）"]
     for file in files:
         mark = "" if file.trusted else "（未确认，未启用）"
@@ -641,8 +728,10 @@ def hooks_report(engine, name: str = "") -> str:
 
 
 def trust_text(file, root: Path) -> str:
-    lines = [f"项目 Hook 文件 {_shown(file.path, root)} 尚未确认。",
-             "Hook 以 MossCode 的权限自动运行，不经过工具审批；请先确认内容："]
+    lines = [
+        f"项目 Hook 文件 {_shown(file.path, root)} 尚未确认。",
+        "Hook 以 MossCode 的权限自动运行，不经过工具审批；请先确认内容：",
+    ]
     for hook in file.hooks:
         lines.extend(_hook_lines(hook))
     return "\n".join(lines)
@@ -688,8 +777,12 @@ async def _hooks(ctx: CommandContext, argument: str) -> None:
         await ctx.ui.note(hooks_report(engine, argument))
         return
     added, removed = await asyncio.to_thread(engine.reload)
-    lines = [f"└ 已重新加载 Hook：已启用 {len(engine.hooks)} 条"
-             + (f"，新增 {'、'.join(added)}" if added else "") + (f"，移除 {'、'.join(removed)}" if removed else "") + "。"]
+    lines = [
+        f"└ 已重新加载 Hook：已启用 {len(engine.hooks)} 条"
+        + (f"，新增 {'、'.join(added)}" if added else "")
+        + (f"，移除 {'、'.join(removed)}" if removed else "")
+        + "。"
+    ]
     lines.extend("  ! " + problem for problem in engine.problems)
     await ctx.ui.note("\n".join(lines))
     ctx.ui.refresh_status()
@@ -704,6 +797,7 @@ def _hook_names(ctx: CommandContext):
 
 # Sub-agents ---------------------------------------------------------------------------
 
+
 def agents_line(conversation) -> str:
     catalog, tasks = conversation.agents, conversation.tasks
     running = tasks.background()
@@ -713,7 +807,11 @@ def agents_line(conversation) -> str:
 
 
 def _model_missing(conversation, agent) -> bool:
-    return bool(agent.model) and not conversation._is_current(agent.model)         and conversation._fork_provider_config(agent.model) is None
+    return (
+        bool(agent.model)
+        and not conversation._is_current(agent.model)
+        and conversation._fork_provider_config(agent.model) is None
+    )
 
 
 def _agent_model(conversation, agent) -> str:
@@ -742,8 +840,11 @@ def agents_report(conversation, name: str = "") -> str:
             ("覆盖", "、".join(str(path) for path in agent.overrides) or "无"),
             ("描述", agent.description),
             ("模型", _agent_model(conversation, agent)),
-            ("权限模式", f"{agent.permission_mode or '继承会话'}；本会话实际为 "
-                         f"{effective_mode(agent, conversation.registry.permissions.mode)}"),
+            (
+                "权限模式",
+                f"{agent.permission_mode or '继承会话'}；本会话实际为 "
+                f"{effective_mode(agent, conversation.registry.permissions.mode)}",
+            ),
             ("最大轮数", str(agent.max_turns) if agent.max_turns else "与主对话相同"),
             ("默认后台", "是" if agent.background else "否"),
             ("隔离", "worktree（在独立的 git 工作树中运行）" if isolated else "无"),
@@ -755,15 +856,19 @@ def agents_report(conversation, name: str = "") -> str:
             ("不存在的工具", "、".join(agent.unknown_tools(names)) or "无"),
             ("提示词首行", _first_line(agent.prompt)),
         ]
-        return "\n".join([f"Agent {agent.name}",
-                          *(f"  {label}{' ' * (14 - cell_len(label))}{value}" for label, value in rows)])
+        return "\n".join(
+            [f"Agent {agent.name}", *(f"  {label}{' ' * (14 - cell_len(label))}{value}" for label, value in rows)]
+        )
     lines = [f"Agent 定义（{len(catalog.agents)}）"]
     width = max((cell_len(item) for item in catalog.agents), default=0)
     for agent in catalog.agents.values():
-        marks = ((f"  [覆盖 {len(agent.overrides)} 个]" if agent.overrides else "")
-                 + (f"  [模型 {agent.model} 不存在]" if _model_missing(conversation, agent) else ""))
-        lines.append(f"{agent.name}{' ' * (width - cell_len(agent.name))}  {AGENT_SOURCES[agent.source]}  "
-                     f"{agent.description}{marks}")
+        marks = (f"  [覆盖 {len(agent.overrides)} 个]" if agent.overrides else "") + (
+            f"  [模型 {agent.model} 不存在]" if _model_missing(conversation, agent) else ""
+        )
+        lines.append(
+            f"{agent.name}{' ' * (width - cell_len(agent.name))}  {AGENT_SOURCES[agent.source]}  "
+            f"{agent.description}{marks}"
+        )
     lines.extend("! " + problem for problem in catalog.problems)
     lines.append("模型用 agent 工具调用；/agents 名称 查看详情；/agents reload 重新加载。")
     return "\n".join(lines)
@@ -780,9 +885,13 @@ async def _agents(ctx: CommandContext, argument: str) -> None:
     added = [name for name in catalog.agents if name not in old.agents]
     removed = [name for name in old.agents if name not in catalog.agents]
     changed = [name for name, agent in catalog.agents.items() if name in old.agents and agent != old.agents[name]]
-    lines = [f"└ 已重新加载 Agent 定义：共 {len(catalog.agents)} 个"
-             + (f"，新增 {'、'.join(added)}" if added else "") + (f"，移除 {'、'.join(removed)}" if removed else "")
-             + (f"，修改 {'、'.join(changed)}" if changed else "") + "；下一次请求起生效。"]
+    lines = [
+        f"└ 已重新加载 Agent 定义：共 {len(catalog.agents)} 个"
+        + (f"，新增 {'、'.join(added)}" if added else "")
+        + (f"，移除 {'、'.join(removed)}" if removed else "")
+        + (f"，修改 {'、'.join(changed)}" if changed else "")
+        + "；下一次请求起生效。"
+    ]
     lines.extend("  ! " + problem for problem in catalog.problems)
     await ctx.ui.note("\n".join(lines))
     ctx.ui.refresh_status()
@@ -791,14 +900,18 @@ async def _agents(ctx: CommandContext, argument: str) -> None:
 def _agent_names(ctx: CommandContext):
     if not getattr(ctx.conversation, "agents_enabled", False):
         return []
-    return [("reload", "重新加载 Agent 定义"),
-            *((agent.name, agent.description) for agent in ctx.conversation.agents.agents.values())]
+    return [
+        ("reload", "重新加载 Agent 定义"),
+        *((agent.name, agent.description) for agent in ctx.conversation.agents.agents.values()),
+    ]
 
 
 def _task_usage(task) -> str:
     usage = task.usage
-    return (f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）· 输出 {usage.output_tokens:,}"
-            f" · 请求 {usage.requests} 次")
+    return (
+        f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）· 输出 {usage.output_tokens:,}"
+        f" · 请求 {usage.requests} 次"
+    )
 
 
 def _preview(text: str, lines: int = 12, size: int = 1500) -> list[str]:
@@ -840,8 +953,10 @@ def tasks_report(conversation, task_id: str = "") -> str:
     lines = [f"任务（{len(tasks.tasks)}）"]
     for task in tasks.tasks.values():
         place = "后台" if task.background else "前台"
-        lines.append(f"  {task.id:<4} {STATUS_LABELS[task.status]}  {place}  {task.label}  "
-                     f"{task.elapsed:.0f} 秒  Token {task.tokens:,}")
+        lines.append(
+            f"  {task.id:<4} {STATUS_LABELS[task.status]}  {place}  {task.label}  "
+            f"{task.elapsed:.0f} 秒  Token {task.tokens:,}"
+        )
     lines.append("/tasks <id> 查看详情；/tasks stop <id> 停止。")
     return "\n".join(lines)
 
@@ -870,19 +985,23 @@ def _task_names(ctx: CommandContext):
     tasks = getattr(ctx.conversation, "tasks", None)
     if tasks is None:
         return []
-    return [*((task.id, f"{STATUS_LABELS[task.status]} · {task.label}") for task in tasks.tasks.values()),
-            *((f"stop {task.id}", f"停止 · {task.label}") for task in tasks.running())]
+    return [
+        *((task.id, f"{STATUS_LABELS[task.status]} · {task.label}") for task in tasks.tasks.values()),
+        *((f"stop {task.id}", f"停止 · {task.label}") for task in tasks.running()),
+    ]
 
 
 # Worktrees ---------------------------------------------------------------------------
 
-WORKTREE_USAGE = ("用法：/worktree [list] · /worktree create <名称> · /worktree remove <名称> [--discard] · "
-                  "/worktree clean")
+WORKTREE_USAGE = (
+    "用法：/worktree [list] · /worktree create <名称> · /worktree remove <名称> [--discard] · /worktree clean"
+)
 
 
 def worktree_manager(conversation):
     """(manager, problem)."""
     from .worktree import WorktreeError
+
     getter = getattr(conversation, "worktree_manager", None)
     if getter is None:
         return None, "当前会话不支持工作树。"
@@ -910,8 +1029,9 @@ async def worktree_report(manager) -> str:
             lines.append(f"  {entry.name}  {entry.status}")
             continue
         lines.append(f"  {meta.name}  {'手动' if meta.manual else '临时'}  {entry.status}")
-        lines.append(f"    分支 {meta.branch}，基于 {meta.base[:7]}，创建于 {_when(meta.created)}；"
-                     f"{manager.display(meta.path)}")
+        lines.append(
+            f"    分支 {meta.branch}，基于 {meta.base[:7]}，创建于 {_when(meta.created)}；{manager.display(meta.path)}"
+        )
     lines.append("/worktree remove <名称> 删除；/worktree clean 清理过期的临时工作树。")
     return "\n".join(lines)
 
@@ -919,14 +1039,17 @@ async def worktree_report(manager) -> str:
 def clean_text(report, *, automatic: bool = False) -> str:
     if automatic:
         return f"└ 已自动清理 {len(report.removed)} 个过期的临时工作树：{'、'.join(report.removed)}"
-    lines = [f"└ 已删除 {len(report.removed)} 个，跳过 {len(report.skipped)} 个"
-             + (f"：{'、'.join(report.removed)}" if report.removed else "。")]
+    lines = [
+        f"└ 已删除 {len(report.removed)} 个，跳过 {len(report.skipped)} 个"
+        + (f"：{'、'.join(report.removed)}" if report.removed else "。")
+    ]
     lines.extend(f"  {name}：{reason}" for name, reason in report.skipped)
     return "\n".join(lines)
 
 
 async def _worktree(ctx: CommandContext, argument: str) -> None:
     from .worktree import WorktreeError
+
     action, _, rest = argument.strip().partition(" ")
     rest = rest.strip()
     manager, problem = worktree_manager(ctx.conversation)
@@ -941,11 +1064,13 @@ async def _worktree(ctx: CommandContext, argument: str) -> None:
             meta = created.meta
             root = manager.root_in(meta)
             head = f"工作树 {meta.name} 已存在" if created.resumed else f"已创建工作树 {meta.name}"
-            lines = [f"└ {head}：{manager.display(meta.path)}",
-                     f"  分支 {meta.branch}，基于 {meta.base[:7]}",
-                     *(f"  ! {warning}" for warning in created.warnings),
-                     *(["  ! 主目录有未提交的改动，它们不在这个工作树中"] if created.dirty else []),
-                     f"  在另一个终端中进入：cd \"{root}\""]
+            lines = [
+                f"└ {head}：{manager.display(meta.path)}",
+                f"  分支 {meta.branch}，基于 {meta.base[:7]}",
+                *(f"  ! {warning}" for warning in created.warnings),
+                *(["  ! 主目录有未提交的改动，它们不在这个工作树中"] if created.dirty else []),
+                f'  在另一个终端中进入：cd "{root}"',
+            ]
             await ctx.ui.note("\n".join(lines))
         elif action == "remove" and rest:
             words = rest.split()
@@ -966,12 +1091,17 @@ async def _worktree(ctx: CommandContext, argument: str) -> None:
 
 
 def _worktree_names(ctx: CommandContext):
-    choices = [("list", "列出工作树"), ("create", "创建或恢复工作树"), ("remove", "删除工作树"),
-               ("clean", "清理过期的临时工作树")]
+    choices = [
+        ("list", "列出工作树"),
+        ("create", "创建或恢复工作树"),
+        ("remove", "删除工作树"),
+        ("clean", "清理过期的临时工作树"),
+    ]
     manager, _ = worktree_manager(ctx.conversation) if getattr(ctx.conversation, "_worktrees", None) else (None, "")
     if manager is not None:
-        choices.extend((f"remove {meta.name}", "删除 · " + ("手动" if meta.manual else "临时"))
-                       for _, meta in manager.metas())
+        choices.extend(
+            (f"remove {meta.name}", "删除 · " + ("手动" if meta.manual else "临时")) for _, meta in manager.metas()
+        )
     return choices
 
 
@@ -983,16 +1113,19 @@ def _worktree_reads(argument: str) -> bool:
 # Teams -------------------------------------------------------------------------------
 
 TEAM_USAGE = "用法：/team · /team <名称> · /team stop <成员> · /team delete <名称>"
-TEAM_DETAILS = ("子命令：\n"
-                "  /team                 列出本项目的团队：成员数、各状态人数、当前团队和持有者\n"
-                "  /team <名称>          团队详情：成员状态、后端、工作树、最近工具调用、用量、未读消息和任务\n"
-                "  /team stop <成员>     请当前团队的成员在这一轮结束后停止，超时强制停止\n"
-                "  /team delete <名称>   确认后停止成员、删除已合并且干净的工作树和团队目录")
+TEAM_DETAILS = (
+    "子命令：\n"
+    "  /team                 列出本项目的团队：成员数、各状态人数、当前团队和持有者\n"
+    "  /team <名称>          团队详情：成员状态、后端、工作树、最近工具调用、用量、未读消息和任务\n"
+    "  /team stop <成员>     请当前团队的成员在这一轮结束后停止，超时强制停止\n"
+    "  /team delete <名称>   确认后停止成员、删除已合并且干净的工作树和团队目录"
+)
 DELETE_OPTIONS = ("删除团队", "取消")
 
 
 async def _team(ctx: CommandContext, argument: str) -> None:
     from .teams import TeamError
+
     runtime = getattr(ctx.conversation, "teams", None)
     if runtime is None:
         await ctx.ui.note("当前会话不支持团队。")
@@ -1023,8 +1156,13 @@ async def _team(ctx: CommandContext, argument: str) -> None:
             async def cancelled() -> None:
                 await ctx.ui.note("已取消，团队保留。")
 
-            ctx.ui.choose(f"删除团队 {name}？会停止它的成员，删除已合并且干净的工作树和团队目录（任务、邮箱、对话记录）。",
-                          DELETE_OPTIONS, 1, picked, cancelled)
+            ctx.ui.choose(
+                f"删除团队 {name}？会停止它的成员，删除已合并且干净的工作树和团队目录（任务、邮箱、对话记录）。",
+                DELETE_OPTIONS,
+                1,
+                picked,
+                cancelled,
+            )
         elif len(words) == 1 and words[0] not in ("stop", "delete"):
             await ctx.ui.note(await asyncio.to_thread(runtime.detail, words[0]))
         else:
@@ -1057,43 +1195,169 @@ async def _exit(ctx: CommandContext, argument: str) -> None:
     await confirm_tasks(ctx.ui, ctx.conversation, leave)
 
 
-BUILTIN = CommandRegistry((
-    Command("help", "查看命令和快捷键", "/help [命令]", "local", argument="optional", argument_hint="[命令]",
-            handler=_help),
-    Command("clear", "开始新会话：清空模型上下文和 Token 统计", "/clear", "local", handler=_clear),
-    Command("compact", "压缩上下文：较早的对话换成摘要，近期消息保留", "/compact [说明]", "local",
-            argument="optional", argument_hint="[说明]", handler=_compact),
-    Command("resume", "恢复本项目之前的会话", "/resume [ID]", "local", argument="optional", argument_hint="[ID]",
-            handler=_resume),
-    Command("session", "查看当前会话的 ID、存档位置和消息数", "/session", "local", handler=_session),
-    Command("memory", "查看已加载的项目指令和记忆笔记", "/memory [名称]", "local", argument="optional",
-            argument_hint="[名称]", handler=_memory, complete=_note_names),
-    Command("model", "切换提供商与模型，对话历史保留", "/model [名称]", "local", argument="optional",
-            argument_hint="[名称]", handler=_model, complete=_provider_names),
-    Command("plan", "只读调查和规划，提交计划经批准后执行", "/plan [任务]", "local",
-            argument="optional", argument_hint="[任务]", handler=_plan),
-    Command("do", "退出计划模式，回到进入前的权限档位", "/do [任务]", "local", argument="optional",
-            argument_hint="[任务]", handler=_do),
-    Command("permissions", "查看或切换工具权限档位", "/permissions [档位]", "local", aliases=("permission",),
-            argument="optional", argument_hint="[档位]", handler=_permissions, complete=lambda ctx: MODE_CHOICES),
-    Command("status", "查看模型、权限、上下文、用量和连接状态", "/status", "local", handler=_status,
-            while_running=True),
-    Command("mcp", "查看 MCP Server 的连接状态与工具", "/mcp [名称]", "local", argument="optional",
-            argument_hint="[名称]", handler=_mcp, complete=_server_names),
-    Command("skills", "查看、重新扫描 Skill", "/skills [名称|reload]", "local", aliases=("skill",),
-            argument="optional", argument_hint="[名称|reload]", handler=_skills, complete=_skill_names),
-    Command("hooks", "查看、重新加载 Hook", "/hooks [id|reload]", "local", aliases=("hook",),
-            argument="optional", argument_hint="[id|reload]", handler=_hooks, complete=_hook_names),
-    Command("agents", "查看、重新加载子 Agent 定义", "/agents [名称|reload]", "local", aliases=("agent",),
-            argument="optional", argument_hint="[名称|reload]", handler=_agents, complete=_agent_names),
-    Command("tasks", "查看、停止本会话的子 Agent 任务", "/tasks [id|stop id]", "local", aliases=("task",),
-            argument="optional", argument_hint="[id|stop id]", handler=_tasks, complete=_task_names,
-            while_running=True),
-    Command("worktree", "查看、创建、删除 git 工作树", "/worktree [子命令]", "local",
-            aliases=("worktrees",), argument="optional", argument_hint="[子命令]",
-            handler=_worktree, complete=_worktree_names, while_running=_worktree_reads),
-    Command("team", "查看、停止、删除 Agent 团队", "/team [子命令]", "local", aliases=("teams",),
-            argument="optional", argument_hint="[子命令]", handler=_team, complete=_team_names,
-            while_running=_team_reads, details=TEAM_DETAILS),
-    Command("exit", "退出 MossCode", "/exit", "local", aliases=("quit",), handler=_exit),
-))
+BUILTIN = CommandRegistry(
+    (
+        Command(
+            "help",
+            "查看命令和快捷键",
+            "/help [命令]",
+            "local",
+            argument="optional",
+            argument_hint="[命令]",
+            handler=_help,
+        ),
+        Command("clear", "开始新会话：清空模型上下文和 Token 统计", "/clear", "local", handler=_clear),
+        Command(
+            "compact",
+            "压缩上下文：较早的对话换成摘要，近期消息保留",
+            "/compact [说明]",
+            "local",
+            argument="optional",
+            argument_hint="[说明]",
+            handler=_compact,
+        ),
+        Command(
+            "resume",
+            "恢复本项目之前的会话",
+            "/resume [ID]",
+            "local",
+            argument="optional",
+            argument_hint="[ID]",
+            handler=_resume,
+        ),
+        Command("session", "查看当前会话的 ID、存档位置和消息数", "/session", "local", handler=_session),
+        Command(
+            "memory",
+            "查看已加载的项目指令和记忆笔记",
+            "/memory [名称]",
+            "local",
+            argument="optional",
+            argument_hint="[名称]",
+            handler=_memory,
+            complete=_note_names,
+        ),
+        Command(
+            "model",
+            "切换提供商与模型，对话历史保留",
+            "/model [名称]",
+            "local",
+            argument="optional",
+            argument_hint="[名称]",
+            handler=_model,
+            complete=_provider_names,
+        ),
+        Command(
+            "plan",
+            "只读调查和规划，提交计划经批准后执行",
+            "/plan [任务]",
+            "local",
+            argument="optional",
+            argument_hint="[任务]",
+            handler=_plan,
+        ),
+        Command(
+            "do",
+            "退出计划模式，回到进入前的权限档位",
+            "/do [任务]",
+            "local",
+            argument="optional",
+            argument_hint="[任务]",
+            handler=_do,
+        ),
+        Command(
+            "permissions",
+            "查看或切换工具权限档位",
+            "/permissions [档位]",
+            "local",
+            aliases=("permission",),
+            argument="optional",
+            argument_hint="[档位]",
+            handler=_permissions,
+            complete=lambda ctx: MODE_CHOICES,
+        ),
+        Command(
+            "status", "查看模型、权限、上下文、用量和连接状态", "/status", "local", handler=_status, while_running=True
+        ),
+        Command(
+            "mcp",
+            "查看 MCP Server 的连接状态与工具",
+            "/mcp [名称]",
+            "local",
+            argument="optional",
+            argument_hint="[名称]",
+            handler=_mcp,
+            complete=_server_names,
+        ),
+        Command(
+            "skills",
+            "查看、重新扫描 Skill",
+            "/skills [名称|reload]",
+            "local",
+            aliases=("skill",),
+            argument="optional",
+            argument_hint="[名称|reload]",
+            handler=_skills,
+            complete=_skill_names,
+        ),
+        Command(
+            "hooks",
+            "查看、重新加载 Hook",
+            "/hooks [id|reload]",
+            "local",
+            aliases=("hook",),
+            argument="optional",
+            argument_hint="[id|reload]",
+            handler=_hooks,
+            complete=_hook_names,
+        ),
+        Command(
+            "agents",
+            "查看、重新加载子 Agent 定义",
+            "/agents [名称|reload]",
+            "local",
+            aliases=("agent",),
+            argument="optional",
+            argument_hint="[名称|reload]",
+            handler=_agents,
+            complete=_agent_names,
+        ),
+        Command(
+            "tasks",
+            "查看、停止本会话的子 Agent 任务",
+            "/tasks [id|stop id]",
+            "local",
+            aliases=("task",),
+            argument="optional",
+            argument_hint="[id|stop id]",
+            handler=_tasks,
+            complete=_task_names,
+            while_running=True,
+        ),
+        Command(
+            "worktree",
+            "查看、创建、删除 git 工作树",
+            "/worktree [子命令]",
+            "local",
+            aliases=("worktrees",),
+            argument="optional",
+            argument_hint="[子命令]",
+            handler=_worktree,
+            complete=_worktree_names,
+            while_running=_worktree_reads,
+        ),
+        Command(
+            "team",
+            "查看、停止、删除 Agent 团队",
+            "/team [子命令]",
+            "local",
+            aliases=("teams",),
+            argument="optional",
+            argument_hint="[子命令]",
+            handler=_team,
+            complete=_team_names,
+            while_running=_team_reads,
+            details=TEAM_DETAILS,
+        ),
+        Command("exit", "退出 MossCode", "/exit", "local", aliases=("quit",), handler=_exit),
+    )
+)

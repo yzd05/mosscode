@@ -1,10 +1,10 @@
 """Protocol-independent tool contract and a single validation/execution boundary."""
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from dataclasses import replace
-import json
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from ..messages import ToolCall, ToolDefinition, ToolResult
 from ..permissions import Decision, PermissionPolicy
 from ..security import SecurityError, project_path, resolve_path
-
 
 # The call a tool is executing, for tools that need its id (the agent tool's row in the UI).
 CURRENT_CALL: ContextVar[ToolCall | None] = ContextVar("mosscode_current_call", default=None)
@@ -33,8 +32,7 @@ class ToolFailure(Exception):
 def bounded_output(output, details):
     encoded = output.encode("utf-8")
     if len(encoded) > 65536:
-        return (encoded[:65536].decode("utf-8", errors="ignore") + "\n（结果已截断）",
-                {**details, "truncated": True})
+        return (encoded[:65536].decode("utf-8", errors="ignore") + "\n（结果已截断）", {**details, "truncated": True})
     return output, details
 
 
@@ -114,8 +112,9 @@ class Tool(ABC):
     def definition(self) -> ToolDefinition:
         guidelines = tuple(dict.fromkeys(rule.strip() for rule in self.prompt_guidelines if rule.strip()))
         description = "\n".join((self.description, *(f"- {rule}" for rule in guidelines)))
-        return ToolDefinition(self.name, description, self.params_model.model_json_schema(),
-                              self.prompt_summary, guidelines)
+        return ToolDefinition(
+            self.name, description, self.params_model.model_json_schema(), self.prompt_summary, guidelines
+        )
 
     @abstractmethod
     async def execute(self, params: Params) -> tuple[str, dict[str, Any]]: ...
@@ -182,15 +181,26 @@ class ToolRegistry:
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
 
-    def for_agent(self, *, agent: str, agent_type: str, permissions: PermissionPolicy, state=None,
-                  keep=None, extra=(), forbidden=()) -> "ToolRegistry":
+    def for_agent(
+        self,
+        *,
+        agent: str,
+        agent_type: str,
+        permissions: PermissionPolicy,
+        state=None,
+        keep=None,
+        extra=(),
+        forbidden=(),
+    ) -> "ToolRegistry":
         """A sub-agent's registry.
 
         Tools holding a FileState are copied and share `state` (a new, empty one when None);
         keep(name) filters the rest; extra tools are added; forbidden names stay offered but are refused.
         """
         from copy import copy
+
         from .files import FileState
+
         state = state if state is not None else FileState()
         view = ToolRegistry(permissions=permissions)
         view.session, view.hooks, view.agent, view.agent_type = self.session, self.hooks, agent, agent_type
@@ -218,6 +228,7 @@ class ToolRegistry:
             if plan:
                 return tool.read_only or tool.plan_only or tool.plan_commands or tool.plan_allowed
             return not tool.plan_only and (not read_only or tool.read_only)
+
         return tuple(tool.definition() for tool in self._tools.values() if offered(tool) and not self._withheld(tool))
 
     def is_read_only(self, name: str) -> bool:
@@ -226,6 +237,7 @@ class ToolRegistry:
 
     def _bound(self, call: ToolCall, output: str, details: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         from ..tool_budget import EXEMPT, bound_result
+
         if call.name in EXEMPT:
             return bounded_output(output, details)
         return bound_result(call.name, call.id, output, details, self.session)
@@ -258,11 +270,19 @@ class ToolRegistry:
             return ToolResult(call.id, call.name, "未知工具。", True, "unknown_tool")
         if self._withheld(tool):
             from ..coordinator import WITHHELD
-            return ToolResult(call.id, call.name, WITHHELD.format(name=call.name), True, "coordinator_withheld",
-                              {"executed": False})
+
+            return ToolResult(
+                call.id, call.name, WITHHELD.format(name=call.name), True, "coordinator_withheld", {"executed": False}
+            )
         if call.name in self.forbidden:
-            return ToolResult(call.id, call.name, f"你是子 Agent，不能使用 {call.name}；请在自己的范围内完成任务并在报告中说明。",
-                              True, "subagent_forbidden", {"executed": False})
+            return ToolResult(
+                call.id,
+                call.name,
+                f"你是子 Agent，不能使用 {call.name}；请在自己的范围内完成任务并在报告中说明。",
+                True,
+                "subagent_forbidden",
+                {"executed": False},
+            )
         if read_only and not tool.read_only:
             # Explicit caller restriction, separate from the approval-based plan mode.
             return ToolResult(call.id, call.name, "本次调用限定只读工具；此调用未执行。", True, "plan_blocked")
@@ -275,13 +295,18 @@ class ToolRegistry:
         except ToolFailure as exc:
             return ToolResult(call.id, call.name, str(exc), True, exc.code, exc.details)
         except ValidationError as exc:
-            issues = [{"field": ".".join(map(str, e["loc"])), "message": e["msg"]}
-                      for e in exc.errors(include_input=False, include_context=False, include_url=False)]
+            issues = [
+                {"field": ".".join(map(str, e["loc"])), "message": e["msg"]}
+                for e in exc.errors(include_input=False, include_context=False, include_url=False)
+            ]
             listed = "\n".join(f"- {issue['field'] or '(参数)'}：{issue['message']}" for issue in issues[:20])
-            return ToolResult(call.id, call.name, "工具参数校验失败：\n" + listed, True, "invalid_arguments", {"issues": issues})
+            return ToolResult(
+                call.id, call.name, "工具参数校验失败：\n" + listed, True, "invalid_arguments", {"issues": issues}
+            )
         hooks, state = self.hooks, {}
         gate = notify = None
         if hooks is not None:
+
             async def gate(operation):
                 state["operation"] = operation
                 if not hooks.wants("pre_tool_use"):
@@ -325,10 +350,14 @@ class ToolRegistry:
 
     def _event(self, name, tool_name, raw, operation, root, result=None):
         from ..hooks import tool_event
+
         event = tool_event(name, self.agent, tool_name, raw, operation, root, result, agent_type=self.agent_type)
         if self.worktree:
-            event = replace(event, fields={**event.fields, "worktree": self.worktree},
-                            payload={**event.payload, "worktree": self.worktree})
+            event = replace(
+                event,
+                fields={**event.fields, "worktree": self.worktree},
+                payload={**event.payload, "worktree": self.worktree},
+            )
         return replace(event, nested=True) if self.nested else event
 
     async def _run(self, call: ToolCall, tool: Tool, params: Params) -> ToolResult:
@@ -342,7 +371,13 @@ class ToolRegistry:
                 outcome = await task
             except asyncio.CancelledError:
                 code = "timeout" if isinstance(exc, TimeoutError) else "cancelled"
-                outcome = ToolResult(call.id, call.name, "工具执行超时。" if code == "timeout" else "工具已取消，可能已有部分外部效果。", True, code)
+                outcome = ToolResult(
+                    call.id,
+                    call.name,
+                    "工具执行超时。" if code == "timeout" else "工具已取消，可能已有部分外部效果。",
+                    True,
+                    code,
+                )
             if isinstance(exc, asyncio.CancelledError):
                 raise ExecutionCancelled(outcome) from None
             # Local file operations may finish during cancellation cleanup.

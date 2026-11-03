@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from .permissions import ApprovalRequest
+
 
 @dataclass(frozen=True)
 class ContentBlock:
@@ -100,6 +102,7 @@ class ToolProgress:
 @dataclass(frozen=True)
 class ResponseBoundary:
     """A complete assistant tool request, followed by execution and another iteration."""
+
     message: Message
 
 
@@ -141,12 +144,14 @@ class RunStopped:
 @dataclass(frozen=True)
 class UserInput:
     """Messages queued during a run, merged into history at an iteration boundary."""
+
     texts: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class TasksNotified:
     """Background task notifications merged into history at an iteration boundary."""
+
     texts: tuple[str, ...]
 
 
@@ -156,6 +161,7 @@ NOTIFICATION = "task-notification"  # Message.synthetic of a background task not
 @dataclass(frozen=True)
 class Retrying:
     """A transient failure before any event of this request; nothing was executed."""
+
     attempt: int
     max_attempts: int
     delay: float
@@ -184,10 +190,21 @@ class CompactFailed:
     manual: bool = False
 
 
-from .permissions import ApprovalRequest
-
-StreamEvent = (Delta | Completed | ToolProgress | ResponseBoundary | IterationProgress | UsageUpdate | RunStopped
-               | ApprovalRequest | Retrying | UserInput | CompactStarted | CompactFinished | CompactFailed)
+StreamEvent = (
+    Delta
+    | Completed
+    | ToolProgress
+    | ResponseBoundary
+    | IterationProgress
+    | UsageUpdate
+    | RunStopped
+    | ApprovalRequest
+    | Retrying
+    | UserInput
+    | CompactStarted
+    | CompactFinished
+    | CompactFailed
+)
 
 
 class ProviderError(RuntimeError):

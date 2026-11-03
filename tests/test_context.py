@@ -1,9 +1,9 @@
 """Context management."""
 
 import asyncio
-from datetime import datetime, timedelta
 import json
 import os
+from datetime import datetime, timedelta
 
 import anthropic
 import httpx
@@ -13,8 +13,8 @@ import yaml
 
 from mosscode.config import ConfigError, load_settings
 from mosscode.context import ContextBudget, ContextMeter, estimate_message, estimate_text
-from mosscode.providers import _safe_error
 from mosscode.messages import ContentBlock, Message, ToolCall, ToolResult, Usage
+from mosscode.providers import _safe_error
 from mosscode.session import MARKER, Session, prune_sessions
 from mosscode.tool_budget import MESSAGE_TOKENS, RESULT_TOKENS, bound_message
 from mosscode.tools import create_default_registry
@@ -28,6 +28,7 @@ def text(role, value):
 
 
 # Estimation and budget
+
 
 def test_estimate_counts_ascii_by_four_and_every_cjk_character_as_a_token():
     assert estimate_text("") == 0
@@ -68,9 +69,12 @@ def test_budget_thresholds_follow_the_configured_window():
 def test_context_fields_are_validated_when_loading(tmp_path):
     settings = load_settings(write_config(tmp_path, context_window=1_000_000, compact_threshold=200_000))
     assert settings.providers[0].budget().auto_threshold == 200_000 and settings.auto_compact
-    for change, message in [({"context_window": 40_000}, "不足"), ({"context_window": 0}, "正整数"),
-                            ({"context_window": 200_000, "compact_threshold": 190_000}, "compact_threshold"),
-                            ({"compact_threshold": 1_000}, "compact_threshold")]:
+    for change, message in [
+        ({"context_window": 40_000}, "不足"),
+        ({"context_window": 0}, "正整数"),
+        ({"context_window": 200_000, "compact_threshold": 190_000}, "compact_threshold"),
+        ({"compact_threshold": 1_000}, "compact_threshold"),
+    ]:
         with pytest.raises(ConfigError, match=message):
             load_settings(write_config(tmp_path, **change))
     path = write_config(tmp_path)
@@ -83,6 +87,7 @@ def test_context_fields_are_validated_when_loading(tmp_path):
 
 
 # Layer 1
+
 
 class DumpParams(Params):
     size: int
@@ -187,19 +192,30 @@ def test_old_marked_session_directories_are_pruned(tmp_path):
 
 # Context overflow is recognized, other 400s are not
 
+
 def status_error(module, status, message, body):
     request = httpx.Request("POST", "https://gateway.example/v1")
-    return module.BadRequestError(message, response=httpx.Response(status, request=request), body=body) \
-        if status == 400 else module.APIStatusError(message, response=httpx.Response(status, request=request), body=body)
+    return (
+        module.BadRequestError(message, response=httpx.Response(status, request=request), body=body)
+        if status == 400
+        else module.APIStatusError(message, response=httpx.Response(status, request=request), body=body)
+    )
 
 
-@pytest.mark.parametrize("module, status, message, body", [
-    (anthropic, 400, "prompt is too long: 210000 tokens > 200000 maximum",
-     {"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long"}}),
-    (openai, 400, "Error code: 400", {"error": {"code": "context_length_exceeded", "message": "too long"}}),
-    (openai, 400, "This model's maximum context length is 131072 tokens.", None),
-    (anthropic, 413, "Request too large", {"error": {"message": "Input is too long for requested model."}}),
-])
+@pytest.mark.parametrize(
+    "module, status, message, body",
+    [
+        (
+            anthropic,
+            400,
+            "prompt is too long: 210000 tokens > 200000 maximum",
+            {"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long"}},
+        ),
+        (openai, 400, "Error code: 400", {"error": {"code": "context_length_exceeded", "message": "too long"}}),
+        (openai, 400, "This model's maximum context length is 131072 tokens.", None),
+        (anthropic, 413, "Request too large", {"error": {"message": "Input is too long for requested model."}}),
+    ],
+)
 def test_overflow_errors_get_a_code_and_a_safe_message(module, status, message, body):
     error = _safe_error(status_error(module, status, message, body))
     assert error.code == "context_overflow" and "上下文窗口" in str(error)
@@ -213,8 +229,16 @@ def test_other_bad_requests_are_not_overflow():
 
 # Layer 2 building blocks
 
-from mosscode.compaction import (BOUNDARY, CLIPPED, CompactionError, collect_quotes, compact_history, cut_point,
-                                 fit_quotes, split_point)
+from mosscode.compaction import (
+    BOUNDARY,
+    CLIPPED,
+    CompactionError,
+    collect_quotes,
+    compact_history,
+    cut_point,
+    fit_quotes,
+    split_point,
+)
 from mosscode.messages import Completed, ProviderError
 from test_agent import SequenceProvider, response
 
@@ -229,8 +253,9 @@ NO_SUMMARY_REPLY = Completed(Message("assistant", (ContentBlock("text", "只有�
 
 
 def summary_reply(body="1. 主要请求和意图：测试", stop="stop"):
-    return Completed(Message("assistant", (ContentBlock("text", f"<analysis>草稿</analysis>\n<summary>\n{body}\n</summary>"),)),
-                     stop)
+    return Completed(
+        Message("assistant", (ContentBlock("text", f"<analysis>草稿</analysis>\n<summary>\n{body}\n</summary>"),)), stop
+    )
 
 
 def test_split_keeps_ten_thousand_tokens_and_five_messages_within_the_share():
@@ -240,8 +265,10 @@ def test_split_keeps_ten_thousand_tokens_and_five_messages_within_the_share():
     assert split_point(chat(2), 100_000) == 0
     # Never start the tail on tool results; a single oversized group is still kept whole.
     calls = (ToolCall("t", "dump", "{}"),)
-    tooled = chat(3) + [Message("assistant", (), tool_calls=calls),
-                        Message("tool", (), tool_results=(ToolResult("t", "dump", BLOCK * 25),))]
+    tooled = chat(3) + [
+        Message("assistant", (), tool_calls=calls),
+        Message("tool", (), tool_results=(ToolResult("t", "dump", BLOCK * 25),)),
+    ]
     assert split_point(tooled, 100_000) == 6  # 50K tokens exceed the 40K share: only the last group stays.
     mixed = tooled[:-1] + [Message("tool", (), tool_results=(ToolResult("t", "dump", "ok"),))] + chat(4)
     for threshold in range(20_000, 120_000, 5_000):
@@ -254,8 +281,10 @@ def test_manual_cut_keeps_only_the_last_group_when_the_tail_covers_everything():
     assert cut_point(chat(2), 100_000) == 0
     assert cut_point(chat(2), 100_000, manual=True) == 3
     calls = (ToolCall("t", "dump", "{}"),)
-    tooled = chat(1) + [Message("assistant", (), tool_calls=calls),
-                        Message("tool", (), tool_results=(ToolResult("t", "dump", "ok"),))]
+    tooled = chat(1) + [
+        Message("assistant", (), tool_calls=calls),
+        Message("tool", (), tool_results=(ToolResult("t", "dump", "ok"),)),
+    ]
     assert cut_point(tooled, 100_000, manual=True) == 2  # The call stays with its result.
     lone = [Message("user", (ContentBlock("text", "摘要"),), synthetic=BOUNDARY)] + chat(1)[1:]
     assert cut_point(lone, 100_000, manual=True) == 0 and cut_point([], 100_000, manual=True) == 0
@@ -265,7 +294,9 @@ async def test_summary_request_has_no_tools_and_the_boundary_keeps_user_words(tm
     session = Session.create(tmp_path)
     history = chat(8)
     history[0] = text("user", "第一条要求：保持中文回复")
-    history[3] = Message("assistant", (ContentBlock("text", "看一下"),), tool_calls=(ToolCall("r", "read_file", '{"path": "a.py"}'),))
+    history[3] = Message(
+        "assistant", (ContentBlock("text", "看一下"),), tool_calls=(ToolCall("r", "read_file", '{"path": "a.py"}'),)
+    )
     history.insert(4, Message("tool", (), tool_results=(ToolResult("r", "read_file", "print('原文')"),)))
     original = list(history)
     provider = SequenceProvider(summary_reply())
@@ -278,21 +309,28 @@ async def test_summary_request_has_no_tools_and_the_boundary_keeps_user_words(tm
     assert prompt.startswith(system) and prompt.rstrip().endswith("只输出 <analysis> 和 <summary>。")
     assert "[工具调用] read_file" in prompt and "print('原文')" in prompt and "侧重接口变化" in prompt
     boundary = done.history[0]
-    assert boundary.synthetic == BOUNDARY and boundary.role == "user" and done.removed == len(history) - len(done.history) + 1
+    assert (
+        boundary.synthetic == BOUNDARY
+        and boundary.role == "user"
+        and done.removed == len(history) - len(done.history) + 1
+    )
     assert "主要请求和意图" in boundary.text and "草稿" not in boundary.text
     assert "第一条要求：保持中文回复" in boundary.text and "修改前必须重新读取" in boundary.text
-    assert done.history[1:] == history[done.removed:]
+    assert done.history[1:] == history[done.removed :]
     record = done.record.read_text(encoding="utf-8")
     assert str(done.record) in boundary.text and "print('原文')" in record and done.record.name == "compact-1.md"
 
 
-@pytest.mark.parametrize("reply, reason", [
-    (Completed(Message("assistant", (ContentBlock("text", "只有分析"),)), "stop"), "没有有效"),
-    (Completed(Message("assistant", (ContentBlock("text", "<summary> </summary>"),)), "stop"), "没有有效"),
-    (summary_reply(stop="max_tokens"), "截断"),
-    (Completed(Message("assistant", (), tool_calls=(ToolCall("x", "read_file", "{}"),)), "tool_calls"), "工具调用"),
-    (ProviderError("服务暂时不可用。"), "服务暂时不可用"),
-])
+@pytest.mark.parametrize(
+    "reply, reason",
+    [
+        (Completed(Message("assistant", (ContentBlock("text", "只有分析"),)), "stop"), "没有有效"),
+        (Completed(Message("assistant", (ContentBlock("text", "<summary> </summary>"),)), "stop"), "没有有效"),
+        (summary_reply(stop="max_tokens"), "截断"),
+        (Completed(Message("assistant", (), tool_calls=(ToolCall("x", "read_file", "{}"),)), "tool_calls"), "工具调用"),
+        (ProviderError("服务暂时不可用。"), "服务暂时不可用"),
+    ],
+)
 async def test_failed_summaries_leave_the_history_unchanged(reply, reason):
     with pytest.raises(CompactionError, match=reason) as caught:
         await compact_history(SequenceProvider(reply), chat(8), ContextBudget.for_provider(200_000, 8_000))
@@ -301,16 +339,20 @@ async def test_failed_summaries_leave_the_history_unchanged(reply, reason):
         await compact_history(SequenceProvider(), chat(2), ContextBudget.for_provider(200_000, 8_000))
     assert nothing.value.code == "nothing"
     with pytest.raises(CompactionError, match="没有有效"):
-        await compact_history(SequenceProvider(NO_SUMMARY_REPLY), chat(2), ContextBudget.for_provider(200_000, 8_000),
-                              manual=True)
+        await compact_history(
+            SequenceProvider(NO_SUMMARY_REPLY), chat(2), ContextBudget.for_provider(200_000, 8_000), manual=True
+        )
 
 
 async def test_oversized_summary_requests_shrink_results_then_drop_the_oldest():
     calls = (ToolCall("t", "dump", "{}"),)
     history = []
     for i in range(10):
-        history += [text("user", f"第 {i} 步"), Message("assistant", (), tool_calls=calls),
-                    Message("tool", (), tool_results=(ToolResult("t", "dump", "x" * 40_000),))]
+        history += [
+            text("user", f"第 {i} 步"),
+            Message("assistant", (), tool_calls=calls),
+            Message("tool", (), tool_results=(ToolResult("t", "dump", "x" * 40_000),)),
+        ]
     history += chat(3)
     # manual limit 37,000: ten 10K-token results only fit once each is cut to 2,000 characters.
     provider = SequenceProvider(summary_reply())
@@ -329,8 +371,11 @@ async def test_oversized_summary_requests_shrink_results_then_drop_the_oldest():
 
 
 async def test_user_words_are_carried_across_compactions_within_the_budget():
-    first = await compact_history(SequenceProvider(summary_reply()), [text("user", "最初的需求")] + chat(8),
-                                  ContextBudget.for_provider(200_000, 8_000))
+    first = await compact_history(
+        SequenceProvider(summary_reply()),
+        [text("user", "最初的需求")] + chat(8),
+        ContextBudget.for_provider(200_000, 8_000),
+    )
     later = first.history + chat(8)
     quotes = collect_quotes(later[:1])
     assert quotes[0] == "最初的需求" and quotes[1].endswith(CLIPPED)  # Older words over 8K are clipped.
@@ -344,7 +389,7 @@ async def test_user_words_are_carried_across_compactions_within_the_budget():
 # The agent compacts before requests, rescues overflows and trips a breaker
 
 from mosscode.conversation import Conversation
-from mosscode.messages import CompactFailed, CompactFinished, CompactStarted, RunStopped
+from mosscode.messages import CompactFailed, CompactFinished, CompactStarted
 
 SMALL = ContextBudget.for_provider(60_000, 4_096)  # auto threshold 27,000; summary input up to 37,000.
 NO_SUMMARY = Completed(Message("assistant", (ContentBlock("text", "忘了写摘要"),)), "stop")
@@ -395,8 +440,17 @@ async def test_overflow_compacts_and_retries_once():
 
 
 async def test_three_failures_pause_automatic_compaction_until_a_manual_success():
-    provider = SequenceProvider(NO_SUMMARY, response("1"), NO_SUMMARY, response("2"), NO_SUMMARY, response("3"),
-                                response("4"), summary_reply(), response("5"))
+    provider = SequenceProvider(
+        NO_SUMMARY,
+        response("1"),
+        NO_SUMMARY,
+        response("2"),
+        NO_SUMMARY,
+        response("3"),
+        response("4"),
+        summary_reply(),
+        response("5"),
+    )
     conv = seeded(provider, chat(8))
     seen = []
     for prompt in ("a", "b", "c"):
@@ -580,7 +634,9 @@ async def test_tool_row_names_the_stored_file(tmp_path):
 
 
 def test_compact_notices_cover_success_failure_and_pause():
-    assert compact_notice(CompactFinished(12, 900, 3.25)) == "✓ 已压缩上下文 · 12 条消息 → 摘要 · 约 900 Token · 用时 3.2s"
+    assert (
+        compact_notice(CompactFinished(12, 900, 3.25)) == "✓ 已压缩上下文 · 12 条消息 → 摘要 · 约 900 Token · 用时 3.2s"
+    )
     assert compact_notice(CompactFailed("超时", 1)).startswith("! 自动压缩上下文失败（连续 1 次）")
     assert "/compact 手动重试或 /clear" in compact_notice(CompactFailed("超时", 3, True))
     assert compact_notice(CompactFailed("超时", 0, manual=True)) == "! 压缩上下文失败：超时"
@@ -621,11 +677,15 @@ async def test_compacted_history_is_a_valid_request_in_every_protocol(protocol, 
     try:
         conv = Conversation(provider)
         conv._agent.history = [
-            Message("user", (ContentBlock("text", "（上下文已压缩）"), ContentBlock("text", "\n\n摘要：读过 a.py")),
-                    synthetic="compact"),
+            Message(
+                "user",
+                (ContentBlock("text", "（上下文已压缩）"), ContentBlock("text", "\n\n摘要：读过 a.py")),
+                synthetic="compact",
+            ),
             Message("assistant", (), tool_calls=(ToolCall("t1", "read_file", '{"path": "a.py"}'),)),
             Message("tool", (), tool_results=(ToolResult("t1", "read_file", "print(1)"),)),
-            text("assistant", "读完了")]
+            text("assistant", "读完了"),
+        ]
         assert await conv.ask("继续") == "你好"
         body = requests[0][1]
         if protocol == "anthropic-messages":
@@ -648,8 +708,9 @@ async def test_compacted_history_is_a_valid_request_in_every_protocol(protocol, 
 async def test_compaction_also_happens_between_iterations_of_one_task(tmp_path):
     (tmp_path / "project").mkdir()
     reg = dump_registry(tmp_path)
-    provider = SequenceProvider(response("先看", [dump("d1", 40_000)], Usage(26_000, 100)), summary_reply(),
-                                response("完成"))
+    provider = SequenceProvider(
+        response("先看", [dump("d1", 40_000)], Usage(26_000, 100)), summary_reply(), response("完成")
+    )
     conv = seeded(provider, chat(4), registry=reg)  # About 16K at the start: no compaction yet.
     events = [e async for e in conv.reply("开始")]
     kinds = [type(e).__name__ for e in events]
@@ -660,14 +721,17 @@ async def test_compaction_also_happens_between_iterations_of_one_task(tmp_path):
 # Stored results keep later requests byte-identical prefixes; A failed rescue reports the overflow;
 # Cancelling a compaction leaves the history unchanged
 
+
 async def test_requests_keep_the_previous_request_as_a_prefix(tmp_path):
     (tmp_path / "project").mkdir()
     reg = dump_registry(tmp_path)
-    provider = SequenceProvider(response("一", [dump("a", 60_000)]), response("二", [dump("b", 60_000)]), response("完"))
+    provider = SequenceProvider(
+        response("一", [dump("a", 60_000)]), response("二", [dump("b", 60_000)]), response("完")
+    )
     conv = Conversation(provider, registry=reg)
     await conv.ask("开始")
     first, second = provider.requests[1][0], provider.requests[2][0]
-    assert second[:len(first)] == first and first[-1].tool_results[0].details["persisted"]
+    assert second[: len(first)] == first and first[-1].tool_results[0].details["persisted"]
 
 
 async def test_overflow_with_a_failed_compaction_stops_with_the_overflow_error():

@@ -1,8 +1,8 @@
 """Tool contracts: reading, editing, commands and search."""
 
 import os
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import pytest
 import yaml
@@ -16,7 +16,6 @@ from mosscode.tools.process import CommandParams
 from mosscode.tools.shell import ShellNotFound, _is_wsl, git_bash, resolve_shell
 from test_permissions import approve
 from test_tools import SHELL, call, python_command
-
 
 BS = chr(92)  # A literal backslash, kept out of escape-processing paths.
 
@@ -71,8 +70,10 @@ async def test_outside_read_asks_and_writes_stay_blocked(tmp_path):
     assert "外部内容" in result.output
     assert pending.operation.outside and pending.operation.target == outside.resolve().as_posix()
     assert "项目目录之外" in pending.operation.preview and "确认" in pending.reason
-    for denied in (call("write_file", path=str(tmp_path / "new.txt"), content="x"),
-                   call("edit_file", path=str(outside), old_text="外部", new_text="x")):
+    for denied in (
+        call("write_file", path=str(tmp_path / "new.txt"), content="x"),
+        call("edit_file", path=str(outside), old_text="外部", new_text="x"),
+    ):
         assert (await reg.execute(denied)).code == "path_blocked"
     assert outside.read_text(encoding="utf-8") == "外部内容" and not (tmp_path / "new.txt").exists()
     # bypassPermissions reads directly; relative allow rules never cover outside paths.
@@ -261,9 +262,14 @@ def test_config_shell_key(tmp_path):
 
 def ignore_tree(root):
     (root / ".gitignore").write_text("build/\n*.log\n!keep.log\n", encoding="utf-8")
-    for name, text in {"build/out.py": "needle", "x.log": "needle", "keep.log": "needle",
-                       "src/main.py": "first\nNeedle one\nneedle two\nlast\n", "src/gen.py": "needle",
-                       "src/.gitignore": "gen.py\n"}.items():
+    for name, text in {
+        "build/out.py": "needle",
+        "x.log": "needle",
+        "keep.log": "needle",
+        "src/main.py": "first\nNeedle one\nneedle two\nlast\n",
+        "src/gen.py": "needle",
+        "src/.gitignore": "gen.py\n",
+    }.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -289,10 +295,15 @@ async def test_grep_output_modes(tmp_path, monkeypatch):
     reg = registry(tmp_path)
     content = await reg.execute(call("grep", pattern="needle", path="src", output_mode="content"))
     assert content.output == "src/main.py:3: needle two"
-    folded = await reg.execute(call("grep", pattern="needle", path="src", output_mode="content",
-                                    ignore_case=True, context=1))
-    assert folded.output.splitlines() == ["src/main.py-1- first", "src/main.py:2: Needle one",
-                                          "src/main.py:3: needle two", "src/main.py-4- last"]
+    folded = await reg.execute(
+        call("grep", pattern="needle", path="src", output_mode="content", ignore_case=True, context=1)
+    )
+    assert folded.output.splitlines() == [
+        "src/main.py-1- first",
+        "src/main.py:2: Needle one",
+        "src/main.py:3: needle two",
+        "src/main.py-4- last",
+    ]
     assert folded.details["matches"] == 2
     count = await reg.execute(call("grep", pattern="needle", output_mode="count", ignore_case=True))
     assert sorted(count.output.splitlines()) == ["keep.log:1", "src/main.py:2"]
@@ -314,6 +325,7 @@ async def test_glob_and_grep_list_newest_first(tmp_path, monkeypatch):
 
 def test_fallback_brace_expansion():
     from mosscode.tools.search_worker import expand_braces
+
     assert expand_braces("{src,docs}/**/*") == ["src/**/*", "docs/**/*"]
     assert expand_braces("*.{py,md}") == ["*.py", "*.md"]
     assert expand_braces("a{b,c{d,e}}f") == ["abf", "acdf", "acef"]

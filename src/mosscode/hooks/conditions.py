@@ -1,10 +1,10 @@
 """`field op value` conditions, joined by && or ||, with the permission rules' matching."""
 
-from dataclasses import dataclass
 import fnmatch
 import os
-from pathlib import Path
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
 from ..permissions import ALIASES, normalized, path_matches
 from ..security import command_segments, starts_with
@@ -88,7 +88,7 @@ def _split(expression: str) -> tuple[list[str], set[str]]:
             current.append(char)
         elif expression.startswith(("&&", "||"), index):
             parts.append("".join(current))
-            joins.add(expression[index:index + 2])
+            joins.add(expression[index : index + 2])
             current = []
             index += 2
             continue
@@ -114,7 +114,7 @@ def _unquote(value: str) -> str:
             index += 2
             continue
         if char == '"':
-            raise HookConfigError(f"条件值中的引号需写成 \\\"：{value}")
+            raise HookConfigError(f'条件值中的引号需写成 \\"：{value}')
         result.append(char)
         index += 1
     return "".join(result)
@@ -125,7 +125,7 @@ def check_field(name: str, event: str) -> None:
     if name.startswith("args."):
         if not EVENTS[event].tool:
             raise HookConfigError(f"事件 {event} 没有条件字段 {name}（args.* 只用于工具事件）。")
-        if not ARGS_NAME.fullmatch(name[len("args."):]):
+        if not ARGS_NAME.fullmatch(name[len("args.") :]):
             raise HookConfigError(f"args 字段只支持顶层参数名（如 args.command）：{name}")
         return
     if name not in ALL_FIELDS:
@@ -143,7 +143,7 @@ def _condition(text: str, event: str) -> Condition:
     name, op, raw = match[1], match[2], match[3]
     check_field(name, event)
     if not raw:
-        raise HookConfigError(f"子条件缺少值（空值请写 \"\"）：{text.strip()}")
+        raise HookConfigError(f'子条件缺少值（空值请写 ""）：{text.strip()}')
     value = _unquote(raw)
     if op == "=~":
         if len(value) < 2 or not value.startswith("/") or not value.endswith("/"):

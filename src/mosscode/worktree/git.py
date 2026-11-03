@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 GIT_TIMEOUT = 120
 EXCLUDE_LINE = "/.mosscode/worktrees/"
@@ -24,9 +24,16 @@ def run_git(args, cwd: Path, *, timeout: float = GIT_TIMEOUT) -> subprocess.Comp
         raise WorktreeError("找不到 git，无法使用工作树。", "worktree_unavailable")
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "LC_ALL": "C"}
     try:
-        return subprocess.run([executable, "-c", "core.quotepath=false", *args], cwd=str(cwd), env=env,
-                              stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout,
-                              encoding="utf-8", errors="replace")
+        return subprocess.run(
+            [executable, "-c", "core.quotepath=false", *args],
+            cwd=str(cwd),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+        )
     except subprocess.TimeoutExpired:
         raise WorktreeError(f"git {args[0]} 超过 {timeout:g} 秒未完成。") from None
     except OSError as exc:

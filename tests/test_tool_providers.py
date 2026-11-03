@@ -11,12 +11,16 @@ from test_providers import CASES, SSEBody, adapter, frame
 
 @pytest.mark.parametrize("protocol,cls,plain_frames,path", CASES)
 async def test_actual_sdk_repeated_tool_rounds_and_plan_filter(tmp_path, protocol, cls, plain_frames, path):
-    second_tools = [b.replace(b"write-id", b"write-second").replace(b"read-id", b"read-second")
-                    for b in tool_frames(protocol)]
+    second_tools = [
+        b.replace(b"write-id", b"write-second").replace(b"read-id", b"read-second") for b in tool_frames(protocol)
+    ]
     batches = iter([tool_frames(protocol), second_tools, plain_frames(), plain_frames()])
     provider, requests, bodies = adapter(protocol, cls, lambda: SSEBody(next(batches)))
     try:
-        conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+        conv = Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        )
         assert await conv.ask("multi-step") == "你好"
         assert len(requests) == 3 and len(conv.history) == 6
         third = requests[2][1]
@@ -43,43 +47,114 @@ async def test_actual_sdk_repeated_tool_rounds_and_plan_filter(tmp_path, protoco
 def calls(invalid=False):
     path = "sample-中.txt"
     first = '{"path":' if invalid else json.dumps({"path": path, "content": "你好\n"})
-    return [("write-id", "write_file", first),
-            ("read-id", "read_file", json.dumps({"path": path}))]
+    return [("write-id", "write_file", first), ("read-id", "read_file", json.dumps({"path": path}))]
 
 
 def tool_frames(protocol, invalid=False, stop=True):
     requested = calls(invalid)
     if protocol == "anthropic-messages":
-        start = {"id": "msg-tools", "type": "message", "role": "assistant", "content": [], "model": "custom-model", "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 12, "output_tokens": 0}}
-        events = [("message_start", {"message": start}),
-                  ("content_block_start", {"index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
-                  ("content_block_delta", {"index": 0, "delta": {"type": "thinking_delta", "thinking": "先写再读"}}),
-                  ("content_block_delta", {"index": 0, "delta": {"type": "signature_delta", "signature": "signed"}}),
-                  ("content_block_stop", {"index": 0})]
+        start = {
+            "id": "msg-tools",
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": "custom-model",
+            "stop_reason": None,
+            "stop_sequence": None,
+            "usage": {"input_tokens": 12, "output_tokens": 0},
+        }
+        events = [
+            ("message_start", {"message": start}),
+            (
+                "content_block_start",
+                {"index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+            ),
+            ("content_block_delta", {"index": 0, "delta": {"type": "thinking_delta", "thinking": "先写再读"}}),
+            ("content_block_delta", {"index": 0, "delta": {"type": "signature_delta", "signature": "signed"}}),
+            ("content_block_stop", {"index": 0}),
+        ]
         for index, (id_, name, arguments) in enumerate(requested, 1):
-            events.append(("content_block_start", {"index": index, "content_block": {"type": "tool_use", "id": id_, "name": name, "input": {}}}))
+            events.append(
+                (
+                    "content_block_start",
+                    {"index": index, "content_block": {"type": "tool_use", "id": id_, "name": name, "input": {}}},
+                )
+            )
             for piece in [arguments[:7], arguments[7:20], arguments[20:]]:
-                events.append(("content_block_delta", {"index": index, "delta": {"type": "input_json_delta", "partial_json": piece}}))
+                events.append(
+                    (
+                        "content_block_delta",
+                        {"index": index, "delta": {"type": "input_json_delta", "partial_json": piece}},
+                    )
+                )
             events.append(("content_block_stop", {"index": index}))
         if stop:
-            events.extend([("message_delta", {"delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 5}}), ("message_stop", {})])
+            events.extend(
+                [
+                    (
+                        "message_delta",
+                        {"delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+                    ),
+                    ("message_stop", {}),
+                ]
+            )
         return [frame(kind, {"type": kind, **data}) for kind, data in events]
     if protocol == "openai-responses":
         events = []
         final_items = []
         for index, (call_id, name, arguments) in enumerate(requested):
-            item = {"type": "function_call", "id": f"item-{index}", "call_id": call_id, "name": name, "arguments": "", "status": "in_progress"}
+            item = {
+                "type": "function_call",
+                "id": f"item-{index}",
+                "call_id": call_id,
+                "name": name,
+                "arguments": "",
+                "status": "in_progress",
+            }
             events.append(("response.output_item.added", {"output_index": index, "item": dict(item)}))
             for piece in [arguments[:7], arguments[7:20], arguments[20:]]:
-                events.append(("response.function_call_arguments.delta", {"output_index": index, "item_id": item["id"], "delta": piece}))
+                events.append(
+                    (
+                        "response.function_call_arguments.delta",
+                        {"output_index": index, "item_id": item["id"], "delta": piece},
+                    )
+                )
             item.update(arguments=arguments, status="completed")
             final_items.append(item)
         if stop:
-            events.append(("response.completed", {"response": {"id": "resp-tool", "created_at": 1, "object": "response", "status": "completed", "model": "custom-model", "output": final_items, "usage": {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17}}}))
-        return [frame(kind, {"type": kind, "sequence_number": index, **data}) for index, (kind, data) in enumerate(events)]
+            events.append(
+                (
+                    "response.completed",
+                    {
+                        "response": {
+                            "id": "resp-tool",
+                            "created_at": 1,
+                            "object": "response",
+                            "status": "completed",
+                            "model": "custom-model",
+                            "output": final_items,
+                            "usage": {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17},
+                        }
+                    },
+                )
+            )
+        return [
+            frame(kind, {"type": kind, "sequence_number": index, **data}) for index, (kind, data) in enumerate(events)
+        ]
     chunks = []
+
     def chunk(delta, reason=None):
-        return frame("message", {"id": "chat-tools", "object": "chat.completion.chunk", "created": 1, "model": "custom-model", "choices": [{"index": 0, "delta": delta, "finish_reason": reason}]})
+        return frame(
+            "message",
+            {
+                "id": "chat-tools",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "custom-model",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": reason}],
+            },
+        )
+
     # Interleave argument fragments from two calls. Names may be fragmented too.
     for piece_index in range(3):
         for index, (id_, name, arguments) in enumerate(requested):
@@ -90,7 +165,9 @@ def tool_frames(protocol, invalid=False, stop=True):
             value = {"index": index, "function": function}
             if piece_index == 0:
                 value.update(id=id_, type="function")
-            chunks.append(chunk({"tool_calls": [value], "reasoning_content": "先写再读" if piece_index == index == 0 else ""}))
+            chunks.append(
+                chunk({"tool_calls": [value], "reasoning_content": "先写再读" if piece_index == index == 0 else ""})
+            )
     if stop:
         chunks.extend([chunk({}, "tool_calls"), b"data: [DONE]\n\n"])
     return chunks
@@ -101,7 +178,10 @@ async def test_actual_sdk_tool_schema_stream_execution_and_replay(tmp_path, prot
     batches = iter([tool_frames(protocol), plain_frames(), plain_frames()])
     provider, requests, bodies = adapter(protocol, cls, lambda: SSEBody(next(batches)))
     try:
-        conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+        conv = Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        )
         assert await conv.ask("write then read") == "你好"
         assert len(requests) == 2
         assert (tmp_path / "sample-中.txt").read_text(encoding="utf-8") == "你好\n"
@@ -136,7 +216,10 @@ async def test_malformed_json_is_tool_error_not_empty_parameters(tmp_path, proto
     batches = iter([tool_frames(protocol, invalid=True), plain_frames()])
     provider, _, _ = adapter(protocol, cls, lambda: SSEBody(next(batches)))
     try:
-        conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+        conv = Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        )
         assert await conv.ask("bad") == "你好"
         assert [r.code for r in conv.history[2].tool_results] == ["invalid_json", "not_found"]
         assert not list(tmp_path.iterdir())
@@ -149,7 +232,10 @@ async def test_malformed_json_is_tool_error_not_empty_parameters(tmp_path, proto
 async def test_incomplete_tool_response_has_no_side_effects(tmp_path, protocol, cls, plain_frames, path, cancel):
     provider, _, bodies = adapter(protocol, cls, lambda: SSEBody(tool_frames(protocol, stop=False), hold=cancel))
     try:
-        conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+        conv = Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        )
         task = asyncio.create_task(conv.ask("write"))
         if cancel:
             for _ in range(100):

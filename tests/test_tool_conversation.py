@@ -1,11 +1,20 @@
 import asyncio
-from contextlib import aclosing
 import json
+from contextlib import aclosing
 
 import pytest
 
 from mosscode.conversation import Conversation
-from mosscode.messages import Completed, ContentBlock, Delta, Message, ProviderError, ResponseBoundary, ToolCall, ToolProgress
+from mosscode.messages import (
+    Completed,
+    ContentBlock,
+    Delta,
+    Message,
+    ProviderError,
+    ResponseBoundary,
+    ToolCall,
+    ToolProgress,
+)
 from mosscode.tools import create_default_registry
 
 
@@ -29,8 +38,10 @@ class ToolProvider:
             yield Delta("text", "结果")
             if self.fail:
                 raise ProviderError("test final failure")
-            yield Completed(Message("assistant", (ContentBlock("text", "结果完成"),),
-                                    tool_calls=self.calls if self.repeat else ()), "stop")
+            yield Completed(
+                Message("assistant", (ContentBlock("text", "结果完成"),), tool_calls=self.calls if self.repeat else ()),
+                "stop",
+            )
 
     async def close(self):
         pass
@@ -42,7 +53,10 @@ def write_call(name="write", content="one"):
 
 async def test_write_read_barrier_then_natural_completion(tmp_path):
     provider = ToolProvider((write_call(), ToolCall("read", "read_file", '{"path":"result.txt"}')))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     events = [e async for e in conv.reply("write then read")]
     assert next(e for e in events if isinstance(e, Completed)).message.text == "结果完成"
     assert len(provider.requests) == 2
@@ -57,8 +71,14 @@ async def test_write_read_barrier_then_natural_completion(tmp_path):
 
 @pytest.mark.parametrize("failure", ["final_error", "cancel", "repeat"])
 async def test_side_effect_and_results_survive_failure_and_limit(tmp_path, failure):
-    provider = ToolProvider((write_call(),), fail=failure == "final_error", hold=failure == "cancel", repeat=failure == "repeat")
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False), max_iterations=2)
+    provider = ToolProvider(
+        (write_call(),), fail=failure == "final_error", hold=failure == "cancel", repeat=failure == "repeat"
+    )
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        max_iterations=2,
+    )
     if failure == "final_error":
         with pytest.raises(ProviderError):
             await conv.ask("write")
@@ -79,7 +99,10 @@ async def test_side_effect_and_results_survive_failure_and_limit(tmp_path, failu
 
 async def test_generator_close_pairs_pending_calls_without_executing(tmp_path):
     provider = ToolProvider((write_call(), write_call("write2", "two")))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     async with aclosing(conv.reply("write")) as stream:
         while not isinstance(await anext(stream), ResponseBoundary):
             pass
@@ -90,7 +113,10 @@ async def test_generator_close_pairs_pending_calls_without_executing(tmp_path):
 
 async def test_invalid_parameters_error_goes_to_model_then_next_turn(tmp_path):
     provider = ToolProvider((ToolCall("bad", "write_file", '{"path":'),))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     assert await conv.ask("bad") == "结果完成"
     assert provider.requests[1][0][-1].tool_results[0].code == "invalid_json"
     assert not list(tmp_path.iterdir())
@@ -101,7 +127,9 @@ async def test_invalid_parameters_error_goes_to_model_then_next_turn(tmp_path):
 
 async def test_complete_write_remains_recorded_if_cancelled_during_file_io(tmp_path, monkeypatch):
     import threading
+
     from mosscode.tools import files
+
     started, release = threading.Event(), threading.Event()
     original = files.atomic_write
 
@@ -111,7 +139,10 @@ async def test_complete_write_remains_recorded_if_cancelled_during_file_io(tmp_p
         original(path, content)
 
     monkeypatch.setattr(files, "atomic_write", slow_write)
-    conv = Conversation(ToolProvider((write_call(), write_call("later", "two"))), registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        ToolProvider((write_call(), write_call("later", "two"))),
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     task = asyncio.create_task(conv.ask("write"))
     for _ in range(100):
         if started.is_set():

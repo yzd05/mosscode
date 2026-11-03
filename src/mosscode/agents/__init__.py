@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
 import fnmatch
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from importlib import resources
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Literal
 
 from ..paths import mosscode_home
 from ..permissions import ALIASES, MODES
@@ -65,8 +66,11 @@ class AgentDef:
     def unknown_tools(self, available: Iterable[str]) -> list[str]:
         """Names that match no registered tool now (MCP servers may not be connected yet)."""
         available = tuple(available)
-        return [pattern for pattern in (*self.tools, *self.disallowed_tools)
-                if not any(_matches(name, pattern) for name in available)]
+        return [
+            pattern
+            for pattern in (*self.tools, *self.disallowed_tools)
+            if not any(_matches(name, pattern) for name in available)
+        ]
 
 
 def _matches(tool: str, pattern: str) -> bool:
@@ -129,11 +133,25 @@ def parse_agent(path: Path, source: Source) -> AgentDef:
         raise AgentError(f"{path}：isolation 只能是 {' / '.join(ISOLATIONS)}，当前为 {isolation!r}。")
     if model == "inherit":
         model = None
-    return AgentDef(name, description, body, path, source, tools, disallowed, model, turns, mode, background,
-                    isolation, tuple(key for key in UNSUPPORTED if key in meta))
+    return AgentDef(
+        name,
+        description,
+        body,
+        path,
+        source,
+        tools,
+        disallowed,
+        model,
+        turns,
+        mode,
+        background,
+        isolation,
+        tuple(key for key in UNSUPPORTED if key in meta),
+    )
 
 
 # Catalog ----------------------------------------------------------------------------------
+
 
 def builtin_dir() -> Path:
     return Path(str(resources.files(__name__).joinpath("builtin")))
@@ -141,9 +159,11 @@ def builtin_dir() -> Path:
 
 def agent_dirs(root: Path, home: Path | None = None, builtin: Path | None = None) -> list[tuple[Source, Path]]:
     """Lowest priority first."""
-    return [("builtin", builtin if builtin is not None else builtin_dir()),
-            ("user", mosscode_home(home) / "agents"),
-            ("project", root / ".mosscode" / "agents")]
+    return [
+        ("builtin", builtin if builtin is not None else builtin_dir()),
+        ("user", mosscode_home(home) / "agents"),
+        ("project", root / ".mosscode" / "agents"),
+    ]
 
 
 @dataclass
@@ -197,16 +217,18 @@ class AgentCatalog:
         for agent in self.agents.values():
             description = agent.description
             if len(description) > CATALOG_DESCRIPTION:
-                description = description[:CATALOG_DESCRIPTION - 1] + "…"
+                description = description[: CATALOG_DESCRIPTION - 1] + "…"
             line = f"- {agent.name}：{description}（工具：{tool_summary(agent)}）"
             if size + len(line) + 1 > CATALOG_LIMIT:
                 continue
             lines.append(line)
             size += len(line) + 1
-        text = ("## 子 Agent\n用 agent 工具把可以独立完成的工作交给子 Agent，主对话只收到结论。"
-                "agent_type 写下列类型之一时，子 Agent 从空白对话开始，按该类型的角色工作，prompt 要写清楚完整的任务和背景；"
-                "省略 agent_type 时为 Fork：分身继承当前对话的全部内容，在后台运行，完成后通知你。"
-                "多个互不依赖的子任务可以在一次回复中同时发起。")
+        text = (
+            "## 子 Agent\n用 agent 工具把可以独立完成的工作交给子 Agent，主对话只收到结论。"
+            "agent_type 写下列类型之一时，子 Agent 从空白对话开始，按该类型的角色工作，prompt 要写清楚完整的任务和背景；"
+            "省略 agent_type 时为 Fork：分身继承当前对话的全部内容，在后台运行，完成后通知你。"
+            "多个互不依赖的子任务可以在一次回复中同时发起。"
+        )
         if lines:
             text += "\n\n" + "\n".join(lines)
         return text

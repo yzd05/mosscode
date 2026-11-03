@@ -1,9 +1,9 @@
 """Render exported Textual cells with Pillow for visual inspection on Windows."""
 
 import json
-from pathlib import Path
 import sys
 import unicodedata
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -11,10 +11,13 @@ from PIL import Image, ImageDraw, ImageFont
 def render(path: Path):
     rows = json.loads(path.read_text(encoding="utf-8"))
     cell_width, cell_height = 12, 24
+
     def width(text):
         return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
-    image = Image.new("RGB", (max(sum(width(s["text"]) for s in r) for r in rows) * cell_width,
-                              len(rows) * cell_height), "#0c0c0c")
+
+    image = Image.new(
+        "RGB", (max(sum(width(s["text"]) for s in r) for r in rows) * cell_width, len(rows) * cell_height), "#0c0c0c"
+    )
     draw = ImageDraw.Draw(image)
     fonts = Path("C:/Windows/Fonts")
     normal = ImageFont.truetype(str(fonts / "consola.ttf"), 19)
@@ -36,7 +39,15 @@ def render(path: Path):
                 elif char == "●":
                     draw.ellipse((x + 2, y + 8, x + 10, y + 16), fill=color)
                 else:
-                    font = chinese if ord(char) > 0x3000 else symbols if char in "❯✓✻└≥—" else bold if segment["bold"] else normal
+                    font = (
+                        chinese
+                        if ord(char) > 0x3000
+                        else symbols
+                        if char in "❯✓✻└≥—"
+                        else bold
+                        if segment["bold"]
+                        else normal
+                    )
                     draw.text((x, y + 1), char, font=font, fill=color)
                 x += step
     image.save(path.with_suffix(".png"))

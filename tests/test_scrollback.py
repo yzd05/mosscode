@@ -3,12 +3,11 @@ import re
 
 from textual.drivers.headless_driver import HeadlessDriver
 from textual.geometry import Offset
-from mosscode.tui import PromptArea
 
 from mosscode.conversation import Conversation
-from mosscode.messages import Completed, ContentBlock, Delta, Message, ToolProgress, ToolResult
+from mosscode.messages import Delta, ToolProgress, ToolResult
 from mosscode.scrollback import TranscriptMarkdown, render_transcript
-from mosscode.tui import ChatEntry, MossCodeApp, ToolEntry
+from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_agent import SequenceProvider, call, response
 
 
@@ -59,9 +58,15 @@ async def test_two_inline_runs_keep_all_completed_content_above_the_live_input()
         await send(second, pilot, "SECOND-SESSION-QUESTION")
         assert len(second.query(ChatEntry)) == 0
         assert second.query_one("#prompt").region.bottom <= second.size.height
-    assert output[:len(before_second)] == before_second
+    assert output[: len(before_second)] == before_second
     text = plain(output)
-    for token in ("FIRST-SESSION-QUESTION", "OLD-LINE-000", "OLD-LINE-159", "SECOND-SESSION-QUESTION", "SHORT-SECOND-ANSWER"):
+    for token in (
+        "FIRST-SESSION-QUESTION",
+        "OLD-LINE-000",
+        "OLD-LINE-159",
+        "SECOND-SESSION-QUESTION",
+        "SHORT-SECOND-ANSWER",
+    ):
         assert text.count(token) == 1
     assert text.index("OLD-LINE-159") < text.index("SECOND-SESSION-QUESTION")
     assert all(len(write) <= 8192 for write in output)
@@ -120,7 +125,14 @@ async def test_parallel_tool_results_commit_in_display_order_and_reset_inline_or
 
 
 def test_committed_markdown_keeps_terminal_background_and_normal_brightness():
-    data = render_transcript([TranscriptMarkdown("# Heading\n\n`file.py`\n\n```python\nprint(1)\n```\n\n> Quote\n\n---\n\n|A|B|\n|-|-|\n|1|2|")], 70)
+    data = render_transcript(
+        [
+            TranscriptMarkdown(
+                "# Heading\n\n`file.py`\n\n```python\nprint(1)\n```\n\n> Quote\n\n---\n\n|A|B|\n|-|-|\n|1|2|"
+            )
+        ],
+        70,
+    )
     assert "print(1)" in data
     assert "38;2;111;168;255" in data
     for sgr in re.findall(r"\x1b\[([\d;]*)m", data):
@@ -212,6 +224,7 @@ async def test_clear_wipes_screen_and_scrollback_and_keeps_only_the_banner():
 async def test_a_response_that_only_calls_tools_leaves_no_empty_text_row(tmp_path):
     from mosscode.messages import Delta
     from mosscode.tools import create_default_registry
+
     (tmp_path / "a.txt").write_text("NEEDLE\n", encoding="utf-8")
 
     async def think_then_search():
@@ -221,7 +234,9 @@ async def test_a_response_that_only_calls_tools_leaves_no_empty_text_row(tmp_pat
 
     output = []
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
-    app = InlineRecordingApp(Conversation(SequenceProvider(think_then_search, response("FOUND-IT")), registry=registry), output)
+    app = InlineRecordingApp(
+        Conversation(SequenceProvider(think_then_search, response("FOUND-IT")), registry=registry), output
+    )
     async with app.run_test(size=(80, 24)) as pilot:
         await send(app, pilot, "搜索 NEEDLE")
         text = plain(output)
@@ -231,6 +246,7 @@ async def test_a_response_that_only_calls_tools_leaves_no_empty_text_row(tmp_pat
 
 async def test_user_messages_sit_on_a_grey_bar_live_and_in_scrollback():
     from mosscode.appearance import USER_MESSAGE_BACKGROUND
+
     output = []
     app = InlineRecordingApp(Conversation(SequenceProvider(response("ANSWER"))), output)
     async with app.run_test(size=(40, 18)) as pilot:

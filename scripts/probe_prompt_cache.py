@@ -2,9 +2,9 @@
 
 import argparse
 import asyncio
+import json
 from contextlib import aclosing
 from dataclasses import asdict
-import json
 from pathlib import Path
 from time import monotonic
 
@@ -20,7 +20,9 @@ async def probe(config_path: str, provider_name: str | None):
     config = settings.select(provider_name)
     provider = create_provider(config)
     root = Path.cwd()
-    definitions = create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False).definitions()
+    definitions = create_default_registry(
+        root, permission_mode="bypassPermissions", load_permissions=False
+    ).definitions()
     system = build_system_prompt(definitions, override=settings.system_prompt)
     env = environment(root, tools_enabled=True)
     reminder = mode_reminder("normal", 1)
@@ -40,10 +42,15 @@ async def probe(config_path: str, provider_name: str | None):
             if final is None:
                 raise ProviderError("缓存探测未获得完整响应。")
             read = final.usage.cached_input_tokens
-            records.append({"request": index, "protocol": config.protocol,
-                            "elapsed_seconds": round(monotonic() - started, 3),
-                            "cache_observation": "unreported" if read is None else "hit" if read > 0 else "miss",
-                            **asdict(final.usage)})
+            records.append(
+                {
+                    "request": index,
+                    "protocol": config.protocol,
+                    "elapsed_seconds": round(monotonic() - started, 3),
+                    "cache_observation": "unreported" if read is None else "hit" if read > 0 else "miss",
+                    **asdict(final.usage),
+                }
+            )
             # Tool definitions take part in prefix matching; no returned call is executed.
             print(json.dumps(records[-1], ensure_ascii=False), flush=True)
         return records
@@ -52,7 +59,9 @@ async def probe(config_path: str, provider_name: str | None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="发送 3 次真实 API 请求，只观测缓存；不执行工具，不输出提示、密钥或回复正文")
+    parser = argparse.ArgumentParser(
+        description="发送 3 次真实 API 请求，只观测缓存；不执行工具，不输出提示、密钥或回复正文"
+    )
     parser.add_argument("--config", required=True, help="明确指定真实配置路径")
     parser.add_argument("--provider", help="Provider 配置名称；省略时遵循配置默认值")
     parser.add_argument("--output", type=Path, help="可选：保存纯计数 JSON")

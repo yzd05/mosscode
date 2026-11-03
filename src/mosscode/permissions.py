@@ -1,33 +1,61 @@
 """Layered policy and queued approval; no UI or provider dependencies."""
 
 import asyncio
-from dataclasses import dataclass, replace
 import fnmatch
 import json
 import os
-from pathlib import Path
 import re
 import tempfile
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 import yaml
 
-from .security import (SecurityError, check_command, command_prefix, command_risk, command_segments, inside,
-                       project_path, read_only_command, resolve_path, simple_command, starts_with)
-
+from .security import (
+    SecurityError,
+    check_command,
+    command_prefix,
+    command_risk,
+    command_segments,
+    inside,
+    project_path,
+    read_only_command,
+    resolve_path,
+    simple_command,
+    starts_with,
+)
 
 MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
 REMOVED_MODES = {"strict": "default", "permissive": "bypassPermissions"}
 MODE_LABELS = {"default": "默认", "acceptEdits": "接受编辑", "plan": "计划", "bypassPermissions": "跳过审批"}
-MODE_BADGES = {"default": "默认权限", "acceptEdits": "⏵⏵ 接受编辑", "plan": "⏸ 计划模式", "bypassPermissions": "⏵⏵ 跳过审批"}
-ALIASES = {"Read": "read_file", "Write": "write_file", "Edit": "edit_file",
-           "Bash": "execute_command", "Shell": "execute_command", "Glob": "glob", "Grep": "grep"}
+MODE_BADGES = {
+    "default": "默认权限",
+    "acceptEdits": "⏵⏵ 接受编辑",
+    "plan": "⏸ 计划模式",
+    "bypassPermissions": "⏵⏵ 跳过审批",
+}
+ALIASES = {
+    "Read": "read_file",
+    "Write": "write_file",
+    "Edit": "edit_file",
+    "Bash": "execute_command",
+    "Shell": "execute_command",
+    "Glob": "glob",
+    "Grep": "grep",
+}
 TOOL_NAMES = set(ALIASES.values())
 READ_TOOLS = {"read_file", "glob", "grep"}  # May read outside the project after approval.
 # Permission, MCP and hook files under a project root: the user's to edit, never the model's.
-PROTECTED_FILES = (".mosscode/permissions.yaml", ".mosscode/permissions.local.yaml", ".mosscode/mcp.yaml", ".mcp.json",
-                   ".mosscode/hooks.yaml", ".mosscode/hooks.local.yaml")
+PROTECTED_FILES = (
+    ".mosscode/permissions.yaml",
+    ".mosscode/permissions.local.yaml",
+    ".mosscode/mcp.yaml",
+    ".mcp.json",
+    ".mosscode/hooks.yaml",
+    ".mosscode/hooks.local.yaml",
+)
 EDIT_TOOLS = {"write_file", "edit_file"}
 
 
@@ -42,6 +70,8 @@ def is_skill_tool(name: str) -> bool:
 def is_json_tool(name: str) -> bool:
     """MCP and skill tools: rules name the whole tool and match its arguments as canonical JSON."""
     return is_mcp_tool(name) or is_skill_tool(name)
+
+
 CHOICES = ("once", "session", "permanent", "deny")
 COMMAND_CHOICES = ("once", "session", "prefix", "permanent", "deny")  # prefix: saved as Bash(<prefix>:*).
 EDIT_CHOICES = ("once", "session", "accept_edits", "permanent", "deny")  # accept_edits: switch mode.
@@ -110,6 +140,7 @@ def path_matches(target: str, pattern: str) -> bool:
         target, pattern = target.casefold(), pattern.casefold()
     parts, patterns = target.split("/"), pattern.split("/")
     memo = {}
+
     def match(i, j):
         if (i, j) not in memo:
             if j == len(patterns):
@@ -120,6 +151,7 @@ def path_matches(target: str, pattern: str) -> bool:
                 answer = i < len(parts) and fnmatch.fnmatchcase(parts[i], patterns[j]) and match(i + 1, j + 1)
             memo[i, j] = answer
         return memo[i, j]
+
     return match(0, 0)
 
 
@@ -152,12 +184,16 @@ class Rule:
             return fnmatch.fnmatchcase(operation.target, self.pattern)
         if operation.tool == "execute_command":
             if self.pattern.endswith(PREFIX_SUFFIX):
-                prefix = self.pattern[:-len(PREFIX_SUFFIX)]
+                prefix = self.pattern[: -len(PREFIX_SUFFIX)]
                 if self.action == "deny":
                     # Any segment of a compound command may be the denied one.
                     return any(starts_with(segment, prefix) for segment in command_segments(operation.target))
                 return simple_command(operation.target) and starts_with(operation.target, prefix)
-            if self.action == "allow" and any(c in self.pattern for c in "*?[") and not simple_command(operation.target):
+            if (
+                self.action == "allow"
+                and any(c in self.pattern for c in "*?[")
+                and not simple_command(operation.target)
+            ):
                 return False
             return fnmatch.fnmatchcase(operation.target, self.pattern)
         # Relative patterns cover the project only; absolute ones cover outside reads.
@@ -199,7 +235,7 @@ def parse_rule(value, action: str) -> Rule:
 
 def mcp_rule(text: str, action: str) -> Rule:
     """Claude Code style: mcp__server, mcp__server__* (whole server) or mcp__server__tool (any arguments)."""
-    server, separator, tool = text[len("mcp__"):].partition("__")
+    server, separator, tool = text[len("mcp__") :].partition("__")
     if not separator or tool == "*":
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", server) or server.endswith("_"):
             raise PermissionConfigError(f"MCP Server 规则格式需为 mcp__Server名称 或 mcp__Server名称__*：{text}")
@@ -291,10 +327,18 @@ class PermissionPolicy:
 
     def operation(self, tool, params) -> Operation:
         args = params.model_dump()
-        if self.mode == "plan" and not tool.read_only and tool.name != EXIT_PLAN and not getattr(tool, "plan_allowed", False):
+        if (
+            self.mode == "plan"
+            and not tool.read_only
+            and tool.name != EXIT_PLAN
+            and not getattr(tool, "plan_allowed", False)
+        ):
             if not (tool.name == "execute_command" and read_only_command(args["command"])):
-                raise SecurityError("plan_blocked", "计划模式只开放只读工具和只读命令（如 git status/diff/log、ls）；此调用未执行。"
-                                                    "调查完成后用 exit_plan_mode 提交计划，用户批准后才能写入、编辑或执行其他命令。")
+                raise SecurityError(
+                    "plan_blocked",
+                    "计划模式只开放只读工具和只读命令（如 git status/diff/log、ls）；此调用未执行。"
+                    "调查完成后用 exit_plan_mode 提交计划，用户批准后才能写入、编辑或执行其他命令。",
+                )
         if getattr(tool, "permission_kind", None) == "memory":
             return Operation(tool.name, f"{args['scope']}:{args['name']}", preview=f"{args['action']} 笔记", notes=True)
         if getattr(tool, "permission_kind", None) == "load_skill":
@@ -309,21 +353,36 @@ class PermissionPolicy:
             return Operation(tool.name, str(target), preview="团队", notes=True)
         if getattr(tool, "permission_kind", None) == "skill":
             target = json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-            preview = (f"Skill {tool.skill_name} 的专属工具 {tool.short_name}\n命令：" + " ".join(tool.argv())
-                       + "\n参数：" + safe_display(target, 2000))
+            preview = (
+                f"Skill {tool.skill_name} 的专属工具 {tool.short_name}\n命令："
+                + " ".join(tool.argv())
+                + "\n参数："
+                + safe_display(target, 2000)
+            )
             return Operation(tool.name, target, preview=preview, skill=tool.skill_name)
         if getattr(tool, "permission_kind", None) == "mcp":
             target = json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-            return Operation(tool.name, target, preview="外部 MCP 调用；本地路径限制不约束 Server 的实际访问。",
-                             server=getattr(tool, "server_name", ""))
+            return Operation(
+                tool.name,
+                target,
+                preview="外部 MCP 调用；本地路径限制不约束 Server 的实际访问。",
+                server=getattr(tool, "server_name", ""),
+            )
         if tool.name == "execute_command":
             target = args["command"]
             cwd = project_path(self.root, args.get("cwd") or ".").relative_to(self.root).as_posix()
             check_command(target)
             risk = command_risk(target) or ""
             preview = f"高风险命令：{risk}。每次都需要确认，规则和档位不会自动放行。" if risk else ""
-            return Operation(tool.name, target, cwd, preview=preview, risk=risk, read_only=read_only_command(target),
-                             prefix="" if risk else command_prefix(target) or "")
+            return Operation(
+                tool.name,
+                target,
+                cwd,
+                preview=preview,
+                risk=risk,
+                read_only=read_only_command(target),
+                prefix="" if risk else command_prefix(target) or "",
+            )
         if tool.name in READ_TOOLS:
             resolved = resolve_path(self.root, args.get("path", "."))
         else:
@@ -334,17 +393,24 @@ class PermissionPolicy:
             actual = project_path(self.root, target)
             # A worktree view guards the copies in its worktree as well as the project's own files.
             roots = dict.fromkeys((self.root, self.project_file.parent.parent))
-            protected = (self.user_path, Path.home() / ".mosscode/mcp.yaml",
-                         # Hooks run arbitrary commands without approval.
-                         Path.home() / ".mosscode/hooks.yaml",
-                         *(root / name for root in roots for name in PROTECTED_FILES))
+            protected = (
+                self.user_path,
+                Path.home() / ".mosscode/mcp.yaml",
+                # Hooks run arbitrary commands without approval.
+                Path.home() / ".mosscode/hooks.yaml",
+                *(root / name for root in roots for name in PROTECTED_FILES),
+            )
             if any(actual == p.resolve() for p in protected):
-                raise SecurityError("policy_protected", "权限、MCP 与 Hook 配置文件由用户管理，模型不能自行写入或编辑。")
+                raise SecurityError(
+                    "policy_protected", "权限、MCP 与 Hook 配置文件由用户管理，模型不能自行写入或编辑。"
+                )
         preview = ""
         if tool.name == "write_file":
             preview = f"写入 {len(args['content'])} 个字符，内容预览：\n" + safe_display(args["content"])
         elif tool.name == "edit_file":
-            preview = "原文：\n" + safe_display(args["old_text"], 400) + "\n替换为：\n" + safe_display(args["new_text"], 400)
+            preview = (
+                "原文：\n" + safe_display(args["old_text"], 400) + "\n替换为：\n" + safe_display(args["new_text"], 400)
+            )
         elif tool.name in {"glob", "grep"}:
             preview = "搜索模式：" + safe_display(args["pattern"], 400)
             if args.get("glob"):
@@ -358,19 +424,32 @@ class PermissionPolicy:
         return Operation(tool.name, target, preview=preview, outside=outside)
 
     def decide(self, operation: Operation, *, read_only: bool) -> Decision:
-        matched = next((hits for layer in (tuple(self.session), *reversed(self.layers))
-                        if (hits := [rule for rule in layer if rule.matches(operation)])), [])
+        matched = next(
+            (
+                hits
+                for layer in (tuple(self.session), *reversed(self.layers))
+                if (hits := [rule for rule in layer if rule.matches(operation)])
+            ),
+            [],
+        )
         if any(rule.action == "deny" for rule in matched):
             return Decision("deny", "permission_denied", "命中显式拒绝规则；此调用未执行。")
         if operation.risk:
             return Decision("ask", reason=f"高风险命令（{operation.risk}）需要每次确认。")
         if matched or operation.notes:
             return Decision("allow")
-        if (operation.outside and operation.tool in {"read_file", "glob"}
-                and any(inside(folder, Path(operation.target)) for folder in (*self.memory_dirs, *self.skill_dirs))):
+        if (
+            operation.outside
+            and operation.tool in {"read_file", "glob"}
+            and any(inside(folder, Path(operation.target)) for folder in (*self.memory_dirs, *self.skill_dirs))
+        ):
             return Decision("allow")  # Memory notes and skill files, plan mode included.
-        if (operation.outside and operation.tool == "read_file" and self.session_dir is not None
-                and inside(self.session_dir, Path(operation.target))):
+        if (
+            operation.outside
+            and operation.tool == "read_file"
+            and self.session_dir is not None
+            and inside(self.session_dir, Path(operation.target))
+        ):
             return Decision("allow")  # Stored tool results and compaction records of this run.
         if operation.outside:
             if self.mode == "bypassPermissions":
@@ -384,7 +463,7 @@ class PermissionPolicy:
 
     async def authorize(self, call_id: str, tool, params, *, gate=None, notify=None) -> Decision:
         """gate(operation) runs pre_tool_use hooks after the hard checks and deny rules, before approval
-       ; it returns a deny Decision or None. notify(request) is awaited before an approval is shown."""
+        ; it returns a deny Decision or None. notify(request) is awaited before an approval is shown."""
         if tool.name == EXIT_PLAN:
             return await self._approve_plan(call_id, params, gate, notify)
         # Hard checks always run, including for bypassPermissions and exact grants.
@@ -447,7 +526,11 @@ class PermissionPolicy:
                     try:
                         self._persist(rule)
                     except (PermissionConfigError, OSError, SecurityError):
-                        return Decision("deny", "permission_save_failed", "永久授权未保存成功，此调用未执行；可选择本次允许或检查本地权限文件。")
+                        return Decision(
+                            "deny",
+                            "permission_save_failed",
+                            "永久授权未保存成功，此调用未执行；可选择本次允许或检查本地权限文件。",
+                        )
                 latest = self.decide(current, read_only=tool.read_only)
                 if latest.action == "deny":
                     return latest
@@ -524,14 +607,15 @@ class PermissionPolicy:
             finally:
                 self._settle(request)
             if choice == "deny":
-                return Decision("deny", "permission_denied", "用户选择继续规划；仍处于计划模式。请根据用户的反馈调整计划。")
+                return Decision(
+                    "deny", "permission_denied", "用户选择继续规划；仍处于计划模式。请根据用户的反馈调整计划。"
+                )
             if self.mode != "plan":
                 return Decision("deny", "not_in_plan", "确认期间已离开计划模式；此调用未执行。")
             self.set_mode("acceptEdits" if choice == "accept_edits" else self.resume_mode)
             return Decision("allow")
 
-    async def confirm(self, call_id: str, operation: Operation, reason: str,
-                      choices: tuple[str, ...]) -> str | None:
+    async def confirm(self, call_id: str, operation: Operation, reason: str, choices: tuple[str, ...]) -> str | None:
         """The user decides, never a rule or mode; None when nobody can be asked."""
         if not self.interactive:
             return None
@@ -589,11 +673,25 @@ class PolicyView(PermissionPolicy):
     its requests to the parent's queue so the UI sees one stream.
     """
 
-    _SHARED = frozenset({"root", "user_path", "project_file", "local_file", "layers", "pending", "_choices",
-                         "_approval_lock", "session_dir", "memory_dirs", "skill_dirs"})
+    _SHARED = frozenset(
+        {
+            "root",
+            "user_path",
+            "project_file",
+            "local_file",
+            "layers",
+            "pending",
+            "_choices",
+            "_approval_lock",
+            "session_dir",
+            "memory_dirs",
+            "skill_dirs",
+        }
+    )
 
-    def __init__(self, parent: PermissionPolicy, mode: str, *, interactive: bool, label: str = "",
-                 root: Path | None = None):
+    def __init__(
+        self, parent: PermissionPolicy, mode: str, *, interactive: bool, label: str = "", root: Path | None = None
+    ):
         object.__setattr__(self, "parent", parent)
         if root is not None:  # A sub-agent in a worktree; rule files stay the project's.
             object.__setattr__(self, "root", root.resolve())

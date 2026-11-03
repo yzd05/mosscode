@@ -9,40 +9,93 @@ from rich.console import Console
 from textual.widgets import Static
 
 from mosscode.agent import AgentLoop
-from mosscode.conversation import Conversation
 from mosscode.messages import ProviderError
-from mosscode.permissions import (COMMAND_CHOICES, EDIT_CHOICES, RISKY_CHOICES, Operation, PermissionConfigError,
-                                  PermissionPolicy, normalize_mode, parse_rule)
+from mosscode.permissions import (
+    COMMAND_CHOICES,
+    EDIT_CHOICES,
+    RISKY_CHOICES,
+    Operation,
+    PermissionConfigError,
+    PermissionPolicy,
+    normalize_mode,
+    parse_rule,
+)
 from mosscode.security import command_prefix, read_only_command
-from mosscode.tui import MossCodeApp, preview_text
+from mosscode.tui import preview_text
 from test_agent import SequenceProvider, call, response
 from test_permission_tui import make_app, wait_approval
 from test_permissions import approve, registry
 from test_plan_commands import plan_registry, simulate
 from test_tui import send
 
-
 # Read-only commands -------------------------------------------------------------------------
 
-@pytest.mark.parametrize("command", [
-    "git status", "git status --short", "git diff HEAD~1 -- src", "git log --oneline -5", "git show HEAD:src/a.py",
-    "git diff main..feature", "git branch", "git branch -a -v", "git remote -v", "git rev-parse HEAD",
-    "ls", "ls -la src", "pwd", "cat README.md", "head -n 5 a.txt", "tail -n 20 log.txt", "wc -l src/a.py",
-    "grep -rn TODO src", "rg -n foo --glob '*.py'", "find . -name '*.py'", "Get-ChildItem src", "gci -Recurse",
-    "Get-Content README.md",
-])
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status",
+        "git status --short",
+        "git diff HEAD~1 -- src",
+        "git log --oneline -5",
+        "git show HEAD:src/a.py",
+        "git diff main..feature",
+        "git branch",
+        "git branch -a -v",
+        "git remote -v",
+        "git rev-parse HEAD",
+        "ls",
+        "ls -la src",
+        "pwd",
+        "cat README.md",
+        "head -n 5 a.txt",
+        "tail -n 20 log.txt",
+        "wc -l src/a.py",
+        "grep -rn TODO src",
+        "rg -n foo --glob '*.py'",
+        "find . -name '*.py'",
+        "Get-ChildItem src",
+        "gci -Recurse",
+        "Get-Content README.md",
+    ],
+)
 def test_read_only_commands(command):
     assert read_only_command(command)
 
 
-@pytest.mark.parametrize("command", [
-    "git commit -m x", "git push", "git branch -D old", "git branch new-feature", "git remote add x url",
-    "git -c core.pager=evil log", "git diff --output=out.txt", "git log --ext-diff",
-    "cat /etc/passwd", "cat ../secret", "cat ~/.ssh/id_rsa", "ls C:/Users", "head src/../../x",
-    "grep -f /etc/passwd x", "rg --pre ./run.sh foo", "rg --pre=sh foo", "rg -z foo", "tail -f log.txt",
-    "find . -delete", "find . -exec rm {} ;", "git status && rm a", "cat a | sh", "ls > out.txt",
-    "cat $HOME/x", "echo hi", "python -V", "rm a", "",
-])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m x",
+        "git push",
+        "git branch -D old",
+        "git branch new-feature",
+        "git remote add x url",
+        "git -c core.pager=evil log",
+        "git diff --output=out.txt",
+        "git log --ext-diff",
+        "cat /etc/passwd",
+        "cat ../secret",
+        "cat ~/.ssh/id_rsa",
+        "ls C:/Users",
+        "head src/../../x",
+        "grep -f /etc/passwd x",
+        "rg --pre ./run.sh foo",
+        "rg --pre=sh foo",
+        "rg -z foo",
+        "tail -f log.txt",
+        "find . -delete",
+        "find . -exec rm {} ;",
+        "git status && rm a",
+        "cat a | sh",
+        "ls > out.txt",
+        "cat $HOME/x",
+        "echo hi",
+        "python -V",
+        "rm a",
+        "",
+    ],
+)
 def test_not_read_only_commands(command):
     assert not read_only_command(command)
 
@@ -71,6 +124,7 @@ async def test_plan_mode_runs_read_only_commands_only(tmp_path):
 
 # Prefix rules -------------------------------------------------------------------------------
 
+
 def test_prefix_rule_matching():
     allow = parse_rule("Bash(pytest:*)", "allow")
     matches = lambda rule, command: rule.matches(Operation("execute_command", command, "."))
@@ -85,14 +139,30 @@ def test_prefix_rule_matching():
 
 # Prefix derivation and the prefix choice ----------------------------------------------------
 
-@pytest.mark.parametrize("command,prefix", [
-    ("pytest tests/a.py -q", "pytest"), ("python -m pytest -q", "python -m pytest"),
-    ("npm run test -- --watch", "npm run test"), ("git commit -m msg", "git commit"),
-    ("cargo test --release", "cargo test"), ("make build", "make build"), ("mypy src", "mypy src"),
-    ("python script.py", None), ("python -m http.server", None), ("node app.js", None), ("bash -c 'x'", None),
-    ("env A=1 pytest", None), ("xargs rm", None), ("git -C x status", None), ("npm", None),
-    ("pytest && rm a", None), ("sudo apt update", None), ("./run.sh", None),
-])
+
+@pytest.mark.parametrize(
+    "command,prefix",
+    [
+        ("pytest tests/a.py -q", "pytest"),
+        ("python -m pytest -q", "python -m pytest"),
+        ("npm run test -- --watch", "npm run test"),
+        ("git commit -m msg", "git commit"),
+        ("cargo test --release", "cargo test"),
+        ("make build", "make build"),
+        ("mypy src", "mypy src"),
+        ("python script.py", None),
+        ("python -m http.server", None),
+        ("node app.js", None),
+        ("bash -c 'x'", None),
+        ("env A=1 pytest", None),
+        ("xargs rm", None),
+        ("git -C x status", None),
+        ("npm", None),
+        ("pytest && rm a", None),
+        ("sudo apt update", None),
+        ("./run.sh", None),
+    ],
+)
 def test_command_prefix(command, prefix):
     assert command_prefix(command) == prefix
 
@@ -128,6 +198,7 @@ async def test_risky_and_underivable_commands_offer_no_prefix(tmp_path):
 
 # Accept edits from an approval, Shift+Tab ---------------------------------------------------
 
+
 async def test_accept_edits_choice_switches_mode_for_later_edits_only(tmp_path):
     reg = registry(tmp_path)
     executed = simulate(reg)
@@ -147,6 +218,7 @@ async def test_shift_tab_cycles_modes_and_waits_while_running(tmp_path):
         started.set()
         await release.wait()
         yield response("完成")
+
     app, policy = make_app(tmp_path, SequenceProvider(slow))
     async with app.run_test(size=(100, 30)) as pilot:
         seen = []
@@ -167,6 +239,7 @@ async def test_shift_tab_cycles_modes_and_waits_while_running(tmp_path):
 
 
 # Diff previews ------------------------------------------------------------------------------
+
 
 async def test_edit_and_overwrite_previews_are_diffs(tmp_path):
     (tmp_path / "a.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
@@ -204,9 +277,11 @@ def test_diff_lines_are_colored():
 
 async def test_tui_approval_shows_colored_diff_and_five_choices(tmp_path):
     (tmp_path / "a.py").write_text("old\n", encoding="utf-8")
-    provider = SequenceProvider(response(calls=[call("read_file", "r", path="a.py")]),
-                                response(calls=[call("edit_file", "e", path="a.py", old_text="old", new_text="new")]),
-                                response("完成"))
+    provider = SequenceProvider(
+        response(calls=[call("read_file", "r", path="a.py")]),
+        response(calls=[call("edit_file", "e", path="a.py", old_text="old", new_text="new")]),
+        response("完成"),
+    )
     app, policy = make_app(tmp_path, provider)
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "修改")
@@ -224,6 +299,7 @@ async def test_tui_approval_shows_colored_diff_and_five_choices(tmp_path):
 
 
 # Removed modes, single mode state -----------------------------------------------------------
+
 
 @pytest.mark.parametrize("removed,replacement", [("strict", "default"), ("permissive", "bypassPermissions")])
 def test_removed_modes_fail_with_replacement(tmp_path, removed, replacement):

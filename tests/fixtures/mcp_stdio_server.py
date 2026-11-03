@@ -2,10 +2,10 @@
 
 import json
 import os
-from pathlib import Path
 import sys
 import threading
 import time
+from pathlib import Path
 
 log = Path(sys.argv[1])
 mode = sys.argv[2] if len(sys.argv) > 2 else "normal"
@@ -20,14 +20,25 @@ def respond(request):
     if method == "initialize":
         if mode == "hang":
             return
-        result = {"protocolVersion": params["protocolVersion"], "capabilities": {"tools": {}},
-                  "serverInfo": {"name": "fixture", "version": "1"}}
+        result = {
+            "protocolVersion": params["protocolVersion"],
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "fixture", "version": "1"},
+        }
     elif method == "tools/list":
-        schema = {"type": "object", "properties": {"text": {"type": "string"}},
-                  "required": ["text"], "additionalProperties": False}
+        schema = {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        }
         names = ["echo", "fail"] if not params.get("cursor") else ["slow", "mixed"]
-        result = {"tools": [{"name": n, "description": n, "inputSchema": schema,
-                              "annotations": {"readOnlyHint": True}} for n in names]}
+        result = {
+            "tools": [
+                {"name": n, "description": n, "inputSchema": schema, "annotations": {"readOnlyHint": True}}
+                for n in names
+            ]
+        }
         if not params.get("cursor"):
             result["nextCursor"] = "next"
         if mode == "repeat":
@@ -36,12 +47,16 @@ def respond(request):
         name, args = params["name"], params["arguments"]
         with lock:
             with log.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps({"id": request["id"], "name": name, "args": args,
-                                         "env": os.environ.get("MOSS_MCP_FIXTURE")}) + "\n")
+                stream.write(
+                    json.dumps(
+                        {"id": request["id"], "name": name, "args": args, "env": os.environ.get("MOSS_MCP_FIXTURE")}
+                    )
+                    + "\n"
+                )
         if name == "slow":
             time.sleep(5)
         elif args["text"] == "delayed":
-            time.sleep(.15)
+            time.sleep(0.15)
         result = {"content": [{"type": "text", "text": args["text"]}], "isError": name == "fail"}
         if args["text"] == "large-error":
             result = {"content": [{"type": "text", "text": "错误" * 30000}], "isError": True}

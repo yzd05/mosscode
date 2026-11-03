@@ -27,12 +27,22 @@ class COORD(ctypes.Structure):
 
 
 class SMALL_RECT(ctypes.Structure):
-    _fields_ = [("Left", ctypes.c_short), ("Top", ctypes.c_short), ("Right", ctypes.c_short), ("Bottom", ctypes.c_short)]
+    _fields_ = [
+        ("Left", ctypes.c_short),
+        ("Top", ctypes.c_short),
+        ("Right", ctypes.c_short),
+        ("Bottom", ctypes.c_short),
+    ]
 
 
 class CSBI(ctypes.Structure):
-    _fields_ = [("dwSize", COORD), ("dwCursorPosition", COORD), ("wAttributes", wintypes.WORD),
-                ("srWindow", SMALL_RECT), ("dwMaximumWindowSize", COORD)]
+    _fields_ = [
+        ("dwSize", COORD),
+        ("dwCursorPosition", COORD),
+        ("wAttributes", wintypes.WORD),
+        ("srWindow", SMALL_RECT),
+        ("dwMaximumWindowSize", COORD),
+    ]
 
 
 def handle():
@@ -64,7 +74,7 @@ def screen_rows(h):
         buffer = ctypes.create_unicode_buffer(width)
         read = wintypes.DWORD()
         k32.ReadConsoleOutputCharacterW(h, buffer, width, COORD(0, y), ctypes.byref(read))
-        rows.append(buffer.value[:read.value].rstrip())
+        rows.append(buffer.value[: read.value].rstrip())
     while rows and not rows[-1]:
         rows.pop()
     return rows
@@ -74,10 +84,14 @@ def report(rows, label):
     text = "\n".join(rows)
     # Rows are joined without spaces so a paragraph wrapped across rows still counts as complete.
     flat = "".join(text.split())
-    return {"label": label, "question": text.count("RESIZE-QUESTION"),
-            "answers": sum(text.count(f"RESIZE-ANSWER-{i:02d}") for i in range(8)),
-            "complete_paragraphs": flat.count("是否正确的中文文本。"),
-            "status_bars": text.count("resize-model"), "rows": rows}
+    return {
+        "label": label,
+        "question": text.count("RESIZE-QUESTION"),
+        "answers": sum(text.count(f"RESIZE-ANSWER-{i:02d}") for i in range(8)),
+        "complete_paragraphs": flat.count("是否正确的中文文本。"),
+        "status_bars": text.count("resize-model"),
+        "rows": rows,
+    }
 
 
 def child(out_path, redraw):
@@ -87,8 +101,10 @@ def child(out_path, redraw):
     from test_agent import SequenceProvider, response
 
     if not redraw:
+
         async def skip(self):
             return None
+
         MossCodeApp._redraw_after_resize = skip
 
     h = handle()
@@ -117,7 +133,9 @@ def child(out_path, redraw):
         results.append(report(screen_rows(h), "wide"))
         await pilot.press("ctrl+q")
 
-    answer = "\n\n".join(f"RESIZE-ANSWER-{i:02d} 这是一段用于检查窗口宽度变化后的换行与重绘是否正确的中文文本。" for i in range(8))
+    answer = "\n\n".join(
+        f"RESIZE-ANSWER-{i:02d} 这是一段用于检查窗口宽度变化后的换行与重绘是否正确的中文文本。" for i in range(8)
+    )
     app = MossCodeApp(Conversation(SequenceProvider(response(answer))), "Demo", model="resize-model")
     app.driver_class = WindowsInlineDriver
     app.run(inline=True, inline_no_clear=True, mouse=False, auto_pilot=pilot_script)

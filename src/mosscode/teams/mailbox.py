@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-import secrets
-from typing import Callable
 
 from .lock import TeamError, atomic_write, file_lock, load_json, now
 
 LEAD = "lead"
 BROADCAST = "*"
-TYPES = ("text", "plan_approval_request", "plan_approval_response", "shutdown_request", "shutdown_response",
-         "idle_notification", "permission_response")
+TYPES = (
+    "text",
+    "plan_approval_request",
+    "plan_approval_response",
+    "shutdown_request",
+    "shutdown_response",
+    "idle_notification",
+    "permission_response",
+)
 # permission_response: the user's answer, given in the lead's window, to a pane member's approval.
 LEAD_ONLY = frozenset({"plan_approval_response", "shutdown_request", "permission_response"})
 MEMBER_ONLY = frozenset({"shutdown_response", "plan_approval_request", "idle_notification"})
@@ -44,16 +51,30 @@ class Message:
     extra: dict = field(default_factory=dict)  # The type's own fields.
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "from": self.sender, "type": self.type, "body": self.body, "summary": self.summary,
-                "timestamp": self.timestamp, "read": self.read, **self.extra}
+        return {
+            "id": self.id,
+            "from": self.sender,
+            "type": self.type,
+            "body": self.body,
+            "summary": self.summary,
+            "timestamp": self.timestamp,
+            "read": self.read,
+            **self.extra,
+        }
 
     @classmethod
     def from_dict(cls, data: dict) -> Message:
         known = {"id", "from", "type", "body", "summary", "timestamp", "read"}
-        return cls(sender=str(data.get("from", "")), type=str(data.get("type", "text")), body=str(data.get("body", "")),
-                   summary=str(data.get("summary", "")), id=str(data.get("id", "")),
-                   timestamp=str(data.get("timestamp", "")), read=bool(data.get("read", False)),
-                   extra={key: value for key, value in data.items() if key not in known})
+        return cls(
+            sender=str(data.get("from", "")),
+            type=str(data.get("type", "text")),
+            body=str(data.get("body", "")),
+            summary=str(data.get("summary", "")),
+            id=str(data.get("id", "")),
+            timestamp=str(data.get("timestamp", "")),
+            read=bool(data.get("read", False)),
+            extra={key: value for key, value in data.items() if key not in known},
+        )
 
 
 def check(message: Message) -> None:

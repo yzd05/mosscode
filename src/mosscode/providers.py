@@ -1,30 +1,45 @@
 """Three wire protocols, arbitrary compatible endpoints, no tool execution."""
 
 import asyncio
+import json
+import random
+import sys
+from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing
 from copy import deepcopy
-import random
-from typing import Any, AsyncIterator, Sequence
-import json
-import sys
+from typing import Any
 
 from .config import ProviderConfig
-from .messages import (Completed, ContentBlock, Delta, Message, ProviderError, Retrying, StreamEvent, Usage, ToolCall,
-                       ToolDefinition, ToolProgress)
+from .messages import (
+    Completed,
+    ContentBlock,
+    Delta,
+    Message,
+    ProviderError,
+    Retrying,
+    StreamEvent,
+    ToolCall,
+    ToolDefinition,
+    ToolProgress,
+    Usage,
+)
 from .prompts import PREFIX_KINDS, PromptRequest, as_prompt
 from .usage import parse_usage, usage_data
 
 
 def _blocks(message: Message, protocol: str) -> list[dict[str, Any]]:
     if message.role == "tool":
-        return [{"type": "tool_result", "tool_use_id": r.call_id, "content": r.model_text(), "is_error": r.is_error}
-                for r in message.tool_results]
+        return [
+            {"type": "tool_result", "tool_use_id": r.call_id, "content": r.model_text(), "is_error": r.is_error}
+            for r in message.tool_results
+        ]
     if message.protocol == protocol and message.native:
         return list(deepcopy(message.native))
     # Portable form, e.g. after switching models: text plus rebuilt tool_use blocks.
     blocks = [{"type": "text", "text": message.text}] if message.text or not message.tool_calls else []
-    blocks.extend({"type": "tool_use", "id": c.id, "name": c.name, "input": _arguments(c.arguments)}
-                  for c in message.tool_calls)
+    blocks.extend(
+        {"type": "tool_use", "id": c.id, "name": c.name, "input": _arguments(c.arguments)} for c in message.tool_calls
+    )
     return blocks
 
 
@@ -50,9 +65,19 @@ def _turns(messages: Sequence[Message], protocol: str) -> list[dict[str, Any]]:
 
 def _tools(definitions: Sequence[ToolDefinition], protocol: str) -> list[dict[str, Any]]:
     if protocol == "anthropic-messages":
-        return [{"name": d.name, "description": d.description, "input_schema": deepcopy(d.parameters)} for d in definitions]
-    functions = [{"type": "function", "name": d.name, "description": d.description,
-                  "parameters": deepcopy(d.parameters), "strict": False} for d in definitions]
+        return [
+            {"name": d.name, "description": d.description, "input_schema": deepcopy(d.parameters)} for d in definitions
+        ]
+    functions = [
+        {
+            "type": "function",
+            "name": d.name,
+            "description": d.description,
+            "parameters": deepcopy(d.parameters),
+            "strict": False,
+        }
+        for d in definitions
+    ]
     if protocol == "openai-chat-completions":
         return [{"type": "function", "function": {k: v for k, v in f.items() if k != "type"}} for f in functions]
     return functions
@@ -100,12 +125,21 @@ def _retry_delay(exc, attempt: int, base: float) -> float:
         advised = None
     if advised is not None and advised >= 0:
         return min(advised, 60.0)
-    return min(base * 2 ** attempt, 60.0) * (1 + random.random() * 0.25)
+    return min(base * 2**attempt, 60.0) * (1 + random.random() * 0.25)
 
 
-OVERFLOW_PATTERNS = ("prompt is too long", "context_length_exceeded", "maximum context length", "context length",
-                     "context window", "too many tokens", "input is too long", "exceeds the context",
-                     "reduce the length", "input too long")
+OVERFLOW_PATTERNS = (
+    "prompt is too long",
+    "context_length_exceeded",
+    "maximum context length",
+    "context length",
+    "context window",
+    "too many tokens",
+    "input is too long",
+    "exceeds the context",
+    "reduce the length",
+    "input too long",
+)
 
 
 def _context_overflow(exc) -> bool:
@@ -162,10 +196,12 @@ class SDKProvider:
         key = config.credential()
         if config.protocol == "anthropic-messages":
             import anthropic
+
             if config.auth_type == "bearer":
                 return anthropic.AsyncAnthropic(api_key=None, auth_token=key, **options)
             return anthropic.AsyncAnthropic(api_key=key, **options)
         import openai
+
         return openai.AsyncOpenAI(api_key=key, **options)
 
     async def close(self) -> None:
@@ -173,8 +209,14 @@ class SDKProvider:
 
     retry_base_delay = 1.0
 
-    async def stream(self, messages: Sequence[Message], system: str | PromptRequest,
-                     tools: Sequence[ToolDefinition] = (), *, allow_tools: bool = True) -> AsyncIterator[StreamEvent]:
+    async def stream(
+        self,
+        messages: Sequence[Message],
+        system: str | PromptRequest,
+        tools: Sequence[ToolDefinition] = (),
+        *,
+        allow_tools: bool = True,
+    ) -> AsyncIterator[StreamEvent]:
         attempt = 0
         while True:
             produced = False
@@ -196,15 +238,27 @@ class SDKProvider:
             yield Retrying(attempt, self.config.max_retries, delay, retry)
             await asyncio.sleep(delay)
 
-    async def _stream(self, messages: Sequence[Message], system: str | PromptRequest,
-                      tools: Sequence[ToolDefinition] = (), *, allow_tools: bool = True) -> AsyncIterator[StreamEvent]:
+    async def _stream(
+        self,
+        messages: Sequence[Message],
+        system: str | PromptRequest,
+        tools: Sequence[ToolDefinition] = (),
+        *,
+        allow_tools: bool = True,
+    ) -> AsyncIterator[StreamEvent]:
         raise NotImplementedError
         yield  # pragma: no cover
 
 
 class AnthropicProvider(SDKProvider):
-    async def _stream(self, messages: Sequence[Message], system: str | PromptRequest,
-                      tools: Sequence[ToolDefinition] = (), *, allow_tools: bool = True) -> AsyncIterator[StreamEvent]:
+    async def _stream(
+        self,
+        messages: Sequence[Message],
+        system: str | PromptRequest,
+        tools: Sequence[ToolDefinition] = (),
+        *,
+        allow_tools: bool = True,
+    ) -> AsyncIterator[StreamEvent]:
         config = self.config
         prompt = as_prompt(system)
         options: dict[str, Any] = {
@@ -220,8 +274,12 @@ class AnthropicProvider(SDKProvider):
             blocks[-1]["cache_control"] = {"type": "ephemeral"}
         # Environment and active skills are stable within a run and belong to the cached prefix;
         # reminders are request-only and follow the last history breakpoint.
-        blocks.extend({"type": "text", "text": item.render()} for item in prompt.supplements if item.kind in PREFIX_KINDS)
-        reminders = [{"type": "text", "text": item.render()} for item in prompt.supplements if item.kind not in PREFIX_KINDS]
+        blocks.extend(
+            {"type": "text", "text": item.render()} for item in prompt.supplements if item.kind in PREFIX_KINDS
+        )
+        reminders = [
+            {"type": "text", "text": item.render()} for item in prompt.supplements if item.kind not in PREFIX_KINDS
+        ]
         turns = options["messages"]
         if turns and cache:
             turns[-1]["content"][-1]["cache_control"] = {"type": "ephemeral"}
@@ -300,7 +358,8 @@ class AnthropicProvider(SDKProvider):
                 raise ProviderError("服务返回了本章不支持的内容。")
             content = tuple(
                 ContentBlock("text" if b["type"] == "text" else "thinking", b.get("text", b.get("thinking", "")))
-                for b in raw if b["type"] in {"text", "thinking"}
+                for b in raw
+                if b["type"] in {"text", "thinking"}
             )
             yield Completed(
                 Message("assistant", content, config.protocol, raw, tuple(calls)),
@@ -315,24 +374,36 @@ def _incomplete_reason(response) -> str | None:
 
 
 class ResponsesProvider(SDKProvider):
-    async def _stream(self, messages: Sequence[Message], system: str | PromptRequest,
-                      tools: Sequence[ToolDefinition] = (), *, allow_tools: bool = True) -> AsyncIterator[StreamEvent]:
+    async def _stream(
+        self,
+        messages: Sequence[Message],
+        system: str | PromptRequest,
+        tools: Sequence[ToolDefinition] = (),
+        *,
+        allow_tools: bool = True,
+    ) -> AsyncIterator[StreamEvent]:
         prompt = as_prompt(system)
-        inputs: list[dict[str, Any]] = [{"role": "developer", "content": s.render()}
-                                      for s in prompt.supplements if s.kind in PREFIX_KINDS]
+        inputs: list[dict[str, Any]] = [
+            {"role": "developer", "content": s.render()} for s in prompt.supplements if s.kind in PREFIX_KINDS
+        ]
         for message in messages:
             if message.role == "tool":
-                inputs.extend({"type": "function_call_output", "call_id": r.call_id, "output": r.model_text()}
-                              for r in message.tool_results)
+                inputs.extend(
+                    {"type": "function_call_output", "call_id": r.call_id, "output": r.model_text()}
+                    for r in message.tool_results
+                )
             elif message.role == "assistant" and message.protocol == self.config.protocol and message.native:
                 inputs.extend(deepcopy(message.native))
             else:
                 if message.text or not message.tool_calls:
                     inputs.append({"role": message.role, "content": message.text})
-                inputs.extend({"type": "function_call", "call_id": c.id, "name": c.name, "arguments": c.arguments}
-                              for c in message.tool_calls)
-        inputs.extend({"role": "developer", "content": s.render()}
-                      for s in prompt.supplements if s.kind not in PREFIX_KINDS)
+                inputs.extend(
+                    {"type": "function_call", "call_id": c.id, "name": c.name, "arguments": c.arguments}
+                    for c in message.tool_calls
+                )
+        inputs.extend(
+            {"role": "developer", "content": s.render()} for s in prompt.supplements if s.kind not in PREFIX_KINDS
+        )
         options: dict[str, Any] = {
             "model": self.config.model,
             "input": inputs,
@@ -396,35 +467,48 @@ class ResponsesProvider(SDKProvider):
                             raise ProviderError("服务返回了本章不支持的内容。")
                     usage = parse_usage(final.usage, self.config.protocol)
                     # Stateless replay needs encrypted data, not a bare reasoning ID.
-                    retained = tuple(item for item in raw if item["type"] != "reasoning" or item.get("encrypted_content"))
+                    retained = tuple(
+                        item for item in raw if item["type"] != "reasoning" or item.get("encrypted_content")
+                    )
                     _valid_calls(calls)
-                    yield Completed(Message("assistant", tuple(content), self.config.protocol, retained, tuple(calls)), stop, usage)
+                    yield Completed(
+                        Message("assistant", tuple(content), self.config.protocol, retained, tuple(calls)), stop, usage
+                    )
                     return
         raise ProviderError("Responses 流在完成信号前中断，请重新发送。")
 
 
 class ChatCompletionsProvider(SDKProvider):
-    async def _stream(self, messages: Sequence[Message], system: str | PromptRequest,
-                      tools: Sequence[ToolDefinition] = (), *, allow_tools: bool = True) -> AsyncIterator[StreamEvent]:
+    async def _stream(
+        self,
+        messages: Sequence[Message],
+        system: str | PromptRequest,
+        tools: Sequence[ToolDefinition] = (),
+        *,
+        allow_tools: bool = True,
+    ) -> AsyncIterator[StreamEvent]:
         prompt = as_prompt(system)
-        history = [{"role": "system", "content": s.render()}
-                   for s in prompt.supplements if s.kind in PREFIX_KINDS]
+        history = [{"role": "system", "content": s.render()} for s in prompt.supplements if s.kind in PREFIX_KINDS]
         for message in messages:
             if message.role == "tool":
-                history.extend({"role": "tool", "tool_call_id": r.call_id, "content": r.model_text()}
-                               for r in message.tool_results)
+                history.extend(
+                    {"role": "tool", "tool_call_id": r.call_id, "content": r.model_text()} for r in message.tool_results
+                )
             elif message.protocol == self.config.protocol and message.native:
                 history.extend(deepcopy(message.native))
             else:
                 entry = {"role": message.role, "content": message.text}
                 if message.tool_calls:
-                    entry["tool_calls"] = [{"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}
-                                           for c in message.tool_calls]
+                    entry["tool_calls"] = [
+                        {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}
+                        for c in message.tool_calls
+                    ]
                 history.append(entry)
         if prompt.stable:
             history.insert(0, {"role": "system", "content": prompt.stable})
-        history.extend({"role": "system", "content": s.render()}
-                       for s in prompt.supplements if s.kind not in PREFIX_KINDS)
+        history.extend(
+            {"role": "system", "content": s.render()} for s in prompt.supplements if s.kind not in PREFIX_KINDS
+        )
         options: dict[str, Any] = {
             "model": self.config.model,
             "messages": history,
@@ -487,7 +571,9 @@ class ChatCompletionsProvider(SDKProvider):
         if thinking:
             native["reasoning_content"] = "".join(thinking)
         if calls:
-            native["tool_calls"] = [{"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}} for c in calls]
+            native["tool_calls"] = [
+                {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}} for c in calls
+            ]
         stop = "max_tokens" if reason == "length" else reason
         yield Completed(Message("assistant", tuple(content), self.config.protocol, (native,), calls), stop, usage)
 

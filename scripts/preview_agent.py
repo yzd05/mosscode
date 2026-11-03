@@ -4,13 +4,12 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from mosscode.tui import PromptArea
+from preview_tui import capture
 
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Delta, Message, ToolCall, Usage
 from mosscode.tools import create_default_registry
-from mosscode.tui import MossCodeApp, ToolEntry
-from preview_tui import capture
+from mosscode.tui import MossCodeApp, PromptArea, ToolEntry
 
 
 class AgentPreviewProvider:
@@ -29,17 +28,24 @@ class AgentPreviewProvider:
         elif self.iteration == 3:
             assert len(tools) == 6
             text = "按计划修改，并重新读取。"
-            calls = (ToolCall("edit", "edit_file", '{"path":"demo.py","old_text":"Hello, MossCode!","new_text":"Hello, Agent!"}'),
-                     ToolCall("read", "read_file", '{"path":"demo.py"}'))
+            calls = (
+                ToolCall(
+                    "edit", "edit_file", '{"path":"demo.py","old_text":"Hello, MossCode!","new_text":"Hello, Agent!"}'
+                ),
+                ToolCall("read", "read_file", '{"path":"demo.py"}'),
+            )
         elif self.iteration == 4:
             text = "文件读取结果正确，再搜索确认。"
             calls = (ToolCall("grep", "grep", '{"pattern":"Hello, Agent!","glob":"*.py"}'),)
         else:
-            text = "**修改完成。** `demo.py` 的问候语已更新，读取与搜索结果一致。\n\n```python\ndef greet():\n    return \"Hello, Agent!\"\n```"
+            text = '**修改完成。** `demo.py` 的问候语已更新，读取与搜索结果一致。\n\n```python\ndef greet():\n    return "Hello, Agent!"\n```'
         yield Delta("text", text[:10])
         yield Delta("text", text[10:])
-        yield Completed(Message("assistant", (ContentBlock("text", text),), tool_calls=calls),
-                        "tool_calls" if calls else "stop", Usage(40 * self.iteration, 15))
+        yield Completed(
+            Message("assistant", (ContentBlock("text", text),), tool_calls=calls),
+            "tool_calls" if calls else "stop",
+            Usage(40 * self.iteration, 15),
+        )
 
     async def close(self):
         pass
@@ -77,12 +83,18 @@ async def main():
     with TemporaryDirectory(prefix="mosscode-agent-preview-") as temporary:
         root = Path(temporary)
         (root / "demo.py").write_text('def greet():\n    return "Hello, MossCode!"\n', encoding="utf-8")
-        app = MossCodeApp(Conversation(AgentPreviewProvider(), registry=create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False)), "Demo Provider")
+        app = MossCodeApp(
+            Conversation(
+                AgentPreviewProvider(),
+                registry=create_default_registry(root, permission_mode="bypassPermissions", load_permissions=False),
+            ),
+            "Demo Provider",
+        )
         async with app.run_test(size=(100, 40)) as pilot:
             await exercise_plan(pilot)
             capture(app, output / "agent-plan")
             await exercise_do(pilot)
-            assert 'Hello, Agent!' in (root / "demo.py").read_text()
+            assert "Hello, Agent!" in (root / "demo.py").read_text()
             capture(app, output / "agent-loop")
             await pilot.resize_terminal(44, 20)
             await pilot.pause()

@@ -11,20 +11,35 @@ from textual.widgets import Static
 from mosscode import cli
 from mosscode.config import ProviderConfig, Settings
 from mosscode.conversation import Conversation
-from mosscode.messages import (Completed, ContentBlock, Delta, Message, ProviderError, ToolCall, ToolResult, Usage)
+from mosscode.messages import Completed, ContentBlock, Delta, Message, ProviderError, ToolCall, ToolResult, Usage
 from mosscode.permissions import MODES
 from mosscode.providers import AnthropicProvider, ChatCompletionsProvider, ResponsesProvider
 from mosscode.tools import create_default_registry
 from mosscode.tools.diffing import unified_diff
-from mosscode.tui import (DIFF_ROWS, ERROR_COLOR, MODE_BADGES, OPERATION_COLOR, TOOL_SUCCESS_COLOR, ChatEntry, MossCodeApp,
-                          PromptArea, ToolEntry, diff_rows)
+from mosscode.tui import (
+    DIFF_ROWS,
+    ERROR_COLOR,
+    MODE_BADGES,
+    OPERATION_COLOR,
+    TOOL_SUCCESS_COLOR,
+    ChatEntry,
+    MossCodeApp,
+    PromptArea,
+    ToolEntry,
+    diff_rows,
+)
 from test_agent import SequenceProvider, call, response
 from test_cli import setup_cli
 from test_conversation import FakeProvider
 from test_tui import send
 
-TWO = Settings((ProviderConfig("test", "anthropic-messages", "model-a"),
-                ProviderConfig("other", "openai-chat-completions", "model-b")), "test")
+TWO = Settings(
+    (
+        ProviderConfig("test", "anthropic-messages", "model-a"),
+        ProviderConfig("other", "openai-chat-completions", "model-b"),
+    ),
+    "test",
+)
 
 
 def bypass(tmp_path, mode="bypassPermissions"):
@@ -33,11 +48,13 @@ def bypass(tmp_path, mode="bypassPermissions"):
 
 def held(message: Completed, gate: asyncio.Event, started: asyncio.Event):
     """A response that streams its first text, then waits for the test."""
+
     async def run():
         yield Delta("text", message.message.text or "…")
         started.set()
         await gate.wait()
         yield message
+
     return run
 
 
@@ -51,7 +68,6 @@ async def wait_until(pilot, predicate, rounds=100):
             return
         await pilot.pause(0.02)
     raise AssertionError("condition not reached")
-
 
 
 async def test_multiline_keys_backslash_paste_and_history():
@@ -118,11 +134,12 @@ async def test_history_steps_through_recalled_commands_without_opening_hints():
         assert field.value == "" and "/help" in [e.body for e in app.query(ChatEntry) if e.speaker == "You"][-1]
 
 
-
 async def test_queued_messages_join_at_the_next_iteration_boundary(tmp_path):
     gate, started = asyncio.Event(), asyncio.Event()
-    provider = SequenceProvider(held(response("先写入", [call("write_file", path="a", content="one")]), gate, started),
-                                response("已按新要求完成"))
+    provider = SequenceProvider(
+        held(response("先写入", [call("write_file", path="a", content="one")]), gate, started),
+        response("已按新要求完成"),
+    )
     app = MossCodeApp(Conversation(provider, registry=bypass(tmp_path)), "Demo")
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "执行任务")
@@ -149,8 +166,9 @@ async def test_queued_messages_join_at_the_next_iteration_boundary(tmp_path):
 
 async def test_up_takes_queued_messages_back_without_interrupting(tmp_path):
     gate, started = asyncio.Event(), asyncio.Event()
-    provider = SequenceProvider(held(response("先写入", [call("write_file", path="a", content="one")]), gate, started),
-                                response("完成"))
+    provider = SequenceProvider(
+        held(response("先写入", [call("write_file", path="a", content="one")]), gate, started), response("完成")
+    )
     app = MossCodeApp(Conversation(provider, registry=bypass(tmp_path)), "Demo")
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "执行任务")
@@ -246,7 +264,6 @@ async def test_ctrl_c_cancels_at_once_and_returns_the_queue(tmp_path):
         assert len(provider.requests) == 1
 
 
-
 def test_diff_rows_number_color_separate_hunks_and_truncate():
     before = "".join(f"line {i}\n" for i in range(1, 41))
     after = before.replace("line 3\n", "line three\n").replace("line 30\n", "line thirty\n")
@@ -255,7 +272,7 @@ def test_diff_rows_number_color_separate_hunks_and_truncate():
     assert "    3 - line 3" in plain and "    3 + line three" in plain
     assert "   30 - line 30" in plain and "   30 + line thirty" in plain
     assert "⋯" in plain and "---" not in plain and "@@" not in plain
-    styles = {text.plain[s.start:s.end].strip(): str(s.style) for s in text.spans}
+    styles = {text.plain[s.start : s.end].strip(): str(s.style) for s in text.spans}
     assert styles["3 - line 3"] == ERROR_COLOR and styles["3 + line three"] == TOOL_SUCCESS_COLOR
     big = diff_rows(unified_diff("".join(f"{i}\n" for i in range(30)), "".join(f"x{i}\n" for i in range(30)), "g"))
     rows = [line for line in big.plain.splitlines() if line.strip()]
@@ -265,10 +282,16 @@ def test_diff_rows_number_color_separate_hunks_and_truncate():
 async def test_tool_rows_show_diff_for_edit_and_content_for_new_file(tmp_path):
     (tmp_path / "old.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
     new_file = "".join(f"row {i}\n" for i in range(1, 11))
-    provider = SequenceProvider(response(calls=[call("read_file", "r", path="old.py")]),
-                                response(calls=[call("edit_file", "e", path="old.py", old_text="b = 2", new_text="b = 3"),
-                                                call("write_file", "w", path="new.txt", content=new_file)]),
-                                response("完成"))
+    provider = SequenceProvider(
+        response(calls=[call("read_file", "r", path="old.py")]),
+        response(
+            calls=[
+                call("edit_file", "e", path="old.py", old_text="b = 2", new_text="b = 3"),
+                call("write_file", "w", path="new.txt", content=new_file),
+            ]
+        ),
+        response("完成"),
+    )
     app = MossCodeApp(Conversation(provider, registry=bypass(tmp_path)), "Demo")
     async with app.run_test(size=(100, 40)) as pilot:
         await send(app, pilot, "修改")
@@ -280,7 +303,6 @@ async def test_tool_rows_show_diff_for_edit_and_content_for_new_file(tmp_path):
         assert "… 还有 2 行未显示" in write
 
 
-
 async def test_status_shows_mode_badge_model_hint_and_tokens(tmp_path):
     conv = Conversation(FakeProvider(), registry=bypass(tmp_path, "default"))
     app = MossCodeApp(conv, "test", settings=TWO, model="model-a")
@@ -290,9 +312,15 @@ async def test_status_shows_mode_badge_model_hint_and_tokens(tmp_path):
             app._status("")
             assert status(app).startswith(MODE_BADGES[mode] + " (Shift+Tab 切换) · model-a")
             badge = app.query_one("#status", Static).render().spans[0]
-            expected = {"acceptEdits": TOOL_SUCCESS_COLOR, "plan": OPERATION_COLOR, "bypassPermissions": ERROR_COLOR}.get(mode)
+            expected = {
+                "acceptEdits": TOOL_SUCCESS_COLOR,
+                "plan": OPERATION_COLOR,
+                "bypassPermissions": ERROR_COLOR,
+            }.get(mode)
             assert badge.end == len(MODE_BADGES[mode])
-            assert (badge.style.foreground.hex.lower() if badge.style.foreground else None) == (expected and expected.lower())
+            assert (badge.style.foreground.hex.lower() if badge.style.foreground else None) == (
+                expected and expected.lower()
+            )
         await pilot.resize_terminal(60, 30)
         await pilot.pause()
         app._status("")
@@ -302,14 +330,15 @@ async def test_status_shows_mode_badge_model_hint_and_tokens(tmp_path):
         assert "Token 入" in status(app)
 
 
-
 async def test_clear_starts_fresh_context_and_keeps_mode(tmp_path):
     reg = bypass(tmp_path, "acceptEdits")
     provider = SequenceProvider(response("一"), response("二"), response("三"))
     conv = Conversation(provider, registry=reg)
     app = MossCodeApp(conv, "Demo")
+
     def reminders(index):
         return [s.kind for s in provider.requests[index][1].supplements if s.kind != "environment"]
+
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "/plan")
         await send(app, pilot, "问题一")
@@ -339,9 +368,11 @@ async def test_clear_is_refused_while_the_loop_is_busy():
 
 async def test_model_switch_by_argument_and_panel_keeps_history():
     first, created = FakeProvider(), []
+
     def factory(config):
         created.append((config.name, FakeProvider()))
         return created[-1][1]
+
     conv = Conversation(first)
     app = MossCodeApp(conv, "test", settings=TWO, model="model-a", provider_factory=factory)
     async with app.run_test(size=(100, 30)) as pilot:
@@ -365,18 +396,21 @@ async def test_model_switch_by_argument_and_panel_keeps_history():
         assert len(conv.history) == 4
 
 
-
 class Captured(Exception):
     pass
 
 
 def capturing_client(protocol):
     seen = {}
+
     async def create(**kwargs):
         seen.update(kwargs)
         raise Captured()
+
     endpoint = SimpleNamespace(create=create)
-    client = SimpleNamespace(messages=endpoint, responses=endpoint, chat=SimpleNamespace(completions=endpoint), base_url="")
+    client = SimpleNamespace(
+        messages=endpoint, responses=endpoint, chat=SimpleNamespace(completions=endpoint), base_url=""
+    )
     return client, seen
 
 
@@ -402,8 +436,13 @@ async def request_for(cls, protocol):
 
 async def test_set_provider_strips_native_blocks_but_keeps_calls_and_results():
     conv = Conversation(FakeProvider())
-    native = Message("assistant", (ContentBlock("text", "先读"),), "openai-responses", ({"type": "reasoning", "id": "r"},),
-                     tool_calls=(ToolCall("c1", "read_file", '{"path": "a"}'),))
+    native = Message(
+        "assistant",
+        (ContentBlock("text", "先读"),),
+        "openai-responses",
+        ({"type": "reasoning", "id": "r"},),
+        tool_calls=(ToolCall("c1", "read_file", '{"path": "a"}'),),
+    )
     conv._agent.history = [PORTABLE_HISTORY[0], native, *PORTABLE_HISTORY[2:]]
     await conv.set_provider(FakeProvider())
     assert list(conv.history) == PORTABLE_HISTORY
@@ -431,7 +470,6 @@ async def test_responses_and_chat_pair_every_call_with_its_result():
     called = [c["id"] for m in chat if m.get("tool_calls") for c in m["tool_calls"]]
     answered = [m["tool_call_id"] for m in chat if m["role"] == "tool"]
     assert called == answered == ["c1", "c2"]
-
 
 
 def run_cli(monkeypatch, capsys, args, provider=None):
@@ -463,8 +501,10 @@ def test_json_outputs_one_result_object(monkeypatch, capsys):
 
 
 def test_stream_json_lines_include_tools_in_order(monkeypatch, capsys):
-    provider = SequenceProvider(response("先看文件", [call("read_file", "r", path="pyproject.toml")], Usage(5, 2)),
-                                response("读完了", usage=Usage(7, 3)))
+    provider = SequenceProvider(
+        response("先看文件", [call("read_file", "r", path="pyproject.toml")], Usage(5, 2)),
+        response("读完了", usage=Usage(7, 3)),
+    )
     code, out, _, _ = run_cli(monkeypatch, capsys, ["-p", "看看", "--output-format", "stream-json"], provider)
     events = [json.loads(line) for line in out.splitlines()]
     kinds = [e["type"] for e in events if e["type"] != "notice"]

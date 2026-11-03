@@ -6,11 +6,12 @@ The same runner serves an in-process member and a member in its own terminal pan
 from __future__ import annotations
 
 import asyncio
-from contextlib import aclosing
-from dataclasses import asdict, fields
 import secrets
 import time
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from contextlib import aclosing
+from dataclasses import asdict, fields
+from typing import TYPE_CHECKING
 
 from ..messages import Completed, ProviderError, RunStopped, ToolProgress
 from ..permissions import ALL_CHOICES, ApprovalRequest, Decision, Operation, PolicyView
@@ -24,25 +25,35 @@ if TYPE_CHECKING:
 
 POLL = 0.5  # Seconds between mailbox reads when nothing woke the reader.
 SUMMARY = 300  # Characters of the last reply in an idle notification.
-TYPE_LABELS = {"text": "消息", "plan_approval_request": "计划审批请求", "plan_approval_response": "计划审批答复",
-               "shutdown_request": "停止请求", "shutdown_response": "停止答复", "idle_notification": "空闲通知",
-               "permission_response": "审批答复"}
+TYPE_LABELS = {
+    "text": "消息",
+    "plan_approval_request": "计划审批请求",
+    "plan_approval_response": "计划审批答复",
+    "shutdown_request": "停止请求",
+    "shutdown_response": "停止答复",
+    "idle_notification": "空闲通知",
+    "permission_response": "审批答复",
+}
 
 
 def addendum(team: str, name: str, worktree: dict | None) -> str:
     """Fixed text, only the names differ."""
-    lines = [f"<team-member>\n你是团队 {team} 的成员 {name}，Lead 的名称是 {LEAD}。",
-             "- 你的文字回复不会被任何人看到：汇报、提问、交付结果都必须用 send_message（通常发给 lead）。",
-             "- 工作流程：team_task_list 查看任务 → 领取就绪的任务（team_task_update 把 owner 设为自己、status 设为 in_progress）"
-             "→ 完成 → git commit 提交改动 → 把任务设为 completed → send_message 向 lead 汇报结果。",
-             "- 每次收到的消息都在 <incoming-messages> 中；处理完就结束这一轮，等待下一条消息，不要空等或轮询。",
-             "- 收到 shutdown_request 时，结束手头的工作，用 send_message（type: shutdown_response，request_id 为该请求的 id，"
-             "approve: true）回复；确有未完成的工作时可以 approve: false 并说明理由。"]
+    lines = [
+        f"<team-member>\n你是团队 {team} 的成员 {name}，Lead 的名称是 {LEAD}。",
+        "- 你的文字回复不会被任何人看到：汇报、提问、交付结果都必须用 send_message（通常发给 lead）。",
+        "- 工作流程：team_task_list 查看任务 → 领取就绪的任务（team_task_update 把 owner 设为自己、status 设为 in_progress）"
+        "→ 完成 → git commit 提交改动 → 把任务设为 completed → send_message 向 lead 汇报结果。",
+        "- 每次收到的消息都在 <incoming-messages> 中；处理完就结束这一轮，等待下一条消息，不要空等或轮询。",
+        "- 收到 shutdown_request 时，结束手头的工作，用 send_message（type: shutdown_response，request_id 为该请求的 id，"
+        "approve: true）回复；确有未完成的工作时可以 approve: false 并说明理由。",
+    ]
     if worktree:
         main = worktree.get("main") or "<主分支>"
-        lines.append(f"- 你在自己的 git 工作树中工作：{worktree['path']}，分支 {worktree['branch']}，主分支是 {main}。"
-                     "完成的工作必须提交到这个分支，Lead 才能合并；Lead 要求你解决合并冲突时，在工作树中执行 "
-                     f"git merge {main}，解决冲突后提交。")
+        lines.append(
+            f"- 你在自己的 git 工作树中工作：{worktree['path']}，分支 {worktree['branch']}，主分支是 {main}。"
+            "完成的工作必须提交到这个分支，Lead 才能合并；Lead 要求你解决合并冲突时，在工作树中执行 "
+            f"git merge {main}，解决冲突后提交。"
+        )
     else:
         lines.append("- 你在主项目目录中工作，与其他人共用文件；只改分配给你的文件。")
     return "\n".join(lines) + "\n</team-member>"
@@ -84,10 +95,14 @@ def task_listing(tasks: list[TeamTask]) -> str:
 
 def task_detail(task: TeamTask, tasks: list[TeamTask]) -> str:
     index = {item.id: item for item in tasks}
-    lines = [f"任务 {task.id}：{task.subject}", f"状态：{STATUS_LABELS.get(task.status, task.status)}",
-             f"负责人：{task.owner or '未指派'}",
-             f"依赖：{'、'.join(task.blocked_by) or '无'}（{'就绪' if is_ready(task, index) else '未就绪'}）",
-             f"被依赖：{'、'.join(blocks(task.id, tasks)) or '无'}", f"更新：{task.updated}"]
+    lines = [
+        f"任务 {task.id}：{task.subject}",
+        f"状态：{STATUS_LABELS.get(task.status, task.status)}",
+        f"负责人：{task.owner or '未指派'}",
+        f"依赖：{'、'.join(task.blocked_by) or '无'}（{'就绪' if is_ready(task, index) else '未就绪'}）",
+        f"被依赖：{'、'.join(blocks(task.id, tasks)) or '无'}",
+        f"更新：{task.updated}",
+    ]
     if task.description:
         lines += ["", task.description]
     return "\n".join(lines)
@@ -132,8 +147,9 @@ class TeamAccess:
             raise TeamError("unknown_member", f"团队 {self.team} 中没有成员 {to}；成员：{'、'.join(names) or '无'}。")
         return [to]
 
-    def send(self, to: str, kind: str, body: str = "", summary: str = "", *, runtime: bool = False,
-             **extra) -> list[str]:
+    def send(
+        self, to: str, kind: str, body: str = "", summary: str = "", *, runtime: bool = False, **extra
+    ) -> list[str]:
         """The model never sends idle notifications or plan requests itself (runtime=False)."""
         if kind in RUNTIME_ONLY and not runtime:
             raise TeamError("invalid_message", f"{kind} 由系统自动发送，不能手动发送。")
@@ -150,8 +166,9 @@ class TeamAccess:
     # Shared tasks -----------------------------------------------------------------------
 
     def task_create(self, subject: str, description: str = "", blocked_by=(), owner: str = "") -> TeamTask:
-        return self.store.board.create(subject, description, blocked_by, owner=owner, actor=self.actor,
-                                       participants=self.participants())
+        return self.store.board.create(
+            subject, description, blocked_by, owner=owner, actor=self.actor, participants=self.participants()
+        )
 
     def task_update(self, task_id: str, **changes):
         return self.store.board.update(task_id, actor=self.actor, participants=self.participants(), **changes)
@@ -167,8 +184,10 @@ def render_incoming(messages: list[Message]) -> str:
             parts.append(f"{head} 摘要：{message.summary}\n{message.body}")
         elif message.type == "plan_approval_response":
             verdict = "已批准" if extra.get("approve") else "被拒绝"
-            parts.append(f"{head} 你的计划（request_id={extra.get('request_id')}）{verdict}。"
-                         + (f"\n反馈：{extra.get('feedback')}" if extra.get("feedback") else ""))
+            parts.append(
+                f"{head} 你的计划（request_id={extra.get('request_id')}）{verdict}。"
+                + (f"\n反馈：{extra.get('feedback')}" if extra.get("feedback") else "")
+            )
         elif message.type == "shutdown_request":
             parts.append(f"{head} Lead 请求你停止。理由：{extra.get('reason') or '无'}")
         else:
@@ -178,8 +197,13 @@ def render_incoming(messages: list[Message]) -> str:
 
 def approval_record(request: ApprovalRequest) -> dict:
     """A pane member's waiting request, as its record keeps it for the lead."""
-    return {"id": request.id, "call_id": request.call_id, "operation": asdict(request.operation),
-            "reason": request.reason, "choices": list(request.choices)}
+    return {
+        "id": request.id,
+        "call_id": request.call_id,
+        "operation": asdict(request.operation),
+        "reason": request.reason,
+        "choices": list(request.choices),
+    }
 
 
 def approval_from_record(item, source: str) -> ApprovalRequest | None:
@@ -190,8 +214,9 @@ def approval_from_record(item, source: str) -> ApprovalRequest | None:
         choices = tuple(item["choices"])
         if not item["id"] or not choices or not all(choice in ALL_CHOICES for choice in choices):
             return None
-        return ApprovalRequest(str(item["id"]), str(item.get("call_id", "")), operation, str(item.get("reason", "")),
-                               choices, source)
+        return ApprovalRequest(
+            str(item["id"]), str(item.get("call_id", "")), operation, str(item.get("reason", "")), choices, source
+        )
     except (KeyError, TypeError, AttributeError):
         return None
 
@@ -199,11 +224,19 @@ def approval_from_record(item, source: str) -> ApprovalRequest | None:
 class MemberRunner:
     """Read the mailbox, run a turn, tell the lead, wait; until stopped."""
 
-    def __init__(self, access: TeamAccess, name: str, *, agent_mode: Callable[[str], str],
-                 session_mode: Callable[[], str], require_plan_approval: bool = False,
-                 on_approval: Callable[[ApprovalRequest], None] | None = None,
-                 on_status: Callable[[str, dict], None] | None = None, poll: float = POLL,
-                 on_event: Callable[[object], None] | None = None):
+    def __init__(
+        self,
+        access: TeamAccess,
+        name: str,
+        *,
+        agent_mode: Callable[[str], str],
+        session_mode: Callable[[], str],
+        require_plan_approval: bool = False,
+        on_approval: Callable[[ApprovalRequest], None] | None = None,
+        on_status: Callable[[str, dict], None] | None = None,
+        poll: float = POLL,
+        on_event: Callable[[object], None] | None = None,
+    ):
         self.access, self.name = access, name
         self.loop: AgentLoop | None = None  # Set once the tools that need this runner exist.
         self.owned = False  # The loop's provider is closed when the member stops.
@@ -311,6 +344,7 @@ class MemberRunner:
                         self.on_approval(event)
                 elif isinstance(event, ToolProgress) and event.phase == "running":
                     from ..agents.runtime import describe_call
+
                     self.last_tool = describe_call(event.call, self.loop.registry.permissions.root)
                     self._status("running", last_tool=self.last_tool)
                 elif isinstance(event, Completed):
@@ -324,8 +358,9 @@ class MemberRunner:
         request = next((m for m in messages if m.type == "shutdown_request"), None)
         if request is not None:
             self.shutdown = None  # Its shutdown_response this turn decides.
-        mode = member_mode(self.agent_mode, self.session_mode(), require=self.require_plan_approval,
-                           approved=self.approved)
+        mode = member_mode(
+            self.agent_mode, self.session_mode(), require=self.require_plan_approval, approved=self.approved
+        )
         prompt = render_incoming(messages)
         if self.on_event is not None:
             self.on_event(messages)
@@ -349,13 +384,16 @@ class MemberRunner:
             self._run = None
         if not failure and (stopped is None or stopped.reason not in {"completed", "max_tokens"}):
             failure = stopped.notice if stopped is not None else "没有完整回复"
-        done = sorted(await asyncio.to_thread(self._completed) - before, key=lambda key: int(key) if key.isdigit() else 0)
+        done = sorted(
+            await asyncio.to_thread(self._completed) - before, key=lambda key: int(key) if key.isdigit() else 0
+        )
         self.last_tool = ""
         if request is not None and self.shutdown is None:
             self.shutdown = True  # It never answered: the request stands.
             try:
-                await asyncio.to_thread(self.access.send, LEAD, "shutdown_response", request_id=request.id,
-                                        approve=True, reason="")
+                await asyncio.to_thread(
+                    self.access.send, LEAD, "shutdown_response", request_id=request.id, approve=True, reason=""
+                )
                 self.access.wake([LEAD])
             except TeamError:
                 pass
@@ -364,11 +402,26 @@ class MemberRunner:
             reason = "interrupted" if interrupted else "failed" if failure else "completed"
             summary = (failure or final.strip())[:SUMMARY]
             try:
-                await asyncio.to_thread(self.access.send, LEAD, "idle_notification", "", summary, runtime=True,
-                                        reason=reason, completed_tasks=done)
+                await asyncio.to_thread(
+                    self.access.send,
+                    LEAD,
+                    "idle_notification",
+                    "",
+                    summary,
+                    runtime=True,
+                    reason=reason,
+                    completed_tasks=done,
+                )
                 self.access.wake([LEAD])
             except TeamError:
                 pass  # The lead's mailbox is busy or gone; the status below still shows the member idle.
         usage = self.loop.total_usage
-        self._status("idle", usage={"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
-                                    "cached_input_tokens": usage.cached_input_tokens}, approved=self.approved)
+        self._status(
+            "idle",
+            usage={
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cached_input_tokens": usage.cached_input_tokens,
+            },
+            approved=self.approved,
+        )

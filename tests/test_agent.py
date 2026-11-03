@@ -1,20 +1,33 @@
 import asyncio
-from contextlib import aclosing
 import json
+from contextlib import aclosing
 
 import pytest
 
 from mosscode.agent import AgentLoop
 from mosscode.conversation import Conversation
-from mosscode.messages import (Completed, ContentBlock, Delta, IterationProgress, Message,
-                               ProviderError, RunStopped, ToolCall, ToolProgress, Usage, UsageUpdate)
+from mosscode.messages import (
+    Completed,
+    ContentBlock,
+    Delta,
+    IterationProgress,
+    Message,
+    ProviderError,
+    ToolCall,
+    ToolProgress,
+    Usage,
+    UsageUpdate,
+)
 from mosscode.tools import create_default_registry
 from mosscode.tools.base import Params, Tool, ToolRegistry
 
 
 def response(text="", calls=(), usage=Usage()):
-    return Completed(Message("assistant", (ContentBlock("text", text),) if text else (),
-                             tool_calls=tuple(calls)), "tool_calls" if calls else "stop", usage)
+    return Completed(
+        Message("assistant", (ContentBlock("text", text),) if text else (), tool_calls=tuple(calls)),
+        "tool_calls" if calls else "stop",
+        usage,
+    )
 
 
 def call(name, id="call", **args):
@@ -56,11 +69,23 @@ async def test_dependent_read_edit_read_loop_and_live_events(tmp_path):
         response("**已完成**", usage=Usage(50, 4)),
         response("下一轮"),
     )
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     events = [e async for e in conv.reply("修改并检查")]
     assert [e.iteration for e in events if isinstance(e, IterationProgress)] == [1, 2, 3, 4]
     assert [e.text for e in events if isinstance(e, Delta)] == ["先读取", "修改", "验证", "**已完成**"]
-    assert [m.role for m in conv.history] == ["user", "assistant", "tool", "assistant", "tool", "assistant", "tool", "assistant"]
+    assert [m.role for m in conv.history] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
     assert "old" in provider.requests[1][0][-1].tool_results[0].output
     assert "new" in provider.requests[3][0][-1].tool_results[0].output
     assert (tmp_path / "demo.txt").read_text() == "new"
@@ -76,12 +101,17 @@ async def test_dependent_read_edit_read_loop_and_live_events(tmp_path):
 
 async def test_stream_forwards_before_completion_and_closes_without_commit(tmp_path):
     gate = asyncio.Event()
+
     async def held():
         yield Delta("text", "正在规划")
         await gate.wait()
         yield response(calls=[call("write_file", path="a", content="x")])
+
     provider = SequenceProvider(held)
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     async with aclosing(conv.reply("任务")) as events:
         assert isinstance(await anext(events), IterationProgress)
         delta = await asyncio.wait_for(anext(events), 1)
@@ -93,7 +123,10 @@ async def test_stream_forwards_before_completion_and_closes_without_commit(tmp_p
 @pytest.mark.parametrize("close_at", [UsageUpdate, ToolProgress])
 async def test_close_after_committed_calls_always_pairs_results(tmp_path, close_at):
     provider = SequenceProvider(response(calls=[call("write_file", path="a", content="x")]))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     async with aclosing(conv.reply("任务")) as events:
         async for event in events:
             if isinstance(event, close_at):
@@ -109,7 +142,11 @@ async def test_limit_executes_last_batch_then_can_continue(tmp_path):
         response(calls=[call("write_file", "w2", path="a", content="last")]),
         response("后续任务完成"),
     )
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False), max_iterations=2)
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        max_iterations=2,
+    )
     events = [e async for e in conv.reply("任务")]
     assert events[-1].reason == "max_iterations"
     assert len(provider.requests) == 2 and len(conv.history) == 5
@@ -123,7 +160,10 @@ async def test_consecutive_all_unknown_rounds_reset_on_registered_tool(tmp_path)
     unknown = response(calls=[call("invented")])
     mixed = response(calls=[call("invented"), call("read_file", "read", path="missing")])
     provider = SequenceProvider(unknown, unknown, mixed, unknown, unknown, unknown)
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     events = [e async for e in conv.reply("任务")]
     assert events[-1].reason == "unknown_tools" and events[-1].iterations == 6
     assert len(provider.requests) == 6
@@ -134,14 +174,22 @@ async def test_consecutive_all_unknown_rounds_reset_on_registered_tool(tmp_path)
 @pytest.mark.parametrize("bad", ["missing_id", "duplicate", "incomplete", "error"])
 async def test_stream_failure_never_executes_incomplete_or_invalid_calls(tmp_path, bad):
     write = call("write_file", path="a", content="x")
+
     async def incomplete():
         yield Delta("text", "部分")
         if bad == "error":
             raise ProviderError("模拟断流")
-    item = incomplete if bad in {"incomplete", "error"} else response(calls=[
-        ToolCall("", write.name, write.arguments)] if bad == "missing_id" else [write, write])
+
+    item = (
+        incomplete
+        if bad in {"incomplete", "error"}
+        else response(calls=[ToolCall("", write.name, write.arguments)] if bad == "missing_id" else [write, write])
+    )
     provider = SequenceProvider(item)
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     events = []
     with pytest.raises(ProviderError):
         async for event in conv.reply("任务"):
@@ -153,17 +201,23 @@ async def test_stream_failure_never_executes_incomplete_or_invalid_calls(tmp_pat
 
 async def test_cancel_model_after_tool_results_emits_stop_and_preserves_history(tmp_path):
     started = asyncio.Event()
+
     async def held():
         yield Delta("thinking", "继续判断")
         started.set()
         await asyncio.Event().wait()
-    provider = SequenceProvider(response(calls=[call("write_file", path="a", content="x")]), held,
-                                response("继续成功"))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+
+    provider = SequenceProvider(response(calls=[call("write_file", path="a", content="x")]), held, response("继续成功"))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     events = []
+
     async def consume():
         async for event in conv.reply("任务"):
             events.append(event)
+
     task = asyncio.create_task(consume())
     await asyncio.wait_for(started.wait(), 2)
     with pytest.raises(ProviderError, match="不能切换"):
@@ -179,20 +233,31 @@ async def test_cancel_model_after_tool_results_emits_stop_and_preserves_history(
 async def test_plan_offers_only_read_tools_and_blocks_writes_and_command(tmp_path):
     (tmp_path / "a").write_text("old")
     provider = SequenceProvider(
-        response(calls=[call("write_file", "w", path="a", content="new"),
-                        call("edit_file", "e", path="a", old_text="old", new_text="new"),
-                        call("execute_command", "c", command="unsupported-command"),
-                        call("read_file", "r", path="a")]),
+        response(
+            calls=[
+                call("write_file", "w", path="a", content="new"),
+                call("edit_file", "e", path="a", old_text="old", new_text="new"),
+                call("execute_command", "c", command="unsupported-command"),
+                call("read_file", "r", path="a"),
+            ]
+        ),
         response("实施计划"),
-        response(calls=[call("write_file", path="a", content="new")]), response("完成"),
+        response(calls=[call("write_file", path="a", content="new")]),
+        response("完成"),
     )
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     conv.set_mode("plan")
     assert await conv.ask("先规划") == "实施计划"
     assert (tmp_path / "a").read_text() == "old"
     assert [r.code for r in conv.history[2].tool_results] == ["plan_blocked"] * 3 + [None]
     assert conv.mode == "plan"
-    assert all({t.name for t in r[2]} == {"read_file", "glob", "grep", "execute_command", "exit_plan_mode"} for r in provider.requests)
+    assert all(
+        {t.name for t in r[2]} == {"read_file", "glob", "grep", "execute_command", "exit_plan_mode"}
+        for r in provider.requests
+    )
     assert "计划模式" in provider.requests[0][1].supplements[-1].text
     conv.set_mode("normal")
     assert await conv.ask("执行") == "完成"
@@ -200,9 +265,13 @@ async def test_plan_offers_only_read_tools_and_blocks_writes_and_command(tmp_pat
 
 
 async def test_unexpected_stream_error_is_safe_stop_and_keeps_completed_tools(tmp_path):
-    provider = SequenceProvider(response(calls=[call("write_file", path="a", content="x")]),
-                                ValueError("private-test-secret"))
-    conv = Conversation(provider, registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False))
+    provider = SequenceProvider(
+        response(calls=[call("write_file", path="a", content="x")]), ValueError("private-test-secret")
+    )
+    conv = Conversation(
+        provider,
+        registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+    )
     events = []
     with pytest.raises(ProviderError, match="内部错误") as error:
         async for event in conv.reply("任务"):
@@ -245,22 +314,34 @@ def controlled(tmp_path, keys):
     read = ControlledTool(tmp_path, "read", True, entered, release, log)
     write = ControlledTool(tmp_path, "write", False, entered, release, log)
     from mosscode.permissions import PermissionPolicy
+
     policy = PermissionPolicy(tmp_path, mode="bypassPermissions", load=False)
     return ToolRegistry([read, write], permissions=policy), read, write, entered, release, log
 
 
 async def test_parallel_reads_complete_live_but_history_order_and_write_fences_hold(tmp_path):
     registry, read, write, entered, release, log = controlled(tmp_path, ["a", "b", "w", "c"])
-    provider = SequenceProvider(response(calls=[call("read", "a", key="a"), call("read", "b", key="b"),
-                                               call("write", "w", key="w"), call("read", "c", key="c")]), response("完成"))
+    provider = SequenceProvider(
+        response(
+            calls=[
+                call("read", "a", key="a"),
+                call("read", "b", key="b"),
+                call("write", "w", key="w"),
+                call("read", "c", key="c"),
+            ]
+        ),
+        response("完成"),
+    )
     conv = Conversation(provider, registry=registry)
     events = []
     finished_b = asyncio.Event()
+
     async def consume():
         async for e in conv.reply("任务"):
             events.append(e)
             if isinstance(e, ToolProgress) and e.phase == "finished" and e.call.id == "b":
                 finished_b.set()
+
     task = asyncio.create_task(consume())
     try:
         await asyncio.wait_for(asyncio.gather(entered["a"].wait(), entered["b"].wait()), 2)
@@ -276,8 +357,18 @@ async def test_parallel_reads_complete_live_but_history_order_and_write_fences_h
         release["c"].set()
         await asyncio.wait_for(task, 2)
         assert [r.call_id for r in conv.history[2].tool_results] == ["a", "b", "w", "c"]
-        assert [e.call.id for e in events if isinstance(e, ToolProgress) and e.phase == "finished"] == ["b", "a", "w", "c"]
-        assert [e.call.id for e in events if isinstance(e, ToolProgress) and e.phase == "running"] == ["a", "b", "w", "c"]
+        assert [e.call.id for e in events if isinstance(e, ToolProgress) and e.phase == "finished"] == [
+            "b",
+            "a",
+            "w",
+            "c",
+        ]
+        assert [e.call.id for e in events if isinstance(e, ToolProgress) and e.phase == "running"] == [
+            "a",
+            "b",
+            "w",
+            "c",
+        ]
     finally:
         for gate in release.values():
             gate.set()
@@ -292,9 +383,11 @@ async def test_at_most_four_reads_and_cancel_settles_all_jobs(tmp_path):
     provider = SequenceProvider(response(calls=[call("read", key, key=key) for key in keys]))
     conv = Conversation(provider, registry=registry)
     events = []
+
     async def consume():
         async for e in conv.reply("任务"):
             events.append(e)
+
     task = asyncio.create_task(consume())
     try:
         await asyncio.wait_for(asyncio.gather(*(entered[k].wait() for k in keys[:4])), 2)

@@ -96,6 +96,7 @@ class MemberApp(App):
 
     def _show(self) -> None:
         from ..tui import choice_label
+
         panel = self.query_one("#approval")
         if not self._requests:
             panel.display = False
@@ -110,8 +111,9 @@ class MemberApp(App):
         self.query_one("#approval-detail", Static).update(text)
         options = self.query_one("#approval-options", OptionList)
         options.clear_options()
-        options.add_options([f"{index}. {choice_label(request, choice)}"
-                             for index, choice in enumerate(request.choices, 1)])
+        options.add_options(
+            [f"{index}. {choice_label(request, choice)}" for index, choice in enumerate(request.choices, 1)]
+        )
         options.highlighted = 0
         panel.display = True
         options.focus()
@@ -130,6 +132,7 @@ class MemberApp(App):
     def _settled(self, request_id: str, choice: str | None) -> None:
         """Answered in the lead's window (choice), or no longer waiting: the card goes."""
         from ..tui import choice_label
+
         request = next((item for item in self._requests if item.id == request_id), None)
         if request is None:
             return

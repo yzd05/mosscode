@@ -1,12 +1,12 @@
 """Run one hook action and report what happened; the engine decides what it means."""
 
 import asyncio
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import shutil
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import TEMPLATE, Action
@@ -69,10 +69,12 @@ def argv(command: tuple[str, ...], values: dict[str, str]) -> list[str]:
     return parts
 
 
-async def run_command(action: Action, *, root: Path, shell, env: dict[str, str], values: dict[str, str],
-                      stdin: bytes, rejecting: bool) -> ActionResult:
+async def run_command(
+    action: Action, *, root: Path, shell, env: dict[str, str], values: dict[str, str], stdin: bytes, rejecting: bool
+) -> ActionResult:
     from ..tools.base import ToolFailure
     from ..tools.process import run_process
+
     if isinstance(action.command, str):
         if shell is None:
             return ActionResult("failed", "没有可用的 shell，无法执行字符串命令；可改用 argv 数组。")
@@ -88,7 +90,8 @@ async def run_command(action: Action, *, root: Path, shell, env: dict[str, str],
     try:
         details = await asyncio.wait_for(
             run_process(args, root, check=False, limit=STREAM_HALF, tail=STREAM_HALF, env=environment, input=stdin),
-            timeout=action.timeout)
+            timeout=action.timeout,
+        )
     except TimeoutError:
         return ActionResult("timeout", f"超过 {action.timeout:g} 秒未结束，已终止。")
     except ToolFailure as exc:
@@ -108,6 +111,7 @@ async def run_command(action: Action, *, root: Path, shell, env: dict[str, str],
 
 async def run_http(action: Action, *, fields, context: dict) -> ActionResult:
     import httpx
+
     body = None
     if action.has_json:
         body = render_json(action.json_body, fields)
@@ -133,8 +137,11 @@ async def run_http(action: Action, *, fields, context: dict) -> ActionResult:
         return ActionResult("failed", f"{public_url(action.url)} 请求失败（{type(exc).__name__}）。")
     if 200 <= status < 300:
         return ActionResult("ok", text[:DETAIL_LIMIT], status=status)
-    return ActionResult("failed", f"{public_url(action.url)} 返回 HTTP {status}" + (f"：{text[:200]}" if text.strip() else ""),
-                        status=status)
+    return ActionResult(
+        "failed",
+        f"{public_url(action.url)} 返回 HTTP {status}" + (f"：{text[:200]}" if text.strip() else ""),
+        status=status,
+    )
 
 
 def stdin_json(context: dict) -> bytes:

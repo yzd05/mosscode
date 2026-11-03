@@ -1,10 +1,10 @@
 import asyncio
 import json
 import os
-from pathlib import Path
 import shlex
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -23,14 +23,16 @@ async def test_registry_schema_and_validation(tmp_path):
     assert len(registry.definitions()) == 6
     with pytest.raises(ValueError, match="重复"):
         registry.register(registry.get("read_file"))
-    cases = [(ToolCall("x", "missing", "{}"), "unknown_tool"),
-             (ToolCall("x", "write_file", '{"path":'), "invalid_json"),
-             (call("write_file", path="a"), "invalid_arguments"),
-             (call("read_file", path="a", offset="1"), "invalid_arguments"),
-             (call("read_file", path="a", invented=True), "invalid_arguments"),
-             (call("read_file", path="missing"), "not_found"),
-             (call("edit_file", path="a", old_text="", new_text="x"), "invalid_arguments"),
-             (call("execute_command", command="x", timeout=601), "invalid_arguments")]
+    cases = [
+        (ToolCall("x", "missing", "{}"), "unknown_tool"),
+        (ToolCall("x", "write_file", '{"path":'), "invalid_json"),
+        (call("write_file", path="a"), "invalid_arguments"),
+        (call("read_file", path="a", offset="1"), "invalid_arguments"),
+        (call("read_file", path="a", invented=True), "invalid_arguments"),
+        (call("read_file", path="missing"), "not_found"),
+        (call("edit_file", path="a", old_text="", new_text="x"), "invalid_arguments"),
+        (call("execute_command", command="x", timeout=601), "invalid_arguments"),
+    ]
     for request, code in cases:
         result = await registry.execute(request)
         assert result.is_error and result.code == code
@@ -41,7 +43,9 @@ async def test_registry_schema_and_validation(tmp_path):
 async def test_file_create_overwrite_read_page_and_unique_edit(tmp_path):
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
     path = tmp_path / "nested" / "demo.py"
-    assert not (await registry.execute(call("write_file", path="nested/demo.py", content="一\r\n二\r\n三\r\n"))).is_error
+    assert not (
+        await registry.execute(call("write_file", path="nested/demo.py", content="一\r\n二\r\n三\r\n"))
+    ).is_error
     page = await registry.execute(call("read_file", path=str(path), offset=2, limit=1))
     assert "     2\t二" in page.output
     assert page.details["next_offset"] == 3
@@ -75,7 +79,9 @@ async def test_paths_outside_root_and_binary_errors(tmp_path):
 
 async def test_read_byte_budget_next_page_does_not_skip_unshown_lines(tmp_path):
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
-    (tmp_path / "large.txt").write_text("".join(f"line{i} " + "中" * 1000 + "\n" for i in range(1, 201)), encoding="utf-8")
+    (tmp_path / "large.txt").write_text(
+        "".join(f"line{i} " + "中" * 1000 + "\n" for i in range(1, 201)), encoding="utf-8"
+    )
     page = await registry.execute(call("read_file", path="large.txt"))
     assert page.details["truncated"] and len(page.output.encode("utf-8")) < 65536
     next_offset = page.details["next_offset"]
@@ -117,15 +123,26 @@ def python_command(script):
 
 async def test_command_success_failure_output_cap_and_timeout(tmp_path):
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
-    request = call("execute_command", command=python_command("import sys; print('中文'); print('err',file=sys.stderr)"), timeout=10)
+    request = call(
+        "execute_command", command=python_command("import sys; print('中文'); print('err',file=sys.stderr)"), timeout=10
+    )
     success = await registry.execute(request)
     assert not success.is_error, success
     assert "中文" in success.output and success.details["stderr"].strip() == "err"
-    failure = await registry.execute(call("execute_command", command=python_command("import sys; print('oops'); sys.exit(7)")))
+    failure = await registry.execute(
+        call("execute_command", command=python_command("import sys; print('oops'); sys.exit(7)"))
+    )
     assert failure.code == "nonzero_exit" and failure.details["exit_code"] == 7
-    large = await registry.execute(call("execute_command", command=python_command("import sys; print('a'*100000); print('b'*100000,file=sys.stderr)")))
+    large = await registry.execute(
+        call(
+            "execute_command",
+            command=python_command("import sys; print('a'*100000); print('b'*100000,file=sys.stderr)"),
+        )
+    )
     assert not large.is_error and large.details["truncated"]
-    timeout = await registry.execute(call("execute_command", command=python_command("import time; time.sleep(30)"), timeout=0.3))
+    timeout = await registry.execute(
+        call("execute_command", command=python_command("import time; time.sleep(30)"), timeout=0.3)
+    )
     assert timeout.code == "timeout"
 
 
@@ -138,6 +155,7 @@ def process_alive(pid):
             return False
     import ctypes
     from ctypes import wintypes
+
     api = ctypes.WinDLL("kernel32", use_last_error=True)
     api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     api.OpenProcess.restype = wintypes.HANDLE
@@ -157,10 +175,14 @@ def process_alive(pid):
 async def test_command_cancel_or_timeout_kills_own_child(tmp_path, cancel):
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
     marker = tmp_path / "pid.txt"
-    script = ("import subprocess,sys,time; from pathlib import Path; "
-              "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
-              f"Path({str(marker)!r}).write_text(str(child.pid)); time.sleep(60)")
-    task = asyncio.create_task(registry.execute(call("execute_command", command=python_command(script), timeout=4 if not cancel else 30)))
+    script = (
+        "import subprocess,sys,time; from pathlib import Path; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+        f"Path({str(marker)!r}).write_text(str(child.pid)); time.sleep(60)"
+    )
+    task = asyncio.create_task(
+        registry.execute(call("execute_command", command=python_command(script), timeout=4 if not cancel else 30))
+    )
     try:
         for _ in range(200):
             if marker.exists():

@@ -7,8 +7,16 @@ import time
 
 import pytest
 
-from mosscode.teams import (LEAD, Member, TeamError, TeamStore, list_teams, teams_root, validate_member_name,
-                            validate_team_name)
+from mosscode.teams import (
+    LEAD,
+    Member,
+    TeamError,
+    TeamStore,
+    list_teams,
+    teams_root,
+    validate_member_name,
+    validate_team_name,
+)
 from mosscode.teams import lock as lock_module
 from mosscode.teams.board import TaskBoard, blocks
 from mosscode.teams.lock import file_lock
@@ -25,7 +33,6 @@ def board(tmp_path):
 
 
 ROSTER = ("alice", "bob")
-
 
 
 @pytest.mark.parametrize("name", ["auth", "a", "team-2", "0x", "a" * 32])
@@ -74,6 +81,7 @@ def test_lead_holder(tmp_path):
 
 def test_team_held_by_a_live_process(tmp_path, monkeypatch):
     import mosscode.teams as teams
+
     store = TeamStore.at(tmp_path, "auth")
     store.create()
     store.modify(lambda team: setattr(team, "lead", {"pid": 4242, "session": "", "since": ""}))
@@ -97,6 +105,7 @@ def test_broken_config_is_left_in_place(tmp_path):
 
 
 # Mailboxes -------------------------------------------------------------------------------
+
 
 def test_two_writers_lose_nothing(tmp_path):
     mailbox = Mailbox(tmp_path)
@@ -164,8 +173,12 @@ def test_read_marks_read_and_trims(tmp_path):
 
 def test_message_fields(tmp_path):
     mailbox = Mailbox(tmp_path)
-    mailbox.send("lead", Message("alice", "idle_notification",
-                                 extra={"reason": "completed", "completed_tasks": ["1"], "summary": "done"}))
+    mailbox.send(
+        "lead",
+        Message(
+            "alice", "idle_notification", extra={"reason": "completed", "completed_tasks": ["1"], "summary": "done"}
+        ),
+    )
     raw = json.loads((tmp_path / "lead.json").read_text(encoding="utf-8"))[0]
     assert raw["id"].startswith("m-") and len(raw["id"]) == 10
     assert {"from", "type", "body", "summary", "timestamp", "read", "reason", "completed_tasks"} <= set(raw)
@@ -175,6 +188,7 @@ def test_message_fields(tmp_path):
 
 def test_full_mailbox(tmp_path, monkeypatch):
     from mosscode.teams import mailbox as mailbox_module
+
     monkeypatch.setattr(mailbox_module, "UNREAD_LIMIT", 3)
     mailbox = Mailbox(tmp_path)
     for _ in range(3):
@@ -185,17 +199,20 @@ def test_full_mailbox(tmp_path, monkeypatch):
     assert len(mailbox.peek("bob")) == 3
 
 
-@pytest.mark.parametrize("message", [
-    Message("alice", "text", "body", ""),  # No summary.
-    Message("alice", "text", "body", "x" * 81),
-    Message("alice", "text", "x" * 20001, "s"),
-    Message("alice", "plan_approval_response", extra={"request_id": "r", "approve": True, "feedback": ""}),
-    Message("alice", "shutdown_request", extra={"reason": ""}),
-    Message(LEAD, "shutdown_response", extra={"request_id": "r", "approve": True, "reason": ""}),
-    Message(LEAD, "idle_notification", extra={"reason": "completed", "completed_tasks": [], "summary": ""}),
-    Message(LEAD, "plan_approval_response", extra={"request_id": "r"}),  # Missing fields.
-    Message("alice", "chat", "x", "s"),
-])
+@pytest.mark.parametrize(
+    "message",
+    [
+        Message("alice", "text", "body", ""),  # No summary.
+        Message("alice", "text", "body", "x" * 81),
+        Message("alice", "text", "x" * 20001, "s"),
+        Message("alice", "plan_approval_response", extra={"request_id": "r", "approve": True, "feedback": ""}),
+        Message("alice", "shutdown_request", extra={"reason": ""}),
+        Message(LEAD, "shutdown_response", extra={"request_id": "r", "approve": True, "reason": ""}),
+        Message(LEAD, "idle_notification", extra={"reason": "completed", "completed_tasks": [], "summary": ""}),
+        Message(LEAD, "plan_approval_response", extra={"request_id": "r"}),  # Missing fields.
+        Message("alice", "chat", "x", "s"),
+    ],
+)
 def test_invalid_messages(message, tmp_path):
     with pytest.raises(TeamError) as caught:
         check(message)
@@ -214,6 +231,7 @@ def test_valid_protocol_messages():
 
 # The shared task list -------------------------------------------------------------------
 
+
 def test_dependency_gates_progress(board):
     first = board.create("接口", actor=LEAD)
     second = board.create("前端", blocked_by=["1"], owner="bob", participants=ROSTER)
@@ -222,7 +240,9 @@ def test_dependency_gates_progress(board):
     with pytest.raises(TeamError) as caught:
         board.update("2", actor="bob", status="in_progress")
     assert caught.value.code == "task_blocked" and "1" in caught.value.message
-    assert board.update("1", actor="alice", participants=ROSTER, owner="alice", status="in_progress").task.owner == "alice"
+    assert (
+        board.update("1", actor="alice", participants=ROSTER, owner="alice", status="in_progress").task.owner == "alice"
+    )
     done = board.update("1", actor="alice", status="completed")
     assert [task.id for task in done.ready] == ["2"]
     assert board.update("2", actor="bob", status="in_progress").task.status == "in_progress"
@@ -279,6 +299,7 @@ def test_ownership_and_direction(board):
 
 def test_limits(board, monkeypatch):
     from mosscode.teams import board as board_module
+
     with pytest.raises(TeamError) as caught:
         board.create("  ")
     assert caught.value.code == "invalid_task"
@@ -335,12 +356,12 @@ import re  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from mosscode.agents.runtime import GLOBAL_BAN  # noqa: E402
+from mosscode.messages import ToolCall  # noqa: E402
 from mosscode.teams.member import TeamAccess  # noqa: E402
 from mosscode.tools.team import LEAD_TOOLS, TEAM_TOOLS  # noqa: E402
 from mosscode.worktree.meta import load_meta  # noqa: E402
 from test_agent import call, response  # noqa: E402
 from test_sessions import drain  # noqa: E402
-from mosscode.messages import ToolCall  # noqa: E402
 from test_subagents import ScriptProvider, conversation, project_of, settle  # noqa: E402
 from test_worktree import branches, repo  # noqa: E402
 
@@ -401,8 +422,9 @@ def done(messages, tools):
 
 async def test_lead_tools_from_the_start_and_never_in_print_mode(tmp_path):
     create = tool_call("team_create", "c1", name="auth")
-    provider, conv = team_conversation(tmp_path, Script(lambda m, t: response(calls=[create]) if len(m) == 1
-                                                        else response("建好了")))
+    provider, conv = team_conversation(
+        tmp_path, Script(lambda m, t: response(calls=[create]) if len(m) == 1 else response("建好了"))
+    )
     assert set(LEAD_TOOLS) <= set(conv.registry.names())
     await drain(conv.reply("建团队"))
     before, after = provider.requests[0][2], provider.requests[1][2]
@@ -431,9 +453,14 @@ async def test_subagents_never_see_team_tools_and_forks_are_refused(tmp_path):
             seen.append(names(tools))
             return response("看完了")
         if len(messages) == 1:
-            return response(calls=[call("agent", "a1", description="看", prompt="看看", agent_type="general"),
-                                   call("agent", "f1", description="分", prompt="分出去")])
+            return response(
+                calls=[
+                    call("agent", "a1", description="看", prompt="看看", agent_type="general"),
+                    call("agent", "f1", description="分", prompt="分出去"),
+                ]
+            )
         return response("好")
+
     provider, conv = team_conversation(tmp_path, script)
     await drain(conv.reply("开始"))
     await settle(conv)
@@ -456,8 +483,13 @@ async def test_ac14_ac15_spawn_in_a_worktree(tmp_path):
     # The record is complete; the worktree is in use while the member runs.
     config = conv.teams.current.config
     member = json.loads(config.read_text(encoding="utf-8"))["members"][0]
-    assert (member["name"], member["agent_type"], member["backend"], member["prompt"], member["agent_id"]) == \
-           ("alice", "general", "in-process", "实现登录", "alice@auth")
+    assert (member["name"], member["agent_type"], member["backend"], member["prompt"], member["agent_id"]) == (
+        "alice",
+        "general",
+        "in-process",
+        "实现登录",
+        "alice@auth",
+    )
     assert member["worktree"]["name"] == "team-auth/alice" and Path(member["worktree"]["path"]).is_dir()
     manager = conv.worktree_manager()
     meta = load_meta(manager.meta_path(member["worktree"]["flat"]))
@@ -479,8 +511,10 @@ async def test_ac14_ac15_spawn_in_a_worktree(tmp_path):
     assert Path(data["members"][0]["worktree"]["path"]).is_dir()  # Kept across restarts.
     # A pane member marks it with its own pid, so it stays in use after the lead has gone.
     await manager.mark_in_use(member["worktree"]["flat"], "团队 auth 成员 alice", pid=4242)
-    assert load_meta(manager.meta_path(member["worktree"]["flat"])).in_use == \
-           {"pid": 4242, "task": "团队 auth 成员 alice"}
+    assert load_meta(manager.meta_path(member["worktree"]["flat"])).in_use == {
+        "pid": 4242,
+        "task": "团队 auth 成员 alice",
+    }
 
 
 async def test_messages_during_a_turn_arrive_together(tmp_path):
@@ -490,6 +524,7 @@ async def test_messages_during_a_turn_arrive_together(tmp_path):
         if turns(messages) == 1:
             await gate.wait()
         return response("收到")
+
     script = Script(alice=alice)
     provider, conv = team_conversation(tmp_path, script)
     await conv.teams.create("t")
@@ -507,8 +542,11 @@ async def test_messages_during_a_turn_arrive_together(tmp_path):
 def test_broadcast_reaches_everyone_but_the_sender(tmp_path):
     store = TeamStore(tmp_path / "t")
     store.create()
-    store.modify(lambda team: team.members.extend([Member("alice", "general"), Member("bob", "general"),
-                                                   Member("carol", "general")]))
+    store.modify(
+        lambda team: team.members.extend(
+            [Member("alice", "general"), Member("bob", "general"), Member("carol", "general")]
+        )
+    )
     assert TeamAccess(store, "alice").send("*", "text", "大家好", "问候") == ["bob", "carol"]
     assert [m.body for m in store.mailbox.peek("bob")] == ["大家好"] == [m.body for m in store.mailbox.peek("carol")]
     assert store.mailbox.peek("alice") == [] and store.mailbox.peek(LEAD) == []
@@ -537,6 +575,7 @@ async def test_member_approval_while_the_lead_is_idle(tmp_path):
         if messages[-1].role == "user":
             return response(calls=[call("write_file", "w1", path="b.txt", content="成员写的\n")])
         return response("写好了")
+
     script = Script(alice=alice)
     provider, conv = team_conversation(tmp_path, script, mode="default", interactive=True)
     shown = []
@@ -544,6 +583,7 @@ async def test_member_approval_while_the_lead_is_idle(tmp_path):
     def approve(request):
         shown.append(request)
         conv.registry.permissions.respond(request.id, "once")
+
     conv.teams.on_approval = approve
     await conv.teams.create("t")
     await conv.teams.spawn("alice", "general", "写文件", isolation="none")
@@ -563,11 +603,13 @@ def plan_member(plans):
             return response(calls=[call("write_file", "w9", path="done.txt", content="ok\n")])
         if last.role == "user" and turns(messages) == 1:
             return response(calls=[call("write_file", "w1", path="early.txt", content="x\n")])
-        if last.role == "user" or (last.tool_results[0].name == "write_file"
-                                   and last.tool_results[0].code == "plan_blocked"):
+        if last.role == "user" or (
+            last.tool_results[0].name == "write_file" and last.tool_results[0].code == "plan_blocked"
+        ):
             submitted.append(1)
             return response(calls=[call("exit_plan_mode", f"p{len(submitted)}", plan=plans[len(submitted) - 1])])
         return response("等待")
+
     return alice
 
 
@@ -622,6 +664,7 @@ async def test_approved_while_the_session_plans(tmp_path):
 
     def approved():
         return [r[0][-1].text for r in script.seen["alice"] if r[0][-1].role == "user" and "已批准" in r[0][-1].text]
+
     await until(lambda: approved() and runner.status == "idle")
     assert "会话当前处于计划模式" in approved()[0] and runner.policy.mode == "plan"
     assert not (project_of(tmp_path) / "done.txt").exists()
@@ -635,6 +678,7 @@ async def test_idle_notification_carries_the_reply_and_newly_ready_tasks(tmp_pat
         if messages[-1].tool_results[0].call_id == "u1":
             return response(calls=[tool_call("team_task_update", "u2", id="1", status="completed")])
         return response("登录做完了")
+
     script = Script(alice=alice)
     provider, conv = team_conversation(tmp_path, script)
     await conv.teams.create("t")
@@ -655,6 +699,7 @@ async def test_member_card_outlives_the_lead_turn(tmp_path):
     """In the UI, a member's request shown during a lead turn stays when that turn ends."""
     from mosscode.tui import MossCodeApp
     from test_tui import send
+
     gate = asyncio.Event()
 
     async def lead(messages, tools):
@@ -665,6 +710,7 @@ async def test_member_card_outlives_the_lead_turn(tmp_path):
         if messages[-1].role == "user":
             return response(calls=[call("write_file", "w1", path="b.txt", content="成员写的\n")])
         return response("写好了")
+
     script = Script(lead, alice=alice)
     provider, conv = team_conversation(tmp_path, script, mode="default")
     app = MossCodeApp(conv, "Demo")
@@ -673,7 +719,7 @@ async def test_member_card_outlives_the_lead_turn(tmp_path):
         await conv.teams.create("t")
         await conv.teams.spawn("alice", "general", "写文件", isolation="none")
         for _ in range(200):
-            await pilot.pause(.02)
+            await pilot.pause(0.02)
             if app._approval_request is not None:
                 break
         request = app._approval_request
@@ -730,6 +776,7 @@ def answering(conv, choice):
             request = await policy.requests.get()
             seen.append(request)
             policy.respond(request.id, choice)
+
     return seen, asyncio.get_running_loop().create_task(answer())
 
 
@@ -752,8 +799,10 @@ def head(project) -> str:
 
 
 def clean(project) -> bool:
-    return git(project, "status", "--porcelain", "--untracked-files=no") == "" and \
-        not (project / ".git" / "MERGE_HEAD").exists()
+    return (
+        git(project, "status", "--porcelain", "--untracked-files=no") == ""
+        and not (project / ".git" / "MERGE_HEAD").exists()
+    )
 
 
 def complete(store, task_id, owner):
@@ -788,6 +837,7 @@ async def test_uncommitted_and_busy_members(tmp_path):
         if turns(messages) == 2:
             await gate.wait()
         return response("好")
+
     project, conv = await merge_team(tmp_path, "alice", "bob", bob=bob)
     worktree = commit_in(conv, "alice", "b.txt")
     (worktree / "new.txt").write_text("没提交\n", encoding="utf-8")
@@ -911,10 +961,12 @@ async def test_lead_guide_only_in_the_lead_prompt(tmp_path):
 
 async def test_merge_card_in_the_ui(tmp_path):
     from mosscode.tui import MossCodeApp
+
     provider, conv = team_conversation(tmp_path, Script())
     app = MossCodeApp(conv, "Demo")
-    request = ApprovalRequest("r1", "", Operation("team_merge", "alice", preview="成员：alice"), "合并？",
-                              ("merge", "deny"))
+    request = ApprovalRequest(
+        "r1", "", Operation("team_merge", "alice", preview="成员：alice"), "合并？", ("merge", "deny")
+    )
     async with app.run_test(size=(100, 32)) as pilot:
         app._show_approval(request)
         await pilot.pause()
@@ -927,6 +979,7 @@ async def test_merge_card_in_the_ui(tmp_path):
 
         async def note(text, style=None):
             notes.append(text)
+
         app._local_note = note
         future = asyncio.get_running_loop().create_future()
         conv.registry.permissions.pending["r1"] = future
@@ -954,9 +1007,11 @@ from test_subagents import tool_results_of  # noqa: E402
 
 def idle(conv, *members):
     """After a turn: a runner starts out idle before its first one."""
+
     def check():
         runners = [conv.teams.runners.get(name) for name in members]
         return all(runner is not None and runner.status == "idle" and runner.loop.history for runner in runners)
+
     return check
 
 
@@ -971,6 +1026,7 @@ async def test_lead_exit_stops_members_and_keeps_the_team(tmp_path):
     async def carol(messages, tools):
         await gate.wait()  # Never answers: cancelled after stop_wait.
         return response("好")
+
     script = Script(alice=done, bob=done, carol=carol)
     provider, conv = team_conversation(tmp_path, script)
     await conv.teams.create("t")
@@ -1002,6 +1058,7 @@ async def test_ac33_reopen_then_revive_with_the_old_conversation(tmp_path):
 
     def alice(messages, tools):
         return response("登录写好了" if turns(messages) == 1 else "收到")
+
     provider, conv = team_conversation(tmp_path, Script(alice=alice))
     await conv.teams.create("t", "登录")
     await conv.teams.spawn("alice", "general", "实现登录")
@@ -1009,8 +1066,12 @@ async def test_ac33_reopen_then_revive_with_the_old_conversation(tmp_path):
     await conv.close()
     # A new lead process opens it; nothing runs, the holder is this process.
     send = tool_call("send_message", "s1", to="alice", body="再加注销", summary="注销")
-    script = Script(lambda m, t: response(calls=[send]) if m[-1].role == "user" and "让 alice 继续" in m[-1].text
-                    else response("好"), alice=lambda m, t: response("注销也好了"))
+    script = Script(
+        lambda m, t: (
+            response(calls=[send]) if m[-1].role == "user" and "让 alice 继续" in m[-1].text else response("好")
+        ),
+        alice=lambda m, t: response("注销也好了"),
+    )
     provider2, conv2 = team_conversation(tmp_path, script)
     notes = []
     conv2.teams.on_note = notes.append
@@ -1041,6 +1102,7 @@ async def test_team_held_and_team_busy(tmp_path, monkeypatch):
     async def alice(messages, tools):
         await gate.wait()
         return response("好")
+
     provider, conv = team_conversation(tmp_path, Script(alice=alice))
     await conv.teams.create("t")
     await conv.teams.spawn("alice", "general", "做事", isolation="none")
@@ -1076,7 +1138,9 @@ async def test_corrupt_transcript_keeps_the_message(tmp_path):
         file.write("{坏的\n")
     with pytest.raises(TeamError) as error:
         await conv2.teams.send("alice", "text", "还在吗", "问")
-    assert error.value.code == "revive_failed" and "已损坏" in error.value.message and "已写入邮箱" in error.value.message
+    assert (
+        error.value.code == "revive_failed" and "已损坏" in error.value.message and "已写入邮箱" in error.value.message
+    )
     assert [m.body for m in store.mailbox.peek("alice") if not m.read] == ["还在吗"]
     assert "alice" not in conv2.teams.runners and store.load().member("alice").status == "stopped"
     await conv2.close()
@@ -1137,8 +1201,10 @@ async def test_team_commands(tmp_path):
 async def test_settle_with_a_finished_write_still_in_the_set(owner, monkeypatch):
     """A write that finished but has not yet left the set (its callback runs next iteration) must not spin."""
     from types import SimpleNamespace
+
     from mosscode.teams.process import MemberProcess
     from mosscode.teams.runtime import TeamRuntime
+
     settle = TeamRuntime.settle if owner == "runtime" else MemberProcess.settle
     gather, calls = asyncio.gather, []
 
@@ -1146,6 +1212,7 @@ async def test_settle_with_a_finished_write_still_in_the_set(owner, monkeypatch)
         calls.append(jobs)
         assert len(calls) < 100, "settle() spun on a finished write"
         return gather(*jobs, **options)
+
     monkeypatch.setattr(asyncio, "gather", counted)
     holder = SimpleNamespace(_writes=set())
     job = asyncio.get_running_loop().create_future()
@@ -1162,6 +1229,7 @@ async def test_member_that_does_not_stop_is_forced(tmp_path):
     async def alice(messages, tools):
         await gate.wait()
         return response("好")
+
     provider, conv = team_conversation(tmp_path, Script(alice=alice))
     notes = []
     conv.teams.on_note = notes.append
@@ -1199,6 +1267,7 @@ async def test_team_context_after_clear(tmp_path):
 
 async def test_status_bar_counts_members_and_their_approvals(tmp_path):
     from mosscode.tui import MossCodeApp
+
     provider, conv = team_conversation(tmp_path, Script(alice=done))
     app = MossCodeApp(conv, "Demo")
     async with app.run_test(size=(160, 32)) as pilot:
@@ -1210,8 +1279,9 @@ async def test_status_bar_counts_members_and_their_approvals(tmp_path):
         pending = conv.registry.permissions.pending
         pending["r1"] = asyncio.get_running_loop().create_future()
         conv.teams.askers["r1"] = "alice"  # Counted by asker, as TeamRuntime._approval records it.
-        app._show_approval(ApprovalRequest("r1", "", Operation("write_file", "b.txt"), "写？", ("once", "deny"),
-                                           source="成员 alice"))
+        app._show_approval(
+            ApprovalRequest("r1", "", Operation("write_file", "b.txt"), "写？", ("once", "deny"), source="成员 alice")
+        )
         await pilot.pause()
         assert "成员审批 1" in str(app.query_one("#status").render())
         pending.pop("r1").cancel()
@@ -1221,11 +1291,11 @@ async def test_status_bar_counts_members_and_their_approvals(tmp_path):
 # Coordinator mode ----------------------------------------------------------------------
 
 import dataclasses  # noqa: E402
-import sys  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
-import mosscode.cli as cli  # noqa: E402
 from mcp import types as mcp_types  # noqa: E402
+
+import mosscode.cli as cli  # noqa: E402
 from mosscode import coordinator  # noqa: E402
 from mosscode.builtin_commands import status_report  # noqa: E402
 from mosscode.mcp_client import MCPTool, ServerConnection  # noqa: E402
@@ -1261,6 +1331,7 @@ def coordinator_cli(monkeypatch, tmp_path, args, *, configured, env):
         conversation = original(*a, **k)
         built.append(conversation)
         return conversation
+
     monkeypatch.setattr(cli, "Conversation", capture)
     try:
         cli.main()
@@ -1274,7 +1345,9 @@ def test_environment_values(value, expected):
     assert coordinator.env_on({coordinator.ENV: value}) is expected
 
 
-@pytest.mark.parametrize("configured,env,notice", [(True, None, coordinator.NO_ENV), (False, "1", coordinator.NO_CONFIG)])
+@pytest.mark.parametrize(
+    "configured,env,notice", [(True, None, coordinator.NO_ENV), (False, "1", coordinator.NO_CONFIG)]
+)
 def test_one_switch_is_not_enough(monkeypatch, tmp_path, configured, env, notice):
     conv, _ = coordinator_cli(monkeypatch, tmp_path, [], configured=configured, env=env)
     assert conv.coordinator is False and conv.registry.withheld is None
@@ -1305,8 +1378,14 @@ def test_print_mode_ignores_it(monkeypatch, tmp_path, capsys):
 
 def skill_tool(root) -> SkillTool:
     skill = SimpleNamespace(name="deploy", directory=root)
-    spec = SimpleNamespace(name="run", full_name="skill__deploy__run", description="d",
-                           input_schema={"type": "object", "properties": {}}, command=["python"], timeout=5)
+    spec = SimpleNamespace(
+        name="run",
+        full_name="skill__deploy__run",
+        description="d",
+        input_schema={"type": "object", "properties": {}},
+        command=["python"],
+        timeout=5,
+    )
     return SkillTool(root, skill, spec)
 
 
@@ -1337,6 +1416,7 @@ async def test_lead_offers_no_write_mcp_or_skill_tools_but_members_keep_them(tmp
 async def test_without_agents_it_is_ignored(tmp_path):
     from mosscode.conversation import Conversation
     from mosscode.tools import create_default_registry
+
     registry = create_default_registry(project_of(tmp_path), load_permissions=False)
     plain = Conversation(ScriptProvider(lambda *a: response("好")), registry=registry, teams=True, coordinator=True)
     assert plain.coordinator is False and coordinator.NO_AGENTS in plain._notices
@@ -1345,6 +1425,7 @@ async def test_without_agents_it_is_ignored(tmp_path):
 
 async def test_status_bar_and_status_command(tmp_path):
     from mosscode.tui import MossCodeApp
+
     provider, conv = team_conversation(tmp_path, Script(), coordinator=True)
     assert coordinator.STATUS in status_report(context(conv))
     app = MossCodeApp(conv, "Demo")
