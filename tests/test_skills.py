@@ -1295,8 +1295,11 @@ def test_builtin_skills(tmp_path, isolated_home):
     from mosscode.skills import builtin_dir
 
     catalog = SkillCatalog.load(tmp_path, reserved=BUILTIN.names())
-    assert catalog.problems == () and [catalog.get(n).source for n in ("commit", "review", "test")] == ["builtin"] * 3
-    commit, review, test = (catalog.get(name) for name in ("commit", "review", "test"))
+    names = ("commit", "init", "review", "test")
+    assert catalog.problems == () and [catalog.get(n).source for n in names] == ["builtin"] * 4
+    commit, init, review, test = (catalog.get(name) for name in names)
+    assert init.mode == "inline" and {"write_file", "edit_file"} <= set(init.allowed_tools)
+    assert "不要安装依赖" in init.body and "不要重写整个文件" in init.body and "CLAUDE.md" in init.body
     assert commit.mode == "inline" and commit.allowed_tools == ("execute_command", "read_file")
     assert "不要用 git add -A" in commit.body and "不要推送" in commit.body
     assert (review.mode, review.fork_context) == ("fork", "none")

@@ -130,7 +130,7 @@ moss --resume                 # 启动后从列表中选择会话
 | `/tasks`（别名 `/task`） | 列出本会话的子 Agent 任务及其状态、用时和 Token；`/tasks id` 查看详情，`/tasks stop id` 停止 |
 | `/worktree`（别名 `/worktrees`） | 列出 MossCode 管理的 git 工作树及其状态；`/worktree create 名称` 创建，`/worktree remove 名称 [--discard]` 删除，`/worktree clean` 清理过期的临时工作树 |
 | `/team`（别名 `/teams`） | 列出本项目的 Agent 团队；`/team 名称` 查看成员和任务，`/team stop 成员` 停止成员，`/team delete 名称` 删除团队 |
-| `/<Skill 名> [参数]` | 运行 Skill，如内置的 `/commit`、`/review`（在独立上下文中审查未提交的改动）、`/test` |
+| `/<Skill 名> [参数]` | 运行 Skill，如内置的 `/commit`、`/init`（生成或补充 `AGENTS.md`）、`/review`（在独立上下文中审查未提交的改动）、`/test` |
 | `/exit`（别名 `/quit`） | 退出并清理资源 |
 
 内置命令都是本地命令，不请求模型；Skill 命令把 Skill 的规程发给模型，补全菜单中带 `[skill]` 标记。命令名不区分大小写。`/etc/hosts 怎么改` 这类不像命令的文字照常发给模型；要发送恰好像命令的文字，在开头再加一个 `/`，如 `//api 怎么设计`。解析、补全和添加命令的方法见 [命令](docs/reference/commands.md)。
