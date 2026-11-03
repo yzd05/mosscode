@@ -47,7 +47,17 @@ GLOBAL_BAN = frozenset(
 )
 # What an isolated sub-agent can have (create_default_registry, rooted in its worktree).
 WORKSPACE_TOOLS = frozenset(
-    {"read_file", "write_file", "edit_file", "execute_command", "glob", "grep", "exit_plan_mode"}
+    {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "execute_command",
+        "glob",
+        "grep",
+        "exit_plan_mode",
+        "web_fetch",
+        "web_search",
+    }
 )
 AUTO_BACKGROUND = 120.0
 MAX_BACKGROUND = 4
@@ -291,11 +301,17 @@ class SubAgents:
         if root is None:
             registry = main.registry.for_agent(agent="subagent", agent_type=agent.name, permissions=policy, keep=keep)
         else:
-            from ..tools import create_default_registry
+            from ..tools import create_default_registry, web_tools
 
             shell = getattr(main.registry.get("execute_command"), "shell", None)
             fresh = create_default_registry(root, permissions=policy, shell=shell if shell is not None else "auto")
-            registry = fresh.for_agent(agent="subagent", agent_type=agent.name, permissions=policy, keep=keep)
+            registry = fresh.for_agent(
+                agent="subagent",
+                agent_type=agent.name,
+                permissions=policy,
+                keep=keep,
+                extra=tuple(tool for tool in web_tools(main.registry, root) if keep(tool.name)),
+            )
             registry.session, registry.hooks, registry.worktree = main.registry.session, main.registry.hooks, worktree
         registry.nested = nested
         turns = min(agent.max_turns or main.max_iterations, main.max_iterations)

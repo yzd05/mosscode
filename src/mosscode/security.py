@@ -1,8 +1,10 @@
 """Application-level hard guards, independent of configurable permissions."""
 
+import ipaddress
 import re
 import shlex
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 
 class SecurityError(Exception):
@@ -280,3 +282,57 @@ def simple_command(command: str) -> bool:
         elif char in ";&|><(){}\\":
             return False
     return quote is None
+
+
+# Proxy tools in fake-IP mode (Clash, Surge) answer every DNS query from this benchmark range.
+FAKE_IP = ipaddress.ip_network("198.18.0.0/15")
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def public_address(value: str) -> bool:
+    """Whether web_fetch may connect to this address: not loopback, private, link-local or reserved."""
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address):
+        # Addresses that carry an IPv4 one are judged by it.
+        embedded = address.ipv4_mapped or address.sixtofour or (address.teredo or (None, None))[1]
+        if embedded is None and address in NAT64:
+            embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        if embedded is not None:
+            address = embedded
+    if address in FAKE_IP:
+        return True
+    return address.is_global and not address.is_multicast
+
+
+def web_target(url: str) -> tuple[str, str]:
+    """The https URL web_fetch requests and its lowercase host; local addresses are refused before any request."""
+    try:
+        parts = urlsplit(url.strip())
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        raise SecurityError("invalid_url", "URL 格式不正确。") from None
+    if parts.scheme.lower() not in {"http", "https"} or not host:
+        raise SecurityError("invalid_url", "web_fetch 只接受 http 和 https 地址。")
+    if parts.username is not None or parts.password is not None:
+        raise SecurityError("invalid_url", "URL 不能包含用户名或密码。")
+    try:
+        host = host.encode("idna").decode("ascii").rstrip(".")
+    except UnicodeError:
+        raise SecurityError("invalid_url", "URL 中的域名不合法。") from None
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    local = not public_address(host) if literal is not None else "." not in host or host == "localhost"
+    if local or host.endswith(".localhost"):
+        raise SecurityError(
+            "local_blocked",
+            "web_fetch 不访问本机和内网地址；需要访问本地服务时用 execute_command（例如 curl），按命令权限确认。",
+        )
+    netloc = f"[{host}]" if isinstance(literal, ipaddress.IPv6Address) else host
+    if port not in (None, 80, 443):
+        netloc += f":{port}"
+    return urlunsplit(("https", netloc, parts.path or "/", parts.query, "")), host

@@ -120,6 +120,14 @@ def _credential(provider) -> tuple[str, str]:
     return WARN, "未配置"
 
 
+def _web_search(config) -> Item:
+    if config is None:
+        return Item(OK, "网络搜索：未配置（web_search 工具不可用；读取网页不受影响）")
+    level, credential = _credential(config)
+    fix = f"设置环境变量 {config.api_key_env} 后打开新的终端" if level != OK else ""
+    return Item(level, f"网络搜索：{config.provider} · 凭据：{credential}", fix)
+
+
 def check_config(config: str | None = None, cwd: Path | None = None, home: Path | None = None) -> list[Item]:
     from .config import ConfigError, find_config, load_settings
     from .setup import OFFICIAL
@@ -158,6 +166,7 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
                         else "在配置中填写 api_key_env",
                     )
                 )
+            items.append(_web_search(settings.web_search))
     legacy = cwd / "config.yaml"
     if config is None and legacy.is_file():
         items.append(

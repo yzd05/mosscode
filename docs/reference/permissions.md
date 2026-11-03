@@ -51,7 +51,7 @@ deny:
   - Bash(git push:*)
 ```
 
-可用别名为 `Read`、`Write`、`Edit`、`Bash`/`Shell`、`Glob`、`Grep`，也接受实际工具名。文件规则匹配解析后的项目相对路径；`Glob`/`Grep` 规则匹配搜索范围的路径。`*` 匹配单个路径段，`**` 可跨目录；Windows 文件匹配忽略大小写。读取类规则（`Read`/`Glob`/`Grep`）可以写绝对路径以放行项目外的读取，例如 `Read(C:/Users/me/notes/**)`；相对路径规则只匹配项目内，`Read(**)` 不会放行项目外。写入和编辑规则必须是项目相对路径。`Bash` 是规则别名，实际运行配置的 shell。命令规则默认匹配完整原始命令；含串联、管道、重定向、变量或命令替换等复杂语法的命令不能凭 `Bash(git *)` 这类 glob 自动授权。以 `:*` 结尾的规则是按单词的前缀规则：allow 形式 `Bash(pytest:*)` 匹配 `pytest` 和 `pytest tests -q`，不匹配 `pytestx`，也不放行任何复杂语法命令；deny 形式 `Bash(git push:*)` 会检查复合命令的每一段，`git status && git push` 同样被拒绝。
+可用别名为 `Read`、`Write`、`Edit`、`Bash`/`Shell`、`Glob`、`Grep`、`WebFetch`、`WebSearch`（见下文 [网络工具](#网络工具)），也接受实际工具名。文件规则匹配解析后的项目相对路径；`Glob`/`Grep` 规则匹配搜索范围的路径。`*` 匹配单个路径段，`**` 可跨目录；Windows 文件匹配忽略大小写。读取类规则（`Read`/`Glob`/`Grep`）可以写绝对路径以放行项目外的读取，例如 `Read(C:/Users/me/notes/**)`；相对路径规则只匹配项目内，`Read(**)` 不会放行项目外。写入和编辑规则必须是项目相对路径。`Bash` 是规则别名，实际运行配置的 shell。命令规则默认匹配完整原始命令；含串联、管道、重定向、变量或命令替换等复杂语法的命令不能凭 `Bash(git *)` 这类 glob 自动授权。以 `:*` 结尾的规则是按单词的前缀规则：allow 形式 `Bash(pytest:*)` 匹配 `pytest` 和 `pytest tests -q`，不匹配 `pytestx`，也不放行任何复杂语法命令；deny 形式 `Bash(git push:*)` 会检查复合命令的每一段，`git status && git push` 同样被拒绝。
 
 自动保存的规则使用对象形式保留精确匹配和命令目录，例如：
 
@@ -60,6 +60,30 @@ allow:
   - rule: execute_command(git status)
     exact: true
     cwd: src
+```
+
+## 网络工具
+
+`web_fetch` 和 `web_search` 把网址或查询词发到外部，不算只读工具：没有匹配规则时在 default、acceptEdits 和 plan 中询问（计划模式也提供这两个工具），bypassPermissions 中允许；deny 在任何档位都生效。无界面模式中没有被规则放行的调用返回 `approval_required`。本机和内网地址在审批之前就被拒绝，任何规则和档位都不能放行，见 [工具与 Agent Loop](tools.md#web_fetch)。
+
+| 规则 | 匹配 |
+| --- | --- |
+| `WebFetch(domain:docs.python.org)` | 这个主机的任意页面 |
+| `WebFetch(domain:*.python.org)` | 子域名，如 `docs.python.org`；不含 `python.org` 本身 |
+| `WebFetch(domain:*)` 或 `WebFetch` | 任意域名 |
+| `WebSearch` | 任意搜索，不带参数 |
+
+域名不区分大小写，中文等国际化域名按 IDNA 编码后比较，`*` 和 `?` 是通配符；规则只匹配主机，不匹配路径和端口。也可以写实际工具名 `web_fetch(domain:…)`、`web_search`。网络规则不接受 `exact` 和 `cwd`，`WebSearch(…)` 带参数时报错。没有内置预先放行的域名。
+
+审批选项：`web_fetch` 为本次允许、本会话允许这个域名（同一主机的其他页面不再询问）、永久允许这个域名（保存为 `WebFetch(domain:主机)`）；`web_search` 为本次允许、本会话允许搜索、永久允许搜索（保存为 `WebSearch`）。审批面板显示完整网址或查询词以及使用的搜索服务。
+
+```yaml
+allow:
+  - WebFetch(domain:docs.python.org)
+  - WebFetch(domain:*.github.io)
+  - WebSearch
+deny:
+  - WebFetch(domain:*.example.com)
 ```
 
 ## 危险命令

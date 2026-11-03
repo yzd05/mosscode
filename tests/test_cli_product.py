@@ -293,8 +293,30 @@ def test_doctor_reports_credentials_without_values(tmp_path, monkeypatch):
     text = doctor.report(items)
     assert secret not in text and "token=x" not in text
     assert "gateway.example" in text and "已设置" in text and "api.openai.com（官方地址）" in text
-    assert [item.level for item in items] == [doctor.OK, doctor.OK, doctor.WARN]
+    assert [item.level for item in items] == [doctor.OK, doctor.OK, doctor.WARN, doctor.OK]
+    assert "网络搜索：未配置" in text
     assert "MOSS_TEST_UNSET_KEY 未设置" in text
+
+
+def test_doctor_reports_web_search_credentials_without_values(tmp_path, monkeypatch):
+    path = tmp_path / "c.yaml"
+    provider = {"name": "a", "protocol": "anthropic-messages", "model": "m", "api_key": "x"}
+    search = {"provider": "tavily", "api_key_env": "MOSS_TEST_SEARCH_KEY"}
+    path.write_text(yaml.safe_dump({"providers": [provider], "web_search": search}), encoding="utf-8")
+    monkeypatch.delenv("MOSS_TEST_SEARCH_KEY", raising=False)
+    item = doctor.check_config(str(path), cwd=tmp_path)[-1]
+    assert (item.level, item.text) == (doctor.WARN, "网络搜索：tavily · 凭据：环境变量 MOSS_TEST_SEARCH_KEY 未设置")
+    assert "MOSS_TEST_SEARCH_KEY" in item.fix
+    monkeypatch.setenv("MOSS_TEST_SEARCH_KEY", "tvly-secret-789")
+    items = doctor.check_config(str(path), cwd=tmp_path)
+    assert items[-1].level == doctor.OK and "tvly-secret-789" not in doctor.report(items)
+    path.write_text(
+        yaml.safe_dump({"providers": [provider], "web_search": {"provider": "tavily", "api_key": "tvly-inline"}}),
+        encoding="utf-8",
+    )
+    items = doctor.check_config(str(path), cwd=tmp_path)
+    assert items[-1].text == "网络搜索：tavily · 凭据：已设置（配置文件中的 api_key）"
+    assert "tvly-inline" not in doctor.report(items)
 
 
 def test_doctor_missing_config_is_an_error_and_legacy_file_a_warning(tmp_path):

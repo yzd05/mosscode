@@ -8,7 +8,7 @@ from rich.console import Console
 from mosscode import cli
 from mosscode.builtin_commands import BUILTIN, dispatch, help_text, session_report, status_report
 from mosscode.commands import Command, CommandConflict, CommandContext, CommandRegistry, parse_input, unknown_note
-from mosscode.config import ProviderConfig, Settings
+from mosscode.config import ProviderConfig, Settings, WebSearchConfig
 from mosscode.conversation import Conversation
 from mosscode.memory import MemoryStore
 from mosscode.memory_extract import conversation_text
@@ -271,6 +271,7 @@ def test_status_without_requests_tools_or_mcp():
     assert "  上下文      尚未发送请求" in report and "  本会话用量  尚未发送请求" in report
     assert "  会话        无" in report and "  项目指令    未找到" in report
     assert "  MCP         未配置" in report and "  记忆        关闭（memory: false）" in report
+    assert "  网络        未启用" in report
 
 
 async def test_status_after_a_request(tmp_path):
@@ -288,6 +289,15 @@ async def test_status_after_a_request(tmp_path):
         f"/ {conv.budget.effective:,} Token" in report and "已压缩 0 次；未配置 context_window，按 128K 估算" in report
     )
     assert "· 请求 1 次" in report and "  项目指令    2 个文件（/memory 查看）" in report
+    assert "  网络        读取网页可用；搜索未配置（配置文件中的 web_search）" in report
+
+
+def test_status_names_the_configured_search_service(tmp_path):
+    registry = create_default_registry(
+        tmp_path, load_permissions=False, web_search=WebSearchConfig("tavily", api_key="tvly-secret")
+    )
+    report = status_report(context(Conversation(FakeProvider(), registry=registry)))
+    assert "  网络        读取网页、搜索（tavily）可用" in report and "tvly-secret" not in report
 
 
 async def test_session_report_and_help_for_one_command(tmp_path):

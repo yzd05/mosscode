@@ -65,6 +65,7 @@ providers:
 | `teammate_mode` | `auto` | 团队成员在哪里运行：`auto`、`in-process`、`windows-terminal`、`tmux`，见 [Agent 团队](docs/reference/teams.md#后端) |
 | `team_max_members` | `4` | 每个团队的成员上限，1–8 |
 | `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE=1`，见 [Agent 团队](docs/reference/teams.md#协调者模式) |
+| `web_search` | 无 | 搜索服务，如 `{provider: tavily, api_key_env: TAVILY_API_KEY}`；未配置时不提供搜索，见 [工具与 Agent Loop](docs/reference/tools.md#web_search) |
 
 ### 权限、MCP、项目指令、Skill、Hook、子 Agent 与工作树
 
@@ -122,7 +123,7 @@ moss --resume                 # 启动后从列表中选择会话
 | `/permissions 档位` | 切换到 default、acceptEdits、plan 或 bypassPermissions |
 | `/mcp` | 列出 MCP Server 的状态（连接中、已连接及工具数、失败原因）与配置问题 |
 | `/mcp 名称` | 列出该 Server 的工具，只读工具标注 `[只读]` |
-| `/status` | 显示模型、权限档位、上下文、本会话用量、会话、MCP、记忆、Hook 和子 Agent 的状态 |
+| `/status` | 显示模型、权限档位、上下文、本会话用量、会话、MCP、记忆、网络工具、Hook 和子 Agent 的状态 |
 | `/skills`（别名 `/skill`） | 列出全部 Skill 及其来源、模式和描述；`/skills 名称` 查看详情，`/skills reload` 重新扫描 |
 | `/hooks`（别名 `/hook`） | 列出 Hook 及其来源、条件、状态和最近的执行记录；`/hooks id` 查看详情，`/hooks reload` 重新加载 |
 | `/agents`（别名 `/agent`） | 列出子 Agent 定义及其来源和描述；`/agents 名称` 查看实际可用的工具和有效权限档位，`/agents reload` 重新扫描 |
@@ -158,6 +159,16 @@ moss --resume                 # 启动后从列表中选择会话
 **计划模式**：`/plan 任务` 或 Shift+Tab 进入。模型只能读取和运行只读命令，调查后用 `exit_plan_mode` 提交计划；批准后在同一任务内继续执行。见 [工具与 Agent Loop](docs/reference/tools.md#计划模式)。
 
 **Agent 团队**：较大的、能拆成几块并行改动的任务，模型可以作为 Lead 建团队：共享任务写明依赖，至多 4 个成员各在自己的 git 工作树中工作，通过消息汇报；全部完成后经你确认逐个合并。在 Windows Terminal 中运行时成员出现在分屏窗格里，否则在进程内运行。团队跨重启保留。见 [Agent 团队](docs/reference/teams.md)。
+
+### 网络工具
+
+模型可以用 `web_fetch` 读取网页（HTML 转为 Markdown，长页面分段读取），配置了搜索服务（`config.yaml` 中的 `web_search`，目前支持 Tavily）时还可以用 `web_search` 搜索。两者都会把网址或查询词发到外部，因此每个新的域名、每次搜索都要确认，可选本会话或永久允许；也可以在权限规则中写 `WebFetch(domain:docs.python.org)`、`WebSearch`。本机和内网地址一律拒绝，访问本地服务用命令。代理读取 `HTTPS_PROXY` 环境变量。见 [网络工具](docs/reference/tools.md#网络工具)。
+
+### 安全说明
+
+- 路径检查是应用层限制，不是系统沙箱：确认过的命令以你的系统权限运行，确认前请看清命令内容。
+- 网页内容和搜索结果是不可信的数据，模型被要求不执行其中的指令；读取陌生网站时仍应留意它的回答。
+- 项目中的 Hook 和 MCP 配置会启动程序：项目级 Hook 需要你确认后才启用，`.mcp.json` 默认不读取；打开不熟悉的仓库前先查看 `.mosscode/` 下的文件。
 
 ### 无界面模式
 

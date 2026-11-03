@@ -468,6 +468,7 @@ def status_report(ctx: CommandContext) -> str:
         ("工作目录", str(conversation.context_root or Path.cwd())),
         ("项目指令", f"{len(files)} 个文件（/memory 查看）" if files else "未找到"),
         ("MCP", _mcp_line(conversation)),
+        ("网络", _web_line(registry)),
         ("记忆", memory),
     ]
     if conversation.hooks is not None:
@@ -482,6 +483,15 @@ def status_report(ctx: CommandContext) -> str:
         rows.append(("角色", STATUS))
     width = max(12, *(cell_len(label) + 2 for label, _ in rows))
     return "状态\n" + "\n".join(f"  {label}{' ' * (width - cell_len(label))}{value}" for label, value in rows)
+
+
+def _web_line(registry) -> str:
+    if registry is None or registry.get("web_fetch") is None:
+        return "未启用"
+    search = registry.get("web_search")
+    if search is None:
+        return "读取网页可用；搜索未配置（配置文件中的 web_search）"
+    return f"读取网页、搜索（{search.backend.name}）可用"
 
 
 async def _status(ctx: CommandContext, argument: str) -> None:

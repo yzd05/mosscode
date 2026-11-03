@@ -62,6 +62,7 @@ moss setup | doctor
 - 版本、解释器、安装方式（uv tool、pipx、虚拟环境，是否可编辑安装）；
 - PATH 中的 `moss`、`mosscode`：找不到、不是当前运行的这一个、或有多个时提示；
 - 生效的配置文件和每个 Provider 的协议、模型、服务地址的主机名、凭据状态（“已设置”“环境变量 X 未设置”），从不显示密钥；工作目录下有不会被读取的 `config.yaml` 时提示；
+- 网络搜索服务（`web_search`）及其凭据状态；未配置时说明搜索不可用，读取网页不受影响；
 - `~/.mosscode` 是否可写；
 - ripgrep、git，Windows 上的 Git Bash 和 Windows Terminal（`wt.exe`，团队分屏窗格需要）；
 - 当前目录 `.mosscode/` 下的权限、MCP 和 Hook 文件能否解析。

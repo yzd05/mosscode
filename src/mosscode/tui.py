@@ -120,6 +120,15 @@ def choice_label(request: ApprovalRequest, choice: str) -> str:
         return f"永久允许以 {request.operation.prefix} 开头的命令 · 保存到本项目本地配置"
     if choice == "accept_edits" and request.operation.tool in EDIT_TOOLS:
         return "本会话自动接受编辑 · 切换为接受编辑档位，命令仍需确认"
+    if request.operation.tool == "web_fetch" and choice in {"session", "permanent"}:
+        host = request.operation.target
+        if choice == "session":
+            return f"本会话允许这个域名 · {host} 的任意页面，退出后失效"
+        return f"永久允许这个域名 · 保存为 WebFetch(domain:{host})"
+    if request.operation.tool == "web_search" and choice == "session":
+        return "本会话允许搜索 · 退出后失效"
+    if request.operation.tool == "web_search" and choice == "permanent":
+        return "永久允许搜索 · 保存为 WebSearch"
     if (request.operation.server or request.operation.skill) and choice == "session":
         return "本会话允许该工具 · 任意参数，退出后失效"
     if (request.operation.server or request.operation.skill) and choice == "permanent":

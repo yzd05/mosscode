@@ -459,7 +459,9 @@ def run(args: argparse.Namespace) -> None:
             config = ProviderSelectApp(settings).run(inline=True, mouse=False)
             if config is None:
                 return
-        registry = create_default_registry(permission_mode=args.permission_mode, shell=settings.shell)
+        registry = create_default_registry(
+            permission_mode=args.permission_mode, shell=settings.shell, web_search=settings.web_search
+        )
         mcp_settings = load_mcp_settings(Path.cwd())
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
         prune_all()

@@ -25,6 +25,7 @@ ALIASES = {
 }
 PROTOCOLS = set(ALIASES.values())
 TEAMMATE_MODES = ("auto", "in-process", "windows-terminal", "tmux")
+SEARCH_PROVIDERS = ("tavily",)
 
 
 def _validate_env_name(value: str | None) -> None:
@@ -72,6 +73,17 @@ class ProviderConfig:
 
 
 @dataclass(frozen=True)
+class WebSearchConfig:
+    provider: str
+    api_key_env: str | None = field(default=None, repr=False)
+    api_key: str | None = field(default=None, repr=False)
+
+    def credential(self) -> str | None:
+        """The key, or None when the variable it names is unset."""
+        return (os.environ.get(self.api_key_env) if self.api_key_env else self.api_key) or None
+
+
+@dataclass(frozen=True)
 class Settings:
     providers: tuple[ProviderConfig, ...]
     default_provider: str | None = None
@@ -91,6 +103,7 @@ class Settings:
     team_max_members: int = 4  # Members of one team at most (1–8).
     teammate_mode: str = "auto"  # auto / in-process / windows-terminal / tmux.
     coordinator_mode: bool = False  # Also needs MOSSCODE_COORDINATOR_MODE.
+    web_search: WebSearchConfig | None = None  # None: web_search is not offered.
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -214,6 +227,22 @@ def _provider(raw: Any) -> ProviderConfig:
     return config
 
 
+def _web_search(raw: Any) -> WebSearchConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) - {"provider", "api_key_env", "api_key"}:
+        raise ConfigError("web_search 只支持 provider、api_key_env、api_key 字段。")
+    if raw.get("provider") not in SEARCH_PROVIDERS:
+        raise ConfigError("web_search.provider 需为 " + "、".join(SEARCH_PROVIDERS) + " 之一。")
+    for key in ("api_key", "api_key_env"):
+        if key in raw and (not isinstance(raw[key], str) or not raw[key].strip()):
+            raise ConfigError(f"web_search.{key} 必须是非空字符串。")
+    if bool(raw.get("api_key")) == bool(raw.get("api_key_env")):
+        raise ConfigError("web_search 需要 api_key_env（环境变量名）或 api_key（密钥）中的一个。")
+    _validate_env_name(raw.get("api_key_env"))
+    return WebSearchConfig(raw["provider"], raw.get("api_key_env"), raw.get("api_key"))
+
+
 def config_candidates(cwd: Path | None = None, home: Path | None = None) -> tuple[Path, ...]:
     """A config.yaml in the working directory is a project's own file, not ours."""
     cwd = Path.cwd() if cwd is None else cwd
@@ -274,6 +303,7 @@ def load_settings(path: str | Path) -> Settings:
         "team_max_members",
         "teammate_mode",
         "coordinator_mode",
+        "web_search",
     }:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
@@ -331,6 +361,7 @@ def load_settings(path: str | Path) -> Settings:
         team_max_members=members,
         teammate_mode=teammate_mode,
         coordinator_mode=coordinator,
+        web_search=_web_search(raw.get("web_search")),
         **switches,
     )
     settings.select()

@@ -15,6 +15,8 @@
 | `glob` | 按文件模式查找文件，如 `**/*.py`，支持花括号多选如 `*.{py,md}`、`{src,docs}/**/*`（`grep` 的 `glob` 参数同样支持）；遵守 `.gitignore`，按修改时间从新到旧 |
 | `grep` | 按正则搜索内容；`output_mode` 为 `files_with_matches`（默认）、`content` 或 `count`，支持 `glob`、`ignore_case`、`context`、`head_limit` |
 | `memory` | 保存或删除跨会话的记忆笔记，只写两个笔记目录，不接受路径；不需要审批，计划模式中也可用。见 [记忆笔记](memory.md#memory-工具) |
+| `web_fetch` | 读取一个网页：HTML 转为 Markdown，文本原样返回，其他类型只说明类型和大小；每次约 10,000 Token，用 `offset` 继续读。见下文 [网络工具](#网络工具) |
+| `web_search` | 用配置的搜索服务搜索，返回标题、URL 和摘要；只在配置了 `web_search` 且凭据可用时提供。见下文 [网络工具](#网络工具) |
 
 ## 先读后改
 
@@ -40,7 +42,7 @@
 
 ## 计划模式
 
-计划模式只向模型提供只读工具（read_file、glob、grep）、`execute_command`（仅限只读命令）、`memory` 和 `exit_plan_mode`；写入、编辑、非只读命令和外部 MCP 工具返回 `plan_blocked`，任何规则和档位都不能放行。模型调查完成后调用 `exit_plan_mode` 提交 Markdown 计划：计划完整显示在对话中，审批面板提供三项——批准并执行（恢复进入计划前的权限）、批准并自动接受编辑（切换为 acceptEdits）、继续规划（拒绝，模型按反馈修改）。批准后同一任务的下一轮请求即可使用全部工具，无需再次输入。`--prompt` 无界面模式打印计划并返回 approval_required，仍停留在计划模式。输入 `/plan 修复入口报错` 先规划；也可以用 Shift+Tab 或 `/permissions 档位` 手动退出计划模式，再输入要执行的任务。/permissions plan 与 /plan 联动，切换其他权限会退出计划模式。计划保存在当前内存上下文，不建立计划文件。
+计划模式只向模型提供只读工具（read_file、glob、grep）、`execute_command`（仅限只读命令）、`memory`、`exit_plan_mode`，以及需要确认的 `web_fetch`、`web_search`；写入、编辑、非只读命令和外部 MCP 工具返回 `plan_blocked`，任何规则和档位都不能放行。模型调查完成后调用 `exit_plan_mode` 提交 Markdown 计划：计划完整显示在对话中，审批面板提供三项——批准并执行（恢复进入计划前的权限）、批准并自动接受编辑（切换为 acceptEdits）、继续规划（拒绝，模型按反馈修改）。批准后同一任务的下一轮请求即可使用全部工具，无需再次输入。`--prompt` 无界面模式打印计划并返回 approval_required，仍停留在计划模式。输入 `/plan 修复入口报错` 先规划；也可以用 Shift+Tab 或 `/permissions 档位` 手动退出计划模式，再输入要执行的任务。/permissions plan 与 /plan 联动，切换其他权限会退出计划模式。计划保存在当前内存上下文，不建立计划文件。
 
 ## 路径、超时与取消
 
@@ -49,6 +51,39 @@
 ## 搜索与截断
 
 搜索优先使用 PATH 中的 ripgrep（rg），缺失时自动使用独立 Python 搜索进程，无需额外安装才能进行基本搜索。正则语法遵循实际引擎。两种实现都遵守 `.gitignore`（不要求是 git 仓库；回退实现支持注释、`!` 取反、`/` 锚定、目录模式和 `**`）；回退实现的 `glob` 模式与 rg 一样展开花括号（可嵌套，不成对的花括号按字面匹配），`.gitignore` 规则不展开，并跳过 `.git`、`.venv`、`venv`、`node_modules` 和 `__pycache__`；明确指定被忽略的目录作为 path 时仍会搜索。`glob` 和 `grep` 的文件列表按修改时间从新到旧，`glob` 最多 200 项，`grep` 默认 `head_limit` 200 条。命令输出在 2 MiB 处保留开头和结尾、中间标注省略的字节数，这只是内存保护；超过约 12,500 Token 的工具结果（`read_file` 除外）完整存入会话目录，历史中保留开头和结尾的预览，见 [上下文管理](context.md#第一层大结果存盘)。`read_file` 自身分页，超长行有显式截断标记。
+
+## 网络工具
+
+两个工具都会把内容发到外部（网址、查询词），因此不是只读工具：default、acceptEdits 和 plan 档位中询问，bypassPermissions 中允许，规则和审批选项见 [工具权限](permissions.md#网络工具)。无界面模式中没有被规则放行的调用返回 `approval_required`，不发出请求。子 Agent（包括内置的 explore、plan）和团队成员同样可以使用，审批照常；它们与主对话共用网页缓存和搜索次数。
+
+网页和搜索结果是不可信的数据：正文包在 `<web_content>` 标记中，系统提示要求模型把其中的指令当作数据，不执行，需要时告诉用户；内容中出现的同名标记会被转义，不能提前结束标记。
+
+### web_fetch
+
+参数为 `url` 和 `offset`（字符位置，默认 0）。只接受 http 和 https，http 自动升级为 https；网址中不能带用户名和密码。
+
+- **本机和内网**：不带点的主机名、`localhost`、`*.localhost`，以及环回、私有、链路本地、保留地址的 IP 字面量，在审批之前就以 `local_blocked` 拒绝，任何档位和规则都不能放行；需要访问本地服务时用 `execute_command`（例如 curl），按命令权限确认。域名在执行时解析，任一地址落在这些范围内也拒绝；连接固定到检查过的地址，防止两次解析结果不同（DNS 重绑定）。`198.18.0.0/15` 不算内网：Clash、Surge 等代理的 fake-IP 模式把域名解析到这个网段。
+- **代理**：读取环境变量 `HTTPS_PROXY`（没有时用 `ALL_PROXY`）和 `NO_PROXY`，不读取系统代理设置；通过代理时本机无法解析的域名交给代理解析。`SSL_CERT_FILE` 指向的证书用于校验（公司代理自己的 CA）。
+- **重定向**：同一主机内最多跟随 5 次（`too_many_redirects`）；跳到其他主机时不跟随，返回原地址和目标地址，由模型决定是否再读取（新的域名需要再次确认）。重定向到本机和内网同样拒绝。
+- **内容**：HTML 去掉脚本、样式、表单等，有 `<main>`、`<article>` 或 `role="main"` 的元素时只取它，否则再去掉导航、页眉、页脚和侧栏，转为 Markdown，相对链接改为绝对地址，图片去掉；纯文本、Markdown、JSON、XML 等原样返回；图片、PDF、压缩包等只说明类型和大小，不下载正文。
+- **限制**：最多下载 10 MB（`too_large`），总时长 60 秒（`timeout`）；超出时不返回部分内容。请求头带 `User-Agent: MossCode/<版本>`，`Accept` 优先 Markdown。
+- **结果**：开头写明 URL、标题、内容类型、总字符数和本段范围，正文每次约 10,000 Token，尽量在换行处分段；未读完时末尾写明下一段的 `offset`，超出正文长度返回 `invalid_offset`。每个 URL 在本会话中缓存 15 分钟，翻页不重新下载。
+
+其他错误：`invalid_url`（网址格式或协议不对）、`dns_failed`（无法解析域名）、`connect_failed`（连接失败或中断）、`http_error`（非 2xx 状态，附状态码）。
+
+### web_search
+
+参数为 `query`、`allowed_domains` 或 `blocked_domains`（二选一，可选）和 `max_results`（默认 8，最多 20）。返回编号的结果：标题、URL 和摘要（每条最多 500 字符）。不读取结果页面，需要细节时由模型再调用 `web_fetch`。域名过滤同时交给搜索服务并在返回后再检查一次，子域名算在内。
+
+在 `config.yaml` 中配置搜索服务，目前支持 [Tavily](https://tavily.com)：
+
+```yaml
+web_search:
+  provider: tavily
+  api_key_env: TAVILY_API_KEY   # 或者直接写 api_key
+```
+
+没有配置或环境变量为空时不向模型提供 `web_search`，`/status` 和 `moss doctor` 显示“未配置”；凭据只显示是否设置，不出现在输出和错误中。每个会话（包括子 Agent 和团队成员）最多搜索 100 次，之后返回 `search_limit`，要求模型用已有信息回答并告诉用户。服务的错误：`search_auth`（凭据被拒绝）、`search_rate_limited`（次数或额度用完）、`search_failed`（超时、连接失败或无法解析返回内容）。
 
 ## 运行时事件
 

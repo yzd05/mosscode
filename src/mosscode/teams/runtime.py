@@ -266,11 +266,14 @@ async def build_runner(
         )
         git = main.git
     else:
-        from ..tools import create_default_registry
+        from ..tools import create_default_registry, web_tools
 
         shell = getattr(main.registry.get("execute_command"), "shell", None)
         fresh = create_default_registry(root, permissions=policy, shell=shell if shell is not None else "auto")
-        registry = fresh.for_agent(agent="teammate", agent_type=agent.name, permissions=policy, keep=keep, extra=extra)
+        web = tuple(tool for tool in web_tools(main.registry, root) if keep(tool.name))
+        registry = fresh.for_agent(
+            agent="teammate", agent_type=agent.name, permissions=policy, keep=keep, extra=(*web, *extra)
+        )
         registry.session, registry.hooks, registry.worktree = main.registry.session, main.registry.hooks, relative
         git = await asyncio.to_thread(git_snapshot, root)
     system = agent.prompt + "\n\n" + addendum(store.name, member.name, member.worktree)

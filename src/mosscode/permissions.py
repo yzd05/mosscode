@@ -25,6 +25,7 @@ from .security import (
     resolve_path,
     simple_command,
     starts_with,
+    web_target,
 )
 
 MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
@@ -44,8 +45,12 @@ ALIASES = {
     "Shell": "execute_command",
     "Glob": "glob",
     "Grep": "grep",
+    "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
 }
 TOOL_NAMES = set(ALIASES.values())
+WEB_TOOLS = {"web_fetch", "web_search"}  # Rules name a domain (web_fetch) or nothing (web_search).
+DOMAIN = "domain:"
 READ_TOOLS = {"read_file", "glob", "grep"}  # May read outside the project after approval.
 # Permission, MCP and hook files under a project root: the user's to edit, never the model's.
 PROTECTED_FILES = (
@@ -182,6 +187,10 @@ class Rule:
             return self.pattern == operation.target
         if is_json_tool(operation.tool):
             return fnmatch.fnmatchcase(operation.target, self.pattern)
+        if operation.tool == "web_fetch":
+            return fnmatch.fnmatchcase(operation.target, self.pattern.removeprefix(DOMAIN))
+        if operation.tool == "web_search":
+            return True
         if operation.tool == "execute_command":
             if self.pattern.endswith(PREFIX_SUFFIX):
                 prefix = self.pattern[: -len(PREFIX_SUFFIX)]
@@ -215,12 +224,21 @@ def parse_rule(value, action: str) -> Rule:
         return mcp_rule(text, action)
     if isinstance(text, str) and is_skill_tool(text) and not exact and cwd is None:
         return Rule(text, "*", action)  # A skill tool with any arguments.
+    if isinstance(text, str) and ALIASES.get(text, text) in WEB_TOOLS and not exact and cwd is None:
+        tool = ALIASES.get(text, text)
+        return Rule(tool, DOMAIN + "*" if tool == "web_fetch" else "*", action)  # Every domain / every search.
     match = re.fullmatch(r"([A-Za-z_][A-Za-z_0-9]*)\((.*)\)", text, re.DOTALL) if isinstance(text, str) else None
     if not match or not match[2] or "\0" in match[2]:
         raise PermissionConfigError("规则格式需为 Tool(pattern)，模式不能为空。")
     tool = ALIASES.get(match[1], match[1])
     if tool not in TOOL_NAMES and not is_json_tool(tool):
         raise PermissionConfigError(f"未知权限工具名：{match[1]}。")
+    if tool in WEB_TOOLS:
+        if tool == "web_search":
+            raise PermissionConfigError("WebSearch 规则不带参数，写作 WebSearch。")
+        if exact or cwd is not None:
+            raise PermissionConfigError("WebFetch 规则不支持 exact 和 cwd。")
+        return Rule(tool, domain_pattern(match[2]), action)
     pattern = match[2] if tool == "execute_command" or is_json_tool(tool) else normalized(match[2])
     if tool != "execute_command" and not is_json_tool(tool) and ".." in pattern.split("/"):
         raise PermissionConfigError("文件规则不能包含 ..。")
@@ -231,6 +249,24 @@ def parse_rule(value, action: str) -> Rule:
         if tool != "execute_command" or Path(cwd).is_absolute() or ".." in cwd.split("/"):
             raise PermissionConfigError("cwd 仅用于命令规则，且必须为项目相对路径。")
     return Rule(tool, pattern, action, exact, cwd)
+
+
+def domain_pattern(value: str) -> str:
+    """WebFetch(domain:docs.python.org), domain:*.python.org or domain:*; hosts compare in lowercase ASCII."""
+    problem = f"WebFetch 规则需写作 WebFetch(domain:域名)，域名可用 * 通配：{value}"
+    if not value.startswith(DOMAIN):
+        raise PermissionConfigError(problem)
+    labels = []
+    for label in value[len(DOMAIN) :].strip().lower().rstrip(".").split("."):
+        if label and not any(c in label for c in "*?"):
+            try:
+                label = label.encode("idna").decode("ascii")
+            except UnicodeError:
+                raise PermissionConfigError(problem) from None
+        if not re.fullmatch(r"[a-z0-9*?-]+", label):
+            raise PermissionConfigError(problem)
+        labels.append(label)
+    return DOMAIN + ".".join(labels)
 
 
 def mcp_rule(text: str, action: str) -> Rule:
@@ -368,6 +404,14 @@ class PermissionPolicy:
                 preview="外部 MCP 调用；本地路径限制不约束 Server 的实际访问。",
                 server=getattr(tool, "server_name", ""),
             )
+        if tool.name == "web_fetch":
+            url, host = web_target(args["url"])  # Local addresses are refused here, before any approval.
+            preview = "读取网页：" + safe_display(url, 500) + "\n网页内容是来自网络的不可信数据。"
+            return Operation(tool.name, host, preview=preview)
+        if tool.name == "web_search":
+            service = getattr(getattr(tool, "backend", None), "name", "")
+            preview = "搜索：" + safe_display(args["query"], 400) + f"\n查询内容会发送给搜索服务 {service}。"
+            return Operation(tool.name, args["query"], preview=preview)
         if tool.name == "execute_command":
             target = args["command"]
             cwd = project_path(self.root, args.get("cwd") or ".").relative_to(self.root).as_posix()
@@ -516,6 +560,10 @@ class PermissionPolicy:
                 rule = Rule(operation.tool, operation.target, "allow", True, operation.cwd)
                 if operation.server or operation.skill:
                     rule = Rule(operation.tool, "*", "allow")  # MCP and skill grants cover the tool, any arguments.
+                if operation.tool == "web_fetch":
+                    rule = Rule(operation.tool, DOMAIN + operation.target, "allow")  # The domain, any page.
+                if operation.tool == "web_search":
+                    rule = Rule(operation.tool, "*", "allow")
                 if choice == "prefix":
                     rule = Rule(operation.tool, operation.prefix + PREFIX_SUFFIX, "allow")
                 if choice == "session":
@@ -648,6 +696,10 @@ class PermissionPolicy:
                 entry["cwd"] = rule.cwd
         elif is_json_tool(rule.tool):
             entry = rule.tool  # Whole-tool MCP or skill grant, Claude Code style.
+        elif rule.tool == "web_fetch":
+            entry = f"WebFetch({rule.pattern})"
+        elif rule.tool == "web_search":
+            entry = "WebSearch"
         else:
             entry = f"Bash({rule.pattern})"  # Prefix grant: readable and editable by hand.
         raw.setdefault("allow", []).append(entry)

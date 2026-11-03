@@ -29,6 +29,11 @@ default_provider: claude
 # team_max_members: 4
 # 协调者模式：Lead 不直接改文件，把实施交给成员。还需要环境变量 MOSSCODE_COORDINATOR_MODE=1；只用于交互界面。
 # coordinator_mode: false
+# 网络搜索（web_search 工具）。未配置或环境变量为空时不提供搜索；读取网页（web_fetch）不需要配置。
+# 目前支持 tavily；api_key_env 填环境变量名称，直接填密钥请改用 api_key。
+# web_search:
+#   provider: tavily
+#   api_key_env: TAVILY_API_KEY
 
 providers:
   - name: claude
