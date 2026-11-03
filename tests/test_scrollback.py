@@ -1,8 +1,9 @@
 import asyncio
 import re
 
+from textual import events
 from textual.drivers.headless_driver import HeadlessDriver
-from textual.geometry import Offset
+from textual.geometry import Offset, Size
 
 from mosscode.conversation import Conversation
 from mosscode.messages import Delta, ToolProgress, ToolResult
@@ -35,6 +36,18 @@ async def send(app, pilot, value):
     if app._reply_task is not None:
         await asyncio.wait_for(app._reply_task, 5)
     await pilot.pause()
+
+
+CLEAR = "\x1b[H\x1b[2J\x1b[3J"  # Starts the repaint after a width change.
+
+
+async def settled_repaint(pilot, output, start):
+    """Until the debounced repaint has started, then long enough for a second one to show."""
+    for _ in range(100):
+        if CLEAR in "".join(output[start:]):
+            break
+        await pilot.pause(0.05)
+    await pilot.pause(0.3)
 
 
 def plain(output):
@@ -176,13 +189,15 @@ async def test_width_change_repaints_the_whole_history_once_the_resize_settles()
         await pilot.resize_terminal(70, 16)
         await pilot.pause(0.3)
         assert "\x1b[3J" not in "".join(output)
-        # A drag: several widths in a row, one repaint at the final width.
+        # A drag: several widths back to back (resize_terminal waits for a refresh after each one,
+        # which on a slow machine outlasts the debounce), one repaint at the final width.
         start = len(output)
         for width in (60, 50, 44):
-            await pilot.resize_terminal(width, 16)
-        await pilot.pause(0.3)
+            app._driver._size = Size(width, 16)
+            app.post_message(events.Resize(Size(width, 16), Size(width, 16)))
+        await settled_repaint(pilot, output, start)
         repaint = "".join(output[start:])
-        assert repaint.count("\x1b[H\x1b[2J\x1b[3J") == 1
+        assert repaint.count(CLEAR) == 1
         text = plain(output[start:])
         assert text.count("FIRST-QUESTION") == 1 and text.count("WIDE-ANSWER") == 12
         rows = plain([repaint.split("\x1b[3J", 1)[1]]).replace("\r", "").split("\n")
@@ -216,7 +231,7 @@ async def test_clear_wipes_screen_and_scrollback_and_keeps_only_the_banner():
         # A later width change repaints only what came after the clear.
         start = len(output)
         await pilot.resize_terminal(50, 18)
-        await pilot.pause(0.3)
+        await settled_repaint(pilot, output, start)
         text = plain(output[start:])
         assert "OLD-" not in text and text.count("已开始新会话") == 1
 
