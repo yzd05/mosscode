@@ -90,7 +90,7 @@ def test_split_tool_list_keeps_arguments_together():
         ("---\ndescription: x\n---\n", "正文", "缺少 name"),
         ("---\nname: bad\n---\n", "正文", "缺少 description"),
         ('---\nname: bad\ndescription: ""\n---\n', "正文", "description 必须是非空字符串"),
-        ("---\nname: Bad\ndescription: x\n---\n", "正文", "name 须以小写字母开头"),
+        ("---\nname: Bad\ndescription: x\n---\n", "正文", "name 只能含小写字母"),
         ("---\nname: other\ndescription: x\n---\n", "正文", "必须与目录名"),
         ("---\nname: bad\ndescription: x\nmode: async\n---\n", "正文", "mode 只能是"),
         ("---\nname: bad\ndescription: x\nmode: inline\ncontext: fork\n---\n", "正文", "矛盾"),
@@ -108,6 +108,48 @@ def test_parse_rejects(tmp_path, front, body, message):
     with pytest.raises(SkillError, match=message) as info:
         parse_skill(directory, "project")
     assert str(directory) in str(info.value) or "Skill bad" in str(info.value)
+
+
+@pytest.mark.parametrize("name", ["-pdf", "pdf-", "pdf--processing", "a" * 65, "pdf_processing"])
+def test_names_follow_the_agent_skills_rules(tmp_path, name):
+    with pytest.raises(SkillError, match="name 只能含小写字母"):
+        parse_skill(write_skill(tmp_path, name), "project")
+
+
+def test_names_may_start_with_a_digit(tmp_path):
+    assert parse_skill(write_skill(tmp_path, "3d-print"), "project").name == "3d-print"
+
+
+def test_agent_skills_fields_load_and_others_only_warn(tmp_path):
+    front = (
+        "license: Apache-2.0\ncompatibility: Requires git and   jq\n"
+        'metadata:\n  author: example-org\n  version: "1.0"\nallowed-tools: Bash(git:*) Read WebFetch\n'
+        "when_to_use: later\n"
+    )
+    skill = parse_skill(write_skill(tmp_path, "pdf-processing", front), "project")
+    assert (skill.license, skill.compatibility) == ("Apache-2.0", "Requires git and jq")
+    assert skill.allowed_tools == ("execute_command", "read_file", "web_fetch")
+    assert len(skill.warnings) == 1 and "不认识的字段 when_to_use" in skill.warnings[0]
+
+
+@pytest.mark.parametrize(
+    "front, message",
+    [
+        ("license: 3\n", "license 应为非空字符串"),
+        ("compatibility: " + "x" * 501 + "\n", "compatibility 应为"),
+        ("metadata:\n  version: 1\n", "metadata 应为字符串到字符串的映射"),
+        ("metadata: [a]\n", "metadata 应为字符串到字符串的映射"),
+    ],
+)
+def test_bad_specification_fields_warn_and_still_load(tmp_path, front, message):
+    skill = parse_skill(write_skill(tmp_path, "s", front), "project")
+    assert skill.license == "" and skill.compatibility == ""
+    assert len(skill.warnings) == 1 and message in skill.warnings[0]
+
+
+def test_a_long_description_warns_but_loads(tmp_path):
+    skill = parse_skill(write_skill(tmp_path, "s", description="x" * 1025), "project")
+    assert len(skill.description) == 1025 and "超过 1024 个字符" in skill.warnings[0]
 
 
 def test_parse_rejects_large_and_non_utf8(tmp_path):
@@ -211,6 +253,30 @@ def test_broken_project_skill_keeps_user_version(places):
     assert any("没有 SKILL.md" in p and "empty" in p for p in catalog.problems)
 
 
+def test_agents_skills_directories_are_read_with_mosscode_winning(places, isolated_home):
+    builtin, user, project_skills, project = places
+    shared_user, shared_project = isolated_home / ".agents" / "skills", project / ".agents" / "skills"
+    write_skill(builtin, "foo", description="内置")
+    write_skill(shared_user, "foo", description="共享用户")
+    write_skill(shared_user, "only-user", description="共享用户")
+    write_skill(user, "foo", description="用户")
+    write_skill(shared_project, "foo", description="共享项目")
+    write_skill(shared_project, "bar", description="共享项目")
+    write_skill(project_skills, "bar", description="项目")
+    write_skill(shared_project, "baz", "when_to_use: x\n", description="共享项目")
+    catalog = load(places)
+    assert catalog.get("only-user").source == "user"
+    assert (catalog.get("foo").description, catalog.get("foo").source) == ("共享项目", "project")
+    assert catalog.get("foo").overrides == (
+        builtin / "foo" / "SKILL.md",
+        shared_user / "foo" / "SKILL.md",
+        user / "foo" / "SKILL.md",
+    )
+    assert catalog.get("bar").description == "项目"
+    assert catalog.get("baz") is not None
+    assert len(catalog.problems) == 1 and catalog.problems[0].startswith("Skill baz 提示：")
+
+
 def test_reserved_names_are_skipped(places):
     _, _, project_skills, _ = places
     write_skill(project_skills, "help")
@@ -225,14 +291,14 @@ def test_reserved_names_are_skipped(places):
 def test_start_time_whitelist_check(places):
     _, _, project_skills, _ = places
     write_skill(project_skills, "typo", "allowed_tools: [read_flie]\n")
-    write_skill(project_skills, "web", "allowed-tools: WebFetch\n")
+    write_skill(project_skills, "web", "allowed-tools: TodoWrite\n")
     write_skill(project_skills, "other", "allowed_tools: [skill__own__detect]\n")
     write_skill(project_skills, "own", "allowed_tools: [detect, mcp__x__y, memory]\n", tools=[tool()])
     catalog = load(places)
     assert list(catalog.skills) == ["own"]
     assert len(catalog.problems) == 3
     assert any("read_flie 不是已知工具" in p for p in catalog.problems)
-    assert any("WebFetch 不是已知工具" in p for p in catalog.problems)
+    assert any("TodoWrite 不是已知工具" in p for p in catalog.problems)
 
 
 def test_missing_places_are_silent(tmp_path):
