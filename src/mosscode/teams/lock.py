@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
-import secrets
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -17,10 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-LOCK_RETRIES = 10
-BACKOFF = (0.005, 0.1)  # Seconds, random within.
-STALE_AFTER = 10.0  # Seconds; an older lock file belongs to a process that died holding it.
-DEADLINE = 5.0  # Seconds of waiting in all, however often the lock changed hands.
+from filelock import FileLock, Timeout
+
+TIMEOUT = 5.0  # Seconds of waiting for a lock before the operation fails.
 REPLACE_RETRIES = 3
 
 
@@ -37,82 +34,25 @@ def now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _stale(lock: Path, after: float) -> bool:
-    try:
-        return time.time() - lock.stat().st_mtime > after
-    except OSError:
-        return False  # Gone already: the next attempt will tell.
-
-
-def _holder(lock: Path) -> str:
-    try:
-        return lock.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
 @contextmanager
-def file_lock(
-    path: Path,
-    *,
-    busy: str = "team_busy",
-    retries: int = LOCK_RETRIES,
-    stale: float = STALE_AFTER,
-    deadline: float = DEADLINE,
-):
-    """O_CREAT|O_EXCL on <file>.lock; retries with random backoff, then TeamError(busy).
+def file_lock(path: Path, *, busy: str = "team_busy", timeout: float | None = None):
+    """An OS lock on <file>.lock, or TeamError(busy) after `timeout` seconds (TIMEOUT by default).
 
-    The count starts again whenever the lock changed hands (others are making progress, it is not stuck),
-    within an overall deadline; a lock held by one holder throughout fails after `retries`.
+    The system releases the lock when its holder exits or crashes, so a dead process never leaves a team
+    file locked; the .lock file itself may stay behind and means nothing on its own.
     """
-    lock = path.with_name(path.name + ".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    token = f"{os.getpid()} {now()} {secrets.token_hex(4)}"
-    attempt, seen, start = 0, None, time.monotonic()
-    while True:
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except (FileExistsError, PermissionError):  # Windows: PermissionError while it is being deleted.
-            if _stale(lock, stale):
-                try:
-                    os.remove(lock)
-                except OSError:
-                    pass
-            holder = _holder(lock)
-            if holder and seen is not None and holder != seen:
-                attempt = 0
-            seen = holder or seen
-            if attempt >= retries or time.monotonic() - start > deadline:
-                raise TeamError(
-                    busy, f"{path.name} 正被其他进程使用，重试 {retries} 次后仍拿不到锁；稍后再试。"
-                ) from None
-            attempt += 1
-            time.sleep(random.uniform(*BACKOFF))
-            continue
-        try:
-            os.write(fd, token.encode("utf-8"))
-        finally:
-            os.close(fd)
-        break
+    wait = TIMEOUT if timeout is None else timeout
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(lock_path, timeout=wait)
+    try:
+        lock.acquire()
+    except Timeout:
+        raise TeamError(busy, f"{path.name} 正被其他进程使用，等待 {wait:g} 秒后仍拿不到锁；稍后再试。") from None
     try:
         yield
     finally:
-        _release(lock)
-
-
-def _release(lock: Path) -> None:
-    """Windows refuses to delete a file another waiter has open for reading its holder: retry briefly,
-    or the lock would stay until it is stale."""
-    for _ in range(40):
-        try:
-            os.remove(lock)
-            return
-        except FileNotFoundError:
-            return
-        except PermissionError:
-            time.sleep(0.005)
-        except OSError:
-            return
+        lock.release()
 
 
 def atomic_write(path: Path, data: Any) -> None:
