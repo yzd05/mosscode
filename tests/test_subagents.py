@@ -201,11 +201,14 @@ async def test_definition_runs_in_a_blank_conversation(tmp_path):
     await conv.close()
 
 
-async def test_a_sub_agent_keeps_its_images_beside_its_own_transcript(tmp_path):
+async def test_a_sub_agent_keeps_its_images_beside_its_own_transcript(tmp_path_factory):
     from PIL import Image
 
     from mosscode.session import load_session
 
+    # .../projects/<key>/sessions/<id>/subagents/t1/images/<sha>.png is the deepest path the suite writes; under
+    # tmp_path (named after this long test) an in-repo basetemp of 10+ characters pushes it past Windows' MAX_PATH.
+    tmp_path = tmp_path_factory.mktemp("img")
     write_agent(agents_dir(tmp_path), "worker", "tools: Read\n", "SUB-WORKER")
     Image.new("RGB", (4, 3), "red").save(project_of(tmp_path) / "shot.png")
 
