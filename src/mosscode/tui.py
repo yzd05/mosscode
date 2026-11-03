@@ -5,6 +5,8 @@ import re
 import sys
 from collections.abc import Callable
 from contextlib import aclosing, suppress
+from dataclasses import dataclass
+from pathlib import Path
 from time import monotonic
 from typing import TypeVar
 
@@ -37,13 +39,16 @@ from .appearance import (
     startup_banner,
 )
 from .builtin_commands import BUILTIN, clean_text, confirm_tasks, dispatch, offer_trust, open_sessions
+from .clipboard import ClipboardError, is_image_file, pasted_image_paths, read_clipboard_async
 from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, Settings
 from .conversation import Conversation, MemoryUpdated, Notice, Resumed
 from .coordinator import BADGE as COORDINATOR_BADGE
+from .images import ImageError, ProcessedImage, load_image, size_label
 from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, MemberList, MemberPanel, MemberView
 from .memory import SCOPE_LABELS
 from .messages import (
+    IMAGE_MARK,
     NOTIFICATION,
     CompactFailed,
     CompactFinished,
@@ -61,6 +66,7 @@ from .messages import (
     ToolResult,
     UsageUpdate,
     UserInput,
+    image_mark,
 )
 from .permissions import CHOICES, EDIT_TOOLS, MODE_BADGES, ApprovalRequest, safe_display
 from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
@@ -198,6 +204,16 @@ def diff_rows(diff: str, limit: int = DIFF_ROWS) -> Text:
     return text
 
 
+@dataclass(frozen=True)
+class Attachment:
+    image: ProcessedImage
+    source: str  # "剪贴板" or the file name
+
+    @property
+    def label(self) -> str:
+        return f"{self.source} · {self.image.describe()}"
+
+
 class PromptArea(TextArea):
     """Multi-line prompt. Enter sends; Shift+Enter, Ctrl+J, Alt+Enter or a trailing \\ insert a newline.
 
@@ -216,6 +232,25 @@ class PromptArea(TextArea):
         def control(self) -> "PromptArea":
             return self.text_area
 
+    class ImagePaste(UIMessage):
+        """Attach images: files (dragged in or pasted as paths), or whatever image the clipboard holds.
+
+        otherwise runs when the clipboard holds no image (Ctrl+V's ordinary paste); without it the user is told.
+        """
+
+        def __init__(
+            self,
+            text_area: "PromptArea",
+            files: list[Path] | None = None,
+            otherwise: Callable[[], None] | None = None,
+        ) -> None:
+            super().__init__()
+            self.text_area, self.files, self.otherwise = text_area, files, otherwise
+
+        @property
+        def control(self) -> "PromptArea":
+            return self.text_area
+
     def __init__(self, **kwargs) -> None:
         super().__init__(soft_wrap=True, tab_behavior="focus", compact=True, highlight_cursor_line=False, **kwargs)
         self.input_history: list[str] = []
@@ -223,6 +258,11 @@ class PromptArea(TextArea):
         self._draft = ""
         # Set by the app: removes and returns the running task's queued messages.
         self.take_queued: Callable[[], tuple[str, ...]] | None = None
+        # Every image attached in this process, by placeholder. Kept after sending so numbers never repeat
+        # and a recalled history entry or queued message still has its images.
+        self.attachments: dict[str, Attachment] = {}
+        # Set by the app: relative pasted paths resolve against the workspace.
+        self.root: Callable[[], Path] = Path.cwd
 
     @property
     def value(self) -> str:
@@ -248,7 +288,53 @@ class PromptArea(TextArea):
                 return
             self.post_message(self.Submitted(self, self.text))
             return
+        if event.key == "alt+v" and not self.read_only:
+            # Windows Terminal keeps Ctrl+V for its own paste, which carries text only.
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.ImagePaste(self))
+            return
         await super()._on_key(event)
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        # Overrides TextArea._on_paste only when handled; otherwise Textual still runs the base handler.
+        if self.read_only:
+            return
+        files = await asyncio.to_thread(pasted_image_paths, event.text, self.root())
+        if files:
+            event.prevent_default()
+            self.post_message(self.ImagePaste(self, files, otherwise=lambda: self.insert_pasted(event.text)))
+
+    def action_paste(self) -> None:
+        """Ctrl+V, where the terminal passes it through: the clipboard image if any, else the usual paste."""
+        if not self.read_only:
+            self.post_message(self.ImagePaste(self, otherwise=super().action_paste))
+
+    def insert_pasted(self, text: str) -> None:
+        if result := self._replace_via_keyboard(text, *self.selection):
+            self.move_cursor(result.end_location)
+
+    def attach(self, items: list["Attachment"]) -> None:
+        """Insert a placeholder per image at the cursor."""
+        marks = []
+        for item in items:
+            mark = image_mark(len(self.attachments) + 1)
+            self.attachments[mark] = item
+            marks.append(mark)
+        result = self.replace(" ".join(marks) + " ", *self.selection, maintain_selection_offset=False)
+        self.move_cursor(result.end_location)
+        self.focus()
+
+    def images_in(self, text: str) -> dict[str, ProcessedImage]:
+        """The attached images whose placeholders are still in text."""
+        return {
+            match.group(): self.attachments[match.group()].image
+            for match in IMAGE_MARK.finditer(text)
+            if match.group() in self.attachments
+        }
+
+    def image_notes(self, text: str) -> list[str]:
+        return [f"{mark} {self.attachments[mark].label}" for mark in self.images_in(text)]
 
     @property
     def recalled(self) -> bool:
@@ -427,10 +513,11 @@ class ProviderSelectApp(TerminalApp[ProviderConfig]):
 
 
 class ChatEntry(Vertical):
-    def __init__(self, speaker: str, text: str = "") -> None:
+    def __init__(self, speaker: str, text: str = "", notes: list[str] | tuple[str, ...] = ()) -> None:
         super().__init__(classes="entry user-entry" if speaker == "You" else "entry assistant-entry")
         self.speaker = speaker
         self.body = text
+        self.notes = tuple(notes)  # Under a user message: its attached images.
         self.thinking = ""
         self.started = monotonic()
         self.phase = "waiting"
@@ -445,6 +532,8 @@ class ChatEntry(Vertical):
             with Horizontal(classes="message-row"):
                 yield Static("❯", classes="message-marker")
                 yield Static(self.body, classes="user-message", markup=False)
+            if self.notes:
+                yield Static(image_lines(self.notes), classes="image-notes")
             return
         for classes in ("thinking-label", "thinking"):
             widget = Static("", classes=classes, markup=False)
@@ -535,12 +624,7 @@ class ChatEntry(Vertical):
 
     def transcript(self):
         if self.speaker == "You":
-            return Padding(
-                message_row("❯", Text(self.body)),
-                0,
-                expand=True,
-                style=f"{USER_MESSAGE_COLOR} on {USER_MESSAGE_BACKGROUND}",
-            )
+            return user_row(self.body, self.notes)
         if not self.display:
             return None
         parts = []
@@ -621,6 +705,18 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
 RESUMED_MESSAGES = 20
 
 
+def image_lines(notes) -> Text:
+    return Text("\n".join(f"  └ {note}" for note in notes), style="dim")
+
+
+def user_row(text: str, notes=()):
+    """A user message on its gray band, with its images listed underneath."""
+    row = Padding(
+        message_row("❯", Text(text)), 0, expand=True, style=f"{USER_MESSAGE_COLOR} on {USER_MESSAGE_BACKGROUND}"
+    )
+    return Group(row, image_lines(notes)) if notes else row
+
+
 def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGES) -> list:
     """The latest messages in brief, for the scrollback after a resume."""
     shown = [m for m in history if m.role != "tool"][-limit:]
@@ -632,14 +728,12 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
             ids = "、".join(re.findall(r"^任务：(\S+)", message.text, re.MULTILINE))
             rows.append(Text(f"└ 已收到后台任务通知：{ids}", style=PARAMETER_COLOR))
         elif message.role == "user":
-            rows.append(
-                Padding(
-                    message_row("❯", Text(message.shown)),
-                    0,
-                    expand=True,
-                    style=f"{USER_MESSAGE_COLOR} on {USER_MESSAGE_BACKGROUND}",
-                )
-            )
+            notes = [
+                f"{block.text} · {block.image.width}×{block.image.height} · {size_label(block.image.size)}"
+                for block in message.content
+                if block.image is not None
+            ]
+            rows.append(user_row(message.shown, notes))
         else:
             parts = [message_row("●", TranscriptMarkdown(message.text))] if message.text.strip() else []
             for call in message.tool_calls:
@@ -815,6 +909,8 @@ class MossCodeApp(TerminalApp[None]):
     .answer MarkdownBlock > .code_inline { color: PARAMETER_COLOR !important; text-style: bold; }
     #status { height: auto; margin-top: 0; color: $text-muted; }
     #queue { height: auto; margin-top: 1; padding: 0 1; }
+    #attachments { height: auto; margin-top: 1; padding: 0 1; color: $text-muted; }
+    .image-notes { height: auto; }
     #input-row { height: auto; margin-top: 1; padding: 0 1; border-top: solid $foreground 35%; border-bottom: solid $foreground 35%; }
     #input-prefix { width: 2; height: 1; color: $primary; }
     #prompt { width: 1fr; height: auto; max-height: 8; border: none; padding: 0; background: $background; }
@@ -936,10 +1032,14 @@ class MossCodeApp(TerminalApp[None]):
         queue = Static("", id="queue", markup=False)
         queue.display = False
         yield queue
+        attachments = Static("", id="attachments", markup=False)
+        attachments.display = False
+        yield attachments
         with Horizontal(id="input-row"):
             yield Static("❯", id="input-prefix")
             prompt = PromptArea(placeholder="输入消息，或 / 查看命令；Shift+Enter 换行", id="prompt")
             prompt.take_queued = self._take_back_queued
+            prompt.root = self._workspace_root
             yield prompt
         panel = ModelPanel(id="model-panel")
         panel.display = False
@@ -1354,6 +1454,63 @@ class MossCodeApp(TerminalApp[None]):
             if value != self._dismissed_prompt:
                 self._dismissed_prompt = None
             self._refresh_hints(value)
+            self._refresh_attachments()
+
+    def _workspace_root(self) -> Path:
+        registry = getattr(self.conversation, "registry", None)
+        return registry.permissions.root if registry is not None else Path.cwd()
+
+    def _image_notes(self, text: str) -> list[str]:
+        return self.query_one("#prompt", PromptArea).image_notes(text)
+
+    def _refresh_attachments(self) -> None:
+        field = self.query_one("#prompt", PromptArea)
+        notes = field.image_notes(field.text)
+        panel = self.query_one("#attachments", Static)
+        panel.display = bool(notes)
+        if notes:
+            panel.update("\n".join(notes) + "\n删除占位符即取消该图片")
+
+    def _hint(self, text: str) -> None:
+        self._hint_until = monotonic() + 2
+        self._status(text)
+
+    def on_prompt_area_image_paste(self, event: PromptArea.ImagePaste) -> None:
+        if not getattr(getattr(self.conversation.provider, "config", None), "accepts_images", True):
+            # Ctrl+V still pastes text and dragged-in paths stay as text; only an explicit Alt+V or a drag says why.
+            if event.otherwise is not None:
+                event.otherwise()
+            if event.otherwise is None or event.files is not None:
+                self._hint(f"当前模型不支持图片（providers.{self.provider_name}.images）")
+            return
+        # The clipboard owner can stall; reading it must not hold up the interface.
+        self.run_worker(self._attach_images(event), group="image-paste")
+
+    async def _attach_images(self, event: PromptArea.ImagePaste) -> None:
+        field = event.text_area
+        try:
+            if event.files is None:
+                self._hint("正在读取剪贴板…")
+                content = await read_clipboard_async()
+            else:
+                content = event.files
+            if isinstance(content, list):
+                content = [path for path in content if await asyncio.to_thread(is_image_file, path)] or None
+            if content is None:
+                if event.otherwise is not None:
+                    event.otherwise()
+                else:
+                    self._hint("剪贴板中没有图片")
+                return
+            if isinstance(content, bytes):
+                items = [Attachment(await asyncio.to_thread(load_image, content), "剪贴板")]
+            else:
+                items = [Attachment(await asyncio.to_thread(load_image, path), path.name) for path in content]
+        except (ClipboardError, ImageError, OSError) as exc:
+            self._hint(f"无法粘贴图片：{exc}")
+            return
+        field.attach(items)
+        self._hint(f"已添加 {len(items)} 张图片" if len(items) > 1 else "已添加图片")
 
     def _take_back_queued(self) -> tuple[str, ...]:
         """↑ in the prompt: pull queued messages back for editing without interrupting the task."""
@@ -1478,7 +1635,7 @@ class MossCodeApp(TerminalApp[None]):
                 return
             field.remember(prompt)
             field.clear()
-            self.conversation.queue(parsed.text)
+            self.conversation.queue(parsed.text, field.images_in(parsed.text))
             self._refresh_queue()
             return
         field.remember(prompt)
@@ -1488,7 +1645,7 @@ class MossCodeApp(TerminalApp[None]):
         if parsed.kind != "message":
             await self._command(prompt.strip(), parsed)
             return
-        await self._start_request(parsed.text)
+        await self._start_request(parsed.text, images=field.images_in(parsed.text))
 
     async def _start_request(
         self,
@@ -1499,13 +1656,14 @@ class MossCodeApp(TerminalApp[None]):
         command: str | None = None,
         fork=None,
         notify: bool = False,
+        images: dict[str, ProcessedImage] | None = None,
     ) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         reply = ChatEntry("MossCode")
         self._active_reply = reply
         if show_user:
             for text in shown or (prompt,):
-                await chat.mount(ChatEntry("You", text))
+                await chat.mount(ChatEntry("You", text, self._image_notes(text)))
         await chat.mount(reply)
         chat.anchor()
         self.started = monotonic()
@@ -1513,7 +1671,7 @@ class MossCodeApp(TerminalApp[None]):
         self._generating = True
         self._status("连接中…")
         await self._commit_ready_transcript()
-        self._reply_task = asyncio.create_task(self._respond(prompt, reply, command, fork, notify))
+        self._reply_task = asyncio.create_task(self._respond(prompt, reply, command, fork, notify, images))
 
     @staticmethod
     def _note(text: str, style: str | None = None) -> Static:
@@ -1879,7 +2037,13 @@ class MossCodeApp(TerminalApp[None]):
             self._tick()
 
     async def _respond(
-        self, prompt: str, reply: ChatEntry, command: str | None = None, fork=None, notify: bool = False
+        self,
+        prompt: str,
+        reply: ChatEntry,
+        command: str | None = None,
+        fork=None,
+        notify: bool = False,
+        images: dict[str, ProcessedImage] | None = None,
     ) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         tool_rows: dict[str, ToolEntry] = {}
@@ -1887,7 +2051,11 @@ class MossCodeApp(TerminalApp[None]):
         completed = False
 
         try:
-            turn = self.conversation.notify() if notify else self.conversation.reply(prompt, command=command, fork=fork)
+            turn = (
+                self.conversation.notify()
+                if notify
+                else self.conversation.reply(prompt, command=command, fork=fork, images=images)
+            )
             async with aclosing(turn) as stream:
                 async for event in stream:
                     if not isinstance(event, Retrying):
@@ -1965,7 +2133,7 @@ class MossCodeApp(TerminalApp[None]):
                     elif isinstance(event, UserInput):
                         # Queued messages joined the context at this iteration boundary.
                         for text in event.texts:
-                            await chat.mount(ChatEntry("You", text))
+                            await chat.mount(ChatEntry("You", text, self._image_notes(text)))
                         chat.anchor()
                         self._refresh_queue()
                     elif isinstance(event, ApprovalRequest):
@@ -2012,7 +2180,8 @@ class MossCodeApp(TerminalApp[None]):
                 queued = self.conversation.take_queued()
                 if queued and completed:
                     # The model answered before the queue could join; send it as the next task.
-                    self.call_later(self._start_request, "\n\n".join(queued), shown=queued)
+                    text = "\n\n".join(queued)
+                    self.call_later(self._start_request, text, shown=queued, images=field.images_in(text))
                 elif queued:
                     # Stopped, cancelled or failed: never resend automatically.
                     field.value = "\n\n".join((*queued, field.value) if field.value.strip() else queued)

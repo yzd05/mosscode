@@ -469,6 +469,7 @@ def status_report(ctx: CommandContext) -> str:
         ("项目指令", f"{len(files)} 个文件（/memory 查看）" if files else "未找到"),
         ("MCP", _mcp_line(conversation)),
         ("网络", _web_line(registry)),
+        ("图片", _image_line(ctx)),
         ("记忆", memory),
     ]
     if conversation.hooks is not None:
@@ -483,6 +484,13 @@ def status_report(ctx: CommandContext) -> str:
         rows.append(("角色", STATUS))
     width = max(12, *(cell_len(label) + 2 for label, _ in rows))
     return "状态\n" + "\n".join(f"  {label}{' ' * (width - cell_len(label))}{value}" for label, value in rows)
+
+
+def _image_line(ctx: CommandContext) -> str:
+    accepts = getattr(getattr(ctx.conversation.provider, "config", None), "accepts_images", True)
+    if accepts:
+        return "可发送（Alt+V 或 Ctrl+V 粘贴，拖入图片文件，或让模型用 read_file 读取）"
+    return f"当前模型不支持（providers.{ctx.ui.provider_name}.images: false）"
 
 
 def _web_line(registry) -> str:

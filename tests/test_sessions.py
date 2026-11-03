@@ -203,6 +203,38 @@ def test_resumed_images_read_their_files_and_missing_ones_become_text(tmp_path):
     assert result.images == (kept,) and result.output == "b.png\n[图片已丢失：b.png]"
 
 
+async def test_pasted_images_follow_their_placeholders_and_are_stored_only_when_sent(tmp_path):
+    def kinds(message):
+        return [(block.kind, block.text) for block in message.content]
+
+    async def steer():
+        conv.queue("再看 [图片 #3]", {"[图片 #3]": png("green"), "[图片 #4]": png("white")})
+        yield response(calls=[call("glob", "g1", pattern="*.md")])
+
+    provider = SequenceProvider(steer, response("看到了"), response("还记得"))
+    conv = make(tmp_path, provider)
+    images = {"[图片 #1]": png(), "[图片 #2]": png("blue"), "[图片 #5]": png("black")}
+    await drain(conv.reply("比较 [图片 #1] 和 [图片 #2]，[图片 #1] 再提一次，[图片 #9] 不存在", images=images))
+    first = provider.requests[0][0][-1]
+    assert kinds(first) == [
+        ("text", "比较 [图片 #1]"),
+        ("image", "[图片 #1]"),
+        ("text", " 和 [图片 #2]"),
+        ("image", "[图片 #2]"),
+        ("text", "，[图片 #1] 再提一次，[图片 #9] 不存在"),
+    ]
+    assert first.text == "比较 [图片 #1] 和 [图片 #2]，[图片 #1] 再提一次，[图片 #9] 不存在"
+    queued = provider.requests[1][0][-1]
+    assert kinds(queued) == [("text", "再看 [图片 #3]"), ("image", "[图片 #3]")]
+    # Only images still named in the text were stored: #4 and #5 were dropped from their drafts.
+    stored = {p.name for p in (conv.session.directory / "images").iterdir()}
+    assert stored == {png(c).name for c in ("red", "blue", "green")}
+    restored = load_session(conv.session.transcript_path)
+    assert kinds(restored.history[0]) == kinds(first) and restored.lost_images == 0
+    assert restored.history[0].content[1].image.read() == png().data
+    await conv.close()
+
+
 async def test_resume_reports_lost_images_once(tmp_path):
     session = image_session(tmp_path)
     image = session.store_image(png(), "[图片 #1]")

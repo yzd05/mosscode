@@ -2,6 +2,7 @@
 
 import asyncio
 import difflib
+from collections.abc import Mapping
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -11,6 +12,7 @@ from .agent import DEFAULT_MAX_ITERATIONS, AgentLoop, Provider
 from .agents import AgentCatalog
 from .agents.runtime import AUTO_BACKGROUND, GLOBAL_BAN, MAX_BACKGROUND, SubAgents
 from .context import ContextBudget, estimate_text
+from .images import ImageRef, ProcessedImage, image_ref
 from .memory import INDEX_TOKENS, MemoryStore
 from .memory_extract import MemoryExtractor
 from .messages import (
@@ -359,14 +361,21 @@ class Conversation:
     def set_mode(self, mode: str):
         self._agent.set_mode(mode)
 
-    def queue(self, text: str):
+    def queue(self, text: str, images: Mapping[str, ProcessedImage] | None = None):
         """Steer a running task; the text joins at the next iteration boundary."""
         if text.strip():
             self._agent.pending.append(text)
+            self._agent.pending_images.update(self._image_refs(images, text))
 
     def take_queued(self) -> tuple[str, ...]:
-        texts, self._agent.pending = tuple(self._agent.pending), []
+        """The texts go back to the prompt, whose placeholders still name their images."""
+        texts, self._agent.pending, self._agent.pending_images = tuple(self._agent.pending), [], {}
         return texts
+
+    def _image_refs(self, images: Mapping[str, ProcessedImage] | None, text: str) -> dict[str, ImageRef]:
+        """Stored in the session when the message is sent, and only those whose placeholder is still in text."""
+        store = self.registry if self.registry is not None else self.session
+        return {mark: image_ref(image, mark, store) for mark, image in (images or {}).items() if mark in text}
 
     @property
     def queued(self) -> tuple[str, ...]:
@@ -842,10 +851,17 @@ class Conversation:
                 await self.memory_provider.close()
 
     async def reply(
-        self, prompt: str, *, command: str | None = None, fork: ForkRequest | None = None, synthetic: str | None = None
+        self,
+        prompt: str,
+        *,
+        command: str | None = None,
+        fork: ForkRequest | None = None,
+        synthetic: str | None = None,
+        images: Mapping[str, ProcessedImage] | None = None,
     ):
+        """images: pasted pictures by their placeholder in prompt."""
         try:
-            async with aclosing(self._reply(prompt, command, fork, synthetic)) as stream:
+            async with aclosing(self._reply(prompt, command, fork, synthetic, images)) as stream:
                 async for event in stream:
                     yield event
         finally:
@@ -863,7 +879,14 @@ class Conversation:
             return prompt, command
         return f"{context}\n\n{prompt}", command or prompt
 
-    async def _reply(self, prompt: str, command: str | None, fork: ForkRequest | None, synthetic: str | None):
+    async def _reply(
+        self,
+        prompt: str,
+        command: str | None,
+        fork: ForkRequest | None,
+        synthetic: str | None,
+        images: Mapping[str, ProcessedImage] | None = None,
+    ):
         await self.start()
         command = command or (f"/{fork.skill.name}" if fork else None)
         if self.hooks is not None:
@@ -876,7 +899,12 @@ class Conversation:
                 yield notice
         if self._team_context_due and not fork and synthetic is None:
             prompt, command = await self._team_context(prompt, command)
-        run = self._fork(fork, command) if fork else self._agent.run(prompt, command=command, synthetic=synthetic)
+        refs = await asyncio.to_thread(self._image_refs, images, prompt) if images else None
+        run = (
+            self._fork(fork, command)
+            if fork
+            else self._agent.run(prompt, command=command, synthetic=synthetic, images=refs)
+        )
         stopped = None
         try:
             async with aclosing(run) as stream:

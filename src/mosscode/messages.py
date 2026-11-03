@@ -1,5 +1,7 @@
 """Project-owned messages and stream events; SDK types stop at the adapters."""
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -12,6 +14,30 @@ class ContentBlock:
     kind: Literal["text", "thinking", "image"]
     text: str  # For an image, its alt text.
     image: ImageRef | None = None
+
+
+IMAGE_MARK = re.compile(r"\[图片 #(\d+)\]")
+
+
+def image_mark(number: int) -> str:
+    return f"[图片 #{number}]"
+
+
+def user_content(text: str, images: Mapping[str, ImageRef] | None = None) -> tuple[ContentBlock, ...]:
+    """The text with each attached image right after the first occurrence of its placeholder."""
+    blocks: list[ContentBlock] = []
+    start, used = 0, set()
+    for match in IMAGE_MARK.finditer(text):
+        image = (images or {}).get(match.group())
+        if image is None or match.group() in used:
+            continue
+        used.add(match.group())
+        blocks += [ContentBlock("text", text[start : match.end()]), ContentBlock("image", image.alt, image)]
+        start = match.end()
+    # Anthropic rejects whitespace-only text blocks, e.g. the space typed after the last placeholder.
+    if text[start:].strip() or not blocks:
+        blocks.append(ContentBlock("text", text[start:]))
+    return tuple(blocks)
 
 
 @dataclass(frozen=True)

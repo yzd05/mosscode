@@ -3,7 +3,7 @@
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import asdict, replace
@@ -12,6 +12,7 @@ from typing import Protocol
 
 from .compaction import NOTHING, CompactionError, compact_history, cut_point
 from .context import ContextBudget, ContextMeter
+from .images import ImageRef
 from .messages import (
     NOTIFICATION,
     CompactFailed,
@@ -33,6 +34,7 @@ from .messages import (
     UsageTotals,
     UsageUpdate,
     UserInput,
+    user_content,
 )
 from .prompts import (
     PromptRequest,
@@ -125,6 +127,7 @@ class AgentLoop:
         self.total_usage = UsageTotals()
         # Steering: text queued while running, merged before the next model request.
         self.pending: list[str] = []
+        self.pending_images: dict[str, ImageRef] = {}  # By placeholder, for the queued texts.
         # Background task notifications, merged the same way as their own message.
         self.notifications: list[str] = []
         self.on_usage = None  # A sub-agent reports each request's usage to its task and the session.
@@ -188,6 +191,7 @@ class AgentLoop:
         if self.busy:
             raise ProviderError("当前任务正在运行，不能清空会话。")
         self.history, self.pending, self.notifications = [], [], []
+        self.pending_images = {}
         self.total_usage = UsageTotals()
         # A fresh context has not seen the mode rules yet.
         self._announced = "normal"
@@ -334,14 +338,22 @@ class AgentLoop:
 
         return (await self.hooks.fire(HookEvent(name, fields=fields))).notes
 
-    async def run(self, prompt: str, *, command: str | None = None, synthetic: str | None = None):
+    async def run(
+        self,
+        prompt: str,
+        *,
+        command: str | None = None,
+        synthetic: str | None = None,
+        images: Mapping[str, ImageRef] | None = None,
+    ):
+        """images: attached pictures by their placeholder in prompt, e.g. "[图片 #1]"."""
         if self.busy:
             raise ProviderError("已有请求正在运行，请等待或取消。")
         if not prompt.strip():
             raise ProviderError("请输入非空消息。")
         self.busy = True
         iteration, unknown_run = 0, 0
-        user = Message("user", (ContentBlock("text", prompt),), command=command, synthetic=synthetic)
+        user = Message("user", user_content(prompt, images), command=command, synthetic=synthetic)
         committed = False
 
         def outcomes():
@@ -362,7 +374,8 @@ class AgentLoop:
                 yield IterationProgress(iteration, self.max_iterations, self.mode)
                 if committed and self.pending:
                     texts, self.pending = tuple(self.pending), []
-                    self._append(Message("user", (ContentBlock("text", "\n\n".join(texts)),)))
+                    images, self.pending_images = self.pending_images, {}
+                    self._append(Message("user", user_content("\n\n".join(texts), images)))
                     yield UserInput(texts)
                 if committed and self.notifications:
                     texts, self.notifications = tuple(self.notifications), []

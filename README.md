@@ -98,6 +98,7 @@ moss --resume                 # 启动后从列表中选择会话
 | --- | --- |
 | Enter | 发送；运行中发送则排队，在下一轮请求前并入对话 |
 | Shift+Enter、Ctrl+J、行尾 `\` | 换行 |
+| Alt+V（macOS、Linux 也可用 Ctrl+V），或把图片文件拖进终端 | 附加图片，输入框中显示为 `[图片 #1]` |
 | ↑ / ↓ | 浏览输入历史；命令提示打开时选择提示 |
 | Tab | 补全命令和参数 |
 | Shift+Tab | 切换权限档位 default → acceptEdits → plan |
