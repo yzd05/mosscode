@@ -215,6 +215,17 @@ async def test_removed_theme_is_unknown_and_do_without_tools_preserves_conversat
         assert len(provider.requests) == 1
 
 
+@pytest.mark.parametrize("gone", ["#member-panel", "#member-view"])
+async def test_member_timers_skip_while_the_widgets_are_being_removed(gone):
+    app = MossCodeApp(Conversation(FakeProvider()), "test")
+    async with app.run_test() as pilot:
+        await app.query_one(gone).remove()  # Shutting down removes them one at a time.
+        app._member_ticks = 1  # The next tick goes on to the panel.
+        app._member_tick()
+        app._show_members()
+        await pilot.pause()
+
+
 @pytest.mark.parametrize("size", [(44, 20), (100, 30)])
 async def test_input_remains_visible_after_long_reply_and_resize(size):
     provider = FakeProvider()

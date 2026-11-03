@@ -2055,9 +2055,13 @@ class MossCodeApp(TerminalApp[None]):
             if not self._members_again:
                 return
 
+    def _members_mounted(self) -> bool:
+        # Timers keep firing while the app shuts down, when its widgets go one at a time.
+        return not self._closing and bool(self.query("#member-panel")) and bool(self.query("#member-view"))
+
     def _show_members(self) -> None:
         """The member panel from the rows already read, and the member view."""
-        if self._closing or not self.query("#member-panel"):
+        if not self._members_mounted():
             return
         teams = getattr(self.conversation, "teams", None)
         current = teams.current if teams is not None else None
@@ -2084,7 +2088,7 @@ class MossCodeApp(TerminalApp[None]):
 
     def _member_tick(self) -> None:
         """A pane member's transcript every 0.5s; The rows every second while something moves."""
-        if self._closing or not self.query("#member-view"):
+        if not self._members_mounted():
             return
         view = self.query_one("#member-view", MemberView)
         if view.display:
@@ -2158,7 +2162,7 @@ class MossCodeApp(TerminalApp[None]):
         self.set_timer(STOP_CONFIRM + 0.05, self._disarm_stop)
 
     def _disarm_stop(self) -> None:
-        if self._closing or self._stop_armed is None or monotonic() <= self._stop_armed[1]:
+        if not self._members_mounted() or self._stop_armed is None or monotonic() <= self._stop_armed[1]:
             return
         self._stop_armed = None
         self.query_one("#member-panel", MemberPanel).help(PANEL_HELP)
