@@ -47,6 +47,8 @@ ALLOW = [
     "mcp.example.yaml",
     "permissions.example.yaml",
 ]
+# Inside the allowlist but tied to development-only material.
+EXCLUDE = {"tests/test_cache_probe.py"}  # Tests scripts/probe_prompt_cache.py, which stays here.
 
 # Written instead of the development .gitignore, which names private material.
 GITIGNORE = """\
@@ -162,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     files = from_worktree() if args.worktree else from_ref(args.ref)
+    files = {name: data for name, data in files.items() if name not in EXCLUDE}
     missing = [p for p in ALLOW if not any(n == p or n.startswith(p + "/") for n in files)]
     if missing:
         sys.exit(f"allowlisted paths missing from the source: {', '.join(missing)}")
@@ -183,7 +186,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # The exported src comes first on the path, ahead of this repository's editable install.
     env = {**os.environ, "PYTHONPATH": str((args.target / "src").resolve())}
-    checks = [["tests/test_docs.py"]] + ([[]] if args.pytest else [])
+    # Collecting every test catches imports of anything that was not exported.
+    checks = [["--collect-only", "-q"], ["tests/test_docs.py"]] + ([[]] if args.pytest else [])
     for extra in checks:
         command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--rootdir", ".", *extra]
         if subprocess.run(command, cwd=args.target, env=env).returncode:
