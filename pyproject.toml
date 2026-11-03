@@ -56,6 +56,7 @@ faulthandler_timeout = 300  # A test that hangs prints every thread's stack inst
 line-length = 120
 target-version = "py312"
 src = ["src", "tests"]
+extend-exclude = ["*.md"]  # Code examples in the docs keep their compact layout.
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
