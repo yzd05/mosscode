@@ -51,6 +51,6 @@
 
 用量事件来自服务实际返回的统计，跨模型请求累计输入/输出 Token，不代表模型窗口容量。全部缺失显示 `—`，部分缺失显示已知下限 `≥`，不估算或伪造零。Chat 兼容服务需要支持并配置 `stream_usage: true` 才能返回流式用量；默认不强制启用，保留兼容端点差异。
 
-Usage 读取 Responses 的 `input_tokens_details`、Chat 的 `prompt_tokens_details`，兼容 DeepSeek 的 `prompt_cache_hit_tokens/prompt_cache_miss_tokens`，并处理 Anthropic 的 `cache_read_input_tokens/cache_creation_input_tokens`。Anthropic 总输入包含普通输入、缓存写入和缓存读取；其他协议已提供总输入，不重复加缓存。流式累计字段覆盖前值。底栏显示会话累计缓存读取及已提供的写入：未知为“未提供”，部分缺失为 `≥` 下限，已知零保持零。
+Usage 读取 Responses 的 `input_tokens_details`、Chat 的 `prompt_tokens_details`，兼容 DeepSeek 的 `prompt_cache_hit_tokens/prompt_cache_miss_tokens`，并处理 Anthropic 的 `cache_read_input_tokens/cache_creation_input_tokens`。Anthropic 总输入包含普通输入、缓存写入和缓存读取；其他协议已提供总输入，不重复加缓存。流式累计字段覆盖前值。底栏显示会话累计的缓存命中率（缓存读取 ÷ 总输入）；有请求没有报告总输入或缓存读取时不显示，因为比例无法算准。
 
 `--prompt --show-usage` 将每次模型请求的详细统计写到 stderr，stdout 仍是正文和工具结果。默认测试和界面预览不调用真实 API。缓存命中并不保证任务质量或节省总成本，真实服务验证与定性比较仍需实际运行；目前不做自动评估。

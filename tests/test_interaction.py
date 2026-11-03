@@ -311,7 +311,7 @@ async def test_status_shows_mode_badge_model_hint_and_tokens(tmp_path):
         for mode in MODES:
             conv.set_permission_mode(mode)
             app._status("")
-            assert status(app).startswith(MODE_BADGES[mode] + " (Shift+Tab 切换) · model-a")
+            assert status(app) == MODE_BADGES[mode] + " (Shift+Tab 切换)"
             badge = app.query_one("#status", Static).render().spans[0]
             expected = {
                 "acceptEdits": TOOL_SUCCESS_COLOR,
@@ -325,10 +325,36 @@ async def test_status_shows_mode_badge_model_hint_and_tokens(tmp_path):
         await pilot.resize_terminal(60, 30)
         await pilot.pause()
         app._status("")
-        assert "Shift+Tab" not in status(app) and "model-a" in status(app)
+        assert "Shift+Tab" not in status(app) and "model-a" not in status(app)
         await send(app, pilot, "hello")
         await asyncio.wait_for(app._reply_task, 5)
-        assert "Token 入" in status(app)
+        assert "上下文 约" in status(app) and "Token" not in status(app)
+
+
+async def test_status_shows_context_against_the_window_and_the_cache_hit_rate(tmp_path):
+    from mosscode.context import ContextBudget
+
+    provider = SequenceProvider(response("好", usage=Usage(8930, 11, 2944, 0)))
+    conv = Conversation(
+        provider, registry=bypass(tmp_path, "default"), budget=ContextBudget.for_provider(1_000_000, 4096)
+    )
+    app = MossCodeApp(conv, "test", settings=TWO, model="model-a")
+    async with app.run_test(size=(120, 30)) as pilot:
+        await send(app, pilot, "hello")
+        await asyncio.wait_for(app._reply_task, 5)
+        await pilot.pause()
+        assert status(app).endswith(" · 上下文 约 9K / 1M（1%） · 缓存命中 33%")
+
+
+async def test_status_names_the_model_once_the_banner_is_out_of_date():
+    def factory(config):
+        return FakeProvider()
+
+    app = MossCodeApp(Conversation(FakeProvider()), "test", settings=TWO, model="model-a", provider_factory=factory)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await app.query_one("#banner").remove()  # Committed to the scrollback, as in the inline mode.
+        await send(app, pilot, "/model other")
+        assert app.provider_name == "other" and " · other" in status(app)
 
 
 async def test_clear_starts_fresh_context_and_keeps_mode(tmp_path):
@@ -347,10 +373,10 @@ async def test_clear_starts_fresh_context_and_keeps_mode(tmp_path):
         await send(app, pilot, "问题二")
         await asyncio.wait_for(app._reply_task, 5)
         assert reminders(0) == ["system-reminder"] and reminders(1) == []
-        assert "Token 入" in status(app)
+        assert "上下文 约" in status(app)
         await send(app, pilot, "/clear")
         assert "已开始新会话" in str(app.query(".local-note")[-1].render())
-        assert not conv.history and conv.total_usage.requests == 0 and "Token 入" not in status(app)
+        assert not conv.history and conv.total_usage.requests == 0 and "上下文" not in status(app)
         assert reg.permissions.mode == "plan" and conv.mode == "plan"
         await send(app, pilot, "问题三")
         await asyncio.wait_for(app._reply_task, 5)
@@ -383,7 +409,9 @@ async def test_model_switch_by_argument_and_panel_keeps_history():
         assert "可用：test、other" in str(app.query(".local-note")[-1].render()) and not created
         await send(app, pilot, "/model other")
         assert first.closed and [name for name, _ in created] == ["other"]
-        assert app.provider_name == "other" and "model-b" in status(app)
+        # The banner is still on screen and shows the new model, so the status bar need not.
+        assert app.provider_name == app._banner_provider == "other"
+        assert "other" not in status(app)
         await send(app, pilot, "again")
         await asyncio.wait_for(app._reply_task, 5)
         second = created[0][1]

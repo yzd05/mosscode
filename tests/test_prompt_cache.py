@@ -7,7 +7,7 @@ from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Message, Usage
 from mosscode.prompts import PromptRequest, Supplement
 from mosscode.tools import create_default_registry
-from mosscode.usage import cache_summary, parse_usage
+from mosscode.usage import cache_hit_rate, parse_usage
 from test_agent import SequenceProvider, response
 from test_providers import CASES, SSEBody, adapter
 
@@ -142,4 +142,4 @@ async def test_cache_totals_are_known_lower_bound_after_missing_request():
     total = conv.total_usage
     assert (total.input_tokens, total.cached_input_tokens, total.cache_write_tokens) == (22, 8, 2)
     assert (total.missing_cached, total.missing_cache_write, total.requests) == (1, 1, 3)
-    assert cache_summary(total) == "缓存读 ≥8 / 写 ≥2"
+    assert cache_hit_rate(total) is None

@@ -3,7 +3,7 @@ import pytest
 from mosscode.agent import add_usage
 from mosscode.catalog import ModelInfo
 from mosscode.messages import Usage, UsageTotals
-from mosscode.usage import cost_text, parse_usage, request_cost
+from mosscode.usage import approx_tokens, cache_hit_rate, cost_text, parse_usage, request_cost
 
 
 def info(input_price=3e-6, output_price=15e-6, read=3e-7, write=3.75e-6):
@@ -47,3 +47,30 @@ def test_totals_and_their_text_say_when_the_cost_is_partial_or_unknown():
     assert cost_text(add_usage(UsageTotals(), Usage(10, 10))) == "无价格信息"
     big = add_usage(UsageTotals(), Usage(1_000_000, 0), info(input_price=3e-6))
     assert cost_text(big) == "约 $3.00"
+
+
+def test_cache_hit_rate_needs_every_request_to_report_input_and_cache_reads():
+    total = UsageTotals()
+    assert cache_hit_rate(total) is None
+    total = add_usage(total, Usage(8930, 11, 2944, 0))
+    assert cache_hit_rate(total) == 33
+    total = add_usage(total, Usage(9000, 20, 8900, 0))
+    assert cache_hit_rate(total) == 66
+    total = add_usage(total, Usage(100, 1))
+    assert cache_hit_rate(total) is None
+    zero = UsageTotals()
+    zero = add_usage(zero, Usage(500, 5, 0, 0))
+    assert cache_hit_rate(zero) == 0
+
+
+def test_approximate_token_counts():
+    assert [approx_tokens(n) for n in (0, 999, 1000, 8930, 999_499, 999_500, 1_234_567, 2_000_000)] == [
+        "0",
+        "999",
+        "1K",
+        "9K",
+        "999K",
+        "1M",
+        "1.2M",
+        "2M",
+    ]

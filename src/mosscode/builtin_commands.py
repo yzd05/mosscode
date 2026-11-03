@@ -598,6 +598,9 @@ def skills_report(catalog, name: str = "", active=()) -> str:
             lines.append("  专属工具")
             for tool in skill.tools:
                 lines.append(f"    {tool.full_name}  {' '.join(tool.command)}  超时 {tool.timeout:g} 秒")
+        if skill.warnings:
+            lines.append("  写法提示（不影响使用）")
+            lines.extend(f"    {warning}" for warning in skill.warnings)
         return "\n".join(lines)
     if not catalog.skills and not catalog.problems:
         return "没有 Skill。可以在 .mosscode/skills/<名称>/SKILL.md 中添加。"
@@ -610,6 +613,9 @@ def skills_report(catalog, name: str = "", active=()) -> str:
             f"{skill.description}"
         )
     lines.extend("! " + problem for problem in catalog.problems)
+    noted = [name for name, skill in catalog.skills.items() if skill.warnings]
+    if noted:
+        lines.append(f"{'、'.join(noted)} 有不符合 Agent Skills 规范的写法，不影响使用；/skills 名称 查看。")
     lines.append("输入 /<名称> 调用；/skills 名称 查看详情；/skills reload 重新扫描。")
     return "\n".join(lines)
 

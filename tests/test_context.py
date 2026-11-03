@@ -574,7 +574,7 @@ async def test_tui_shows_automatic_compaction_before_the_reply_and_the_context_s
         note = next(w for w in children if "已压缩上下文" in str(w.render()))
         reply = [w for w in children if isinstance(w, ChatEntry)][-1]
         assert children.index(note) < children.index(reply) and reply.body == "好"
-        assert "上下文 约 50%" in str(app.query_one("#status", Static).render())
+        assert "（50%）" in str(app.query_one("#status", Static).render())
 
 
 async def test_tui_compact_command_runs_idle_with_instructions():

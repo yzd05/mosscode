@@ -39,6 +39,7 @@ from .appearance import (
     startup_banner,
 )
 from .builtin_commands import BUILTIN, clean_text, confirm_tasks, dispatch, offer_trust, open_sessions
+from .catalog import tokens_label
 from .clipboard import ClipboardError, is_image_file, pasted_image_paths, read_clipboard_async
 from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, Settings
@@ -75,7 +76,7 @@ from .teams.runtime import MemberRow
 from .teams.view import TranscriptTail
 from .tool_budget import persisted_note
 from .tools import shell_label
-from .usage import cache_summary
+from .usage import approx_tokens, cache_hit_rate
 
 Result = TypeVar("Result")
 
@@ -983,7 +984,7 @@ class MossCodeApp(TerminalApp[None]):
         self._hooks_confirmed = False  # Asked once at startup, before session_start.
         # A table of this run's own: skill commands are added here and replaced by /skills reload.
         self.commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
-        self.provider_name = provider_name
+        self.provider_name = self._banner_provider = provider_name
         self.settings, self.model = settings, model
         if provider_factory is None:
             from .providers import create_provider as provider_factory
@@ -1011,7 +1012,8 @@ class MossCodeApp(TerminalApp[None]):
         self._startup_task = None
         self._compacting: float | None = None  # Start time while a compaction runs.
         self._compact_row: CompactRow | None = None
-        self._context_share: tuple[int, bool] | None = None  # (percent of the effective window, near threshold)
+        # (estimate, window, percent of the effective window, near the compaction threshold)
+        self._context_share: tuple[str, str, int, bool] | None = None
         self._agent_rows: dict[str, ToolEntry] = {}  # Agent tool rows by call id.
         self._notify_waiting = False  # A notification turn waits for the running task.
         self._announce = Announcer(self._task_note)
@@ -1351,8 +1353,9 @@ class MossCodeApp(TerminalApp[None]):
                 text.append(" " + COORDINATOR_BADGE, style=f"bold {OPERATION_COLOR}")
             if not self._generating and self.size.width >= 80:
                 text.append(" (Shift+Tab 切换)")
-        if self.model:
-            text.append(" · " + self.model)
+        if self.provider_name != self._banner_provider:
+            # The banner names the model; after /model it is stale, so the status bar names the new one.
+            text.append(" · " + self.provider_name)
         if note:
             stage, separator, rest = note.partition(" · ")
             stage_color = (
@@ -1393,19 +1396,11 @@ class MossCodeApp(TerminalApp[None]):
             ):
                 text.append(" · Ctrl+T 成员")
         if self._usage.requests:
-
-            def tokens(value, missing):
-                if missing == self._usage.requests:
-                    return "—"
-                return ("≥" if missing else "") + str(value)
-
             if self._context_share is not None:
-                percent, near = self._context_share
-                text.append(f" · 上下文 约 {percent}%", style=OPERATION_COLOR if near else None)
-            text.append(
-                f" · Token 入 {tokens(self._usage.input_tokens, self._usage.missing_input)} / 出 {tokens(self._usage.output_tokens, self._usage.missing_output)}"
-            )
-            text.append(" · " + cache_summary(self._usage))
+                used, window, percent, near = self._context_share
+                text.append(f" · 上下文 约 {used} / {window}（{percent}%）", style=OPERATION_COLOR if near else None)
+            if (rate := cache_hit_rate(self._usage)) is not None:
+                text.append(f" · 缓存命中 {rate}%")
         status = self.query("#status")
         if not status:  # Timers and MCP callbacks can fire while the screen is torn down.
             return
@@ -1419,7 +1414,12 @@ class MossCodeApp(TerminalApp[None]):
             self._context_share = None
             return
         budget = self.conversation.budget
-        self._context_share = (round(100 * estimate / budget.effective), estimate >= 0.8 * budget.auto_threshold)
+        self._context_share = (
+            approx_tokens(estimate),
+            tokens_label(budget.window),
+            round(100 * estimate / budget.effective),
+            estimate >= 0.8 * budget.auto_threshold,
+        )
 
     def _tick(self) -> None:
         if self._generating and self._compacting is not None:
@@ -1756,6 +1756,7 @@ class MossCodeApp(TerminalApp[None]):
             return
         async with self._scrollback_lock:
             self._history = [startup_banner(self.provider_name)]
+            self._banner_provider = self.provider_name
             with self.batch_update():
                 redraw_transcript(self, self._history)
 
@@ -1894,6 +1895,9 @@ class MossCodeApp(TerminalApp[None]):
             await self._local_note(f"切换失败：{exc}")
             return
         self.provider_name, self.model = config.name, config.model
+        if self.query("#banner"):  # Not yet committed to the scrollback: it can still change.
+            self.query_one("#banner", Static).update(startup_banner(self.provider_name))
+            self._banner_provider = self.provider_name
         self._refresh_context()
         self._status("")
         await self._local_note(f"└ 已切换到 {config.name}（{config.protocol} / {config.model}）；对话历史保留。")

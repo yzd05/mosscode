@@ -50,7 +50,7 @@ argument-hint: "[接口路径]"
 | `user-invocable: false` | 不出现在补全菜单和 `/help` 中，仍可输入全名调用，也仍可由模型加载 |
 | `license`、`compatibility`、`metadata` | Agent Skills 规范的字段：许可证、环境要求（最长 500 个字符）、字符串到字符串的映射。前两项在 `/skills <名称>` 中显示 |
 
-字段值不合法（如 `mode: async`）时跳过该 Skill 并提示。不认识的字段和不符合 Agent Skills 规范的 `description`、`license`、`compatibility`、`metadata` 只提示，Skill 照常加载。为 Claude Code 写的 Skill 可以直接放进来：`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`、`WebFetch`、`WebSearch` 会换算成 MossCode 的工具名，`Bash(git:*)` 这类写法只取工具名。
+字段值不合法（如 `mode: async`）时跳过该 Skill 并提示。不认识的字段和不符合 Agent Skills 规范的 `description`、`license`、`compatibility`、`metadata` 不影响加载，启动时也不提示（为其他 agent 写的 Skill 常带有自己的字段）；`/skills` 列出有这类写法的 Skill，`/skills <名称>` 显示具体内容。为 Claude Code 写的 Skill 可以直接放进来：`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`、`WebFetch`、`WebSearch` 会换算成 MossCode 的工具名，`Bash(git:*)` 这类写法只取工具名。
 
 **参数**：正文中的 `$ARGUMENTS` 替换为调用参数；正文没有 `$ARGUMENTS` 而调用时带了参数，就在末尾追加“补充要求：<参数>”。
 

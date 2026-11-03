@@ -76,18 +76,20 @@ def cost_text(total: UsageTotals) -> str:
     return ("≥ " if total.missing_cost else "约 ") + amount
 
 
-def accumulated(value: int, missing: int, requests: int, unknown: str = "未提供") -> str:
-    if missing == requests:
-        return unknown
-    return ("≥" if missing else "") + str(value)
+def cache_hit_rate(total: UsageTotals) -> int | None:
+    """Percent of the session's input read from the prompt cache; None unless every request reported both counts."""
+    if not total.requests or total.missing_input or total.missing_cached or not total.input_tokens:
+        return None
+    return round(100 * total.cached_input_tokens / total.input_tokens)
 
 
-def cache_summary(total: UsageTotals) -> str:
-    read = accumulated(total.cached_input_tokens, total.missing_cached, total.requests)
-    text = f"缓存读 {read}"
-    if total.missing_cache_write < total.requests:
-        text += " / 写 " + accumulated(total.cache_write_tokens, total.missing_cache_write, total.requests)
-    return text
+def approx_tokens(count: int) -> str:
+    """8930 → 9K, 1234567 → 1.2M: a rounded figure for estimates."""
+    if count < 1000:
+        return str(count)
+    if count < 999_500:
+        return f"{round(count / 1000)}K"
+    return f"{count / 1_000_000:.1f}".removesuffix(".0") + "M"
 
 
 def request_usage_text(usage: Usage, iteration: int) -> str:

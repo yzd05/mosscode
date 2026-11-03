@@ -424,7 +424,8 @@ class SkillCatalog:
                 if skill.name in reserved:
                     problems.append(f"Skill {skill.name} 已跳过：与内置命令 /{skill.name} 冲突（{skill.path}）。")
                     continue
-                problems.extend(f"Skill {skill.name} 提示：{note}" for note in skill.warnings)
+                # skill.warnings stay out of problems: the skill works, and skills shared with other agents
+                # often carry their fields; /skills lists them instead of every start announcing them.
                 previous = skills.get(skill.name)
                 if previous is not None:
                     skill = replace(skill, overrides=previous.overrides + (previous.path,))

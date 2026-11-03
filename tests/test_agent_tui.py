@@ -102,7 +102,7 @@ async def test_multiple_iterations_streaming_final_markdown_and_usage(tmp_path):
         assert reply.query_one(".raw").display and not reply.query_one(".answer").display
         assert "**已完" in str(reply.query_one(".raw", Static).render())
         status = str(app.query_one("#status", Static).render())
-        assert "跳过审批" in status and "3/200 轮" in status and "≥10" in status
+        assert "跳过审批" in status and "3/200 轮" in status and "Token" not in status
         release.set()
         await app._reply_task
         await pilot.pause()
@@ -112,8 +112,9 @@ async def test_multiple_iterations_streaming_final_markdown_and_usage(tmp_path):
         assert len(app.query(ToolEntry)) == 2  # Same call ID in another round creates another row.
         assert "已创建 a" in str(list(app.query(ToolEntry))[0].render())
         status = str(app.query_one("#status", Static).render())
-        assert "跳过审批" in status and "就绪" not in status and "≥22" in status and "≥6" in status
-        assert "缓存读 ≥8 / 写 ≥2" in status
+        assert "跳过审批" in status and "就绪" not in status and "上下文 约" in status
+        # One request did not report its cache reads, so no hit rate can be given.
+        assert "缓存" not in status
         assert all("<system-reminder>" not in e.body and "<environment>" not in e.body for e in app.query(ChatEntry))
         assert not app.query_one("#prompt", PromptArea).disabled
 
@@ -132,8 +133,7 @@ async def test_loop_limit_notice_is_local_and_input_recovers(tmp_path):
         await pilot.pause()
         assert "最大迭代轮数 1" in str(app.query_one(".local-note", Static).render())
         assert "已停止" in str(app.query_one("#status", Static).render())
-        assert "入 — / 出 —" in str(app.query_one("#status", Static).render())
-        assert "缓存读 未提供" in str(app.query_one("#status", Static).render())
+        assert "缓存" not in str(app.query_one("#status", Static).render())
         assert not app.query_one("#prompt", PromptArea).disabled
         assert len(conv.history) == 3
 

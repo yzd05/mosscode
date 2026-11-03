@@ -274,7 +274,7 @@ def test_agents_skills_directories_are_read_with_mosscode_winning(places, isolat
     )
     assert catalog.get("bar").description == "项目"
     assert catalog.get("baz") is not None
-    assert len(catalog.problems) == 1 and catalog.problems[0].startswith("Skill baz 提示：")
+    assert catalog.problems == () and "when_to_use" in catalog.get("baz").warnings[0]
 
 
 def test_reserved_names_are_skipped(places):
@@ -491,6 +491,19 @@ async def test_skills_list_details_and_help(tmp_path, places):
     assert shown[-1] == "规程首行：第一步：读接口。"
     assert help_text(commands, "quiet", conversation.skills).startswith("未知命令")
     assert "/foo [参数]" in help_text(commands) and "/quiet" not in help_text(commands)
+    await conversation.close()
+
+
+async def test_specification_hints_are_listed_by_skills_not_announced(tmp_path, places):
+    _, user, _, _ = places
+    write_skill(user, "shared", "hidden: true\nmetadata:\n  version: 0.2\n")
+    conversation = conversation_for(tmp_path, places)
+    assert conversation.skills.problems == () and conversation.skills.get("shared") is not None
+    listing = (await run_command(conversation, "/skills")).notes[0]
+    assert "shared 有不符合 Agent Skills 规范的写法，不影响使用" in listing
+    detail = (await run_command(conversation, "/skills shared")).notes[0].splitlines()
+    start = detail.index("  写法提示（不影响使用）")
+    assert "不认识的字段 hidden" in detail[start + 1] and "metadata 应为" in detail[start + 2]
     await conversation.close()
 
 
