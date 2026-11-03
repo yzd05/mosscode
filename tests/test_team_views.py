@@ -330,7 +330,8 @@ async def test_answered_in_its_window_or_stopped_withdraws_the_card(tmp_path):
     await until(lambda: len(shown) == 2)
     publish(store, "bob", asking("r2"))  # r1 answered in the member's window.
     await until(lambda: withdrawn == ["r1"])
-    assert "成员 bob 的审批已在它的窗口中回答" in notes and "r1" not in conv.registry.permissions.pending
+    await until(lambda: "r1" not in conv.registry.permissions.pending)  # Released once the relay wakes.
+    assert "成员 bob 的审批已在它的窗口中回答" in notes
     assert not store.mailbox.peek("bob")  # Nothing is sent for it.
     store.modify(lambda team: setattr(team.member("bob"), "status", "stopped"))  # The member ends.
     await until(lambda: withdrawn == ["r1", "r2"])
