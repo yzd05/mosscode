@@ -750,7 +750,7 @@ async def merge_team(tmp_path, *members, **scripts):
     await conv.teams.create("t")
     for name in members:
         await conv.teams.spawn(name, "general", "做事")
-    await until(lambda: all(conv.teams.runners[name].status == "idle" for name in members))
+    await until(idle(conv, *members))
     return project, conv
 
 
