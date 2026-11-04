@@ -24,7 +24,7 @@ pipx install mosscode
 moss
 ```
 
-找不到配置时，`moss` 在终端里逐项询问协议、服务地址、模型和凭据，写入 `~/.mosscode/config.yaml` 后进入界面。凭据推荐放在环境变量中，配置里只写变量名。`moss doctor` 检查安装、配置和依赖工具，不发送请求。
+找不到配置时，`moss` 在终端里逐项询问协议、服务地址、模型和凭据，写入 `~/.mosscode/config.yaml` 后进入界面。凭据推荐保存在系统凭据管理器中（`moss key set`），也可以放在环境变量中，配置里只写名称。`moss doctor` 检查安装、配置和依赖工具，不发送请求。
 
 ```
 moss "解释这个项目的入口"          # 启动后立即发送
@@ -39,6 +39,7 @@ moss -p "列出 src 下的模块"        # 无界面模式，运行一个任务�
 - MCP 外部工具、Skill、生命周期 Hook。
 - 子 Agent、后台任务、git 工作树隔离和 Agent 团队。
 - 上下文自动压缩、会话存档与恢复、记忆笔记、项目指令 `AGENTS.md`。
+- 网页读取与搜索、图片输入；输入框中 `@` 引用文件、`!` 直接执行命令，检查点与 `/rewind` 退回改动。
 
 支持 Windows、Linux 和 macOS。搜索优先使用 PATH 中的 [ripgrep](https://github.com/BurntSushi/ripgrep)，没有时退回内置实现。
 

@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-04
+
 ### 新增
 
 - `web_fetch` 读取网页：HTML 转为 Markdown，长页面按 `offset` 分段，同一会话缓存 15 分钟；拒绝本机和内网地址，连接固定到检查过的 IP；跨主机重定向交给模型决定；支持 `HTTPS_PROXY`。
@@ -51,5 +53,6 @@
 - Git 工作树隔离：创建、初始化（链接与复制）、改动检查、安全删除和过期清理。
 - Agent 团队：共享任务、成员邮箱、各自的工作树、Windows Terminal 分屏或进程内运行、确认后逐个合并。
 
-[Unreleased]: https://github.com/yzd11/mosscode/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/yzd11/mosscode/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/yzd11/mosscode/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yzd11/mosscode/releases/tag/v0.1.0
