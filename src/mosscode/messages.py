@@ -195,6 +195,7 @@ class TasksNotified:
 
 NOTIFICATION = "task-notification"  # Message.synthetic of a background task notification.
 MENTIONS = "file-mentions"  # Message.synthetic of what a typed message's @ mentions hold, right after it.
+SHELL = "shell-command"  # Message.synthetic of a command the user ran with ! and its output.
 
 
 @dataclass(frozen=True)

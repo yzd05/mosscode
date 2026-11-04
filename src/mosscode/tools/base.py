@@ -372,7 +372,7 @@ class ToolRegistry:
     def refusal(self, tool: Tool, params: Params) -> Decision | None:
         """The hard checks and deny rules alone: for what the user asked for, which needs no approval."""
         try:
-            operation = self.permissions.operation(tool, params)
+            operation = self.permissions.operation(tool, params, typed=True)
         except SecurityError as exc:
             return Decision("deny", exc.code, str(exc))
         decision = self.permissions.decide(operation, read_only=tool.read_only)

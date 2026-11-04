@@ -57,6 +57,7 @@ from .tools.agent import AgentTool, TaskOutput, TaskStop
 from .tools.base import ToolFailure, ToolRegistry
 from .tools.memory import Memory
 from .tools.skill import LoadSkill, SkillTool
+from .user_command import CommandRun, command_message, run_user_command
 
 
 @dataclass(frozen=True)
@@ -1166,3 +1167,15 @@ class Conversation:
                 if isinstance(event, RunStopped) and event.reason in {"unknown_tools", "max_iterations", "max_tokens"}:
                     return event.notice
         raise ProviderError("没有完整回复。")
+
+    async def run_command(self, command: str, *, keep: bool = True) -> CommandRun:
+        """A ! command; with keep, the command and its output join the history for the next request."""
+        await self.start()
+        if self._busy:
+            raise ProviderError("已有请求正在运行，请等待或取消。")
+        if self.registry is None:
+            return CommandRun(command, "", None, "当前没有可用的工具。")
+        run = await run_user_command(command, self.registry)
+        if keep and run.exit_code is not None:
+            self._agent._append(command_message(run))
+        return run

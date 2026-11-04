@@ -53,6 +53,7 @@ from .messages import (
     IMAGE_MARK,
     MENTIONS,
     NOTIFICATION,
+    SHELL,
     CompactFailed,
     CompactFinished,
     CompactStarted,
@@ -80,6 +81,7 @@ from .teams.view import TranscriptTail
 from .tool_budget import persisted_note
 from .tools import shell_label
 from .usage import approx_tokens, cache_hit_rate
+from .user_command import CommandRun, ran
 
 Result = TypeVar("Result")
 
@@ -449,6 +451,61 @@ class CompactRow(Static):
         self.update(self.transcript)
 
 
+SHELL_HEAD, SHELL_TAIL = 10, 20  # Output lines shown under a ! command; the context keeps more.
+
+
+def shell_heading(command: str, keep: bool = True) -> Text:
+    text = Text()
+    text.append("! " if keep else "!! ", style=f"bold {OPERATION_COLOR}")
+    text.append(" ".join(command.splitlines())[:200], style=PARAMETER_COLOR)
+    return text
+
+
+def shell_output(output: str) -> Text:
+    lines = output.splitlines()
+    if len(lines) > SHELL_HEAD + SHELL_TAIL:
+        hidden = len(lines) - SHELL_HEAD - SHELL_TAIL
+        lines = [*lines[:SHELL_HEAD], f"…（省略 {hidden} 行）…", *lines[-SHELL_TAIL:]]
+    return Text("\n".join(f"  {line[:300]}" for line in lines))
+
+
+class ShellRow(Static):
+    """A ! command while it runs, then its output and exit code in place."""
+
+    def __init__(self, command: str, keep: bool):
+        super().__init__(classes="tool-entry")
+        self.heading = shell_heading(command, keep)
+        self.keep = keep
+        self.started = monotonic()
+        self.transcript: Text | None = None  # Set once finished; scrollback waits until then.
+        self.tick()
+
+    def tick(self) -> None:
+        if self.transcript is None:
+            elapsed = monotonic() - self.started
+            self.update(self.heading + Text(f"\n  └ 执行中 · {elapsed:.1f}s · Esc 取消", style=OPERATION_COLOR))
+
+    def finish(self, run: CommandRun) -> None:
+        text = self.heading.copy()
+        if run.exit_code is None:
+            text.append(f"\n  └ 未执行 · {run.problem}", style=OPERATION_COLOR)
+        else:
+            if run.output:
+                text.append("\n")
+                text.append_text(shell_output(run.output))
+            kept = "已加入对话，下一条消息发送时模型能看到" if self.keep else "未加入对话"
+            text.append(
+                f"\n  └ 退出码 {run.exit_code} · {run.elapsed:.1f}s · {kept}",
+                style=TOOL_SUCCESS_COLOR if run.exit_code == 0 else ERROR_COLOR,
+            )
+        self.transcript = text
+        self.update(text)
+
+    def stop(self, reason: str) -> None:
+        self.transcript = self.heading + Text(f"\n  └ {reason}", style=OPERATION_COLOR)
+        self.update(self.transcript)
+
+
 class KeyboardOptions(OptionList):
     async def _on_click(self, event: events.Click) -> None:
         # Choices require Enter. Mouse clicks may focus the list but cannot execute an action.
@@ -753,6 +810,8 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
             rows.append(Text(f"└ 已收到后台任务通知：{ids}", style=PARAMETER_COLOR))
         elif message.synthetic == MENTIONS:
             rows.append(Text(attached_line(mentioned(message)), style=PARAMETER_COLOR))
+        elif message.synthetic == SHELL:
+            rows.append(shell_heading(ran(message)))
         elif message.role == "user":
             notes = [
                 f"{block.text} · {block.image.width}×{block.image.height} · {size_label(block.image.size)}"
@@ -944,6 +1003,7 @@ class MossCodeApp(TerminalApp[None]):
     .image-notes { height: auto; }
     #input-row { height: auto; margin-top: 1; padding: 0 1; border-top: solid $foreground 35%; border-bottom: solid $foreground 35%; }
     #input-prefix { width: 2; height: 1; color: $primary; }
+    #input-prefix.shell { color: OPERATION_COLOR; text-style: bold; }
     #prompt { width: 1fr; height: auto; max-height: 8; border: none; padding: 0; background: $background; }
     #prompt:focus { border: none; background-tint: transparent; }
     #command-hints { height: auto; max-height: 7; border: none; padding: 0 1; }
@@ -976,6 +1036,7 @@ class MossCodeApp(TerminalApp[None]):
         .replace("PARAMETER_COLOR", PARAMETER_COLOR)
         .replace("USER_MESSAGE_BACKGROUND", USER_MESSAGE_BACKGROUND)
         .replace("USER_MESSAGE_COLOR", USER_MESSAGE_COLOR)
+        .replace("OPERATION_COLOR", OPERATION_COLOR)
     )
     BINDINGS = [
         Binding("escape", "cancel", "取消生成", priority=True, show=False),
@@ -1047,6 +1108,7 @@ class MossCodeApp(TerminalApp[None]):
         self._startup_task = None
         self._compacting: float | None = None  # Start time while a compaction runs.
         self._compact_row: CompactRow | None = None
+        self._shell_row: ShellRow | None = None  # While a ! command runs.
         # (estimate, window, percent of the effective window, near the compaction threshold)
         self._context_share: tuple[str, str, int, bool] | None = None
         self._agent_rows: dict[str, ToolEntry] = {}  # Agent tool rows by call id.
@@ -1457,6 +1519,12 @@ class MossCodeApp(TerminalApp[None]):
         )
 
     def _tick(self) -> None:
+        if self._generating and self._shell_row is not None:
+            self._shell_row.tick()
+            if monotonic() < self._hint_until:
+                return
+            self._status(f"执行命令中 · {monotonic() - self._shell_row.started:.1f}s · Esc 取消")
+            return
         if self._generating and self._compacting is not None:
             if self._compact_row is not None:
                 self._compact_row.tick()
@@ -1490,6 +1558,11 @@ class MossCodeApp(TerminalApp[None]):
                 self._dismissed_prompt = None
             self._refresh_hints(value)
             self._refresh_attachments()
+            shell = value.lstrip().startswith("!")
+            prefix = self.query_one("#input-prefix", Static)
+            if prefix.has_class("shell") != shell:
+                prefix.set_class(shell, "shell")
+                prefix.update("!" if shell else "❯")
 
     def _workspace_root(self) -> Path:
         registry = getattr(self.conversation, "registry", None)
@@ -1607,8 +1680,8 @@ class MossCodeApp(TerminalApp[None]):
     def _mention_hints(self, value: str) -> tuple[list[Hint], list[int]]:
         """Files and directories for the @ mention being typed before the cursor."""
         field = self.query_one("#prompt", PromptArea)
-        if "@" not in value or value != field.text:
-            return [], []
+        if "@" not in value or value != field.text or value.lstrip().startswith("!"):
+            return [], []  # A ! command's @ is the shell's.
         cursor = field.document.get_index_from_location(field.cursor_location)
         before, after = value[:cursor], value[cursor:]
         typed = partial_mention(before)
@@ -1733,7 +1806,15 @@ class MossCodeApp(TerminalApp[None]):
             and parsed.command is not None
             and parsed.command.runs_while_running(parsed.argument)
         )
+        if parsed.kind == "shell" and not parsed.text:
+            self._hint_until = monotonic() + 2
+            self._status("在 ! 后面输入要执行的命令；!! 开头只执行，不加入对话")
+            return
         if self._task_running and not running_ok:
+            if parsed.kind == "shell":
+                self._hint_until = monotonic() + 2
+                self._status("运行中不能执行 ! 命令，请在完成后发送 · Esc 取消")
+                return
             if parsed.kind != "message":
                 # Commands change state the running task depends on; keep the text for later.
                 self._hint_until = monotonic() + 2
@@ -1750,6 +1831,9 @@ class MossCodeApp(TerminalApp[None]):
         field.clear()
         self._dismissed_prompt = None
         self._refresh_hints("")
+        if parsed.kind == "shell":
+            await self._start_shell(parsed.text, keep=parsed.word == "!")
+            return
         if parsed.kind != "message":
             await self._command(prompt.strip(), parsed)
             return
@@ -1780,6 +1864,37 @@ class MossCodeApp(TerminalApp[None]):
         self._status("连接中…")
         await self._commit_ready_transcript()
         self._reply_task = asyncio.create_task(self._respond(prompt, reply, command, fork, notify, images))
+
+    async def _start_shell(self, command: str, *, keep: bool) -> None:
+        chat = self.query_one("#chat", VerticalScroll)
+        self._shell_row = ShellRow(command, keep)
+        await chat.mount(self._shell_row)
+        chat.anchor()
+        self._generating = True
+        self._tick()
+        self._reply_task = asyncio.create_task(self._run_shell(command, keep))
+
+    async def _run_shell(self, command: str, keep: bool) -> None:
+        row = self._shell_row
+        try:
+            row.finish(await self.conversation.run_command(command, keep=keep))
+        except asyncio.CancelledError:
+            if not self._closing:
+                row.stop("已取消 · 未加入对话")
+        except ProviderError as exc:
+            row.stop(f"未执行 · {exc}")
+        finally:
+            self._generating = False
+            self._shell_row = None
+            if not self._closing:
+                await self._commit_ready_transcript()
+                field = self.query_one("#prompt", PromptArea)
+                queued = self.conversation.take_queued()
+                if queued:
+                    field.value = "\n\n".join((*queued, field.value) if field.value.strip() else queued)
+                self._refresh_queue()
+                self._refresh_context()
+                self._status("")
 
     @staticmethod
     def _note(text: str, style: str | None = None) -> Static:

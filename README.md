@@ -101,6 +101,7 @@ moss --resume                 # 启动后从列表中选择会话
 | Shift+Enter、Ctrl+J、行尾 `\` | 换行 |
 | Alt+V（macOS、Linux 也可用 Ctrl+V），或把图片文件拖进终端 | 附加图片，输入框中显示为 `[图片 #1]` |
 | `@` | 列出项目文件和目录，模糊匹配；发送时附上 `@路径` 引用的文件内容（`@文件#L10-20` 只附这几行），见 [引用文件](docs/reference/interface.md#引用文件) |
+| `!命令`、`!!命令` | 不经过模型直接执行命令；`!` 的输出加入对话，下一条消息时模型能看到，`!!` 只执行，见 [执行命令](docs/reference/interface.md#执行命令) |
 | ↑ / ↓ | 浏览输入历史；命令提示打开时选择提示 |
 | Tab | 补全命令和参数 |
 | Shift+Tab | 切换权限档位 default → acceptEdits → plan |

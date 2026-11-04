@@ -361,10 +361,12 @@ class PermissionPolicy:
             self.resume_mode = mode
         self.mode = mode
 
-    def operation(self, tool, params) -> Operation:
+    def operation(self, tool, params, *, typed: bool = False) -> Operation:
+        """typed: the user asked for it themselves (an @ mention, a ! command), so plan mode does not hold it back."""
         args = params.model_dump()
         if (
-            self.mode == "plan"
+            not typed
+            and self.mode == "plan"
             and not tool.read_only
             and tool.name != EXIT_PLAN
             and not getattr(tool, "plan_allowed", False)

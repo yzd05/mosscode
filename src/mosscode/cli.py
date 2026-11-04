@@ -54,7 +54,7 @@ def _headless_input(
     For a skill the prompt is its argument: the request is rendered once the tools are known.
     """
     parsed = parse_input(text, commands)
-    if parsed.kind in {"empty", "message"}:
+    if parsed.kind in {"empty", "message", "shell"}:  # -p speaks to the model; ! runs nothing here.
         return (parsed.text if parsed.kind == "message" else text), None, None
     if parsed.kind == "unknown":
         problem = unknown_note(parsed, commands)

@@ -110,8 +110,8 @@ class Command:
 
 @dataclass(frozen=True)
 class Parsed:
-    kind: Literal["empty", "message", "command", "unknown"]
-    text: str = ""  # message: what goes to the model
+    kind: Literal["empty", "message", "command", "unknown", "shell"]
+    text: str = ""  # message: what goes to the model; shell: the command
     command: Command | None = None
     argument: str = ""
     word: str = ""  # The command word as typed
@@ -223,10 +223,14 @@ class CommandRegistry:
 
 
 def parse_input(text: str, registry: CommandRegistry) -> Parsed:
-    """Commands are one slash word; anything else (paths, "//" escapes) is a message."""
+    """Commands are one slash word, shell commands start with ! (!! keeps them out of the context);
+    anything else (paths, "//" escapes) is a message."""
     if not text.strip():
         return Parsed("empty")
     stripped = text.lstrip()
+    if stripped.startswith("!"):
+        word = "!!" if stripped.startswith("!!") else "!"
+        return Parsed("shell", stripped[len(word) :].strip(), word=word)
     if stripped.startswith("//"):
         return Parsed("message", stripped[1:])
     if stripped.rstrip() == "/":
