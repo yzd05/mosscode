@@ -62,7 +62,8 @@ async def test_write_read_barrier_then_natural_completion(tmp_path):
     assert next(e for e in events if isinstance(e, Completed)).message.text == "结果完成"
     assert len(provider.requests) == 2
     assert provider.requests[1][2] is True
-    assert len(provider.requests[0][1]) == 6
+    # Every registered tool is offered, whatever the default set grows to.
+    assert [tool.name for tool in provider.requests[0][1]] == [tool.name for tool in conv.registry.definitions()]
     results = conv.history[2].tool_results
     assert [r.call_id for r in results] == ["write", "read"]
     assert "     1\tone" in results[1].output
