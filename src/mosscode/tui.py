@@ -48,14 +48,17 @@ from .coordinator import BADGE as COORDINATOR_BADGE
 from .images import ImageError, ImageRef, ProcessedImage, load_image, size_label
 from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, MemberList, MemberPanel, MemberView
 from .memory import SCOPE_LABELS
+from .mentions import FileIndex, mentioned, partial_mention, quoted
 from .messages import (
     IMAGE_MARK,
+    MENTIONS,
     NOTIFICATION,
     CompactFailed,
     CompactFinished,
     CompactStarted,
     Completed,
     Delta,
+    FilesAttached,
     IterationProgress,
     Message,
     ProviderError,
@@ -734,6 +737,10 @@ def user_row(text: str, notes=()):
     return Group(row, image_lines(notes)) if notes else row
 
 
+def attached_line(entries) -> str:
+    return "└ 已附上 " + "、".join(entries)
+
+
 def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGES) -> list:
     """The latest messages in brief, for the scrollback after a resume."""
     shown = [m for m in history if m.role != "tool"][-limit:]
@@ -744,6 +751,8 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
         elif message.synthetic == NOTIFICATION:
             ids = "、".join(re.findall(r"^任务：(\S+)", message.text, re.MULTILINE))
             rows.append(Text(f"└ 已收到后台任务通知：{ids}", style=PARAMETER_COLOR))
+        elif message.synthetic == MENTIONS:
+            rows.append(Text(attached_line(mentioned(message)), style=PARAMETER_COLOR))
         elif message.role == "user":
             notes = [
                 f"{block.text} · {block.image.width}×{block.image.height} · {size_label(block.image.size)}"
@@ -1024,6 +1033,10 @@ class MossCodeApp(TerminalApp[None]):
         self._hint_until = 0.0  # Short notes shown over the running status until this time.
         self._escape_at = 0.0  # The last Esc on an empty, idle prompt: a second one soon after opens /rewind.
         self._hint_choices: list[Hint] = []
+        # Per @ mention hint: where the cursor goes after it, as an index into the prompt's text.
+        self._mention_cursors: list[int] = []
+        self._file_index: FileIndex | None = None
+        self._indexing = False
         self._dismissed_prompt: str | None = None
         self._scrollback_lock = asyncio.Lock()
         self._history: list = []  # Everything committed to scrollback, re-rendered after a width change.
@@ -1571,8 +1584,13 @@ class MossCodeApp(TerminalApp[None]):
         self._hint_choices = (
             [] if recalled or value == self._dismissed_prompt else self.commands.matches(self._command_context(), value)
         )
+        self._mention_cursors = []
+        if not self._hint_choices and not recalled and value != self._dismissed_prompt:
+            self._hint_choices, self._mention_cursors = self._mention_hints(value)
         hints.clear_options()
         width = min(24, max(10, (self.size.width - 8) // 2))
+        if self._mention_cursors:
+            width = min(72, max(10, self.size.width - 16))  # Paths need the room more than the description.
         for hint in self._hint_choices:
             row = Table.grid(padding=(0, 2), expand=True)
             row.add_column(width=width, no_wrap=True, overflow="ellipsis")
@@ -1585,6 +1603,66 @@ class MossCodeApp(TerminalApp[None]):
             hints.highlighted = next((i for i, choice in enumerate(self._hint_choices) if choice[0] == previous), 0)
             help_line.update("↑ / ↓ 选择 · Tab 补全 · Enter 确认 · Esc 收起")
         self.call_later(self._fit_chat)
+
+    def _mention_hints(self, value: str) -> tuple[list[Hint], list[int]]:
+        """Files and directories for the @ mention being typed before the cursor."""
+        field = self.query_one("#prompt", PromptArea)
+        if "@" not in value or value != field.text:
+            return [], []
+        cursor = field.document.get_index_from_location(field.cursor_location)
+        before, after = value[:cursor], value[cursor:]
+        typed = partial_mention(before)
+        if typed is None:
+            return [], []
+        index = self._mention_index()
+        if index is None:
+            return [], []
+        start, query = typed
+        if query in index.paths and not query.endswith("/"):
+            return [], []  # Already a whole file's path: nothing left to choose.
+        if before[start + 1 : start + 2] == '"' and after[:1] == '"':
+            after = after[1:]  # The closing quote of the mention being replaced.
+        hints, cursors = [], []
+        for path in index.candidates(query):
+            directory = path.endswith("/")
+            inserted = "@" + quoted(path) + ("" if directory or after[:1].isspace() else " ")
+            hints.append(Hint(before[:start] + inserted + after, "目录" if directory else "", path))
+            # Inside a quoted directory the cursor stays before the quote, so its entries come next.
+            cursors.append(start + len(inserted) - (1 if directory and inserted.endswith('"') else 0))
+        return hints, cursors
+
+    def _mention_index(self) -> FileIndex | None:
+        root = self._workspace_root()
+        if self._file_index is None or self._file_index.root != root:
+            self._file_index = FileIndex(root)
+        index = self._file_index
+        if index.stale and not self._indexing:
+            self._indexing = True
+            self.run_worker(lambda: self._load_index(index), thread=True, group="file-index")
+        return index if index.loaded_at is not None else None
+
+    def _load_index(self, index: FileIndex) -> None:
+        try:
+            index.load()
+        finally:
+            self._indexing = False
+        try:
+            self.call_from_thread(self._index_loaded)
+        except RuntimeError:  # The app closed meanwhile.
+            pass
+
+    def _index_loaded(self) -> None:
+        try:
+            field = self.query_one("#prompt", PromptArea)
+        except NoMatches:
+            return
+        if "@" in field.text:
+            self._refresh_hints(field.text)
+
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        # Moving the cursor onto or off a mention changes what the menu offers, without any edit.
+        if event.text_area.id == "prompt" and "@" in event.text_area.text:
+            self._refresh_hints(event.text_area.text)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action in {"move_hint", "complete_hint"}:
@@ -1621,6 +1699,14 @@ class MossCodeApp(TerminalApp[None]):
                 return
             completion = unique.value
         elif hints.highlighted is None:
+            return
+        elif self._mention_cursors:
+            completion, cursor = self._hint_choices[hints.highlighted].value, self._mention_cursors[hints.highlighted]
+            field = self.query_one("#prompt", PromptArea)
+            self._dismissed_prompt = None  # A directory goes on to its own entries.
+            field.value = completion
+            field.move_cursor(field.document.get_location_from_index(cursor))
+            self._refresh_hints(completion)
             return
         else:
             completion = self._hint_choices[hints.highlighted].value
@@ -2177,6 +2263,8 @@ class MossCodeApp(TerminalApp[None]):
                             self._tick()
                     elif isinstance(event, Notice):
                         await self._local_note("! " + event.text, OPERATION_COLOR)
+                    elif isinstance(event, FilesAttached):
+                        await chat.mount(self._note(attached_line(event.entries), PARAMETER_COLOR), before=reply)
                     elif isinstance(event, UserInput):
                         # Queued messages joined the context at this iteration boundary.
                         for text in event.texts:

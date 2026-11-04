@@ -16,12 +16,14 @@ from .context import ContextBudget, estimate_text
 from .images import ImageRef, ProcessedImage, image_ref
 from .memory import INDEX_TOKENS, MemoryStore
 from .memory_extract import MemoryExtractor
+from .mentions import attach
 from .messages import (
     NOTIFICATION,
     CompactFailed,
     CompactFinished,
     Completed,
     ContentBlock,
+    FilesAttached,
     Message,
     ProviderError,
     RunStopped,
@@ -979,10 +981,21 @@ class Conversation:
         if self._team_context_due and not fork and synthetic is None:
             prompt, command = await self._team_context(prompt, command)
         refs = await asyncio.to_thread(self._image_refs, images, prompt) if images else None
+        attached = None
+        if not fork and synthetic is None and self.registry is not None and "@" in prompt:
+            attached = await attach(prompt, self.registry)
+            if attached is not None:
+                yield FilesAttached(attached.entries)
         run = (
             self._fork(fork, command)
             if fork
-            else self._agent.run(prompt, command=command, synthetic=synthetic, images=refs)
+            else self._agent.run(
+                prompt,
+                command=command,
+                synthetic=synthetic,
+                images=refs,
+                attachments=attached.message if attached is not None else None,
+            )
         )
         stopped = None
         try:

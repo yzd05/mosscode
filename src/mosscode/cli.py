@@ -27,6 +27,7 @@ from .messages import (
     CompactStarted,
     Completed,
     Delta,
+    FilesAttached,
     Message,
     ProviderError,
     ResponseBoundary,
@@ -311,6 +312,8 @@ async def _prompt(
                         _emit(_compact_event(event))
                     elif isinstance(event, Notice):
                         _emit({"type": "notice", "text": event.text})
+                    elif isinstance(event, FilesAttached):
+                        _emit({"type": "files_attached", "entries": list(event.entries)})
         except ProviderError as exc:
             error = str(exc)
         registry = conversation.registry
@@ -401,6 +404,8 @@ async def _text_prompt(
                     print(compact_notice(event), file=sys.stderr, flush=True)
                 elif isinstance(event, Notice):
                     print(event.text, file=sys.stderr, flush=True)
+                elif isinstance(event, FilesAttached):
+                    print("已附上 " + "、".join(event.entries), file=sys.stderr, flush=True)
         print()
     finally:
         await conversation.close()

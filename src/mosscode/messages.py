@@ -194,6 +194,14 @@ class TasksNotified:
 
 
 NOTIFICATION = "task-notification"  # Message.synthetic of a background task notification.
+MENTIONS = "file-mentions"  # Message.synthetic of what a typed message's @ mentions hold, right after it.
+
+
+@dataclass(frozen=True)
+class FilesAttached:
+    """The typed message's @ mentions were read; one line per mention."""
+
+    entries: tuple[str, ...]
 
 
 @dataclass(frozen=True)

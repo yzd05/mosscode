@@ -369,6 +369,31 @@ class ToolRegistry:
             return result
         return await self._after(call, tool, raw, state, result)
 
+    def refusal(self, tool: Tool, params: Params) -> Decision | None:
+        """The hard checks and deny rules alone: for what the user asked for, which needs no approval."""
+        try:
+            operation = self.permissions.operation(tool, params)
+        except SecurityError as exc:
+            return Decision("deny", exc.code, str(exc))
+        decision = self.permissions.decide(operation, read_only=tool.read_only)
+        return decision if decision.action == "deny" else None
+
+    async def read_for_user(self, path: str, offset: int = 1, limit: int | None = None) -> ToolResult:
+        """read_file for a path the user typed (an @ mention): no approval or hooks, the same result otherwise."""
+        arguments: dict[str, Any] = {"path": path, "offset": offset} | ({"limit": limit} if limit else {})
+        call = ToolCall("mention", "read_file", json.dumps(arguments, ensure_ascii=False))
+        tool = self.get("read_file")
+        if tool is None or self._withheld(tool):
+            return ToolResult(call.id, call.name, "当前没有启用 read_file。", True, "unknown_tool")
+        try:
+            params = tool.validate_arguments(arguments)
+        except (ToolFailure, ValidationError):
+            return ToolResult(call.id, call.name, "路径或行号不合法。", True, "invalid_arguments")
+        refused = self.refusal(tool, params)
+        if refused is not None:
+            return ToolResult(call.id, call.name, refused.reason, True, refused.code, {"executed": False})
+        return await self._run(call, tool, params)
+
     async def _after(self, call: ToolCall, tool: Tool, raw, state, result: ToolResult) -> ToolResult:
         """post_tool_use; a cancelled hook keeps the tool result."""
         hooks, notes, modified = self.hooks, list(state.get("notes", ())), None

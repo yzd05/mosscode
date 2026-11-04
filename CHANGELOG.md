@@ -14,6 +14,7 @@
 - 模型目录：随程序附带 LiteLLM 的模型数据，`context_window`、`max_output_tokens`（最多 32,000）和 `images` 未配置时按模型自动取值，不再一律按 128K 估算；模型名是别名时用新配置项 `catalog_model` 指定条目。新增 `moss models [关键词]` 查找条目、`moss models update` 下载最新数据；`/status` 和 `-p` 的 json 结果（`total_cost_usd`）显示按目录价格估算的费用；`moss setup` 和 `moss doctor` 显示目录的匹配结果。
 - 内置 Skill `/init`：分析项目后生成或补充 `AGENTS.md`，写入前显示改动并按档位审批。
 - 检查点与 `/rewind`（别名 `/checkpoint`）：`write_file`、`edit_file` 改文件前自动保存快照（包括主工作区中的子 Agent），可以把文件、对话或两者退回到之前某条消息发出前的状态，回退后的消息放回输入框；空闲且输入框为空时连按两次 Esc 打开。检查点随会话存档保存，恢复会话后仍可回退。
+- `@` 文件引用：输入 `@` 列出项目中的文件和目录（遵守 `.gitignore`，模糊匹配），Tab 或 Enter 补全；发送时附上引用的文件内容（与 `read_file` 的结果相同，记为已读，可以直接编辑）和目录列表，`@文件#L10-20` 只附这几行；一条消息最多 10 个引用、约 112 KiB，显式拒绝规则仍然生效；`-p` 同样展开。
 - Skill 另外从 [Agent Skills](https://agentskills.io/specification) 的共享目录 `~/.agents/skills/`、`.agents/skills/` 读取；按规范检查 `SKILL.md`，不认识的字段只提示；`/skills <名称>` 显示 `license`、`compatibility`；白名单中的 `WebFetch`、`WebSearch` 换算为 `web_fetch`、`web_search`。
 
 ### 变更

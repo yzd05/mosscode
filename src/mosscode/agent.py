@@ -374,8 +374,12 @@ class AgentLoop:
         command: str | None = None,
         synthetic: str | None = None,
         images: Mapping[str, ImageRef] | None = None,
+        attachments: Message | None = None,
     ):
-        """images: attached pictures by their placeholder in prompt, e.g. "[图片 #1]"."""
+        """images: attached pictures by their placeholder in prompt, e.g. "[图片 #1]".
+
+        attachments: what the prompt's @ mentions hold, sent and kept right after it.
+        """
         if self.busy:
             raise ProviderError("已有请求正在运行，请等待或取消。")
         if not prompt.strip():
@@ -410,7 +414,7 @@ class AgentLoop:
                     texts, self.notifications = tuple(self.notifications), []
                     self._append(Message("user", (ContentBlock("text", "\n\n".join(texts)),), synthetic=NOTIFICATION))
                     yield TasksNotified(texts)
-                fresh = [] if committed else [user]
+                fresh = [] if committed else [user, *([attachments] if attachments else [])]
                 if self._may_compact() and self.estimate(fresh, env.text) >= self.budget.auto_threshold:
                     async with aclosing(self._compact()) as events:
                         async for event in events:
@@ -449,6 +453,8 @@ class AgentLoop:
                 await self._hook("post_receive", {"iteration": str(iteration), "tool_calls": str(len(calls))})
                 if not committed:
                     self._append(deepcopy(user))
+                    if attachments is not None:
+                        self._append(deepcopy(attachments))
                     committed = True
                 self._append(deepcopy(final.message))
                 self._usage(final.usage)
