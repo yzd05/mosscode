@@ -21,7 +21,7 @@ from mosscode.tools.process import run_process
 from test_cli_product import wizard
 from test_conversation import FakeProvider
 
-KEY = "sk-test-secret-0123456789"
+KEY = "moss-test-secret-0123456789"  # Not shaped like a real provider key, so secret scanners leave it alone.
 
 
 def config_file(tmp_path, provider=None, **extra):
