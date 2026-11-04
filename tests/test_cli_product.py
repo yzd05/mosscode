@@ -163,6 +163,13 @@ async def test_initial_prompt_is_sent_once_started():
 # SU, CF --------------------------------------------------------------------
 
 
+class NoVault:
+    """No system credential manager: the wizard offers the environment variable and the typed key."""
+
+    def problem(self):
+        return "没有可用的系统凭据管理器"
+
+
 def wizard(answers, *, secret=None, environ=None):
     answers, out = iter(answers), []
 
@@ -178,6 +185,7 @@ def wizard(answers, *, secret=None, environ=None):
         secret=secret or (lambda question: pytest.fail("no secret asked")),
         write=out.append,
         environ=environ or {},
+        vault=NoVault(),
     ), out
 
 

@@ -16,6 +16,7 @@ from .commands import CommandRegistry, argument_problem, parse_input, unknown_no
 from .config import ConfigError, find_config, load_settings
 from .conversation import Conversation, Notice, Resumed
 from .coordinator import decide as decide_coordinator
+from .credentials import plaintext_notice, protect
 from .hooks import HookEngine
 from .launcher import is_terminal, parse_arguments
 from .mcp_client import MCPManager
@@ -462,6 +463,7 @@ def run(args: argparse.Namespace) -> None:
             for item in settings.providers:
                 print(f"{item.name}: {item.protocol} / {item.model}")
             return
+        protect(settings)
         config = settings.select(args.provider)
         if (
             args.prompt is None
@@ -486,7 +488,9 @@ def run(args: argparse.Namespace) -> None:
         )
         if coordinator_notice:
             notices += (coordinator_notice,)
-        notices += tuple(filter(None, (load_catalog().problem, config.window_note())))
+        notices += tuple(
+            filter(None, (load_catalog().problem, config.window_note(), plaintext_notice(settings, Path.cwd())))
+        )
         conversation = Conversation(
             create_provider(config),
             settings.system_prompt,

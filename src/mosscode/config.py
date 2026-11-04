@@ -27,6 +27,7 @@ ALIASES = {
 PROTOCOLS = set(ALIASES.values())
 TEAMMATE_MODES = ("auto", "in-process", "windows-terminal", "tmux")
 SEARCH_PROVIDERS = ("tavily",)
+CREDENTIAL_FIELDS = ("api_key", "api_key_env", "api_key_keyring")
 # Default output limit taken from the catalog at most: some models allow as much output as their whole window,
 # and the reply reserve comes out of the window.
 OUTPUT_CAP = 32_000
@@ -47,6 +48,7 @@ class ProviderConfig:
     base_url: str | None = None
     api_key_env: str | None = field(default=None, repr=False)
     api_key: str | None = field(default=None, repr=False)
+    api_key_keyring: str | None = None  # The entry name in the system credential manager.
     auth_type: str = "api_key"
     headers: dict[str, str] = field(default_factory=dict, repr=False)
     thinking: dict[str, Any] | None = None
@@ -90,15 +92,35 @@ class ProviderConfig:
 
     def credential(self) -> str:
         _validate_env_name(self.api_key_env)
-        value = os.environ.get(self.api_key_env, "") if self.api_key_env else self.api_key
+        value = _stored(self.api_key_env, self.api_key_keyring, self.api_key, self.name)
         if not value:
-            hint = (
-                f"请设置环境变量 {self.api_key_env}（api_key_env 只填写变量名；直接填写密钥请使用 api_key）"
-                if self.api_key_env
-                else "请配置 api_key_env（环境变量名）或 api_key（密钥）"
-            )
+            if self.api_key_env:
+                hint = f"请设置环境变量 {self.api_key_env}（api_key_env 只填写变量名；直接填写密钥请使用 api_key）"
+            elif self.api_key_keyring:
+                hint = (
+                    f"系统凭据管理器中没有 {self.api_key_keyring}，请运行 moss key set {self.api_key_keyring} 保存密钥"
+                )
+            else:
+                hint = "请配置 api_key_env（环境变量名）、api_key_keyring（凭据管理器中的名称）或 api_key（密钥）"
             raise ConfigError(f"{self.name}：{hint}。")
         return value
+
+
+def _stored(env: str | None, keyring: str | None, plain: str | None, owner: str) -> str | None:
+    """The key from whichever of the three places is configured; registered so it is hidden from the model."""
+    from . import credentials
+
+    if env:
+        value = os.environ.get(env) or None
+    elif keyring:
+        try:
+            value = credentials.keyring_get(keyring)
+        except credentials.KeyringError as exc:
+            raise ConfigError(f"{owner}：{exc}。") from None
+    else:
+        value = plain or None
+    credentials.remember(value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -106,10 +128,11 @@ class WebSearchConfig:
     provider: str
     api_key_env: str | None = field(default=None, repr=False)
     api_key: str | None = field(default=None, repr=False)
+    api_key_keyring: str | None = None
 
     def credential(self) -> str | None:
-        """The key, or None when the variable it names is unset."""
-        return (os.environ.get(self.api_key_env) if self.api_key_env else self.api_key) or None
+        """The key, or None when the variable or credential manager entry it names is missing."""
+        return _stored(self.api_key_env, self.api_key_keyring, self.api_key, "web_search")
 
 
 @dataclass(frozen=True)
@@ -195,11 +218,11 @@ def _provider(raw: Any) -> ProviderConfig:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
             raise ConfigError("base_url 必须是没有嵌入凭据的 HTTP(S) URL。")
-    for key in ("api_key", "api_key_env"):
+    for key in CREDENTIAL_FIELDS:
         if key in data and (not isinstance(data[key], str) or not data[key].strip()):
             raise ConfigError(f"{key} 必须是非空字符串。")
-    if data.get("api_key") and data.get("api_key_env"):
-        raise ConfigError("api_key 和 api_key_env 只选择一种。")
+    if sum(bool(data.get(key)) for key in CREDENTIAL_FIELDS) > 1:
+        raise ConfigError("api_key、api_key_env 和 api_key_keyring 只选择一种。")
     _validate_env_name(data.get("api_key_env"))
     headers = data.get("headers", {})
     if not isinstance(headers, dict) or any(
@@ -306,17 +329,19 @@ def _catalog_defaults(data: dict) -> None:
 def _web_search(raw: Any) -> WebSearchConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict) or set(raw) - {"provider", "api_key_env", "api_key"}:
-        raise ConfigError("web_search 只支持 provider、api_key_env、api_key 字段。")
+    if not isinstance(raw, dict) or set(raw) - {"provider", *CREDENTIAL_FIELDS}:
+        raise ConfigError("web_search 只支持 provider、api_key_env、api_key_keyring、api_key 字段。")
     if raw.get("provider") not in SEARCH_PROVIDERS:
         raise ConfigError("web_search.provider 需为 " + "、".join(SEARCH_PROVIDERS) + " 之一。")
-    for key in ("api_key", "api_key_env"):
+    for key in CREDENTIAL_FIELDS:
         if key in raw and (not isinstance(raw[key], str) or not raw[key].strip()):
             raise ConfigError(f"web_search.{key} 必须是非空字符串。")
-    if bool(raw.get("api_key")) == bool(raw.get("api_key_env")):
-        raise ConfigError("web_search 需要 api_key_env（环境变量名）或 api_key（密钥）中的一个。")
+    if sum(bool(raw.get(key)) for key in CREDENTIAL_FIELDS) != 1:
+        raise ConfigError(
+            "web_search 需要 api_key_env（环境变量名）、api_key_keyring（凭据管理器中的名称）或 api_key（密钥）中的一个。"
+        )
     _validate_env_name(raw.get("api_key_env"))
-    return WebSearchConfig(raw["provider"], raw.get("api_key_env"), raw.get("api_key"))
+    return WebSearchConfig(raw["provider"], raw.get("api_key_env"), raw.get("api_key"), raw.get("api_key_keyring"))
 
 
 def config_candidates(cwd: Path | None = None, home: Path | None = None) -> tuple[Path, ...]:

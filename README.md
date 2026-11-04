@@ -23,7 +23,7 @@ moss --version
 
 ### 模型
 
-第一次运行 `moss` 时如果找不到配置，会在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认只写环境变量名；选择直接输入密钥时，密钥以明文保存在这个文件中。
+第一次运行 `moss` 时如果找不到配置，会在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），配置只写名称；也可以只写环境变量名，或直接把密钥以明文写进这个文件。
 
 追加 Provider 或调整其他选项时手动编辑，字段说明见 [config.example.yaml](config.example.yaml)：
 
@@ -39,14 +39,14 @@ providers:
   - name: claude
     protocol: anthropic-messages      # 或 openai-responses、openai-chat-completions
     model: replace-with-service-model
-    api_key_env: ANTHROPIC_API_KEY    # 环境变量名；也可以用 api_key 直接填写
+    api_key_env: ANTHROPIC_API_KEY    # 环境变量名；或 api_key_keyring（moss key set 保存的名称）、api_key 直接填写
     # max_output_tokens: 32000        # 单次回复的输出上限；默认取模型目录的值（最多 32000）
     # context_window: 200000          # 通常不必填写，模型目录中没有该模型时再填
     # catalog_model: claude-sonnet-4-5  # 模型名是目录中没有的别名时，指定目录中的条目
     # base_url: https://your-gateway.example/v1
 ```
 
-凭据推荐放在环境变量中（`$env:ANTHROPIC_API_KEY = '你的凭据'`），不要提交到仓库，也不用发送到聊天。上下文窗口、输出上限、是否接受图片和价格来自随程序发布的[模型目录](docs/reference/providers.md#模型目录)（数据来自 LiteLLM），`moss models` 查看匹配结果，`moss models update` 下载最新数据。兼容服务、多 Provider、重试和协议选项见 [模型提供商](docs/reference/providers.md)。
+凭据推荐用 `moss key set 名称` 存进系统凭据管理器，或放在环境变量中（`$env:ANTHROPIC_API_KEY = '你的凭据'`），不要提交到仓库，也不用发送到聊天；模型执行的命令拿不到这些变量，工具结果中出现的密钥也会被隐藏（见[密钥保护](docs/reference/providers.md#密钥保护)）。上下文窗口、输出上限、是否接受图片和价格来自随程序发布的[模型目录](docs/reference/providers.md#模型目录)（数据来自 LiteLLM），`moss models` 查看匹配结果，`moss models update` 下载最新数据。兼容服务、多 Provider、重试和协议选项见 [模型提供商](docs/reference/providers.md)。
 
 常用的顶层选项：
 
@@ -229,6 +229,7 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 | `tui.py`、`appearance.py`、`scrollback.py` | 界面、命令与提示、原生滚动历史 |
 | `launcher.py`、`cli.py` | 命令入口：参数、`--version` 和子命令不加载界面与 SDK；会话由 `cli.run` 启动 |
 | `config.py`、`setup.py`、`doctor.py` | 配置加载、配置引导（`moss setup`）与诊断（`moss doctor`） |
+| `credentials.py`、`key_command.py` | 系统凭据管理器（`moss key`），子进程环境与输出中的密钥隐藏 |
 
 ### 文档
 

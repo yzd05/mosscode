@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from .compaction import NOTHING, CompactionError, compact_history, cut_point
 from .context import ContextBudget, ContextMeter
+from .credentials import redact, redact_value
 from .images import ImageRef
 from .messages import (
     NOTIFICATION,
@@ -104,6 +105,20 @@ def add_usage(total: UsageTotals, usage: Usage, price: "ModelInfo | None" = None
     )
 
 
+def _redacted(message: Message) -> Message:
+    """message with any known API key hidden: attachments, ! commands and hook context reach the model this way."""
+    content = tuple(
+        replace(block, text=redact(block.text)) if block.kind == "text" else block for block in message.content
+    )
+    results = tuple(
+        replace(result, output=redact(result.output), details=redact_value(result.details))
+        for result in message.tool_results
+    )
+    if content == message.content and results == message.tool_results:
+        return message
+    return replace(message, content=content, tool_results=results)
+
+
 BREAKER = 3  # Consecutive automatic compaction failures before automatic compaction pauses.
 
 
@@ -166,6 +181,8 @@ class AgentLoop:
     def _append(self, message: Message) -> None:
         if message.role == "user" and message.synthetic is None and message.id is None:
             message = replace(message, id=message_id())
+        if message.role != "assistant":
+            message = _redacted(message)
         if message.id is not None and self.checkpoints is not None:
             self.checkpoints.begin(message.id)
         self.history.append(message)
@@ -386,7 +403,8 @@ class AgentLoop:
             raise ProviderError("请输入非空消息。")
         self.busy = True
         iteration, unknown_run = 0, 0
-        user = Message("user", user_content(prompt, images), command=command, synthetic=synthetic)
+        user = _redacted(Message("user", user_content(prompt, images), command=command, synthetic=synthetic))
+        attachments = None if attachments is None else _redacted(attachments)
         committed = False
 
         def outcomes():

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from ..credentials import redact
 from .config import TEMPLATE, Action
 
 STREAM_HALF = 16 * 1024  # Head and tail of stdout and stderr: 32 KB each.
@@ -98,7 +99,8 @@ async def run_command(
         return ActionResult("failed", str(exc))
     except OSError as exc:
         return ActionResult("failed", f"无法启动命令：{exc.strerror or type(exc).__name__}")
-    code, stdout, stderr = details["exit_code"], details["stdout"], details["stderr"]
+    # Hook output can reach the model as feedback or a rejection reason.
+    code, stdout, stderr = details["exit_code"], redact(details["stdout"]), redact(details["stderr"])
     if code == 0:
         output = stdout.strip()[:FEEDBACK_LIMIT] if action.feedback else ""
         return ActionResult("ok", short(stdout), output, exit_code=0)

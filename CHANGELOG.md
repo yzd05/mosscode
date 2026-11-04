@@ -17,6 +17,8 @@
 - `@` 文件引用：输入 `@` 列出项目中的文件和目录（遵守 `.gitignore`，模糊匹配），Tab 或 Enter 补全；发送时附上引用的文件内容（与 `read_file` 的结果相同，记为已读，可以直接编辑）和目录列表，`@文件#L10-20` 只附这几行；一条消息最多 10 个引用、约 112 KiB，显式拒绝规则仍然生效；`-p` 同样展开。
 - `!命令`：在输入框中不经过模型直接执行命令（与 `execute_command` 同一个 shell，项目根目录，不需要审批，黑名单和显式拒绝规则仍然生效，Esc 取消）；输出加入对话但不触发回复，下一条消息时模型能看到；`!!命令` 只执行不加入对话。
 - `/thinking off|low|medium|high|default`：在会话中调整思考强度，按协议换算为 Anthropic 的 adaptive 加 effort（较早的模型用思考预算）、OpenAI 的 `reasoning.effort` / `reasoning_effort`、DeepSeek 的思考开关；模型目录表明不支持时提示并忽略。`/status` 和状态栏显示当前档位。模型目录新增思考相关的字段，Provider 新增 `reasoning` 配置。
+- 系统凭据管理器保存 API 密钥：Provider 和 `web_search` 新增 `api_key_keyring`，`moss key set|delete 名称` 保存或删除（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），`moss setup` 有可用的凭据管理器时默认用它，`moss doctor` 显示条目状态。新增依赖 keyring。
+- 密钥保护：`execute_command`、`!` 命令、Hook 和 Skill 工具的进程不再继承 `api_key_env` 指向的变量；工具结果、`!` 输出、Hook 输出和进入对话的消息中完整出现的密钥替换为 `[已隐藏的密钥]`；`write_file`、`edit_file` 拒绝写入这个占位符；配置文件在项目目录中且含明文密钥时启动提示。
 - Skill 另外从 [Agent Skills](https://agentskills.io/specification) 的共享目录 `~/.agents/skills/`、`.agents/skills/` 读取；按规范检查 `SKILL.md`，不认识的字段只提示；`/skills <名称>` 显示 `license`、`compatibility`；白名单中的 `WebFetch`、`WebSearch` 换算为 `web_fetch`、`web_search`。
 
 ### 变更

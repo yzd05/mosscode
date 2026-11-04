@@ -10,6 +10,7 @@ from time import monotonic
 
 from pydantic import ValidationError
 
+from .credentials import redact
 from .messages import SHELL, ContentBlock, Message
 from .tools.base import ToolFailure
 from .tools.process import run_process
@@ -62,7 +63,7 @@ async def run_user_command(command: str, registry) -> CommandRun:
         output += ("\n" if output and not output.endswith("\n") else "") + "stderr:\n" + details["stderr"]
     return CommandRun(
         command,
-        output.rstrip("\n"),
+        redact(output.rstrip("\n")),
         details["exit_code"],
         elapsed=monotonic() - started,
         truncated=details["truncated"],

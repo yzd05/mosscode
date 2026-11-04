@@ -30,7 +30,7 @@ default_provider: claude
 # 协调者模式：Lead 不直接改文件，把实施交给成员。还需要环境变量 MOSSCODE_COORDINATOR_MODE=1；只用于交互界面。
 # coordinator_mode: false
 # 网络搜索（web_search 工具）。未配置或环境变量为空时不提供搜索；读取网页（web_fetch）不需要配置。
-# 目前支持 tavily；api_key_env 填环境变量名称，直接填密钥请改用 api_key。
+# 目前支持 tavily；api_key_env 填环境变量名称，api_key_keyring 填 moss key set 保存的名称，直接填密钥请改用 api_key。
 # web_search:
 #   provider: tavily
 #   api_key_env: TAVILY_API_KEY
@@ -40,6 +40,7 @@ providers:
     protocol: anthropic-messages
     model: replace-with-your-claude-model
     api_key_env: ANTHROPIC_API_KEY  # 填环境变量名称；直接填密钥请改用 api_key。
+    # api_key_keyring: claude  # 或者：系统凭据管理器中的名称，用 moss key set claude 保存（三者选一）。
     max_output_tokens: 32000  # 单次回复的输出上限；达到上限会提示截断，不当作完成。
     # 上下文窗口、输出上限、是否接受图片通常不必填写，从模型目录中取（moss models 查看匹配结果）。
     # 目录中没有该模型时填写窗口（Token），否则按 128K 估算并在启动时提示：

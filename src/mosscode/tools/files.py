@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import Field
 
+from ..credentials import placeholder_problem
 from ..images import ImageError, image_ref, load_image, sniff, store_failure
 from .base import IMAGES, Params, Tool, ToolFailure, file_io, image_context
 from .diffing import unified_diff
@@ -229,6 +230,9 @@ class WriteFile(FileTool):
         return "\n".join([f"新建文件 {name}（{line_count(params.content)} 行）", *shown])
 
     async def execute(self, params: WriteParams):
+        if problem := placeholder_problem(params.content):
+            raise ToolFailure("secret_placeholder", problem)
+
         def write():
             path = self.path(params.path)
             existed, before = path.is_file(), None
@@ -312,6 +316,9 @@ class EditFile(FileTool):
         return unified_diff(text, result, self.display(path), limit=PREVIEW_LINES)
 
     async def execute(self, params: EditParams):
+        if problem := placeholder_problem(params.new_text):
+            raise ToolFailure("secret_placeholder", problem)
+
         def edit():
             path = self.path(params.path)
             self.state.check(path)

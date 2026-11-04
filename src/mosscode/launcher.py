@@ -11,15 +11,16 @@ import sys
 from pathlib import Path
 
 OUTPUT_FORMATS = ("text", "json", "stream-json")
-SUBCOMMANDS = ("setup", "doctor", "models")
+SUBCOMMANDS = ("setup", "doctor", "models", "key")
 NAMES = ("moss", "mosscode")
-USAGE = "%(prog)s [选项] [PROMPT]\n       %(prog)s setup | doctor | models"
+USAGE = "%(prog)s [选项] [PROMPT]\n       %(prog)s setup | doctor | models | key"
 DESCRIPTION = "MossCode：终端中的 coding agent。在项目目录中运行即可开始。"
 EXAMPLES = """\
 子命令：
   setup                 创建用户级配置 ~/.mosscode/config.yaml
   doctor                检查安装、配置和依赖工具，不发送请求
   models [关键词|update] 查找模型目录中的窗口和价格，或下载最新目录
+  key set|delete 名称    在系统凭据管理器中保存或删除 API 密钥
 
 例子：
   moss                                   在当前目录启动交互界面
@@ -28,7 +29,7 @@ EXAMPLES = """\
   Get-Content error.log | moss -p "解释这个错误"
   moss -c                                恢复本项目最近的会话
 
-moss 与 mosscode 是同一个命令。要把 setup、doctor 或 models 当作消息发送，写成 moss -- doctor。
+moss 与 mosscode 是同一个命令。要把 setup、doctor、models 或 key 当作消息发送，写成 moss -- doctor。
 """
 
 
@@ -159,6 +160,10 @@ def _subcommand(name: str, argv: list[str]) -> int:
         from .models_command import main as models
 
         return models(argv)
+    if name == "key":
+        from .key_command import main as key
+
+        return key(argv)
     from .doctor import main as doctor
 
     return doctor(argv)

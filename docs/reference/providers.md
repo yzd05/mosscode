@@ -6,7 +6,13 @@ Provider 配置、协议、重试与无界面输出。
 
 在 `config.yaml` 的 `providers` 列表追加配置即可接入兼容已有协议的服务。每项绑定一个模型；同一服务的多个模型可分别配置，使用不同 `name`，共用 `base_url` 和凭据。
 
-凭据字段二选一：`api_key: '你的密钥'` 直接填写密钥；`api_key_env: DEEPSEEK_API_KEY` 填写环境变量名称，并在启动进程的环境中设置该变量。例如 PowerShell 中先执行 `$env:DEEPSEEK_API_KEY = '你的密钥'` 再启动应用。`api_key_env` 不能填写 `sk-...`；误填时会给出字段说明，错误中不回显该值。推荐用环境变量保存凭据。Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key`）。
+凭据字段三选一：
+
+- `api_key_keyring: deepseek`（推荐）：密钥保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），用 `moss key set deepseek` 保存，配置只写名称，见[命令行](cli.md#key)。保存后立即生效，不用重开终端。
+- `api_key_env: DEEPSEEK_API_KEY`：填写环境变量名称，并在启动进程的环境中设置该变量。例如 PowerShell 中先执行 `$env:DEEPSEEK_API_KEY = '你的密钥'` 再启动应用。`api_key_env` 不能填写 `sk-...`；误填时会给出字段说明，错误中不回显该值。
+- `api_key: '你的密钥'`：明文写在配置文件中。
+
+Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key`）。
 
 ```yaml
   - name: my-gateway-model-a
@@ -15,6 +21,17 @@ Provider 配置、协议、重试与无界面输出。
     model: replace-with-service-model
     api_key_env: MY_GATEWAY_API_KEY
 ```
+
+## 密钥保护
+
+无论密钥放在哪里，MossCode 都不让它经由工具进入对话：
+
+- **子进程不继承密钥变量**：配置中所有 `api_key_env`（各 Provider 和 `web_search`）指向的变量，不传给 `execute_command`、`!` 命令、Hook 命令和 Skill 工具启动的进程，模型执行 `env` 时看不到它们。MCP 服务器本来就只继承 PATH 等少数变量；团队成员进程照常继承，自己读取密钥。
+- **输出中的密钥被隐藏**：MossCode 知道的每个密钥（明文 `api_key`、环境变量的值、凭据管理器中的值，以及名称含 auth、key、token、secret 的 `headers` 值），完整出现在工具结果、`!` 命令输出、Hook 输出、`@` 附件或你输入的消息中时，替换为 `[已隐藏的密钥]`，然后才显示、发给模型、写入会话存档或大结果文件。少于 8 个字符的值不替换。
+- **不会写回占位符**：`write_file` 的内容或 `edit_file` 的 `new_text` 含有 `[已隐藏的密钥]` 时拒绝执行，避免模型把读到的占位符写回文件、覆盖真正的密钥。
+- **明文提示**：配置文件位于项目目录中且含有明文 `api_key` 时，启动时提示改用 `moss key set`。
+
+只识别完整的原文：被截断、编码或拆开的密钥不会被发现。这些措施防的是“顺手带出去”，挡不住以你的身份运行、专门窃取密钥的程序。
 
 ## 选择与切换
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import Field
 
+from ..credentials import child_environment
 from .base import Params, Tool, ToolFailure
 from .shell import Shell, resolve_shell
 
@@ -94,6 +95,7 @@ async def run_process(
     gate = f"import os,subprocess,sys; os.read(0,1); sys.exit(subprocess.call(sys.argv[1:]{inherit}))"
     command = [sys.executable, "-c", gate, *args] if os.name == "nt" else args
     piped = os.name == "nt" or input is not None
+    env = child_environment(env)  # Commands, hooks and skill tools never inherit the variables holding API keys.
     spawn = asyncio.create_task(
         asyncio.create_subprocess_exec(
             *command,

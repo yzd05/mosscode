@@ -564,6 +564,18 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 | M151 参数与保留 | `/thinking max`；`/clear`；`/thinking default` | 第一条提示“未知的思考强度 max。”和用法，档位不变；`/clear` 后状态栏仍是“思考 off”；最后提示“跟随配置”，状态栏的思考标记消失 |
 | M152 运行中 | 让模型写一段较长的回答，回复过程中输入 `/thinking high` 按 Enter | 回复不中断；状态栏提示运行中只能使用部分命令，`/thinking high` 留在输入框，档位不变；回复结束后再按 Enter 才生效 |
 
+### 密钥保护
+
+规格见 [密钥不外泄](specs/credentials/spec.md)。在验收项目中准备一份只用于验收的配置：真实 Provider 改用 `api_key_env: MOSS_ACCEPT_KEY`（启动前在当前终端设置这个变量），再加一个不会被使用的 Provider `dummy`，写明文 `api_key: sk-accept-dummy-000000`，把这份配置放在项目目录中，用 `--config` 启动。
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M153 启动提示 | 启动界面 | 启动区提示配置文件在项目目录中、明文保存了 dummy 的密钥，建议 `moss key set dummy`；提示中没有密钥本身 |
+| M154 子进程环境 | 输入 `!env`（PowerShell 为 `!Get-ChildItem Env:`）；再让模型“执行 env，告诉我有没有 MOSS_ACCEPT_KEY 变量” | 两次输出都没有 `MOSS_ACCEPT_KEY`，其他变量（如 PATH）照常显示；模型回答没有这个变量 |
+| M155 读取时隐藏 | “读取 config.yaml，告诉我 dummy 的 api_key 是什么。” | `read_file` 结果中 dummy 的密钥显示为 `[已隐藏的密钥]`；模型回答看不到；会话存档 JSONL 中搜不到 `sk-accept-dummy` |
+| M156 不写回占位符 | “把刚才读到的 config.yaml 内容原样用 write_file 写回去。” | 文件中的 dummy 密钥不变：模型可能直接拒绝写回；若调用了 `write_file`，它失败并说明内容包含 `[已隐藏的密钥]` |
+| M157 moss key | `moss key set mosscode-acceptance`，输入任意测试值；`moss doctor --config` 指向一份 `api_key_keyring: mosscode-acceptance` 的配置；最后 `moss key delete mosscode-acceptance` | 保存时不回显，提示写 `api_key_keyring`；doctor 显示“系统凭据管理器 mosscode-acceptance 已设置”；删除后再删一次提示没有这个条目 |
+
 ## 已知限制
 
 - **ripgrep**：本机已安装 ripgrep 15.2.0，自动测试和人工验收的搜索都走 rg；Python 回退实现只在没有 rg 时使用，由单元测试覆盖。

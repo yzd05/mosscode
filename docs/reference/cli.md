@@ -44,9 +44,10 @@ moss setup | doctor | models
 
 ### setup
 
-`moss setup` 在终端中逐项询问：协议（Anthropic Messages、OpenAI Responses、OpenAI Chat Completions）、服务地址 `base_url`（回车使用协议的官方地址，提问中写明是哪个；选 OpenAI Chat Completions 时提示填写兼容服务的地址，例如 `https://api.deepseek.com`）、模型名、上下文窗口（如 `200k`）、凭据。填完模型名后在[模型目录](providers.md#模型目录)中查找：找到时上下文窗口一步回车即采用目录中的值，且不写入配置，以后随目录更新；找不到时说明可以用 `catalog_model` 指定条目，回车按 128K 估算。凭据有两种保存方式：
+`moss setup` 在终端中逐项询问：协议（Anthropic Messages、OpenAI Responses、OpenAI Chat Completions）、服务地址 `base_url`（回车使用协议的官方地址，提问中写明是哪个；选 OpenAI Chat Completions 时提示填写兼容服务的地址，例如 `https://api.deepseek.com`）、模型名、上下文窗口（如 `200k`）、凭据。填完模型名后在[模型目录](providers.md#模型目录)中查找：找到时上下文窗口一步回车即采用目录中的值，且不写入配置，以后随目录更新；找不到时说明可以用 `catalog_model` 指定条目，回车按 128K 估算。凭据有三种保存方式：
 
-- 环境变量（默认）：配置中只写变量名，按协议默认 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，给了服务地址时按域名取名，如 `DEEPSEEK_API_KEY`。变量还没设置时，写完后显示 PowerShell 的设置方法。
+- 系统凭据管理器（有可用的凭据管理器时为默认）：输入时不显示，密钥保存到 Windows 凭据管理器、macOS 钥匙串或 Linux Secret Service，配置中只写 `api_key_keyring: 名称`（名称同 Provider 名称）。确认写入后才保存密钥。没有可用的凭据管理器（例如没有桌面环境的 Linux）时说明原因，这一项不出现。
+- 环境变量（没有凭据管理器时为默认）：配置中只写变量名，按协议默认 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，给了服务地址时按域名取名，如 `DEEPSEEK_API_KEY`。变量还没设置时，写完后显示 PowerShell 的设置方法。
 - 直接输入密钥：输入时不显示，以明文写入配置文件。
 
 写入前显示汇总（密钥只显示“已设置”），确认后写入 `~/.mosscode/config.yaml`，并用与启动相同的规则校验。Provider 名称取自服务地址的域名（如 `deepseek`），没有地址时按协议取 `claude`、`openai` 或 `compat`，并设为 `default_provider`。
@@ -61,7 +62,7 @@ moss setup | doctor | models
 
 - 版本、解释器、安装方式（uv tool、pipx、虚拟环境，是否可编辑安装）；
 - PATH 中的 `moss`、`mosscode`：找不到、不是当前运行的这一个、或有多个时提示；
-- 生效的配置文件和每个 Provider 的协议、模型、服务地址的主机名、凭据状态（“已设置”“环境变量 X 未设置”），从不显示密钥；工作目录下有不会被读取的 `config.yaml` 时提示；
+- 生效的配置文件和每个 Provider 的协议、模型、服务地址的主机名、凭据状态（“已设置”“环境变量 X 未设置”“系统凭据管理器 X 未找到”），从不显示密钥；工作目录下有不会被读取的 `config.yaml` 时提示；
 - 模型目录的条目数、数据日期和来源；每个 Provider 匹配到的目录条目和窗口、输出上限，如“目录：deepseek/deepseek-v4-flash（1M / 32K）”，没有匹配、按 128K 估算时给出警告和填写建议；
 - 网络搜索服务（`web_search`）及其凭据状态；未配置时说明搜索不可用，读取网页不受影响；
 - `~/.mosscode` 是否可写；
@@ -79,6 +80,23 @@ moss setup | doctor | models
 | `moss models update` | 从 LiteLLM 下载最新数据，写入 `~/.mosscode/models.json.gz`，显示条目数以及新增、删除、变化的数量；遵守 `HTTPS_PROXY`；下载或解析失败时原有文件不变 |
 
 `--config 路径` 指定读取的配置文件。每次都在最后一行显示目录的条目数、数据日期和来源。
+
+### key
+
+`moss key` 管理系统凭据管理器（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service）中的 API 密钥，条目都保存在服务名 `mosscode` 下：
+
+| 写法 | 行为 |
+| --- | --- |
+| `moss key set 名称` | 保存或替换密钥：在终端中不回显地输入；输入来自管道时读第一行，例如 `Get-Content key.txt \| moss key set deepseek`。密钥为空时不保存 |
+| `moss key delete 名称` | 删除这个条目；没有时退出码为 1 |
+
+两者都不显示密钥。保存后在 Provider（或 `web_search`）中写 `api_key_keyring: 名称`，并删掉原来的 `api_key` 或 `api_key_env`。把明文 `api_key` 迁过来：
+
+```bash
+moss key set deepseek
+```
+
+然后把配置中的 `api_key: ...` 一行改成 `api_key_keyring: deepseek`。没有可用的凭据管理器时报错并建议改用环境变量。
 
 ## 配置查找
 

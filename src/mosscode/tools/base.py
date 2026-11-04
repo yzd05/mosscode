@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from ..credentials import redact, redact_value
 from ..messages import ToolCall, ToolDefinition, ToolResult
 from ..permissions import Decision, PermissionPolicy
 from ..security import SecurityError, project_path, resolve_path
@@ -282,11 +283,12 @@ class ToolRegistry:
         try:
             output, details = await tool.execute(params)
             details, images = _split_images(details)
-            output, details = self._bound(call, output, details)
+            # Hidden before _bound, which writes long output to the session directory.
+            output, details = self._bound(call, redact(output), redact_value(details))
             return ToolResult(call.id, call.name, output, details=details, images=images)
         except ToolFailure as exc:
             details, images = _split_images(exc.details)
-            output, details = self._bound(call, str(exc), details)
+            output, details = self._bound(call, redact(str(exc)), redact_value(details))
             return ToolResult(call.id, call.name, output, True, exc.code, details, images)
         except FileNotFoundError:
             return ToolResult(call.id, call.name, "文件或目录不存在。", True, "not_found")

@@ -39,6 +39,25 @@ class Cancelled(Exception):
     pass
 
 
+class SystemVault:
+    """The system credential manager, as the wizard uses it; tests pass their own."""
+
+    def problem(self) -> str | None:
+        from .credentials import keyring_problem
+
+        return keyring_problem()
+
+    def label(self) -> str:
+        from .credentials import keyring_label
+
+        return keyring_label()
+
+    def store(self, name: str, key: str) -> None:
+        from .credentials import keyring_set
+
+        keyring_set(name, key)
+
+
 def user_config(home: Path | None = None) -> Path:
     return (Path.home() if home is None else home) / ".mosscode" / "config.yaml"
 
@@ -82,9 +101,12 @@ class Wizard:
         secret: Callable[[str], str] = getpass.getpass,
         write: Callable[[str], None] = print,
         environ=None,
+        vault=None,
     ):
         self.read, self.secret, self.write = read, secret, write
         self.environ = os.environ if environ is None else environ
+        self.vault = SystemVault() if vault is None else vault
+        self.pending_key: str | None = None  # For the credential manager, saved only once the user confirms.
 
     def ask(self, question: str, default: str = "") -> str:
         try:
@@ -140,25 +162,30 @@ class Wizard:
         if base_url:
             provider["base_url"] = base_url
         self.write("5/5 凭据")
-        method = self.choose(
-            "保存方式", ["环境变量（推荐）：配置文件只写变量名，密钥放在环境变量中", "直接输入密钥：写入配置文件"]
+        problem = self.vault.problem()
+        methods = (
+            []
+            if problem
+            else [("keyring", f"系统凭据管理器（推荐）：密钥由 {self.vault.label()} 保存，配置文件只写名称")]
         )
-        if method == 1:
+        methods += [
+            ("env", "环境变量" + ("（推荐）" if problem else "") + "：配置文件只写变量名，密钥放在环境变量中"),
+            ("plain", "直接输入密钥：写入配置文件"),
+        ]
+        if problem:
+            self.write(f"  {problem}，不能使用系统凭据管理器。")
+        method = methods[self.choose("保存方式", [label for _, label in methods]) - 1][0]
+        if method == "keyring":
+            self.pending_key = self._key()
+            provider["api_key_keyring"] = name
+        elif method == "env":
             default = f"{name.upper().replace('-', '_')}_API_KEY" if _host_name(base_url) else KEYS[protocol]
             while not ENV_NAME.fullmatch(variable := self.ask("环境变量名", default)):
                 self.write("  请填写变量名（字母、数字和下划线），不要填写密钥本身。")
             provider["api_key_env"] = variable
         else:
             self.write("  " + PLAINTEXT_WARNING)
-            while True:
-                try:
-                    key = self.secret("密钥（输入时不显示）：").strip()
-                except EOFError:
-                    raise Cancelled from None
-                if key:
-                    break
-                self.write("  密钥不能为空。")
-            provider["api_key"] = key
+            provider["api_key"] = self._key()
         if window is not None:
             provider["context_window"] = window
         self.write("")
@@ -166,6 +193,16 @@ class Wizard:
         for line in summary(provider, known):
             self.write("  " + line)
         return provider if self.ask("确认写入？(Y/n)").lower() in {"", "y", "yes", "是"} else None
+
+    def _key(self) -> str:
+        while True:
+            try:
+                key = self.secret("密钥（输入时不显示）：").strip()
+            except EOFError:
+                raise Cancelled from None
+            if key:
+                return key
+            self.write("  密钥不能为空。")
 
 
 def summary(provider: dict, catalog_window: int | None = None) -> list[str]:
@@ -182,6 +219,8 @@ def summary(provider: dict, catalog_window: int | None = None) -> list[str]:
     ]
     if "api_key_env" in provider:
         lines.append(f"凭据 环境变量 {provider['api_key_env']}")
+    elif "api_key_keyring" in provider:
+        lines.append(f"凭据 系统凭据管理器 {provider['api_key_keyring']}")
     else:
         lines.append("凭据 已设置（明文保存在配置文件中）")
     return lines
@@ -218,6 +257,14 @@ def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: 
     if provider is None:
         wizard.write("没有写入文件。")
         return "cancelled"
+    if wizard.pending_key is not None:
+        from .credentials import KeyringError
+
+        try:
+            wizard.vault.store(provider["api_key_keyring"], wizard.pending_key)
+        except KeyringError as exc:
+            wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
+            return "failed"
     try:
         write_config(path, provider)
     except FileExistsError:

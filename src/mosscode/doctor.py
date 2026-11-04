@@ -110,21 +110,32 @@ def check_path(path: str | None = None, scripts: Path | None = None) -> list[Ite
     return items
 
 
-def _credential(provider) -> tuple[str, str]:
+def _credential(provider) -> tuple[str, str, str]:
+    """Level, what is configured, and how to fix it."""
     if provider.api_key_env:
         if os.environ.get(provider.api_key_env):
-            return OK, f"环境变量 {provider.api_key_env} 已设置"
-        return WARN, f"环境变量 {provider.api_key_env} 未设置"
+            return OK, f"环境变量 {provider.api_key_env} 已设置", ""
+        return WARN, f"环境变量 {provider.api_key_env} 未设置", f"设置环境变量 {provider.api_key_env} 后打开新的终端"
+    if provider.api_key_keyring:
+        from .credentials import KeyringError, keyring_get
+
+        name = provider.api_key_keyring
+        try:
+            found = keyring_get(name) is not None
+        except KeyringError as exc:
+            return WARN, f"系统凭据管理器 {name} 无法读取", str(exc)
+        if found:
+            return OK, f"系统凭据管理器 {name} 已设置", ""
+        return WARN, f"系统凭据管理器 {name} 未找到", f"运行 moss key set {name}"
     if provider.api_key:
-        return OK, "已设置（配置文件中的 api_key）"
-    return WARN, "未配置"
+        return OK, "已设置（配置文件中的 api_key）", ""
+    return WARN, "未配置", "在配置中填写 api_key_env 或 api_key_keyring"
 
 
 def _web_search(config) -> Item:
     if config is None:
         return Item(OK, "网络搜索：未配置（web_search 工具不可用；读取网页不受影响）")
-    level, credential = _credential(config)
-    fix = f"设置环境变量 {config.api_key_env} 后打开新的终端" if level != OK else ""
+    level, credential, fix = _credential(config)
     return Item(level, f"网络搜索：{config.provider} · 凭据：{credential}", fix)
 
 
@@ -164,7 +175,7 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
                 else Item(OK, f"模型目录 {len(catalog.models)} 个模型，数据日期 {catalog.fetched}（{where}）")
             )
             for provider in settings.providers:
-                level, credential = _credential(provider)
+                level, credential, fix = _credential(provider)
                 host = (
                     urlsplit(provider.base_url).hostname
                     if provider.base_url
@@ -176,11 +187,7 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
                         level,
                         f"Provider {provider.name}{default}：{provider.protocol} · {provider.model}"
                         f" · {host} · 凭据：{credential} · {_catalog_match(provider)}",
-                        ""
-                        if level == OK
-                        else f"设置环境变量 {provider.api_key_env} 后打开新的终端"
-                        if provider.api_key_env
-                        else "在配置中填写 api_key_env",
+                        fix,
                     )
                 )
                 if note := provider.window_note():
