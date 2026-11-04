@@ -104,6 +104,7 @@ moss --resume                 # 启动后从列表中选择会话
 | Tab | 补全命令和参数 |
 | Shift+Tab | 切换权限档位 default → acceptEdits → plan |
 | Esc / Ctrl+C | 取消生成；有排队消息时第一次 Esc 只把排队消息取回输入框，任务继续；审批时 Esc 拒绝当前调用 |
+| Esc Esc | 空闲且输入框为空时打开 `/rewind` |
 | Ctrl+Q | 退出 |
 
 | 命令 | 行为 |
@@ -113,6 +114,7 @@ moss --resume                 # 启动后从列表中选择会话
 | `/compact [说明]` | 压缩上下文：较早的对话换成摘要，近期消息和用户原话保留；说明用于指定摘要侧重点 |
 | `/resume` | 列出本项目最近的会话，↑ / ↓ 选择、Enter 恢复、Esc 收起 |
 | `/resume ID` | 直接恢复指定会话 |
+| `/rewind` | 选一条之前的消息，把文件、对话或两者退回到它发出之前 |
 | `/session` | 显示当前会话的 ID、存档路径、标题和消息数 |
 | `/memory` | 列出已加载的项目指令文件，以及用户级和项目级的记忆笔记及目录 |
 | `/memory 名称` | 显示该笔记的路径和全文 |
@@ -141,7 +143,7 @@ moss --resume                 # 启动后从列表中选择会话
 
 ### 会话与记忆
 
-会话实时存档到 `~/.mosscode/projects/<项目键>/sessions/`，退出或崩溃后用 `-c`、`--resume [ID]` 或 `/resume` 接着对话，中断时未完成的工具调用会被标记出来。存档保留 30 天。见 [会话存档与恢复](docs/reference/sessions.md)。
+会话实时存档到 `~/.mosscode/projects/<项目键>/sessions/`，退出或崩溃后用 `-c`、`--resume [ID]` 或 `/resume` 接着对话，中断时未完成的工具调用会被标记出来。`write_file` 和 `edit_file` 改文件前自动保存检查点，`/rewind` 可以把文件和对话退回到之前某条消息发出前的状态。存档保留 30 天。见 [会话存档与恢复](docs/reference/sessions.md)。
 
 对模型说“记住……”时，它用 `memory` 工具写一条笔记；任务完成后，后台还会提取你纠正过的做法和偏好（只依据对话，不依据工具输出）。笔记是 `~/.mosscode/memory/`（用户级）和 `~/.mosscode/projects/<项目键>/memory/`（项目级）中的 Markdown 文件，下次启动时索引进入系统提示。见 [记忆笔记](docs/reference/memory.md)。
 

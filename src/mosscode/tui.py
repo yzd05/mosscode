@@ -3,7 +3,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +45,7 @@ from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input
 from .config import ConfigError, ProviderConfig, Settings
 from .conversation import Conversation, MemoryUpdated, Notice, Resumed
 from .coordinator import BADGE as COORDINATOR_BADGE
-from .images import ImageError, ProcessedImage, load_image, size_label
+from .images import ImageError, ImageRef, ProcessedImage, load_image, size_label
 from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, MemberList, MemberPanel, MemberView
 from .memory import SCOPE_LABELS
 from .messages import (
@@ -347,6 +347,21 @@ class PromptArea(TextArea):
             self.input_history.append(text)
         self._history_index = None
         self._draft = ""
+
+    def restore_message(self, text: str, images: Mapping[str, ProcessedImage]) -> None:
+        """A message /rewind took back: images this process no longer holds are attached again.
+
+        A placeholder already naming a different image here gets a fresh number, so it never sends the wrong one.
+        """
+        renamed = {}
+        for mark, image in images.items():
+            known = self.attachments.get(mark)
+            if known is not None and known.image.data == image.data:
+                continue
+            if known is not None:
+                renamed[mark] = mark = image_mark(len(self.attachments) + 1)
+            self.attachments[mark] = Attachment(image, "回退")
+        self.restore_queued((IMAGE_MARK.sub(lambda match: renamed.get(match.group(), match.group()), text),))
 
     def restore_queued(self, queued: tuple[str, ...]) -> None:
         """Put queued messages back in front of any draft."""
@@ -704,6 +719,7 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
 
 
 RESUMED_MESSAGES = 20
+DOUBLE_ESCAPE = 0.5  # Seconds between two Esc presses on an empty prompt that open /rewind.
 
 
 def image_lines(notes) -> Text:
@@ -748,6 +764,11 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
             if parts:
                 rows.append(Group(*parts))
     return rows
+
+
+def rewound_image(ref: ImageRef) -> ProcessedImage:
+    """A sent image back as an attachment: it was already processed, so its sizes are what was sent."""
+    return ProcessedImage(ref.read(), ref.media_type, ref.width, ref.height, ref.width, ref.height, ref.size)
 
 
 def memory_line(details: dict) -> Text:
@@ -1001,6 +1022,7 @@ class MossCodeApp(TerminalApp[None]):
         self._mcp_notices: list[str] = []  # MCP servers that settled while a task was running.
         self._retry_notice = ""  # Held until the next event so the ticker does not hide it.
         self._hint_until = 0.0  # Short notes shown over the running status until this time.
+        self._escape_at = 0.0  # The last Esc on an empty, idle prompt: a second one soon after opens /rewind.
         self._hint_choices: list[Hint] = []
         self._dismissed_prompt: str | None = None
         self._scrollback_lock = asyncio.Lock()
@@ -1772,14 +1794,17 @@ class MossCodeApp(TerminalApp[None]):
         await self._clear_screen()
         when = restored.last_time.strftime("%Y-%m-%d %H:%M") if restored.last_time else "未知"
         await self._local_note(f"└ 已恢复会话 · {restored.title} · {event.messages} 条消息 · 上次活动 {when}")
+        await self._show_history(restored.history)
+        for notice in event.notices:
+            await self._local_note("└ " + notice)
+
+    async def _show_history(self, history) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        for renderable in resumed_rows(restored.history, shell_label(self.conversation.registry)):
+        for renderable in resumed_rows(history, shell_label(self.conversation.registry)):
             row = Static(renderable, classes="resumed-entry")
             row.transcript = renderable
             await chat.mount(row)
         chat.anchor()
-        for notice in event.notices:
-            await self._local_note("└ " + notice)
 
     async def _run_resume(self, session_id: str, startup: bool = False) -> None:
         unanswered: tuple[str, ...] = ()
@@ -1877,6 +1902,24 @@ class MossCodeApp(TerminalApp[None]):
 
     def resume(self, session_id: str) -> None:
         self._start_resume(session_id)
+
+    async def rewound(self, message: Message) -> None:
+        await self._clear_screen()
+        await self._show_history(self.conversation.history)
+        images = {}
+        for block in message.content:
+            if block.kind == "image" and block.image is not None and IMAGE_MARK.fullmatch(block.image.alt):
+                try:
+                    images[block.image.alt] = rewound_image(block.image)
+                except OSError:
+                    continue  # Its file is gone: the placeholder stays as text.
+        if message.command is not None:
+            images = {}
+        self.query_one("#prompt", PromptArea).restore_message(message.shown, images)
+        self._refresh_context()
+
+    def _open_rewind(self) -> None:
+        self.run_worker(dispatch(self._command_context(), parse_input("/rewind", self.commands)), group="rewind")
 
     async def switch_model(self, name: str) -> None:
         config = next(item for item in self.settings.providers if item.name == name)
@@ -2481,6 +2524,14 @@ class MossCodeApp(TerminalApp[None]):
             self.query_one("#prompt", PromptArea).restore_queued(queued)
             self._hint_until = monotonic() + 2
             self._status("已取回排队消息，任务继续 · 再按 Esc 取消任务")
+            return
+        if not self._task_running and not self._generating and not self.query_one("#prompt", PromptArea).value:
+            now = monotonic()
+            if now - self._escape_at <= DOUBLE_ESCAPE:
+                self._escape_at = 0.0
+                self._open_rewind()
+            else:
+                self._escape_at = now
             return
         self.action_cancel_task()
 

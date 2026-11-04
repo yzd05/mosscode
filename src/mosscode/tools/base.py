@@ -220,11 +220,13 @@ class ToolRegistry:
         keep=None,
         extra=(),
         forbidden=(),
+        checkpoints: bool = True,
     ) -> "ToolRegistry":
         """A sub-agent's registry.
 
         Tools holding a FileState are copied and share `state` (a new, empty one when None);
         keep(name) filters the rest; extra tools are added; forbidden names stay offered but are refused.
+        checkpoints=False stops the copies recording file snapshots for /rewind.
         """
         from copy import copy
 
@@ -241,6 +243,8 @@ class ToolRegistry:
             if getattr(tool, "state", None) is not None:
                 tool = copy(tool)
                 tool.state = state
+                if not checkpoints and hasattr(tool, "checkpoints"):
+                    tool.checkpoints = None
             view._tools[name] = tool
         for tool in extra:  # Replace same-named ones.
             if tool.root != permissions.root:

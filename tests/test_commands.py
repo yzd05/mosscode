@@ -75,6 +75,9 @@ class FakeUI:
     async def switch_model(self, name):
         self.calls.append(("switch_model", name))
 
+    async def rewound(self, message):
+        self.calls.append(("rewound", message.shown))
+
     def exit(self):
         self.calls.append(("exit",))
 
@@ -129,12 +132,13 @@ def test_malformed_commands_are_rejected(command):
         CommandRegistry([command])
 
 
-def test_builtin_registry_has_nineteen_visible_commands():
+def test_builtin_registry_has_twenty_visible_commands():
     assert [c.name for c in BUILTIN.visible()] == [
         "help",
         "clear",
         "compact",
         "resume",
+        "rewind",
         "session",
         "memory",
         "model",
@@ -176,9 +180,9 @@ def test_completion(tmp_path):
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
     conv = Conversation(FakeProvider(), registry=tools(tmp_path), memory=store)
     ctx = context(conv, Settings((ProviderConfig("only", "anthropic-messages", "m"),), "only"))
-    assert len(BUILTIN.matches(ctx, "/")) == 19
+    assert len(BUILTIN.matches(ctx, "/")) == 20
     hidden = CommandRegistry([*BUILTIN.visible(), Command("debug", "x", "/debug", "local", hidden=True, handler=noop)])
-    assert len(hidden.matches(ctx, "/")) == 19 and hidden.get("/debug") is not None
+    assert len(hidden.matches(ctx, "/")) == 20 and hidden.get("/debug") is not None
     assert [tuple(h) for h in BUILTIN.matches(ctx, "/q")] == [("/exit", "退出 MossCode（别名 /quit）", "/exit")]
     assert [h.value for h in BUILTIN.matches(ctx, "/permissions ")] == [
         "/permissions default",

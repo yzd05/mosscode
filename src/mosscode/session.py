@@ -6,13 +6,15 @@ import os
 import re
 import secrets
 import shutil
+import threading
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
+from .checkpoints import Snapshot
 from .images import ImageRef, ProcessedImage, store_image
 from .messages import Message, ToolResult
 from .paths import SESSION_ID, mosscode_home, new_session_id, project_dir
@@ -117,6 +119,19 @@ def message_record(message: Message) -> dict:
 def compact_record(boundary: Message, keep: int, record: str | None) -> dict:
     """The history became the boundary plus the last `keep` messages."""
     return {"type": "compact", "time": _now(), "boundary": message_to_json(boundary), "keep": keep, "record": record}
+
+
+def rewind_record(keep: int, message: str) -> dict:
+    """/rewind: the history became its first `keep` messages, ending before `message`."""
+    return {"type": "rewind", "time": _now(), "keep": keep, "message": message}
+
+
+def checkpoint_record(message: str, path: str, blob: str | None, too_large: bool = False) -> dict:
+    """The content of path before the first edit after `message`; blob None means it did not exist."""
+    record = {"type": "checkpoint", "time": _now(), "message": message, "path": path, "blob": blob}
+    if too_large:
+        record["too_large"] = True
+    return record
 
 
 def skill_record(name: str, arguments: str, pinned: bool) -> dict:
@@ -232,6 +247,8 @@ class Transcript:
         self.lock = Lock(self.path.with_suffix(".lock"))
         self.failed: str | None = None
         self._stream = None
+        # Checkpoint records arrive from the file tools' worker threads.
+        self._guard = threading.Lock()
 
     def open_existing(self) -> None:
         """Resume: lock first, then repair and continue the same file."""
@@ -264,17 +281,18 @@ class Transcript:
 
     def append(self, record: dict) -> str | None:
         """None on success (or after an earlier failure); the one-time notice on the first failure."""
-        if self.failed is not None:
-            return None
-        try:
-            if self._stream is None:
-                self._create()
-            self._write(record)
-            return None
-        except (OSError, SessionLocked, ValueError, TypeError) as exc:
-            self.failed = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
-            self.close()
-            return f"会话存档写入失败：{self.failed}，本会话之后的消息不会被保存。"
+        with self._guard:
+            if self.failed is not None:
+                return None
+            try:
+                if self._stream is None:
+                    self._create()
+                self._write(record)
+                return None
+            except (OSError, SessionLocked, ValueError, TypeError) as exc:
+                self.failed = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+                self.close()
+                return f"会话存档写入失败：{self.failed}，本会话之后的消息不会被保存。"
 
     def close(self) -> None:
         stream, self._stream = self._stream, None
@@ -398,6 +416,8 @@ class Restored:
     stripped: bool = False
     skills: tuple[tuple[str, str, bool], ...] = ()  # (name, arguments, pinned) in record order.
     lost_images: int = 0  # Image files missing from the session directory.
+    snapshots: tuple[Snapshot, ...] = ()  # File checkpoints in record order.
+    marks: dict[str, int] = field(default_factory=dict)  # Message id -> snapshots taken before it was sent.
 
 
 def _strip(history: Sequence[Message]) -> list[Message]:
@@ -447,6 +467,8 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     history: list[Message] = []
     skipped, last_time, last_provider = 0, None, None
     skills: list[tuple[str, str, bool]] = []
+    snapshots: list[Snapshot] = []
+    marks: dict[str, int] = {}
     images, lost = path.with_suffix("") / "images", []
     with path.open("rb") as stream:
         for raw in stream:
@@ -458,7 +480,17 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     raise ValueError("记录类型不合法")
                 kind = record["type"]
                 if kind == "message":
-                    history.append(message_from_json(record.get("message"), images, lost))
+                    message = message_from_json(record.get("message"), images, lost)
+                    history.append(message)
+                    if message.id is not None and message.role == "user" and message.synthetic is None:
+                        marks[message.id] = _mark(snapshots, message.id)
+                elif kind == "checkpoint":
+                    snapshots.append(_snapshot(record))
+                elif kind == "rewind":
+                    keep = record.get("keep")
+                    if type(keep) is not int or keep < 0:
+                        raise ValueError("keep 不合法")
+                    history = history[:keep]
                 elif kind == "compact":
                     keep = record.get("keep")
                     if type(keep) is not int or keep < 0:
@@ -510,7 +542,27 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
         stripped,
         tuple(skills),
         len(lost),
+        tuple(snapshots),
+        marks,
     )
+
+
+def _snapshot(record: dict) -> Snapshot:
+    message, path, blob = record.get("message"), record.get("path"), record.get("blob")
+    too_large = record.get("too_large", False)
+    if not isinstance(message, str) or not isinstance(path, str) or not path or not isinstance(too_large, bool):
+        raise ValueError("checkpoint 记录不合法")
+    if blob is not None and (not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{32}", blob)):
+        raise ValueError("checkpoint 记录不合法")
+    return Snapshot(message, path, blob, too_large)
+
+
+def _mark(snapshots: list[Snapshot], message: str) -> int:
+    """Snapshots before the message; a sub-agent's write can land between its turn starting and its record."""
+    mark = len(snapshots)
+    while mark and snapshots[mark - 1].message == message:
+        mark -= 1
+    return mark
 
 
 # Pruning ------------------------------------------------------------------------------------

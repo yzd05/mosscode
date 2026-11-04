@@ -77,15 +77,19 @@ def read_text(path: Path) -> str:
     return text
 
 
-def atomic_write(path: Path, text: str) -> None:
+def atomic_write(path: Path, content: str | bytes) -> None:
     if path.is_dir():
         raise IsADirectoryError()
     path.parent.mkdir(parents=True, exist_ok=True)
     previous_mode = path.stat().st_mode if path.exists() else None
     descriptor, temporary = tempfile.mkstemp(prefix=".mosscode-", dir=path.parent)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
-            stream.write(text)
+        if isinstance(content, bytes):
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(content)
+        else:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+                stream.write(content)
         if previous_mode is not None:
             os.chmod(temporary, previous_mode)
         os.replace(temporary, path)
@@ -102,6 +106,12 @@ class FileTool(Tool):
     def __init__(self, root: Path, state: FileState | None = None):
         super().__init__(root)
         self.state = state if state is not None else FileState()
+        # The main conversation's Checkpoints, shared by sub-agents in the same workspace; None tracks nothing.
+        self.checkpoints = None
+
+    def _before_write(self, path: Path) -> None:
+        if self.checkpoints is not None:
+            self.checkpoints.before_write(path)
 
 
 class ReadFile(FileTool):
@@ -228,6 +238,7 @@ class WriteFile(FileTool):
                     before = read_text(path)
                 except (UnicodeError, ToolFailure):
                     pass  # Overwriting a non-text file: no diff.
+            self._before_write(path)
             atomic_write(path, params.content)
             self.state.record(path)
             name = self.display(path)
@@ -306,6 +317,7 @@ class EditFile(FileTool):
             self.state.check(path)
             text = read_text(path)
             result, count, first, last = self._replace(text, params)
+            self._before_write(path)
             atomic_write(path, result)
             self.state.record(path)
             name = self.display(path)

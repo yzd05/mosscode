@@ -79,6 +79,8 @@ def message_to_json(message: Message) -> dict:
         data["synthetic"] = message.synthetic
     if message.command is not None:
         data["command"] = message.command
+    if message.id is not None:
+        data["id"] = message.id
     return data
 
 
@@ -194,4 +196,5 @@ def message_from_json(data: Any, images: Path | None = None, lost: list | None =
         tuple(results),
         _string(data.get("synthetic"), "synthetic", optional=True),
         _string(data.get("command"), "command", optional=True),
+        _string(data.get("id"), "id", optional=True),
     )

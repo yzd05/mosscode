@@ -34,6 +34,7 @@ from .messages import (
     UsageTotals,
     UsageUpdate,
     UserInput,
+    message_id,
     user_content,
 )
 from .prompts import (
@@ -46,7 +47,7 @@ from .prompts import (
     mode_reminder,
     stable_prompt,
 )
-from .session import compact_record, message_record
+from .session import compact_record, message_record, rewind_record
 from .skills import ActiveSkills
 from .tools import shell_label
 from .tools.base import ToolRegistry
@@ -150,7 +151,9 @@ class AgentLoop:
         self.on_commit = None
         # Set by the memory extractor: messages a compaction is about to replace with a summary.
         self.on_compact = None
-        self._gap: Supplement | None = None  # One-time reminder after resuming an old session.
+        self._gap: Supplement | None = None  # One-time reminder after resuming an old session or a /rewind.
+        # The main conversation's file checkpoints: each typed message starts a new turn of snapshots.
+        self.checkpoints = None
         # The main conversation's HookEngine (a fork sub-agent has none).
         self.hooks = None
         self.hook_context: Supplement | None = None  # session_start output, cached prefix.
@@ -161,8 +164,27 @@ class AgentLoop:
             self.on_commit(record)
 
     def _append(self, message: Message) -> None:
+        if message.role == "user" and message.synthetic is None and message.id is None:
+            message = replace(message, id=message_id())
+        if message.id is not None and self.checkpoints is not None:
+            self.checkpoints.begin(message.id)
         self.history.append(message)
         self._commit(message_record(message))
+
+    def truncate(self, keep: int, message: str) -> None:
+        """/rewind: the history before index keep. Usage stays spent; skills and the session's hook context stay."""
+        if self.busy:
+            raise ProviderError("当前任务正在运行，不能回退。")
+        self.history = self.history[:keep]
+        self.meter.invalidate()
+        self.compact_failures = 0
+        if self.registry is not None:
+            self.registry.forget_reads()
+        self._commit(rewind_record(keep, message))
+
+    def remind(self, reminder: Supplement) -> None:
+        """Sent once with the next request, never stored in the history."""
+        self._gap = reminder
 
     def restore(self, history: list[Message], gap: Supplement | None = None):
         """Resume a saved session: its messages only; usage, reads and the mode announcement start afresh."""

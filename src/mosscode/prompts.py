@@ -468,6 +468,15 @@ def mode_reminder(mode: str, previous: str) -> Supplement | None:
 GAP_HOURS = 6
 
 
+def rewind_reminder(paths: Sequence[str], shown: int = 20) -> Supplement:
+    """After /rewind put files back but kept the conversation: what the history says about them is stale."""
+    names = "、".join(paths[:shown]) + (f" 等 {len(paths)} 个文件" if len(paths) > shown else "")
+    return Supplement(
+        "system-reminder",
+        f"用户用 /rewind 把这些文件恢复到了之前的状态：{names}。对话中关于它们的内容可能已经过时；修改前先重新读取。",
+    )
+
+
 def gap_reminder(last: datetime | None, now: datetime | None = None, *, hours: int = GAP_HOURS) -> Supplement | None:
     """After resuming a session last active >= 6 hours ago: files may have changed since."""
     if last is None:

@@ -4,7 +4,7 @@ TUI 的布局、输入、命令、状态栏与配色。命令列表见 [README](
 
 ## 按键与流式显示
 
-Enter 发送；Shift+Enter 或 Ctrl+J 换行；Esc 或 Ctrl+C 取消生成（有排队消息时第一次 Esc 只取回排队消息）；Ctrl+B 把正在前台运行的子 Agent 转入后台（见 [子 Agent](subagents.md#前台与后台)）；有团队成员时 Ctrl+T 展开成员面板，选中成员按 Enter 查看它的对话（见 [Agent 团队](teams.md#成员面板与成员视图)）；Ctrl+Q 退出，有后台任务在运行时先确认。生成期间可以继续输入，Enter 将消息排队（见下文“输入与排队”）。服务返回 thinking 时展示过程并实时计时；开始输出正文后收起思考内容，只保留思考用时。正文逐块显示纯文本，完整收到后一次渲染 Markdown。服务未提供 thinking 时不显示或虚构思考过程。
+Enter 发送；Shift+Enter 或 Ctrl+J 换行；Esc 或 Ctrl+C 取消生成（有排队消息时第一次 Esc 只取回排队消息）；空闲且输入框为空时 0.5 秒内连按两次 Esc 打开 `/rewind`（见 [检查点与回退](sessions.md#检查点与回退)），面板、命令提示和排队消息仍先由 Esc 处理；Ctrl+B 把正在前台运行的子 Agent 转入后台（见 [子 Agent](subagents.md#前台与后台)）；有团队成员时 Ctrl+T 展开成员面板，选中成员按 Enter 查看它的对话（见 [Agent 团队](teams.md#成员面板与成员视图)）；Ctrl+Q 退出，有后台任务在运行时先确认。生成期间可以继续输入，Enter 将消息排队（见下文“输入与排队”）。服务返回 thinking 时展示过程并实时计时；开始输出正文后收起思考内容，只保留思考用时。正文逐块显示纯文本，完整收到后一次渲染 Markdown。服务未提供 thinking 时不显示或虚构思考过程。
 
 ## 布局与滚动历史
 

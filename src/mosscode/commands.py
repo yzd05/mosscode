@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 if TYPE_CHECKING:
     from .config import Settings
     from .conversation import Conversation
+    from .messages import Message
     from .skills import SkillCatalog
 
 NAME = re.compile(r"[a-z][a-z0-9_-]*")
@@ -58,6 +59,9 @@ class CommandUI(Protocol):
     def resume(self, session_id: str) -> None: ...
 
     async def switch_model(self, name: str) -> None: ...
+
+    async def rewound(self, message: Message) -> None:
+        """The conversation went back to before message: show what is left and put it back in the input."""
 
     def exit(self) -> None: ...
 

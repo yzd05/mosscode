@@ -11,6 +11,7 @@ from pathlib import Path
 from .agent import DEFAULT_MAX_ITERATIONS, AgentLoop, Provider
 from .agents import AgentCatalog
 from .agents.runtime import AUTO_BACKGROUND, GLOBAL_BAN, MAX_BACKGROUND, SubAgents
+from .checkpoints import Checkpoints, Restoration
 from .context import ContextBudget, estimate_text
 from .images import ImageRef, ProcessedImage, image_ref
 from .memory import INDEX_TOKENS, MemoryStore
@@ -35,12 +36,14 @@ from .prompts import (
     instructions_section,
     load_instructions,
     memory_section,
+    rewind_reminder,
 )
 from .session import (
     Restored,
     Session,
     SessionLocked,
     Transcript,
+    checkpoint_record,
     find_session,
     list_sessions,
     load_session,
@@ -66,6 +69,21 @@ class MemoryUpdated:
     """The background extractor wrote or deleted notes."""
 
     names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RewindPoint:
+    """A typed message /rewind can go back to, and how many files the edit tools changed after it."""
+
+    message: Message
+    files: int
+
+
+@dataclass(frozen=True)
+class Rewound:
+    restoration: Restoration | None  # None when the files were left alone.
+    kept: int | None  # Messages left in the history; None when the conversation was left alone.
+    message: Message | None  # The message rewound past, for the prompt.
 
 
 @dataclass(frozen=True)
@@ -224,6 +242,24 @@ class Conversation:
             self.registry.use_session(session)
         root = self.context_root or Path.cwd()
         self._transcript = Transcript(session, root.resolve()) if self.persist else None
+        self._use_checkpoints(session)
+
+    def _use_checkpoints(self, session) -> None:
+        """This session's file snapshots for /rewind; sub-agent copies of the file tools share them."""
+        self.checkpoints = None
+        if self.registry is not None and session is not None:
+            self.checkpoints = Checkpoints(
+                self.registry.permissions.root,
+                session,
+                record=lambda s: self._record(checkpoint_record(s.message, s.path, s.blob, s.too_large)),
+                on_notice=lambda text: self._raised.append(text),  # From a tool thread: joins the next events.
+            )
+        self._agent.checkpoints = self.checkpoints
+        if self.registry is not None:
+            for name in ("write_file", "edit_file"):
+                tool = self.registry.get(name)
+                if tool is not None and hasattr(tool, "checkpoints"):
+                    tool.checkpoints = self.checkpoints
 
     def _record(self, record: dict) -> None:
         if self._transcript is not None:
@@ -357,6 +393,46 @@ class Conversation:
                 yield event
                 for notice in self._drain():
                     yield notice
+
+    def rewind_points(self) -> list[RewindPoint]:
+        """The typed messages still in the context, newest first."""
+        points = []
+        for message in reversed(self._agent.history):
+            if message.role == "user" and message.synthetic is None and message.id is not None:
+                files = len(self.checkpoints.changed_after(message.id)) if self.checkpoints is not None else 0
+                points.append(RewindPoint(deepcopy(message), files))
+        return points
+
+    async def rewind(self, message_id: str, *, code: bool, conversation: bool) -> Rewound:
+        """Put the files back as they were before the message, drop it and what followed, or both."""
+        if self._busy:
+            raise ProviderError("当前任务正在运行，不能回退。")
+        history = self._agent.history
+        index = next((i for i, m in enumerate(history) if m.role == "user" and m.id == message_id), None)
+        if index is None:
+            raise ProviderError("这条消息已不在当前上下文中。")
+        restoration = None
+        if code:
+            if self.checkpoints is None:
+                raise ProviderError("当前会话没有文件检查点。")
+            running = self.tasks.background()
+            if running:
+                raise ProviderError(
+                    f"有 {len(running)} 个后台任务正在运行，恢复代码前请等待它们结束，或用 /tasks 停止。"
+                )
+            restoration = await asyncio.to_thread(self.checkpoints.restore, message_id)
+        message, kept = None, None
+        if conversation:
+            message = deepcopy(history[index])
+            self._agent.truncate(index, message_id)
+            self._cursor, self._cut = min(self._cursor, index), None
+            kept = index
+        elif restoration is not None:
+            if self.registry is not None:
+                self.registry.forget_reads()  # What the model read may no longer be on disk.
+            if restoration.paths:
+                self._agent.remind(rewind_reminder(restoration.paths))
+        return Rewound(restoration, kept, message)
 
     def set_mode(self, mode: str):
         self._agent.set_mode(mode)
@@ -712,6 +788,9 @@ class Conversation:
             # Approvals belong to the run that granted them, never to a restored transcript.
             self.registry.permissions.session.clear()
         self._transcript = transcript
+        self._use_checkpoints(session)
+        if self.checkpoints is not None:
+            self.checkpoints.load(restored.snapshots, restored.marks)
         self._agent.restore(restored.history, gap_reminder(restored.last_time))
         self._drop_skills()
         self._rewind()

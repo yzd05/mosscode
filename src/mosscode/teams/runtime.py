@@ -262,8 +262,9 @@ async def build_runner(
     extra = member_tools(base, access, runner)
     keep = lambda name: name not in GLOBAL_BAN and agent.allows(name)  # noqa: E731
     if root is None:
+        # Members run alongside the user's turns, so /rewind leaves their files alone.
         registry = main.registry.for_agent(
-            agent="teammate", agent_type=agent.name, permissions=policy, keep=keep, extra=extra
+            agent="teammate", agent_type=agent.name, permissions=policy, keep=keep, extra=extra, checkpoints=False
         )
         git = main.git
     else:

@@ -174,6 +174,7 @@ Shift+Tab             依次切换 default → acceptEdits → plan
 运行中 Enter          排队消息，本轮工具执行后发送给模型
 Esc                   关闭命令提示（保留输入）
 Esc / Ctrl+C          取消正在生成的回复；排队消息放回输入框
+Esc Esc               空闲且输入框为空时打开 /rewind
 授权面板              ↑ / ↓ 选择，Enter 确认，Esc 拒绝本次，Ctrl+C 取消任务
 Ctrl+B                把前台运行的子 Agent 转入后台
 Ctrl+T                展开团队成员面板：Enter 查看对话，x 停止成员

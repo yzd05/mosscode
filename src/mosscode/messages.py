@@ -1,6 +1,7 @@
 """Project-owned messages and stream events; SDK types stop at the adapters."""
 
 import re
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -40,6 +41,10 @@ def user_content(text: str, images: Mapping[str, ImageRef] | None = None) -> tup
     return tuple(blocks)
 
 
+def message_id() -> str:
+    return secrets.token_hex(6)
+
+
 @dataclass(frozen=True)
 class Message:
     role: Literal["user", "assistant", "tool"]
@@ -53,6 +58,8 @@ class Message:
     synthetic: str | None = None
     # A prompt command as typed ("/review 安全"); content holds the expanded template.
     command: str | None = None
+    # Given to messages the user typed when they join the history: /rewind and checkpoints refer to it.
+    id: str | None = field(default=None, compare=False)
 
     @property
     def text(self) -> str:

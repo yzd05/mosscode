@@ -211,6 +211,79 @@ async def open_sessions(ctx: CommandContext) -> None:
     )
 
 
+# (label, restore code, rewind the conversation); a message with no file changes offers the conversation only.
+REWIND_ACTIONS = (("恢复代码和对话", True, True), ("只恢复对话", False, True), ("只恢复代码", True, False))
+REWIND_TALK = (("只恢复对话", False, True),)
+REWIND_LISTED = 10
+
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), "（空消息）")
+
+
+def _listed(paths) -> str:
+    names = "、".join(paths[:REWIND_LISTED])
+    return names + (f" 等 {len(paths)} 个" if len(paths) > REWIND_LISTED else "")
+
+
+def rewind_report(rewound) -> str:
+    lines = []
+    restoration = rewound.restoration
+    if restoration is not None:
+        if restoration.restored:
+            lines.append(f"└ 已恢复 {len(restoration.restored)} 个文件：{_listed(restoration.restored)}")
+        if restoration.deleted:
+            lines.append(f"└ 已删除 {len(restoration.deleted)} 个之后新建的文件：{_listed(restoration.deleted)}")
+        lines += [f"└ 跳过 {path}：{why}" for path, why in restoration.skipped]
+        lines += [f"! 未能恢复 {path}：{why}" for path, why in restoration.failed]
+        if not (restoration.paths or restoration.skipped or restoration.failed):
+            lines.append("└ 文件已经是那条消息之前的状态。")
+    if rewound.kept is not None:
+        lines.append("└ 对话已退回到这条消息之前，原消息已放回输入框。")
+    elif restoration is not None and restoration.paths:
+        lines.append("└ 对话保留；下一次请求会提醒模型这些文件已恢复，需要重新读取。")
+    return "\n".join(lines)
+
+
+async def _rewind(ctx: CommandContext, argument: str) -> None:
+    conversation = ctx.conversation
+    points = conversation.rewind_points()
+    if not points:
+        await ctx.ui.note("当前上下文中没有可以回退的消息。")
+        return
+    rows = [
+        Text(
+            _first_line(point.message.shown) + (f"  · 之后改动 {point.files} 个文件" if point.files else ""),
+            no_wrap=True,
+            overflow="ellipsis",
+        )
+        for point in points
+    ]
+
+    async def pick(index: int) -> None:
+        point = points[index]
+        actions = REWIND_ACTIONS if point.files else REWIND_TALK
+
+        async def act(choice: int) -> None:
+            if choice >= len(actions):
+                return  # 取消
+            _, code, talk = actions[choice]
+            try:
+                rewound = await conversation.rewind(point.message.id, code=code, conversation=talk)
+            except ProviderError as exc:
+                await ctx.ui.note(f"! {exc}")
+                return
+            if rewound.message is not None:
+                await ctx.ui.rewound(rewound.message)
+            ctx.ui.refresh_status()
+            await ctx.ui.note(rewind_report(rewound))
+
+        title = _first_line(point.message.shown)
+        ctx.ui.choose(f"回退到“{title[:40]}”之前", [label for label, _, _ in actions] + ["取消"], 0, act)
+
+    ctx.ui.choose("回退 · 选择回到哪条消息之前（最新的在最上面）", rows, 0, pick)
+
+
 def session_report(conversation, sessions=()) -> str:
     session = conversation.session
     if session is None:
@@ -1259,6 +1332,14 @@ BUILTIN = CommandRegistry(
             argument="optional",
             argument_hint="[ID]",
             handler=_resume,
+        ),
+        Command(
+            "rewind",
+            "把文件或对话退回到之前某条消息发出前的状态",
+            "/rewind",
+            "local",
+            aliases=("checkpoint",),
+            handler=_rewind,
         ),
         Command("session", "查看当前会话的 ID、存档位置和消息数", "/session", "local", handler=_session),
         Command(
