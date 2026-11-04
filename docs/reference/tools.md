@@ -63,6 +63,7 @@
 | `image_unsupported` | 当前模型不接受图片（见 [图片输入](providers.md#图片输入)），切换到接受图片的模型后可以读取 |
 | `image_too_large` | 文件超过 50 MB、像素数超过解压炸弹上限，或处理后仍超过 4.5 MB |
 | `image_invalid` | 文件损坏或不完整，无法解码 |
+| `image_store_failed` | 图片已读取，但无法保存到会话目录的 `images/`，结果说明原因，例如路径超过 Windows 的 260 字符限制 |
 
 MCP 工具返回的图片按同样的规则处理，见 [MCP](mcp.md#安全边界与结果)。图片保存在会话目录的 `images/` 中，会话记录只保存引用，见 [会话存档](sessions.md#存档位置)。上下文估算和压缩时图片的处理见 [上下文管理](context.md#估算)。
 

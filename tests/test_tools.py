@@ -123,6 +123,43 @@ async def test_read_file_image_errors(tmp_path, monkeypatch):
     assert (await registry.execute(call("read_file", path="shot.png"))).code == "image_too_large"
 
 
+def refuse_replace(monkeypatch, error):
+    from mosscode import images
+
+    def refuse(source, target):
+        raise error(3, "系统找不到指定的路径。", str(source), None, str(target))
+
+    monkeypatch.setattr(images.os, "replace", refuse)
+
+
+async def test_read_file_reports_a_failed_image_store_not_a_missing_file(tmp_path, monkeypatch):
+    from mosscode.session import Session
+
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    registry.use_session(Session(tmp_path / "session"))
+    save_image(tmp_path / "shot.png")
+    refuse_replace(monkeypatch, FileNotFoundError)
+    result = await registry.execute(call("read_file", path="shot.png"))
+    assert result.code == "image_store_failed" and not result.images
+    assert result.output == "图片已读取，但无法保存到会话目录：系统找不到指定的路径。"
+    assert list((tmp_path / "session" / "images").iterdir()) == []
+
+
+async def test_a_failed_image_store_names_the_windows_path_limit(tmp_path, monkeypatch):
+    from mosscode import images
+    from mosscode.session import Session
+
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    registry.use_session(Session(tmp_path / "session"))
+    save_image(tmp_path / "shot.png")
+    monkeypatch.setattr(images, "WINDOWS", True)
+    monkeypatch.setattr(images, "WINDOWS_MAX_PATH", len(str(tmp_path)))
+    refuse_replace(monkeypatch, FileNotFoundError)
+    result = await registry.execute(call("read_file", path="shot.png"))
+    assert result.code == "image_store_failed" and "路径超过 Windows 的" in result.output
+    assert str(tmp_path / "session" / "images") in result.output
+
+
 async def test_reading_an_image_outside_the_project_still_needs_approval(tmp_path):
     root = tmp_path / "project"
     root.mkdir()

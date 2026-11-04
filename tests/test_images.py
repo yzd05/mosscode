@@ -142,3 +142,16 @@ def test_image_refs_read_memory_or_file(tmp_path):
     stored = images.ImageRef(ref.name, ref.media_type, 4, 4, ref.size, ref.alt, path=path)
     assert stored == ref and stored.read() == processed.data
     assert stored.placeholder("当前模型不支持图片，已省略") == "[图片 #1]（当前模型不支持图片，已省略）"
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, PermissionError])
+def test_a_failed_store_leaves_no_partial_file(tmp_path, monkeypatch, error):
+    processed = load_image(encode(Image.new("RGB", (4, 4)), "PNG"))
+
+    def refuse(source, target):
+        raise error(2, "refused", str(source), None, str(target))
+
+    monkeypatch.setattr(images.os, "replace", refuse)
+    with pytest.raises(error):
+        images.store_image(tmp_path / "images", processed, "shot.png")
+    assert list((tmp_path / "images").iterdir()) == []

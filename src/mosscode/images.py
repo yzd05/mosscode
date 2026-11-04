@@ -6,6 +6,7 @@ import io
 import math
 import os
 import secrets
+import sys
 import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -22,6 +23,9 @@ EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "imag
 ORIENTATION = 0x0112
 # 128 bits of SHA-256 is unique enough and keeps paths under Windows' 260-character limit.
 NAME_DIGITS = 32
+WINDOWS = sys.platform == "win32"
+# Without long-path support Windows refuses paths of 260 characters or more, terminator included.
+WINDOWS_MAX_PATH = 260
 
 
 class ImageError(Exception):
@@ -122,9 +126,22 @@ def store_image(directory: Path, image: ProcessedImage, alt: str) -> ImageRef:
     if not path.is_file():
         directory.mkdir(parents=True, exist_ok=True)
         partial = directory / f".{secrets.token_hex(4)}.tmp"
-        partial.write_bytes(image.data)
-        os.replace(partial, path)
+        try:
+            partial.write_bytes(image.data)
+            os.replace(partial, path)
+        finally:
+            partial.unlink(missing_ok=True)
     return ImageRef(image.name, image.media_type, image.width, image.height, len(image.data), alt, path=path)
+
+
+def store_failure(exc: OSError) -> str:
+    """Why store_image failed, for the user: a path past Windows' limit fails as "not found", which misleads."""
+    target = exc.filename2 or exc.filename
+    if WINDOWS and target is not None:
+        full = str(Path(os.fsdecode(target)).absolute())
+        if len(full) >= WINDOWS_MAX_PATH:
+            return f"路径超过 Windows 的 {WINDOWS_MAX_PATH} 字符限制（{len(full)} 个字符：{full}）"
+    return exc.strerror or str(exc) or type(exc).__name__
 
 
 def image_ref(image: ProcessedImage, alt: str, store=None) -> ImageRef:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import Field
 
-from ..images import ImageError, image_ref, load_image, sniff
+from ..images import ImageError, image_ref, load_image, sniff, store_failure
 from .base import IMAGES, Params, Tool, ToolFailure, file_io, image_context
 from .diffing import unified_diff
 
@@ -183,7 +183,11 @@ class ReadFile(FileTool):
         except ImageError as exc:
             raise ToolFailure(exc.code, str(exc)) from None
         name = self.display(path)
-        ref = image_ref(image, name, store)
+        try:
+            ref = image_ref(image, name, store)
+        except OSError as exc:
+            # Not the generic "not_found": the image was read, only keeping a copy of it failed.
+            raise ToolFailure("image_store_failed", f"图片已读取，但无法保存到会话目录：{store_failure(exc)}") from None
         self.state.record(path, stamp)
         details = {
             "path": str(path),
