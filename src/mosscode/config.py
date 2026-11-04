@@ -60,6 +60,7 @@ class ProviderConfig:
     context_window: int | None = None
     compact_threshold: int | None = None
     images: bool | None = None  # Whether the model accepts images; None follows the protocol.
+    reasoning: bool | None = None  # Whether /thinking applies; None follows the model catalog.
     catalog_model: str | None = None  # The model catalog entry, when the model name is an alias it does not list.
     # Filled in when the configuration is read: the catalog entry and which fields came from it.
     catalog: ModelInfo | None = field(default=None, compare=False, repr=False)
@@ -223,6 +224,8 @@ def _provider(raw: Any) -> ProviderConfig:
         raise ConfigError("prompt_cache 必须是布尔值或 null。")
     if data.get("images") is not None and type(data["images"]) is not bool:
         raise ConfigError("images 必须是布尔值或 null。")
+    if data.get("reasoning") is not None and type(data["reasoning"]) is not bool:
+        raise ConfigError("reasoning 必须是布尔值或 null。")
     if data.get("max_tokens_field", "max_tokens") not in {"max_tokens", "max_completion_tokens"}:
         raise ConfigError("max_tokens_field 必须是 max_tokens 或 max_completion_tokens。")
     thinking = data.get("thinking")

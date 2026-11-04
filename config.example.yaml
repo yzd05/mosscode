@@ -79,6 +79,8 @@ providers:
     max_tokens_field: max_tokens
     # 模型是否接受图片：Chat Completions 默认不接受，所用模型支持时改为 true（其他协议默认接受）。
     # images: true
+    # /thinking 默认按模型目录判断模型是否支持思考；目录不准确时明确填写 true 或 false。
+    # reasoning: true
 
   - name: deepseek
     protocol: openai-chat-completions

@@ -42,7 +42,14 @@ FIELDS = (
     "cache_read_input_token_cost",
     "cache_creation_input_token_cost",
     "supports_vision",
+    "supports_reasoning",
+    "supports_adaptive_thinking",
+    "thinking_always_on",
+    "supports_none_reasoning_effort",
+    "supports_minimal_reasoning_effort",
 )
+# Files written before the thinking fields were kept: still read, the missing fields are None.
+OLDEST_FIELDS = 8
 FILE_NAME = "models.json.gz"
 # Service host → LiteLLM provider. Hosts not listed fall back to the bare model name.
 HOST_PROVIDERS = {
@@ -82,6 +89,13 @@ class ModelInfo:
     cache_read_price: float | None
     cache_write_price: float | None
     vision: bool | None  # None: the catalog does not say.
+    # LiteLLM leaves supports_reasoning out for models without reasoning; slim() records that as False,
+    # so None only comes from a file written before the field was kept and means "not known".
+    reasoning: bool | None = None
+    adaptive: bool | None = None  # Anthropic adaptive thinking.
+    always_on: bool | None = None  # Thinking cannot be turned off.
+    none_effort: bool | None = None  # reasoning effort "none" turns it off.
+    minimal_effort: bool | None = None
 
     @property
     def priced(self) -> bool:
@@ -122,7 +136,8 @@ def slim(raw: dict, fetched: str | None = None) -> dict:
             continue
         row[1:3] = [_count(value) for value in row[1:3]]
         row[3:7] = [_number(value) for value in row[3:7]]
-        row[7] = row[7] if isinstance(row[7], bool) else None
+        row[7:] = [value if isinstance(value, bool) else None for value in row[7:]]
+        row[8] = row[8] is True
         models[name] = row
     return {
         "source": SOURCE,
@@ -140,9 +155,10 @@ def encode(data: dict) -> bytes:
 
 def decode(blob: bytes, path: Path | None = None) -> Catalog:
     data = json.loads(gzip.decompress(blob).decode("utf-8"))
-    if list(data.get("fields", ())) != list(FIELDS) or not isinstance(data.get("models"), dict):
+    fields = list(data.get("fields", ()))
+    if len(fields) < OLDEST_FIELDS or fields != list(FIELDS[: len(fields)]) or not isinstance(data.get("models"), dict):
         raise ValueError("unexpected layout")
-    models = {name: ModelInfo(name, *row) for name, row in data["models"].items()}
+    models = {name: ModelInfo(name, *row[: len(FIELDS)]) for name, row in data["models"].items()}
     return Catalog(models, str(data.get("fetched", "")), path)
 
 

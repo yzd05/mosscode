@@ -27,6 +27,7 @@ from .messages import (
     Usage,
 )
 from .prompts import PREFIX_KINDS, PromptRequest, as_prompt
+from .reasoning import Unsupported, thinking_options
 from .usage import parse_usage, usage_data
 
 # Anthropic tightens its per-image limits above 20 images a request, and old screenshots rarely still matter.
@@ -290,6 +291,7 @@ def _safe_error(exc) -> ProviderError:
 class SDKProvider:
     def __init__(self, config: ProviderConfig, client: Any = None) -> None:
         self.config = config
+        self.thinking: str | None = None  # The /thinking level; None sends what the configuration says.
         self.client = client if client is not None else self._client()
         # base64 by image name (a content hash): history images are sent again every turn.
         self._encoded: dict[str, str] = {}
@@ -305,6 +307,15 @@ class SDKProvider:
             while len(self._encoded) > ENCODED_CACHE:
                 del self._encoded[next(iter(self._encoded))]
         return data
+
+    def _thinking_options(self) -> dict[str, Any]:
+        """Request parameters for the /thinking level; nothing when unset or the model cannot take it."""
+        if self.thinking is None:
+            return {}
+        try:
+            return thinking_options(self.config, self.thinking).options
+        except Unsupported:
+            return {}
 
     def _client(self) -> Any:
         config = self.config
@@ -416,7 +427,9 @@ class AnthropicProvider(SDKProvider):
             options["tools"] = _tools(tools, config.protocol)
             if not allow_tools:
                 options["tool_choice"] = {"type": "none"}
-        if config.thinking is not None:
+        if override := self._thinking_options():
+            options.update(override)
+        elif config.thinking is not None:
             options["thinking"] = {k: v for k, v in config.thinking.items() if k != "effort"}
             if "effort" in config.thinking:
                 options["output_config"] = {"effort": config.thinking["effort"]}
@@ -547,6 +560,7 @@ class ResponsesProvider(SDKProvider):
                 options["tool_choice"] = "none"
         if self.config.include_encrypted_reasoning:
             options["include"] = ["reasoning.encrypted_content"]
+        options.update(self._thinking_options())
         arguments: dict[str, str] = {}
         final = None
         stream = await self.client.responses.create(**options)
@@ -663,6 +677,7 @@ class ChatCompletionsProvider(SDKProvider):
             options["tools"] = _tools(tools, self.config.protocol)
             if not allow_tools:
                 options["tool_choice"] = "none"
+        options.update(self._thinking_options())
         stream = await self.client.chat.completions.create(**options)
         text: list[str] = []
         thinking: list[str] = []

@@ -14,10 +14,11 @@
 | `/session` | — | 本地 | 显示当前会话的 ID、存档路径、标题、消息数和开始时间；`persist_sessions: false` 时说明未存档 |
 | `/memory [名称]` | — | 本地 | 列出项目指令和记忆笔记；带名称时显示笔记全文（见 [记忆笔记](memory.md)） |
 | `/model [名称]` | — | 本地 | 切换提供商，对话历史保留；配置了多个提供商时，不带名称会打开选择面板 |
+| `/thinking [档位]` | — | 本地 | 设置本会话的思考强度：off、low、medium、high，`default` 回到配置；不带参数时打开选择列表（见 [思考强度](providers.md#思考强度)） |
 | `/plan [任务]` | — | 本地 | 进入计划模式；带任务时随后把任务发给模型（见 [计划模式](tools.md#计划模式)） |
 | `/do [任务]` | — | 本地 | 退出计划模式，回到进入前的档位（从 acceptEdits 进入就回到 acceptEdits）；带任务时随后把任务发给模型。不在计划模式时只提示“当前不在计划模式。”，不发送任务 |
 | `/permissions [档位]` | `/permission` | 本地 | 查看档位说明，或切换到 default、acceptEdits、plan、bypassPermissions（见 [工具权限](permissions.md)） |
-| `/status` | — | 本地 | 显示模型（窗口等取自模型目录时注明条目）、权限档位、上下文估算、本会话用量和估算费用、会话 ID、工作目录、项目指令、MCP、记忆、网络工具、已激活 Skill、Hook 的状态，以及 Agent 定义数和运行中的后台任务数 |
+| `/status` | — | 本地 | 显示模型（窗口等取自模型目录时注明条目）、权限档位、思考强度（档位和当前模型实际发送的参数）、上下文估算、本会话用量和估算费用、会话 ID、工作目录、项目指令、MCP、记忆、网络工具、已激活 Skill、Hook 的状态，以及 Agent 定义数和运行中的后台任务数 |
 | `/mcp [名称]` | — | 本地 | 列出 MCP Server 的状态；带名称时列出该 Server 的工具（见 [MCP](mcp.md)） |
 | `/skills [名称\|reload]` | `/skill` | 本地 | 列出 Skill；带名称时显示详情，`reload` 重新扫描（见 [Skill](skills.md#skills)） |
 | `/hooks [id\|reload]` | `/hook` | 本地 | 列出 Hook 和最近的执行记录；带 `id` 时显示详情，`reload` 重新加载并询问未确认的项目级文件（见 [Hook](hooks.md#hooks)） |

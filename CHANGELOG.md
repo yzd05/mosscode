@@ -16,6 +16,7 @@
 - 检查点与 `/rewind`（别名 `/checkpoint`）：`write_file`、`edit_file` 改文件前自动保存快照（包括主工作区中的子 Agent），可以把文件、对话或两者退回到之前某条消息发出前的状态，回退后的消息放回输入框；空闲且输入框为空时连按两次 Esc 打开。检查点随会话存档保存，恢复会话后仍可回退。
 - `@` 文件引用：输入 `@` 列出项目中的文件和目录（遵守 `.gitignore`，模糊匹配），Tab 或 Enter 补全；发送时附上引用的文件内容（与 `read_file` 的结果相同，记为已读，可以直接编辑）和目录列表，`@文件#L10-20` 只附这几行；一条消息最多 10 个引用、约 112 KiB，显式拒绝规则仍然生效；`-p` 同样展开。
 - `!命令`：在输入框中不经过模型直接执行命令（与 `execute_command` 同一个 shell，项目根目录，不需要审批，黑名单和显式拒绝规则仍然生效，Esc 取消）；输出加入对话但不触发回复，下一条消息时模型能看到；`!!命令` 只执行不加入对话。
+- `/thinking off|low|medium|high|default`：在会话中调整思考强度，按协议换算为 Anthropic 的 adaptive 加 effort（较早的模型用思考预算）、OpenAI 的 `reasoning.effort` / `reasoning_effort`、DeepSeek 的思考开关；模型目录表明不支持时提示并忽略。`/status` 和状态栏显示当前档位。模型目录新增思考相关的字段，Provider 新增 `reasoning` 配置。
 - Skill 另外从 [Agent Skills](https://agentskills.io/specification) 的共享目录 `~/.agents/skills/`、`.agents/skills/` 读取；按规范检查 `SKILL.md`，不认识的字段只提示；`/skills <名称>` 显示 `license`、`compatibility`；白名单中的 `WebFetch`、`WebSearch` 换算为 `web_fetch`、`web_search`。
 
 ### 变更

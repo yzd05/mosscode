@@ -12,6 +12,7 @@ from .agent import DEFAULT_MAX_ITERATIONS, AgentLoop, Provider
 from .agents import AgentCatalog
 from .agents.runtime import AUTO_BACKGROUND, GLOBAL_BAN, MAX_BACKGROUND, SubAgents
 from .checkpoints import Checkpoints, Restoration
+from .config import ProviderConfig
 from .context import ContextBudget, estimate_text
 from .images import ImageRef, ProcessedImage, image_ref
 from .memory import INDEX_TOKENS, MemoryStore
@@ -40,6 +41,7 @@ from .prompts import (
     memory_section,
     rewind_reminder,
 )
+from .reasoning import LEVELS, Unsupported, thinking_options
 from .session import (
     Restored,
     Session,
@@ -163,6 +165,7 @@ class Conversation:
         self._agent.auto_compact = auto_compact
         # (name, protocol, model) of the current provider: written to the transcript on a switch.
         self.provider_info = provider_info
+        self.thinking: str | None = None  # The /thinking level for this process; None follows the configuration.
         # Transcripts need a session from Session.new; persist=False keeps only stored results.
         self.persist = persist and session is not None and session.transcript_path is not None
         self.sessions_home = sessions_home
@@ -492,6 +495,8 @@ class Conversation:
         self, provider: Provider, budget: ContextBudget | None = None, info: tuple[str, str, str] | None = None
     ):
         old = self.provider
+        if self.thinking is not None:
+            provider.thinking = self.thinking
         self._agent.set_provider(provider, budget)
         self.provider = provider
         if info is not None:
@@ -500,6 +505,33 @@ class Conversation:
                 self._record(provider_record(*info))
         if old is not provider:
             await old.close()
+
+    @property
+    def provider_config(self) -> ProviderConfig | None:
+        config = getattr(self.provider, "config", None)
+        return config if isinstance(config, ProviderConfig) else None
+
+    def set_thinking(self, level: str | None) -> None:
+        """The /thinking level from the next request on; sub-agents on the same provider follow it."""
+        if self._busy:
+            raise ProviderError("当前任务正在运行，不能切换思考强度。")
+        if level is not None and level not in LEVELS:
+            raise ProviderError(f"未知的思考强度 {level}。")
+        self.thinking = level
+        self.provider.thinking = level
+
+    def thinking_problem(self) -> str | None:
+        """Why the current model is not sent the level, or None when it is (or no level is set)."""
+        if self.thinking is None:
+            return None
+        config = self.provider_config
+        if config is None:
+            return "无法确定当前模型"
+        try:
+            thinking_options(config, self.thinking)
+        except Unsupported as exc:
+            return str(exc)
+        return None
 
     def set_permission_mode(self, mode: str):
         if self._busy:

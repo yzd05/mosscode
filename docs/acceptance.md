@@ -552,6 +552,18 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 | M146 取消 | `!sleep 30`，执行中输入 `!ls` 按 Enter，再按 Esc | `!ls` 不执行，状态栏提示“运行中不能执行 ! 命令”，文字留在输入框；Esc 后命令行显示“已取消 · 未加入对话” |
 | M147 恢复会话 | `/exit` 后加 `-c` 启动 | 恢复的历史中有“! python src/app.py”一行，没有 `!!` 和取消的命令 |
 
+### /thinking
+
+规格见 [`/thinking` 思考强度](specs/thinking/spec.md)。在验收项目中启动界面，使用 DeepSeek 提供商（Anthropic Messages 协议）。
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M148 选择列表 | 输入 `/thinking`，↓ 选到“高”，按 Enter | 列表标题“思考强度 · 提供商名”，五项中“跟随配置”打勾，每项说明会发送的参数；选择后显示“└ 思考强度：high；… 发送 adaptive，effort high。”，状态栏模型后出现“· 思考 high” |
+| M149 生效 | “17×23 等于多少？只回答数字。”，再输入 `/status` | 回复前显示思考内容；`/status` 的“思考”一行是“high（发送 adaptive，effort high）” |
+| M150 关闭 | `/thinking off`，再问“29×31 等于多少？只回答数字。” | 提示发送 thinking disabled；这次回复没有思考内容，状态栏是“思考 off” |
+| M151 参数与保留 | `/thinking max`；`/clear`；`/thinking default` | 第一条提示“未知的思考强度 max。”和用法，档位不变；`/clear` 后状态栏仍是“思考 off”；最后提示“跟随配置”，状态栏的思考标记消失 |
+| M152 运行中 | 让模型写一段较长的回答，回复过程中输入 `/thinking high` 按 Enter | 回复不中断；状态栏提示运行中只能使用部分命令，`/thinking high` 留在输入框，档位不变；回复结束后再按 Enter 才生效 |
+
 ## 已知限制
 
 - **ripgrep**：本机已安装 ripgrep 15.2.0，自动测试和人工验收的搜索都走 rg；Python 回退实现只在没有 rg 时使用，由单元测试覆盖。

@@ -18,6 +18,7 @@ from .hooks.config import SOURCE_LABELS as HOOK_SOURCES
 from .memory import SCOPE_LABELS
 from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
+from .reasoning import DEFAULT, LEVEL_LABELS, LEVELS, Unsupported, thinking_options
 from .skills import SOURCE_LABELS, ForkRequest
 from .usage import cost_text
 
@@ -425,6 +426,78 @@ def _provider_names(ctx: CommandContext):
     return [(item.name, "切换到该提供商") for item in providers] if len(providers) > 1 else []
 
 
+THINKING_CHOICES = (DEFAULT, *LEVELS)
+THINKING_HELP = "/thinking off|low|medium|high 设置本会话的思考强度；/thinking default 回到配置文件的设置。"
+
+
+def thinking_detail(config, level: str | None) -> str:
+    """What the current model is sent for level, or why it cannot take it."""
+    if level is None:
+        return "不发送覆盖参数，按配置文件"
+    if config is None:
+        return "当前模型不支持：无法确定当前模型"
+    try:
+        result = thinking_options(config, level)
+    except Unsupported as exc:
+        return f"当前模型不支持：{exc}"
+    return f"发送 {result.summary}" + (f"（{result.note}）" if result.note else "")
+
+
+async def _set_thinking(ctx: CommandContext, value: str) -> None:
+    level = None if value == DEFAULT else value
+    try:
+        ctx.conversation.set_thinking(level)
+    except ProviderError as exc:
+        await ctx.ui.note(str(exc))
+        return
+    ctx.ui.refresh_status()
+    if level is None:
+        await ctx.ui.note("└ 思考强度：跟随配置，不发送覆盖参数。")
+        return
+    config = ctx.conversation.provider_config
+    detail = thinking_detail(config, level)
+    if ctx.conversation.thinking_problem() is not None:
+        await ctx.ui.note(
+            f"└ 思考强度：{level}；{ctx.ui.provider_name} {detail}，这个模型的请求按配置发送，切换到支持的模型后生效。"
+        )
+    else:
+        await ctx.ui.note(f"└ 思考强度：{level}；{ctx.ui.provider_name} {detail}。")
+
+
+async def _thinking(ctx: CommandContext, argument: str) -> None:
+    value = argument.strip().lower()
+    if value:
+        if value not in THINKING_CHOICES:
+            await ctx.ui.note(f"未知的思考强度 {argument}。" + THINKING_HELP)
+        else:
+            await _set_thinking(ctx, value)
+        return
+    current = ctx.conversation.thinking or DEFAULT
+    config = ctx.conversation.provider_config
+    rows = [
+        Text(
+            f"{value}{'  ✓' if value == current else ''}  {LEVEL_LABELS[value]} · "
+            + thinking_detail(config, None if value == DEFAULT else value),
+            no_wrap=True,
+            overflow="ellipsis",
+        )
+        for value in THINKING_CHOICES
+    ]
+
+    async def pick(index: int) -> None:
+        await _set_thinking(ctx, THINKING_CHOICES[index])
+
+    ctx.ui.choose(f"思考强度 · {ctx.ui.provider_name}", rows, THINKING_CHOICES.index(current), pick)
+
+
+def _thinking_line(ctx: CommandContext) -> str:
+    conversation = ctx.conversation
+    level = conversation.thinking
+    if level is None:
+        return LEVEL_LABELS[DEFAULT]
+    return f"{level}（{thinking_detail(conversation.provider_config, level)}）"
+
+
 async def _plan(ctx: CommandContext, argument: str) -> None:
     try:
         ctx.conversation.set_mode("plan")
@@ -543,6 +616,7 @@ def status_report(ctx: CommandContext) -> str:
     rows = [
         ("模型", _model_line(ctx)),
         ("权限档位", mode),
+        ("思考", _thinking_line(ctx)),
         ("上下文", _context_line(conversation)),
         ("本会话用量", _usage_line(conversation)),
         ("会话", conversation.session_id or "无"),
@@ -1361,6 +1435,16 @@ BUILTIN = CommandRegistry(
             argument_hint="[名称]",
             handler=_model,
             complete=_provider_names,
+        ),
+        Command(
+            "thinking",
+            "查看或设置本会话的思考强度",
+            "/thinking [档位]",
+            "local",
+            argument="optional",
+            argument_hint="[档位]",
+            handler=_thinking,
+            complete=lambda ctx: [(value, LEVEL_LABELS[value]) for value in THINKING_CHOICES],
         ),
         Command(
             "plan",

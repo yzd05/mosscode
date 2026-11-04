@@ -40,7 +40,21 @@ def test_slim_keeps_chat_models_and_valid_numbers_with_source_and_license():
     assert data["fetched"] == "2026-01-02" and "MIT License" in data["license"] and "litellm" in data["source"]
     assert list(data["fields"]) == list(FIELDS)
     assert "text-embedding-3-small" not in data["models"] and "sample_spec" in data["models"]
-    assert data["models"]["broken"] == ["openai", None, None, None, 1e-6, None, None, None]
+    assert data["models"]["broken"] == [
+        "openai",
+        None,
+        None,
+        None,
+        1e-6,
+        None,
+        None,
+        None,
+        False,
+        None,
+        None,
+        None,
+        None,
+    ]
     info = catalog().get("deepseek/deepseek-v4-flash")
     assert (info.provider, info.context_window, info.max_output_tokens, info.vision) == (
         "deepseek",

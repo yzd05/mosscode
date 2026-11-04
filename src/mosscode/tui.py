@@ -1453,6 +1453,9 @@ class MossCodeApp(TerminalApp[None]):
         if self.provider_name != self._banner_provider:
             # The banner names the model; after /model it is stale, so the status bar names the new one.
             text.append(" · " + self.provider_name)
+        if (thinking := getattr(self.conversation, "thinking", None)) is not None:
+            unsupported = self.conversation.thinking_problem() is not None
+            text.append(f" · 思考 {thinking}" + ("（不支持）" if unsupported else ""))
         if note:
             stage, separator, rest = note.partition(" · ")
             stage_color = (
@@ -2147,6 +2150,10 @@ class MossCodeApp(TerminalApp[None]):
         await self._local_note(f"└ 已切换到 {config.name}（{config.protocol} / {config.model}）；对话历史保留。")
         if note := config.window_note():
             await self._local_note(f"└ {note}")
+        if (problem := self.conversation.thinking_problem()) is not None:
+            await self._local_note(
+                f"└ 思考强度 {self.conversation.thinking}：{config.name} 不支持（{problem}），这个模型的请求按配置发送。"
+            )
 
     def _close_model_panel(self) -> None:
         self._pick = self._on_cancel = None

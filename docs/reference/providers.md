@@ -38,6 +38,29 @@ Provider 配置、协议、重试与无界面输出。
 
 Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，多轮原样回传服务返回的不透明推理数据。兼容服务不支持该选项时可设 `include_encrypted_reasoning: false`；缺少加密数据的推理条目不回传，仍保留正文历史，无法保留隐式推理连续性。
 
+## 思考强度
+
+`/thinking off|low|medium|high` 在本会话中调整思考强度，`/thinking default` 回到配置文件的设置；不带参数时打开选择列表，每一项说明当前模型实际会收到什么。档位从下一次请求开始生效，对主对话和使用同一模型的子 Agent 都有效；`/model` 切换后沿用。档位只在本进程中有效：`/clear` 保留，退出后恢复会话时回到配置。运行中不能切换，命令留在输入框，回复结束后再发送。
+
+| 协议 | off | low / medium / high |
+| --- | --- | --- |
+| Messages | `thinking: {type: disabled}` | `thinking: {type: adaptive}` 加 `output_config.effort`；目录标明不支持 adaptive 的较早 Claude 模型（如 Haiku 4.5），以及目录中没有、配置中用 `enabled` 预算的模型，改为 `budget_tokens` 2048 / 8192 / 16384，不超过 `max_output_tokens` 的一半 |
+| Responses | `reasoning.effort: none`；模型不支持 none 但支持 minimal 时用 minimal | `reasoning.effort` |
+| Chat Completions | `reasoning_effort: none`（规则同上） | `reasoning_effort` |
+| DeepSeek（Chat Completions） | `thinking: {type: disabled}`（放在请求体中） | `thinking: {type: enabled}` 加 `reasoning_effort`；DeepSeek 把 medium 按 high 处理 |
+
+设置档位后，覆盖参数替换配置中的 `thinking`；`default` 时请求与配置完全相同。切换档位会改变请求参数，Anthropic 的提示缓存在切换后的第一次请求不会命中。
+
+**不支持时提示并忽略。** 档位保留，但当前模型的请求按配置发送，切换到支持的模型后生效；`/status` 的“思考”一行和状态栏会注明。判断依据是[模型目录](#模型目录)：目录中这个模型不支持思考（如 `gpt-4.1`），不能关闭思考的模型（Opus 5.5、Sonnet 5.5）上的 `off`，以及既不支持 none 也不支持 minimal 的 OpenAI 模型（如 `o3`）上的 `off`。目录中没有的模型照常发送，由服务决定；服务拒绝时显示它的错误，改用其他档位或 `/thinking default` 即可。目录不准确时用配置项 `reasoning` 指定：`false` 不接受 `/thinking`，`true` 表示模型支持思考（跳过目录的判断）。
+
+```yaml
+  - name: gateway
+    protocol: openai-chat-completions
+    model: my-reasoning-model
+    base_url: https://your-gateway.example/v1
+    reasoning: true
+```
+
 ## 图片输入
 
 配置项 `images` 表示模型是否接受图片输入。省略时先看[模型目录](#模型目录)中是否有明确记录；没有时，`anthropic-messages` 和 `openai-responses` 视为接受，`openai-chat-completions` 视为不接受，因为兼容服务的模型差别很大。与实际不符时明确填写：
@@ -103,7 +126,7 @@ MossCode 带有一份模型目录，记录各家模型的上下文窗口、输�
 
 ### 更新
 
-包内的目录在发布时生成。新模型发布后不必等 MossCode 更新：运行 `moss models update` 从 LiteLLM 下载最新数据，写入 `~/.mosscode/models.json.gz`，以后优先使用它。`moss models <关键词>` 查找条目，见 [命令行](cli.md#models)。用户目录中的文件损坏时，改用包内的目录并在启动区提示，重新运行 `moss models update` 即可修复。
+包内的目录在发布时生成。新模型发布后不必等 MossCode 更新：运行 `moss models update` 从 LiteLLM 下载最新数据，写入 `~/.mosscode/models.json.gz`，以后优先使用它。`moss models <关键词>` 查找条目，见 [命令行](cli.md#models)。旧版本下载的目录不含思考相关的字段，仍然可用，只是 `/thinking` 无法判断哪些模型不支持，重新运行 `moss models update` 即可补上。用户目录中的文件损坏时，改用包内的目录并在启动区提示，重新运行 `moss models update` 即可修复。
 
 ### 费用估算
 
