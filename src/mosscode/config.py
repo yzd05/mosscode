@@ -157,6 +157,9 @@ class Settings:
     coordinator_mode: bool = False  # Also needs MOSSCODE_COORDINATOR_MODE.
     web_search: WebSearchConfig | None = None  # None: web_search is not offered.
     claude_directories: bool = False  # Also read skills and sub-agents from .claude directories.
+    # Variable names (with *) that model-run commands keep despite looking like secrets, or lose anyway.
+    command_env_keep: tuple[str, ...] = ()
+    command_env_drop: tuple[str, ...] = ()
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -170,6 +173,24 @@ def _positive_int(value: Any, label: str) -> int:
     if type(value) is not int or value <= 0:
         raise ConfigError(f"{label} 必须是正整数。")
     return value
+
+
+ENV_PATTERN = re.compile(r"[A-Za-z_*][A-Za-z0-9_*]*")
+
+
+def _command_env(raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    problem = "command_env 需为 {keep: [变量名], drop: [变量名]}，变量名可用 * 通配。"
+    if raw is None:
+        return (), ()
+    if not isinstance(raw, dict) or set(raw) - {"keep", "drop"}:
+        raise ConfigError(problem)
+    lists = []
+    for key in ("keep", "drop"):
+        names = raw.get(key, [])
+        if not isinstance(names, list) or not all(isinstance(n, str) and ENV_PATTERN.fullmatch(n) for n in names):
+            raise ConfigError(problem)
+        lists.append(tuple(names))
+    return lists[0], lists[1]
 
 
 def _links(raw: Any) -> tuple[str, ...]:
@@ -407,6 +428,7 @@ def load_settings(path: str | Path) -> Settings:
         "coordinator_mode",
         "web_search",
         "claude_directories",
+        "command_env",
     }:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
@@ -452,6 +474,7 @@ def load_settings(path: str | Path) -> Settings:
     claude_directories = raw.get("claude_directories", Settings.claude_directories)
     if type(claude_directories) is not bool:
         raise ConfigError("claude_directories 必须是布尔值。")
+    keep, drop = _command_env(raw.get("command_env"))
     settings = Settings(
         providers,
         default,
@@ -469,6 +492,8 @@ def load_settings(path: str | Path) -> Settings:
         coordinator_mode=coordinator,
         web_search=_web_search(raw.get("web_search")),
         claude_directories=claude_directories,
+        command_env_keep=keep,
+        command_env_drop=drop,
         **switches,
     )
     settings.select()

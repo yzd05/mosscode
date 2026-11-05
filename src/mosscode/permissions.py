@@ -52,7 +52,7 @@ TOOL_NAMES = set(ALIASES.values())
 WEB_TOOLS = {"web_fetch", "web_search"}  # Rules name a domain (web_fetch) or nothing (web_search).
 DOMAIN = "domain:"
 READ_TOOLS = {"read_file", "glob", "grep"}  # May read outside the project after approval.
-# Permission, MCP and hook files under a project root: the user's to edit, never the model's.
+# Permission, MCP, hook and plugin files under a project root: the user's to edit, never the model's.
 PROTECTED_FILES = (
     ".mosscode/permissions.yaml",
     ".mosscode/permissions.local.yaml",
@@ -60,7 +60,11 @@ PROTECTED_FILES = (
     ".mcp.json",
     ".mosscode/hooks.yaml",
     ".mosscode/hooks.local.yaml",
+    ".mosscode/plugins.yaml",
 )
+# git runs hooks, and programs named in its config (core.fsmonitor, core.hooksPath), the next time the user runs git.
+PROTECTED_GIT = (".git/config",)
+PROTECTED_GIT_DIRS = (".git/hooks",)
 EDIT_TOOLS = {"write_file", "edit_file"}
 
 
@@ -448,7 +452,14 @@ class PermissionPolicy:
             )
             if any(actual == p.resolve() for p in protected):
                 raise SecurityError(
-                    "policy_protected", "权限、MCP 与 Hook 配置文件由用户管理，模型不能自行写入或编辑。"
+                    "policy_protected", "权限、MCP、Hook 与插件配置文件由用户管理，模型不能自行写入或编辑。"
+                )
+            git = [root / name for root in roots for name in PROTECTED_GIT]
+            hooks = [(root / name).resolve() for root in roots for name in PROTECTED_GIT_DIRS]
+            if any(actual == p.resolve() for p in git) or any(actual.is_relative_to(d) for d in hooks):
+                raise SecurityError(
+                    "policy_protected",
+                    "git 钩子和 .git/config 会在你之后运行 git 时执行其中的程序，模型不能写入或编辑。",
                 )
         preview = ""
         if tool.name == "write_file":

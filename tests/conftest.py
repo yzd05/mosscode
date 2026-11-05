@@ -51,6 +51,10 @@ def memory_keyring(monkeypatch):
     monkeypatch.setattr(keyring, "get_keyring", lambda: backend)
     for action in ("get_password", "set_password", "delete_password"):
         monkeypatch.setattr(keyring, action, getattr(backend, action))
+    from mosscode import command_env
+
     credentials.forget_all()
+    command_env.reset()
     yield backend
     credentials.forget_all()
+    command_env.reset()

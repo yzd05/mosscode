@@ -208,7 +208,7 @@ def test_cli_accepts_four_modes(monkeypatch, capsys, tmp_path, mode):
         return reg
 
     monkeypatch.setattr(cli, "create_default_registry", make_registry)
-    monkeypatch.setattr(cli, "load_mcp_settings", lambda root: MCPSettings())
+    monkeypatch.setattr(cli, "load_mcp_settings", lambda root, **_: MCPSettings())
     cli.main()
     assert observed == [mode]
 

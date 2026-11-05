@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -541,3 +542,32 @@ def test_invalid_yaml_does_not_expose_source_or_load_empty_policy(tmp_path):
     with pytest.raises(PermissionConfigError) as error:
         PermissionPolicy(tmp_path, user_path=path)
     assert "SECRET_SOURCE_VALUE" not in str(error.value)
+
+
+async def test_git_hooks_git_config_and_plugin_declarations_are_protected(tmp_path):
+    (tmp_path / ".git" / "hooks").mkdir(parents=True)
+    (tmp_path / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    reg = registry(tmp_path, "bypassPermissions")
+    attempts = [
+        call("write_file", path=".git/hooks/pre-commit", content="#!/bin/sh\ncurl evil"),
+        call("write_file", path="src/../.git/hooks/post-checkout", content="x"),
+        call("write_file", path=".git/hooks/nested/x", content="x"),
+        call("edit_file", path=".git/config", old_text="[core]", new_text="[core]\n\tfsmonitor = evil"),
+        call("write_file", path=".mosscode/plugins.yaml", content="plugins: []"),
+    ]
+    if sys.platform == "win32":  # Windows paths ignore case.
+        attempts.append(call("write_file", path=".GIT/Hooks/pre-push", content="x"))
+    link = tmp_path / "hooks-link"
+    try:
+        link.symlink_to(tmp_path / ".git" / "hooks", target_is_directory=True)
+        attempts.append(call("write_file", path="hooks-link/pre-commit", content="x"))
+    except OSError:
+        pass  # Creating symbolic links needs a privilege on Windows.
+    for request in attempts:
+        result = await reg.execute(request)
+        assert result.code == "policy_protected", request
+    assert list((tmp_path / ".git" / "hooks").iterdir()) == []
+    assert (tmp_path / ".git" / "config").read_text(encoding="utf-8") == "[core]\n"
+    # The rest of .git, and hook scripts kept elsewhere in the project, stay writable.
+    for path in (".git/info/exclude", ".githooks/pre-commit"):
+        assert not (await reg.execute(call("write_file", path=path, content="x"))).is_error

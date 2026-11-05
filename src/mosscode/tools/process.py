@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import Field
 
+from ..command_env import command_environment
 from ..credentials import child_environment
 from .base import Params, Tool, ToolFailure
 from .shell import Shell, resolve_shell
@@ -85,8 +86,13 @@ async def run_process(
     tail: int = 0,
     env: dict[str, str] | None = None,
     input: bytes | None = None,
+    confined: bool = False,
 ):
-    """input, when given, is written to the child's stdin, which is then closed; otherwise stdin is empty."""
+    """input, when given, is written to the child's stdin, which is then closed; otherwise stdin is empty.
+
+    confined is for what the model runs (commands, Skill tools): secrets are removed from its environment, it gets
+    a private temp directory, and on Windows its Job may not read the clipboard or touch the desktop.
+    """
     options = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}
     # Windows commands wait on a one-byte gate until Job assignment completes.
     # This closes the race in which a fast shell could spawn before assignment.
@@ -95,7 +101,8 @@ async def run_process(
     gate = f"import os,subprocess,sys; os.read(0,1); sys.exit(subprocess.call(sys.argv[1:]{inherit}))"
     command = [sys.executable, "-c", gate, *args] if os.name == "nt" else args
     piped = os.name == "nt" or input is not None
-    env = child_environment(env)  # Commands, hooks and skill tools never inherit the variables holding API keys.
+    # Commands, hooks and skill tools never inherit the variables holding API keys.
+    env = command_environment(env) if confined else child_environment(env)
     spawn = asyncio.create_task(
         asyncio.create_subprocess_exec(
             *command,
@@ -117,7 +124,7 @@ async def run_process(
         from .windows_job import WindowsJob
 
         try:
-            process._mosscode_job = WindowsJob(process.pid)
+            process._mosscode_job = WindowsJob(process.pid, ui_limits=confined)
         except OSError:
             await terminate_tree(process)
             raise ToolFailure("process_cleanup_unavailable", "无法建立命令进程的生命周期边界，命令已终止。") from None
@@ -206,6 +213,7 @@ class ExecuteCommand(Tool):
             limit=COMMAND_HEAD,
             tail=COMMAND_TAIL,
             env=self.shell.env(params.command),
+            confined=True,
         )
         output = details["stdout"]
         if details["stderr"]:

@@ -115,7 +115,7 @@ class SkillTool(Tool):
         }
         data = json.dumps(params.model_dump(), ensure_ascii=False).encode("utf-8")
         details = await run_process(
-            argv, self.root, check=False, limit=COMMAND_HEAD, tail=COMMAND_TAIL, env=env, input=data
+            argv, self.root, check=False, limit=COMMAND_HEAD, tail=COMMAND_TAIL, env=env, input=data, confined=True
         )
         details = {**details, "skill": self.skill_name, "tool": self.short_name}
         if details["exit_code"] != 0:

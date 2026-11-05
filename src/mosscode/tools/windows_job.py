@@ -36,8 +36,15 @@ class ExtendedLimit(ctypes.Structure):
     ]
 
 
+# JOB_OBJECT_UILIMIT_*: no clipboard reads (passwords sit there), no global atoms, system parameters, display
+# settings, desktop switching or logoff. Not a security boundary on its own: processes started through WMI or the
+# task scheduler are outside the Job.
+UI_LIMITS = 0x2 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80
+JOB_BASIC_UI_RESTRICTIONS = 4
+
+
 class WindowsJob:
-    def __init__(self, pid: int):
+    def __init__(self, pid: int, *, ui_limits: bool = False):
         api = ctypes.WinDLL("kernel32", use_last_error=True)
         api.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
         api.CreateJobObjectW.restype = wintypes.HANDLE
@@ -58,6 +65,11 @@ class WindowsJob:
         process = None
         try:
             if not api.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            ui = wintypes.DWORD(UI_LIMITS)
+            if ui_limits and not api.SetInformationJobObject(
+                self.handle, JOB_BASIC_UI_RESTRICTIONS, ctypes.byref(ui), ctypes.sizeof(ui)
+            ):
                 raise ctypes.WinError(ctypes.get_last_error())
             process = api.OpenProcess(0x0101, False, pid)  # SET_QUOTA | TERMINATE
             if not process or not api.AssignProcessToJobObject(self.handle, process):

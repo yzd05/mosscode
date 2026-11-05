@@ -48,6 +48,9 @@ def forget_all() -> None:
 
 def protect(settings) -> None:
     """Register the keys a configuration names; keys in the credential manager are read now so all are known."""
+    from .command_env import configure  # It imports this module.
+
+    configure(settings.command_env_keep, settings.command_env_drop)
     for config in (*settings.providers, *((settings.web_search,) if settings.web_search else ())):
         hide_variable(config.api_key_env)
         if config.api_key_env:

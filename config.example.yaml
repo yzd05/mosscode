@@ -34,6 +34,11 @@ default_provider: claude
 # web_search:
 #   provider: tavily
 #   api_key_env: TAVILY_API_KEY
+# 模型运行的命令看不到形似密钥的环境变量（名称含 TOKEN、SECRET、PASSWORD 等）。命令确实需要的写在 keep，
+# 要额外去掉的写在 drop；变量名可用 *。
+# command_env:
+#   keep: [GITHUB_TOKEN]
+#   drop: [INTERNAL_*]
 
 providers:
   - name: claude

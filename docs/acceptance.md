@@ -592,6 +592,16 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 | M163 删除 | `moss plugin remove kit-demo`、`moss plugin remove feature-dev`；`moss plugin list` | 克隆目录 `repos\kit-demo` 和数据目录 `data\kit-demo` 都删除，`..\plugin-demo` 仍在；最后显示没有安装插件 |
 | M164 项目级插件 | 1. `moss plugin install file:///<验收目录>/plugin-demo --project`，输入 y；查看 `.mosscode\plugins.yaml`；2. `moss -p "请插件问候我"`，再加 `--trust-project-plugins` 运行一次；3. 启动界面，选“信任”，输入 `/plugins kit-demo`；退出后再启动；4. 在 `.mosscode\plugins.yaml` 末尾加一行 `# changed`，启动界面，按 Esc；5. 换一个用户目录：`$env:USERPROFILE = "$env:TEMP\moss-other-home"` 后启动界面，退出；`moss plugin install`，输入 y；再启动界面；最后恢复 `$env:USERPROFILE`，`moss plugin remove kit-demo --project` | 1. 声明只有 name、source（没有 enabled），克隆在 `~\.mosscode\plugins\project\kit-demo-<8 位>\`，输出提示提交这个文件；2. 第一次 stderr 显示“项目插件 kit-demo 未经确认，未加载；…”，回答中没有插件的问候；第二次输出“来自插件的问候：plugin-demo”；3. 启动前列出插件内容和确认面板“信任并启用项目插件 kit-demo？”；`/plugins kit-demo` 显示（项目级）和已确认；再次启动不再询问；4. 再次询问；Esc 后启动区提示“本次未启用项目插件；下次启动时会再次询问。”，`/plugins` 中没有 kit-demo；5. 启动区提示“项目声明了 1 个插件尚未安装（kit-demo），运行 moss plugin install 安装。”；install 列出内容后安装到临时用户目录；再启动时询问是否信任。删除后声明文件中没有 kit-demo，克隆目录删除 |
 
+### 命令环境与控制面
+
+规格见 [命令沙箱](specs/sandbox/spec.md) 的 13A。开始前在 PowerShell 中设置两个变量：`$env:DEMO_TOKEN = "demo-1"`、`$env:DEMO_PLAIN = "plain"`，再在同一个窗口启动界面。
+
+| # | 操作 | 期望 |
+| --- | --- | --- |
+| M165 环境与临时目录 | 让模型“执行 env，告诉我有没有 DEMO_TOKEN 和 DEMO_PLAIN，以及 TMPDIR 的值”；再输入 `!env`；记下 TMPDIR 后退出，查看这个目录 | 模型的命令中没有 `DEMO_TOKEN`，有 `DEMO_PLAIN`，TMPDIR 在 `~/.mosscode/tmp/<进程号>-<随机>` 下；`!env` 中有 `DEMO_TOKEN`；退出后目录已删除 |
+| M166 剪贴板 | 复制一段文字，让模型“用 powershell -NoProfile -c Get-Clipboard 读剪贴板”；再输入 `!powershell -NoProfile -c Get-Clipboard` | 模型的命令读不到（没有输出或报错）；`!` 命令显示复制的文字 |
+| M167 git 钩子 | 让模型“用 write_file 在 .git/hooks/pre-commit 写一个打印 hi 的脚本”，再让它“在 .git/config 的 [core] 下加 fsmonitor = true” | 两次都失败（policy_protected），说明钩子和配置会在你之后运行 git 时执行；模型改用 `execute_command` 时按档位弹出审批，拒绝即可 |
+
 ## 已知限制
 
 - **ripgrep**：本机已安装 ripgrep 15.2.0，自动测试和人工验收的搜索都走 rg；Python 回退实现只在没有 rg 时使用，由单元测试覆盖。
