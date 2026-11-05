@@ -602,6 +602,17 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 | M166 剪贴板 | 复制一段文字，让模型“用 powershell -NoProfile -c Get-Clipboard 读剪贴板”；再输入 `!powershell -NoProfile -c Get-Clipboard` | 模型的命令读不到（没有输出或报错）；`!` 命令显示复制的文字 |
 | M167 git 钩子 | 让模型“用 write_file 在 .git/hooks/pre-commit 写一个打印 hi 的脚本”，再让它“在 .git/config 的 [core] 下加 fsmonitor = true” | 两次都失败（policy_protected），说明钩子和配置会在你之后运行 git 时执行；模型改用 `execute_command` 时按档位弹出审批，拒绝即可 |
 
+### 命令沙箱
+
+规格见 [命令沙箱](specs/sandbox/spec.md) 的 13C。准备：把 `wxc-exec.exe` 放到 PATH 中（见 [命令沙箱](reference/sandbox.md#安装-mxc)），在验收项目中 `git init` 并提交一次，用 `--sandbox` 启动界面（default 档位）。
+
+| # | 操作 | 期望 |
+| --- | --- | --- |
+| M168 写入边界 | 让模型“运行 `python -c "print(1)"`，再写一个 a.txt 并 git commit”；再让它“用命令在 .mosscode/permissions.yaml 末尾加一行 # x”“用命令在 .git/hooks 下建 pre-commit” | 状态栏显示“沙箱”；运行、写文件和提交都不弹审批；两次改写都失败（拒绝访问），结果末尾说明可能是沙箱拦截；`.mosscode/permissions.yaml` 未变，`.git/hooks/pre-commit` 不存在 |
+| M169 越界申请 | 让模型“在 %USERPROFILE%\Desktop 写一个 moss-test.txt” | 第一次被拦截；模型带理由以 outside_sandbox 重试，面板标题有“在沙箱外运行”，显示理由和“完整权限”说明，选项为本次、本会话、拒绝；选拒绝后结果说明“用户拒绝在沙箱外运行”，文件不存在 |
+| M170 读取与网络 | 让模型“读 ~/.ssh 下的文件列表”“用 curl 访问 https://example.com” | 都失败；`/sandbox` 列出最近的记录、可写目录和禁止读取的路径 |
+| M171 失败关闭 | 退出后把 `wxc-exec.exe` 移出 PATH，删除 `~/.mosscode/sandbox-probe.json`，再用 `--sandbox` 启动；让模型运行 `git status`；再 `/sandbox off` 并确认，重复一次；运行 `moss doctor`；最后把 `wxc-exec.exe` 放回 | 启动区和状态栏显示沙箱不可用及原因；命令返回 sandbox_unavailable 并提示 `/sandbox off`；关闭后命令照常运行，状态栏显示“无沙箱”；doctor 显示找不到 wxc-exec.exe 和下载说明 |
+
 ## 已知限制
 
 - **ripgrep**：本机已安装 ripgrep 15.2.0，自动测试和人工验收的搜索都走 rg；Python 回退实现只在没有 rg 时使用，由单元测试覆盖。

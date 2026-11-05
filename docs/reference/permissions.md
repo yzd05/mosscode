@@ -21,6 +21,10 @@ Ask 在输入区下方申请授权。↑ / ↓ 选择、Enter 确认；Esc 拒�
 
 普通授权有三个允许选项：本次允许，只执行当前调用；本会话允许，当前工具对同一目标可继续执行，退出失效；永久允许，保存到当前项目的 `.mosscode/permissions.local.yaml`，重启有效。文件授权只匹配具体文件与工具；命令授权精确匹配命令，并绑定项目相对工作目录。不会自动保存为 `Write(**)` 或 `Bash(*)`。另有两个按操作出现的选项：写入/编辑审批提供“本会话自动接受编辑”，切换为 acceptEdits 档位，之后的编辑不再询问，命令仍需确认；命令能推导出前缀时提供“永久允许以 X 开头的命令”，保存为 `Bash(X:*)` 前缀规则。前缀取开头最多三个普通单词（如 `pytest`、`npm run test`、`python -m pytest`），遇到选项、路径或特殊字符即停止；脚本解释器（`python x.py`、`node app.js`）、包装命令（`sudo`、`env`、`bash -c`、`xargs`）、单独的 `git`/`npm` 和高风险命令不提供前缀选项。
 
+## 沙箱
+
+打开 [命令沙箱](sandbox.md) 后，沙箱中的命令在 default、acceptEdits 和 bypassPermissions 下都不再询问：它能写、能读和能连接什么由系统限制。显式 deny 规则、灾难级命令的拒绝和高风险命令的确认照旧，plan 仍只开放只读命令。模型申请在沙箱外运行（`outside_sandbox`）时每次询问，bypassPermissions 也一样；选项只有本次、本会话（这条命令或它的前缀）和拒绝，不能永久保存，已有的 allow 规则也不会让它自动通过。沙箱打开但不可用时命令以 `sandbox_unavailable` 拒绝。
+
 ## 子 Agent
 
 子 Agent 与主对话共用规则文件、硬限制和审批界面，有自己的档位和本会话授权：它的授权从空开始，审批中授予的也不带回主对话。主对话处于 plan 时子 Agent 一律为 plan；项目级 Agent 定义只能收紧档位，用户级和内置定义可以指定任意档位。后台子 Agent 不能请求审批，需要审批的调用返回 `approval_required`；前台子 Agent 的审批面板标题注明来源。详见 [子 Agent](subagents.md#权限)。

@@ -114,8 +114,21 @@ class SkillTool(Tool):
             **(self.plugin.env(self.root) if self.plugin is not None else {}),
         }
         data = json.dumps(params.model_dump(), ensure_ascii=False).encode("utf-8")
+        from ..sandbox import UNAVAILABLE_HINT, current
+
+        sandbox = current()
+        if sandbox.enabled and not sandbox.active:
+            raise ToolFailure("sandbox_unavailable", sandbox.status().reason + UNAVAILABLE_HINT)
         details = await run_process(
-            argv, self.root, check=False, limit=COMMAND_HEAD, tail=COMMAND_TAIL, env=env, input=data, confined=True
+            argv,
+            self.root,
+            check=False,
+            limit=COMMAND_HEAD,
+            tail=COMMAND_TAIL,
+            env=env,
+            input=data,
+            confined=True,
+            sandbox_root=self.root if sandbox.enabled else None,
         )
         details = {**details, "skill": self.skill_name, "tool": self.short_name}
         if details["exit_code"] != 0:

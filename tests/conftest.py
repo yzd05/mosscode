@@ -58,3 +58,14 @@ def memory_keyring(monkeypatch):
     yield backend
     credentials.forget_all()
     command_env.reset()
+
+
+@pytest.fixture(autouse=True)
+def sandbox_off():
+    """The command sandbox is process-wide; every test starts with it off unless the test turns it on."""
+    from mosscode import sandbox
+    from mosscode.config import SandboxConfig
+
+    sandbox.configure(SandboxConfig())
+    yield
+    sandbox.configure(SandboxConfig())

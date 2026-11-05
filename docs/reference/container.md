@@ -1,6 +1,6 @@
 # 在容器中运行
 
-MossCode 的权限检查是应用层的（见 [权限](permissions.md#路径限制)）：确认过的命令以你的系统权限运行，能读写项目以外的文件。MossCode 不自带沙箱；想让模型执行的命令碰不到主机上的其他文件、凭据和进程，在 Docker 容器或 Dev Container 中运行它。
+MossCode 的权限检查是应用层的（见 [权限](permissions.md#路径限制)）：确认过的命令以你的系统权限运行，能读写项目以外的文件。Windows 11 上可以打开 [命令沙箱](sandbox.md)，由系统限制命令的写入、读取和网络；其他系统，或想让 MossCode 整个碰不到主机上的其他文件、凭据和进程，在 Docker 容器或 Dev Container 中运行它。
 
 ## 容器能隔离什么
 

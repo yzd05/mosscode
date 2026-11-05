@@ -99,6 +99,11 @@ def member_arguments(
         arguments += ["--config", str(Path(config).resolve())]
     if provider:
         arguments += ["--provider", provider]
+    from ..sandbox import current
+
+    sandbox = current()
+    if sandbox.enabled != (sandbox.config.mode == "on"):  # The lead's --sandbox, --no-sandbox or /sandbox.
+        arguments.append("--sandbox" if sandbox.enabled else "--no-sandbox")
     return arguments
 
 

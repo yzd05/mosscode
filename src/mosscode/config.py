@@ -136,6 +136,18 @@ class WebSearchConfig:
 
 
 @dataclass(frozen=True)
+class SandboxConfig:
+    """The sandbox: section; paths may start with ~."""
+
+    mode: str = "off"  # off / on
+    allow_write: tuple[str, ...] = ()
+    allow_read: tuple[str, ...] = ()
+    deny_read: tuple[str, ...] = ()
+    allow_unsandboxed: str = "ask"  # ask / never
+    wxc_exec: str | None = None  # Path to MXC's wxc-exec.exe when it is not on PATH.
+
+
+@dataclass(frozen=True)
 class Settings:
     providers: tuple[ProviderConfig, ...]
     default_provider: str | None = None
@@ -160,6 +172,7 @@ class Settings:
     # Variable names (with *) that model-run commands keep despite looking like secrets, or lose anyway.
     command_env_keep: tuple[str, ...] = ()
     command_env_drop: tuple[str, ...] = ()
+    sandbox: SandboxConfig = field(default_factory=lambda: SandboxConfig())
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -191,6 +204,30 @@ def _command_env(raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
             raise ConfigError(problem)
         lists.append(tuple(names))
     return lists[0], lists[1]
+
+
+def _sandbox(raw: Any) -> SandboxConfig:
+    if raw is None:
+        return SandboxConfig()
+    keys = {"mode", "allow_write", "allow_read", "deny_read", "allow_unsandboxed", "wxc_exec"}
+    if not isinstance(raw, dict) or set(raw) - keys:
+        raise ConfigError("sandbox 只能包含 " + "、".join(sorted(keys)) + "。")
+    mode = raw.get("mode", "off")
+    if mode not in {"off", "on"}:
+        raise ConfigError("sandbox.mode 需为 off 或 on。")
+    unsandboxed = raw.get("allow_unsandboxed", "ask")
+    if unsandboxed not in {"ask", "never"}:
+        raise ConfigError("sandbox.allow_unsandboxed 需为 ask 或 never。")
+    lists = {}
+    for key in ("allow_write", "allow_read", "deny_read"):
+        paths = raw.get(key, [])
+        if not isinstance(paths, list) or not all(isinstance(p, str) and p.strip() for p in paths):
+            raise ConfigError(f"sandbox.{key} 需为路径列表。")
+        lists[key] = tuple(p.strip() for p in paths)
+    wxc = raw.get("wxc_exec")
+    if wxc is not None and (not isinstance(wxc, str) or not wxc.strip()):
+        raise ConfigError("sandbox.wxc_exec 需为 wxc-exec.exe 的路径。")
+    return SandboxConfig(mode, allow_unsandboxed=unsandboxed, wxc_exec=wxc.strip() if wxc else None, **lists)
 
 
 def _links(raw: Any) -> tuple[str, ...]:
@@ -429,6 +466,7 @@ def load_settings(path: str | Path) -> Settings:
         "web_search",
         "claude_directories",
         "command_env",
+        "sandbox",
     }:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
@@ -494,6 +532,7 @@ def load_settings(path: str | Path) -> Settings:
         claude_directories=claude_directories,
         command_env_keep=keep,
         command_env_drop=drop,
+        sandbox=_sandbox(raw.get("sandbox")),
         **switches,
     )
     settings.select()

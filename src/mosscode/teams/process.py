@@ -322,10 +322,13 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
     return conversation
 
 
-def run_member(team_dir: str, name: str, config_path: str | None, provider: str | None) -> int:
+def run_member(
+    team_dir: str, name: str, config_path: str | None, provider: str | None, *, sandbox: bool | None = None
+) -> int:
     """cli.main with --team-dir/--team-member: the pane's window, or plain lines when not on a terminal."""
     from ..config import ConfigError, find_config, load_settings
     from ..credentials import protect
+    from ..sandbox import configure
 
     store = TeamStore(Path(team_dir))
     try:
@@ -339,6 +342,7 @@ def run_member(team_dir: str, name: str, config_path: str | None, provider: str 
     try:
         settings = load_settings(config_path if config_path else find_config())
         protect(settings)
+        configure(settings.sandbox, override=sandbox, source=settings.source)
         config = settings.select(provider)
     except ConfigError as exc:
         return fail(store, name, str(exc))

@@ -361,6 +361,39 @@ def _project_plugin_items(project, home: Path | None, cwd: Path) -> list[Item]:
     return items
 
 
+def check_sandbox(config: str | None = None, *, windows: bool | None = None) -> list[Item]:
+    from .config import ConfigError, SandboxConfig, find_config, load_settings
+    from .sandbox import windows_mxc
+
+    windows = os.name == "nt" if windows is None else windows
+    try:
+        settings = load_settings(Path(config) if config is not None else find_config())
+        sandbox = settings.sandbox
+    except ConfigError:
+        sandbox = SandboxConfig()  # check_config reports the problem.
+    on = sandbox.mode == "on"
+    items = [
+        Item(
+            OK, "沙箱：" + ("开启（sandbox.mode: on）" if on else "关闭（sandbox.mode: off，可用 --sandbox 临时打开）")
+        )
+    ]
+    if not windows:
+        level = WARN if on else OK
+        items.append(Item(level, "这个系统的沙箱后端还没有实现：开启时模型的命令都会被拒绝", "用 --no-sandbox 运行"))
+        return items
+    wxc = windows_mxc.find(sandbox.wxc_exec)
+    if wxc is None:
+        items.append(Item(WARN if on else OK, "找不到 MXC 的 wxc-exec.exe（沙箱需要）", windows_mxc.MISSING))
+        return items
+    problem = windows_mxc.check(wxc)
+    items.append(
+        Item(WARN, f"MXC {wxc} 不可用：{problem}", "更新 Windows 后重试")
+        if problem
+        else Item(OK, f"MXC：{wxc}，隔离级别 base-container，自检通过")
+    )
+    return items
+
+
 def run(config: str | None = None) -> list[Item]:
     return [
         *check_install(),
@@ -368,6 +401,7 @@ def run(config: str | None = None) -> list[Item]:
         *check_config(config),
         *check_home(),
         *check_tools(),
+        *check_sandbox(config),
         *check_project(config=config),
         *check_plugins(),
     ]

@@ -17,7 +17,7 @@ moss --version
 
 支持 Windows、Linux 和 macOS：日常开发在 Windows（Windows Terminal）上进行，三个系统都由 CI 运行全部测试。搜索优先使用 PATH 中的 ripgrep（`rg`），没有时自动退回内置实现；Windows 上建议安装 Git for Windows，命令工具会优先使用 Git Bash。Agent 团队的分屏窗格需要 Windows Terminal 或 tmux，否则成员在进程内运行。
 
-也可以在 Docker 容器中运行，让命令只能接触挂载进去的项目目录：Dockerfile 和启动命令见 [在容器中运行](docs/reference/container.md)。
+也可以在 Docker 容器中运行，让命令只能接触挂载进去的项目目录：Dockerfile 和启动命令见 [在容器中运行](docs/reference/container.md)。Windows 11 上还可以打开命令沙箱，由系统限制模型的命令能写、能读和能连接什么，见 [命令沙箱](docs/reference/sandbox.md)。
 
 从源码安装、开发与测试见 [参与贡献](CONTRIBUTING.md)。
 
@@ -69,6 +69,7 @@ providers:
 | `team_max_members` | `4` | 每个团队的成员上限，1–8 |
 | `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE=1`，见 [Agent 团队](docs/reference/teams.md#协调者模式) |
 | `claude_directories` | `false` | 另外读取 Claude Code 的 `.claude/skills/`、`.claude/agents/`（用户级和项目级），见 [Skill](docs/reference/skills.md#存放位置) |
+| `sandbox` | `mode: off` | 命令沙箱：`mode: on` 时模型的命令在系统隔离中运行（目前只有 Windows，需要 MXC），见 [命令沙箱](docs/reference/sandbox.md) |
 | `web_search` | 无 | 搜索服务，如 `{provider: tavily, api_key_env: TAVILY_API_KEY}`；未配置时不提供搜索，见 [工具与 Agent Loop](docs/reference/tools.md#web_search) |
 
 ### 权限、MCP、项目指令、Skill、Hook、子 Agent、插件与工作树
@@ -132,6 +133,7 @@ moss --resume                 # 启动后从列表中选择会话
 | `/do [任务]` | 退出计划模式，回到进入前的档位；带任务时随后发给模型 |
 | `/permissions`（别名 `/permission`） | 查看权限档位说明 |
 | `/permissions 档位` | 切换到 default、acceptEdits、plan 或 bypassPermissions |
+| `/sandbox [on\|off]` | 查看命令沙箱的边界和最近的拦截；`off` 确认后在本会话关闭，`on` 重新打开 |
 | `/mcp` | 列出 MCP Server 的状态（连接中、已连接及工具数、失败原因）与配置问题 |
 | `/mcp 名称` | 列出该 Server 的工具，只读工具标注 `[只读]` |
 | `/status` | 显示模型、权限档位、上下文、本会话用量和估算费用、会话、MCP、记忆、网络工具、Hook 和子 Agent 的状态 |
@@ -241,7 +243,7 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[在容器中运行](docs/reference/container.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[插件](docs/reference/plugins.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
+| 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[命令沙箱](docs/reference/sandbox.md)、[在容器中运行](docs/reference/container.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[插件](docs/reference/plugins.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
 | 版本变化 | [更新日志](CHANGELOG.md) |
 | 开发与贡献 | [参与贡献](CONTRIBUTING.md)、[开发说明](AGENTS.md)、[安全策略](SECURITY.md) |
 

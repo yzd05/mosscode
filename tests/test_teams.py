@@ -1413,7 +1413,7 @@ def test_print_mode_ignores_it(monkeypatch, tmp_path, capsys):
 
 
 def skill_tool(root) -> SkillTool:
-    skill = SimpleNamespace(name="deploy", directory=root)
+    skill = SimpleNamespace(name="deploy", directory=root, plugin=None)
     spec = SimpleNamespace(
         name="run",
         full_name="skill__deploy__run",

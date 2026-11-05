@@ -36,6 +36,7 @@ moss setup | doctor | models
 | `--show-usage` | `text` 格式在 stderr 显示每次请求的 Token 与缓存用量 |
 | `--list-providers` | 列出配置中的 Provider，不发请求 |
 | `--no-hooks` | 本次运行不加载 Hook |
+| `--sandbox`、`--no-sandbox` | 本次运行打开或关闭命令沙箱，覆盖 `sandbox.mode`，见 [命令沙箱](sandbox.md) |
 | `--trust-project-hooks` | 本次运行信任项目级 Hook 文件，不写入确认记录 |
 | `--trust-project-plugins` | 本次运行信任项目声明的插件，不写入确认记录；用于 `-p` |
 

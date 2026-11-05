@@ -41,6 +41,7 @@ from .permissions import PermissionConfigError
 from .plugins import Installed, project_plugins, with_project
 from .plugins import installed as installed_plugins
 from .providers import create_provider
+from .sandbox import configure as configure_sandbox
 from .session import Session, prune_all
 from .skills import ForkRequest, SkillCatalog
 from .tools import create_default_registry
@@ -490,7 +491,7 @@ def run(args: argparse.Namespace) -> None:
     if args.team_dir is not None:
         from .teams.process import run_member
 
-        raise SystemExit(run_member(args.team_dir, args.team_member, args.config, args.provider))
+        raise SystemExit(run_member(args.team_dir, args.team_member, args.config, args.provider, sandbox=args.sandbox))
     try:
         path = _config_path(args)
         if path is None:
@@ -511,6 +512,8 @@ def run(args: argparse.Namespace) -> None:
             else (None, None, None)
         )
         protect(settings)
+        # Before the tools are built: the command tool's shell and parameters depend on it.
+        sandbox = configure_sandbox(settings.sandbox, override=args.sandbox, source=settings.source)
         config = settings.select(args.provider)
         if (
             args.prompt is None
@@ -537,6 +540,8 @@ def run(args: argparse.Namespace) -> None:
         )
         if coordinator_notice:
             notices += (coordinator_notice,)
+        if sandbox.enabled and not sandbox.active:
+            notices += ("沙箱不可用，模型的命令都会被拒绝：" + sandbox.status().reason,)
         notices += tuple(
             filter(None, (load_catalog().problem, config.window_note(), plaintext_notice(settings, Path.cwd())))
         )

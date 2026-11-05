@@ -541,6 +541,44 @@ async def _permissions(ctx: CommandContext, argument: str) -> None:
         await ctx.ui.note(PERMISSION_HELP)
 
 
+# Sandbox ----------------------------------------------------------------------------------
+
+SANDBOX_OFF_OPTIONS = ("关闭沙箱", "返回")
+
+
+async def _sandbox(ctx: CommandContext, argument: str) -> None:
+    from .sandbox import current
+
+    sandbox = current()
+    root = ctx.conversation.registry.permissions.root if ctx.conversation.registry else Path.cwd()
+    if argument == "on":
+        if not sandbox.started:
+            await ctx.ui.note(
+                "└ 本会话启动时沙箱是关闭的，命令工具没有按沙箱构建（Windows 上沙箱中的命令改用 PowerShell）。"
+                "请用 --sandbox 重新启动，或在 config.yaml 中设 sandbox.mode: on。"
+            )
+            return
+        sandbox.set_enabled(True)
+        ctx.ui.refresh_status()
+        await ctx.ui.note("\n".join("└ " + line if i == 0 else line for i, line in enumerate(sandbox.report(root))))
+        return
+    if argument == "off" and sandbox.enabled:
+
+        async def pick(index: int) -> None:
+            if index == 0:
+                sandbox.set_enabled(False)
+                ctx.ui.refresh_status()
+                await ctx.ui.note(
+                    "└ 已在本会话关闭沙箱：命令以你的完整权限运行，按权限档位审批。/sandbox on 重新打开。"
+                )
+
+        ctx.ui.choose(
+            "关闭沙箱后，模型的命令以你的完整权限运行，按权限档位审批。确定关闭？", SANDBOX_OFF_OPTIONS, 1, pick
+        )
+        return
+    await ctx.ui.note("\n".join(sandbox.report(root)))
+
+
 # Status -----------------------------------------------------------------------------------
 
 
@@ -1497,6 +1535,16 @@ BUILTIN = CommandRegistry(
         ),
         Command(
             "status", "查看模型、权限、上下文、用量和连接状态", "/status", "local", handler=_status, while_running=True
+        ),
+        Command(
+            "sandbox",
+            "查看命令沙箱的边界和最近的拦截，或在本会话中打开、关闭",
+            "/sandbox [on|off]",
+            "local",
+            argument="optional",
+            argument_hint="[on|off]",
+            handler=_sandbox,
+            complete=lambda ctx: [("on", "打开沙箱"), ("off", "关闭沙箱（需确认）")],
         ),
         Command(
             "mcp",

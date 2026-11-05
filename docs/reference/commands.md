@@ -18,6 +18,7 @@
 | `/plan [任务]` | — | 本地 | 进入计划模式；带任务时随后把任务发给模型（见 [计划模式](tools.md#计划模式)） |
 | `/do [任务]` | — | 本地 | 退出计划模式，回到进入前的档位（从 acceptEdits 进入就回到 acceptEdits）；带任务时随后把任务发给模型。不在计划模式时只提示“当前不在计划模式。”，不发送任务 |
 | `/permissions [档位]` | `/permission` | 本地 | 查看档位说明，或切换到 default、acceptEdits、plan、bypassPermissions（见 [工具权限](permissions.md)） |
+| `/sandbox [on\|off]` | — | 本地 | 查看命令沙箱的状态、可写和禁止读取的路径、网络及最近 20 条记录；`off` 确认后在本会话关闭，`on` 重新打开（启动时未打开沙箱的会话需要用 `--sandbox` 重新启动），见 [命令沙箱](sandbox.md) |
 | `/status` | — | 本地 | 显示模型（窗口等取自模型目录时注明条目）、权限档位、思考强度（档位和当前模型实际发送的参数）、上下文估算、本会话用量和估算费用、会话 ID、工作目录、项目指令、MCP、记忆、网络工具、已激活 Skill、Hook 的状态，以及 Agent 定义数和运行中的后台任务数 |
 | `/mcp [名称]` | — | 本地 | 列出 MCP Server 的状态；带名称时列出该 Server 的工具（见 [MCP](mcp.md)） |
 | `/skills [名称\|reload]` | `/skill` | 本地 | 列出 Skill；带名称时显示详情，`reload` 重新扫描（见 [Skill](skills.md#skills)） |

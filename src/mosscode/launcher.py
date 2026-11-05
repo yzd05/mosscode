@@ -98,6 +98,12 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-providers", action="store_true", help="列出配置，不发请求")
     parser.add_argument("--no-hooks", action="store_true", help="本次运行不加载任何 Hook")
     parser.add_argument(
+        "--sandbox",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="本次运行打开（--sandbox）或关闭（--no-sandbox）命令沙箱，覆盖配置中的 sandbox.mode",
+    )
+    parser.add_argument(
         "--trust-project-hooks",
         action="store_true",
         help="本次运行信任项目级 Hook 文件（不写入确认记录），用于无界面模式",

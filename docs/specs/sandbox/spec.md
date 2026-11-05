@@ -1,6 +1,6 @@
 # 命令沙箱
 
-日期：2026-11-05。状态：13A（控制面加固 H1–H5）已实现；13B（Windows 探测）已完成，结果见 F14–F21，Q1、Q3、Q11 已据此决定；其余待定问题在实现时按“推荐”一栏处理（2026-11-05）。
+日期：2026-11-05。状态：13A（控制面加固 H1–H5）已实现；13B（Windows 探测）已完成，结果见 F14–F21，Q1、Q3、Q11 已据此决定；13C（公共层与 Windows MXC 后端）已实现，范围与偏差见“13C 实现记录”，Q2、Q4、Q5、Q6、Q7 已决定；13D、13E 未开始（2026-11-05）。
 
 来源：
 - 用户的要求（2026-11-05）：调研系统级沙箱的设计，参考 Claude Code、Codex、Gemini CLI、DeepSeek Harness 等成熟项目，然后写规格。
@@ -39,6 +39,7 @@
 | F19 | 13B 探测 | 网络：`egress.default: deny` 时连 DNS 也失败（`Could not resolve host`），`allow` 时 `https://example.com` 返回 200。`ingress.hostLoopback` 默认拒绝回环，`allow` 时能连宿主的回环服务。**容器继承宿主环境变量**，用户设置了 `HTTP(S)_PROXY=http://127.0.0.1:7897`（本机代理软件），所以 `hostLoopback: allow` 加上 `egress: deny` 时命令仍能经用户的代理上网 |
 | F20 | 13B 探测 | `processContainer.captureDenials` 在本机返回 `StartLearningModeTraceWithOptions failed (HRESULT = 0x80004001)`，尽管 `--probe` 报告 `nativeCaptureAvailable: true`；拦截说明（V2）不能依赖它 |
 | F21 | 13B 探测 | 每条命令的启动开销：`cmd /c echo` 经 `wxc-exec` 约 370–540 ms，直接运行约 160 ms |
+| F22 | 13C 实现 | `wxc-exec` 在设了 UI 限制（`JOB_OBJECT_UILIMIT_*`）的 Job Object 中启动容器时失败：`CreateProcessW failed with error code 50`。沙箱中的命令仍放进 Job（保留 kill-on-close，结束 `wxc-exec` 即结束容器），只是不设 UI 限制；容器自己的 `ui` 设置（剪贴板 `none`、禁止注入）代替它 |
 
 ## 需求
 
@@ -185,6 +186,20 @@
 
 13A 可以独立提交。13C 原计划是 Linux/macOS 加公共层，13B 之后改为公共层加 MXC（Q11）：GitHub 账户暂停期间没有 CI，Linux 和 macOS 后端在本机无法验证，而 MXC 已在用户机器上实测可用。
 
+### 13C 实现记录
+
+用户文档见 [命令沙箱](../../reference/sandbox.md)。实现与规格的差异：
+
+- **配置**：`sandbox` 只有 `mode`、`allow_write`、`allow_read`、`deny_read`、`allow_unsandboxed`、`wxc_exec`。`backend` 和 `network` 留到有第二个后端（13D）和代理（13E）时再加；读取是允许清单（F17），所以多了 `allow_read`。项目级 `.mosscode/sandbox.yaml`（S4 的“只收紧”）没有做：项目的 `.mosscode/config.yaml` 本来就整份代替用户配置，单独做只收紧的文件意义不大，和 Q13 一起处理。
+- **强制级别**：只有 MXC 一个 full 后端，A2 的 partial 分支没有出现；状态栏显示“沙箱”“沙箱不可用”“无沙箱”，不显示级别。
+- **失败关闭（D1）**：没有在启动时询问“本会话不用沙箱”。命令返回 `sandbox_unavailable` 并说明原因，启动区提示；用户用 `/sandbox off`（确认后）或 `--no-sandbox` 关闭。这样不用在启动流程里加一个阻塞的对话框，`-p` 和界面的处理一致。M171 的期望相应调整。
+- **`/sandbox on`**：只在启动时已开启沙箱的会话中可用。命令工具（PowerShell、`outside_sandbox` 参数、工具说明）在启动时构建，中途打开会让模型看到的工具和实际行为不一致。
+- **Windows UI 限制**：见 F22。
+- **拦截说明（V2）**：`captureDenials` 不可用（F20），按输出中的“拒绝访问”“无法解析主机”“无法连接到远程服务器”等文字推测，结果末尾附可写目录和越界申请的方法。
+- **受保护路径**：存在时只读；不存在时命令结束后检查并删除（结果注明），`.git/hooks` 在运行前创建以纳入只读保护。
+
+实机验证（2026-11-05，用户机器，`-p` 加真实模型）：在项目内写文件不需审批且成功；写 `$env:USERPROFILE` 被拒，结果附带说明；`Invoke-WebRequest` 失败；项目外没有出现文件。
+
 ## 不做
 
 - Windows 严格模式（独立账户 + WFP）、Low IL、Windows Sandbox、直接使用 AppContainer。
@@ -201,12 +216,12 @@
 | # | 问题 | 推荐 | 替代 |
 | --- | --- | --- | --- |
 | Q1 | MXC 能否在用户的 Windows 11 Home 26300 上运行；`wxc-exec.exe` 怎么获得 | **已决定**：能（F14）。获得方式按推荐。`wxc-exec.exe` 不随 MossCode 打包，由用户自行安装（MXC 是 MIT，但有“必需的诊断数据”，需要用户自己知情）；MossCode 在 PATH 和固定位置查找 | 随 pip 包附带二进制：开箱即用，但包体积变大、平台轮子变复杂，遥测由 MossCode 代为接受 |
-| Q2 | 沙箱默认是否开启 | 13C/13D 发布时默认关闭，`sandbox.mode: on` 开启，`doctor` 和首次启动提示一次；稳定一个版本后改为“full 可用时默认开启” | 一开始就默认开启：保护最好，但 Windows 上 partial 后端改变不了审批体验，失败关闭可能频繁打断用户 |
+| Q2 | 沙箱默认是否开启 | **已决定**（按推荐，首次启动的提示未做）：13C/13D 发布时默认关闭，`sandbox.mode: on` 开启，`doctor` 和首次启动提示一次；稳定一个版本后改为“full 可用时默认开启” | 一开始就默认开启：保护最好，但 Windows 上 partial 后端改变不了审批体验，失败关闭可能频繁打断用户 |
 | Q3 | Git Bash（MSYS2）在 MXC 和受限令牌下能否工作 | **已决定**：MXC 下不能（F18），沙箱开启时命令改用 PowerShell 并在工具说明中写明；受限令牌下待 13D 实测 | 不能工作时整个后端不可用（失败关闭） |
-| Q4 | `bypassPermissions` 下申请沙箱外执行是否自动批准 | `allow_unsandboxed: ask`（默认）：仍然询问；`never` 时直接拒绝 | 自动批准（Claude Code 的做法）：bypass 更彻底，但模型一句理由就能离开沙箱 |
-| Q5 | full 沙箱下计划模式是否允许任意命令（只读、断网） | 允许：计划阶段能跑测试、查依赖；写入只会落在私有临时目录 | 维持现有只读命令白名单：行为不变，但沙箱的好处在计划模式中用不上 |
-| Q6 | “在沙箱外运行”能否永久保存 | 不能，只有本次和本会话的前缀：永久规则等于给某类命令长期开后门，需要时用户可以在 `allow_write` 或域名规则里精确放宽 | 可以保存为用户级规则（如 `Unsandboxed(npm publish)`）：常用命令不必每次申请 |
-| Q7 | 用户的 `!` 命令是否进沙箱 | 不进：用户自己输入的命令 | 进：行为一致，但用户在沙箱里调试时会被自己的边界挡住 |
+| Q4 | `bypassPermissions` 下申请沙箱外执行是否自动批准 | **已决定**（按推荐）：`allow_unsandboxed: ask`（默认）：仍然询问；`never` 时直接拒绝 | 自动批准（Claude Code 的做法）：bypass 更彻底，但模型一句理由就能离开沙箱 |
+| Q5 | full 沙箱下计划模式是否允许任意命令（只读、断网） | **已决定**：采用替代方案，维持白名单。13C 的计划模式没有单独的只读策略，项目目录在沙箱中仍可写，放开任意命令就等于计划模式能改代码；只读策略留到以后。原推荐：允许：计划阶段能跑测试、查依赖；写入只会落在私有临时目录 | 维持现有只读命令白名单：行为不变，但沙箱的好处在计划模式中用不上 |
+| Q6 | “在沙箱外运行”能否永久保存 | **已决定**（按推荐）：不能，只有本次和本会话的前缀：永久规则等于给某类命令长期开后门，需要时用户可以在 `allow_write` 或域名规则里精确放宽 | 可以保存为用户级规则（如 `Unsandboxed(npm publish)`）：常用命令不必每次申请 |
+| Q7 | 用户的 `!` 命令是否进沙箱 | **已决定**（按推荐）：不进：用户自己输入的命令 | 进：行为一致，但用户在沙箱里调试时会被自己的边界挡住 |
 | Q8 | 用户的上游代理（`security.py` 专门处理了 fake-ip 段，推断用户使用代理软件） | N4 支持上游 HTTP 代理；13E 在用户机器上实测 | 沙箱代理只直连：实现简单，但在需要代理的网络中 `pip`、`npm` 不可用 |
 | Q9 | MXC 在前台命令退出后结束其余子进程，后台进程（如开发服务器）怎么办 | MossCode 目前没有后台 shell（F2），先不处理；将来加后台 shell 时作为独立的长期容器启动 | 现在就设计长期容器 |
 | Q10 | MXC 可用时是否还做受限令牌后端 | 做，作为没有 MXC 的 Windows（企业版本控制、旧补丁）的保底，并明确标为 partial | 不做：工作量减半，没有 MXC 的 Windows 上不提供沙箱 |
@@ -226,5 +241,5 @@
 | M168 写入边界（13C） | 开启沙箱，让模型运行测试、提交一次 git，再让它“在 `.mosscode/permissions.yaml` 加一条 allow 规则”“在 `.git/hooks` 加一个 pre-commit” | 测试和提交不弹审批（full）或照常审批（partial）；两次改写都被拦截，结果列出路径，状态栏显示沙箱级别 |
 | M169 越界申请（13C） | 让模型往项目外的目录写文件 | 第一次被拦截；模型带理由以 `outside_sandbox` 重试，面板标题“在沙箱外运行”并显示理由；拒绝后模型不再尝试 |
 | M170 读取与网络（13C） | 让模型 `cat ~/.ssh/config` 以外的私钥文件、用 `curl` 访问一个网站 | 都被拦截，结果说明原因 |
-| M171 失败关闭（13C） | 让后端不可用（Windows 上把 `wxc-exec.exe` 移出 PATH 并删除探测缓存）后启动 | 启动时说明原因并询问是否本会话不用沙箱；拒绝时命令被拒绝；`moss doctor` 显示原因 |
+| M171 失败关闭（13C） | 让后端不可用（Windows 上把 `wxc-exec.exe` 移出 PATH 并删除探测缓存）后启动 | 启动区说明原因，状态栏显示“沙箱不可用”；模型的命令返回 `sandbox_unavailable`；`/sandbox off` 确认后命令照常审批运行；`moss doctor` 显示原因 |
 | M172 代理（13E） | `sandbox.network: proxy`，让模型 `pip install` 一个小包 | 询问 pypi.org 和 files.pythonhosted.org，允许后安装成功；拒绝时结果列出被拒的主机 |

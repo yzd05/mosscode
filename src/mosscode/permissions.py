@@ -85,6 +85,8 @@ CHOICES = ("once", "session", "permanent", "deny")
 COMMAND_CHOICES = ("once", "session", "prefix", "permanent", "deny")  # prefix: saved as Bash(<prefix>:*).
 EDIT_CHOICES = ("once", "session", "accept_edits", "permanent", "deny")  # accept_edits: switch mode.
 RISKY_CHOICES = ("once", "deny")  # High-risk commands: never remembered.
+# Running outside the sandbox: remembered for this session at most, never saved as a rule.
+UNSANDBOXED_CHOICES = ("once", "session", "deny")
 PLAN_CHOICES = ("execute", "accept_edits", "deny")  # deny = keep planning.
 MERGE_CHOICES = ("merge", "deny")  # team_merge, asked whatever the mode or rules.
 ALL_CHOICES = frozenset((*COMMAND_CHOICES, *EDIT_CHOICES, *PLAN_CHOICES, *MERGE_CHOICES))
@@ -124,6 +126,8 @@ class Operation:
     server: str = ""  # MCP server name from the configuration (tool names may be hashed).
     skill: str = ""  # Skill whose own tool this is.
     notes: bool = False  # memory and load_skill: they touch only their own files, no approval.
+    sandboxed: bool = False  # A command the full sandbox confines: no approval unless a rule or risk asks.
+    unsandboxed: bool = False  # A command asking to leave the sandbox: asked even in bypassPermissions.
 
 
 @dataclass(frozen=True)
@@ -332,6 +336,7 @@ class PermissionPolicy:
         if mode is not None:
             self.set_mode(mode)
         self.session: list[Rule] = []
+        self.unsandboxed: list[Rule] = []  # Commands allowed outside the sandbox for this session.
         self.interactive = False
         self.session_dir: Path | None = None
         self.memory_dirs: tuple[Path, ...] = ()  # Note directories: read_file and glob need no approval.
@@ -424,6 +429,13 @@ class PermissionPolicy:
             check_command(target)
             risk = command_risk(target) or ""
             preview = f"高风险命令：{risk}。每次都需要确认，规则和档位不会自动放行。" if risk else ""
+            sandboxed, unsandboxed = (False, False) if typed else self._sandbox_state(args)
+            if unsandboxed:
+                preview = (
+                    "在沙箱外运行：将以你的完整权限执行，不受沙箱的读、写、网络限制。\n理由："
+                    + safe_display(args.get("justification") or "", 1000)
+                    + ("\n" + preview if preview else "")
+                )
             return Operation(
                 tool.name,
                 target,
@@ -432,6 +444,8 @@ class PermissionPolicy:
                 risk=risk,
                 read_only=read_only_command(target),
                 prefix="" if risk else command_prefix(target) or "",
+                sandboxed=sandboxed,
+                unsandboxed=unsandboxed,
             )
         if tool.name in READ_TOOLS:
             resolved = resolve_path(self.root, args.get("path", "."))
@@ -480,6 +494,27 @@ class PermissionPolicy:
             preview = "项目目录之外\n" + preview
         return Operation(tool.name, target, preview=preview, outside=outside)
 
+    @staticmethod
+    def _sandbox_state(args: dict) -> tuple[bool, bool]:
+        """(sandboxed, unsandboxed) for a command the model runs; refuses when the sandbox cannot run it."""
+        from .sandbox import UNAVAILABLE_HINT, current
+
+        sandbox = current()
+        if not sandbox.enabled:
+            return False, False
+        if args.get("outside_sandbox"):
+            if sandbox.config.allow_unsandboxed == "never":
+                raise SecurityError(
+                    "sandbox_required",
+                    "配置 sandbox.allow_unsandboxed 为 never，命令只能在沙箱中运行；此调用未执行。"
+                    "请在沙箱边界内完成，或请用户自己运行这条命令。",
+                )
+            return False, True
+        if not sandbox.active:
+            # Fail closed: running without the sandbox the user asked for is their call, not ours.
+            raise SecurityError("sandbox_unavailable", sandbox.status().reason + UNAVAILABLE_HINT)
+        return True, False
+
     def decide(self, operation: Operation, *, read_only: bool) -> Decision:
         matched = next(
             (
@@ -493,6 +528,13 @@ class PermissionPolicy:
             return Decision("deny", "permission_denied", "命中显式拒绝规则；此调用未执行。")
         if operation.risk:
             return Decision("ask", reason=f"高风险命令（{operation.risk}）需要每次确认。")
+        if operation.unsandboxed:
+            # Allow rules and the mode were granted for confined commands; leaving the sandbox is asked anew.
+            if any(rule.matches(operation) for rule in self.unsandboxed):
+                return Decision("allow")
+            return Decision("ask", reason="模型申请在沙箱外运行这条命令。")
+        if operation.sandboxed:
+            return Decision("allow")
         if matched or operation.notes:
             return Decision("allow")
         if (
@@ -560,6 +602,8 @@ class PermissionPolicy:
                 if choice == "deny" and not self.interactive:  # Moved to the background meanwhile.
                     return Decision("deny", "approval_required", self.noninteractive_reason)
                 if choice == "deny":
+                    if operation.unsandboxed:
+                        return Decision("deny", "permission_denied", "用户拒绝在沙箱外运行这条命令；此调用未执行。")
                     return Decision("deny", "permission_denied", "用户拒绝了此操作；此调用未执行。")
                 try:
                     current = self.operation(tool, params)
@@ -579,7 +623,11 @@ class PermissionPolicy:
                     rule = Rule(operation.tool, "*", "allow")
                 if choice == "prefix":
                     rule = Rule(operation.tool, operation.prefix + PREFIX_SUFFIX, "allow")
-                if choice == "session":
+                if operation.unsandboxed and choice == "session":
+                    if operation.prefix:
+                        rule = Rule(operation.tool, operation.prefix + PREFIX_SUFFIX, "allow")
+                    self.unsandboxed.append(rule)
+                elif choice == "session":
                     self.session.append(rule)
                 elif choice == "accept_edits":
                     self.set_mode("acceptEdits")
@@ -610,6 +658,8 @@ class PermissionPolicy:
     def _choices_for(operation: Operation) -> tuple[str, ...]:
         if operation.risk:
             return RISKY_CHOICES
+        if operation.unsandboxed:
+            return UNSANDBOXED_CHOICES
         if operation.tool == "execute_command":
             return COMMAND_CHOICES if operation.prefix else CHOICES
         return EDIT_CHOICES if operation.tool in EDIT_TOOLS else CHOICES
@@ -763,6 +813,7 @@ class PolicyView(PermissionPolicy):
         self._mode = normalize_mode(mode)
         self.resume_mode = "default" if self._mode == "plan" else self._mode
         self.session: list[Rule] = []
+        self.unsandboxed: list[Rule] = []
         self.interactive = interactive
         self.label = label
         self.requests: asyncio.Queue[ApprovalRequest] = asyncio.Queue()

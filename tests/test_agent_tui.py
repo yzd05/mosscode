@@ -28,6 +28,7 @@ async def test_plan_then_permissions_command_help_and_chinese_completion(tmp_pat
         assert [hint[:2] for hint in app._hint_choices] == [
             ("/plan", "只读调查和规划，提交计划经批准后执行"),
             ("/permissions", "查看或切换工具权限档位"),
+            ("/plugins", "查看已安装的插件"),
         ]
         await pilot.press("tab")
         assert field.value == "/plan"

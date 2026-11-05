@@ -60,5 +60,7 @@ def web_tools(registry: ToolRegistry, root: Path) -> tuple:
 
 def shell_label(registry: ToolRegistry | None) -> str | None:
     """The execute_command shell's name, e.g. "Git Bash", for prompts and the UI."""
-    shell = getattr(registry.get("execute_command"), "shell", None) if registry is not None else None
+    tool = registry.get("execute_command") if registry is not None else None
+    # With the sandbox on, the model's commands may run in another shell than the user's ! commands.
+    shell = getattr(tool, "command_shell", None) or getattr(tool, "shell", None)
     return shell.label if isinstance(shell, Shell) else None

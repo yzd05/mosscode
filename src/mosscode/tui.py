@@ -82,6 +82,7 @@ from .messages import (
     image_mark,
 )
 from .permissions import CHOICES, EDIT_TOOLS, MODE_BADGES, ApprovalRequest, safe_display
+from .sandbox import badge as sandbox_badge
 from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
 from .teams import TeamError
 from .teams.runtime import MemberRow
@@ -134,6 +135,14 @@ def choice_label(request: ApprovalRequest, choice: str) -> str:
         return "继续规划 · 拒绝并让模型修改计划"
     if request.operation.tool == "team_merge" and choice == "deny":
         return "不合并 · Lead 会停下来问你"
+    if request.operation.unsandboxed and choice == "once":
+        return "本次在沙箱外运行 · 以你的完整权限执行这一条"
+    if request.operation.unsandboxed and choice == "session":
+        prefix = request.operation.prefix
+        what = f"以 {prefix} 开头的命令" if prefix else "这条命令"
+        return f"本会话允许{what}在沙箱外运行 · 退出后失效"
+    if request.operation.unsandboxed and choice == "deny":
+        return "拒绝 · 命令留在沙箱中，让模型调整策略"
     if request.operation.risk and choice == "once":
         return "本次允许 · 高风险命令每次都需确认"
     if choice == "prefix":
@@ -1485,6 +1494,9 @@ class MossCodeApp(TerminalApp[None]):
             text.append(MODE_BADGES[mode], style=f"bold {color}" if color else "bold")
             if getattr(self.conversation, "coordinator", False):
                 text.append(" " + COORDINATOR_BADGE, style=f"bold {OPERATION_COLOR}")
+            if badge := sandbox_badge():
+                text.append(" · ")
+                text.append(badge, style=TOOL_SUCCESS_COLOR if badge == "沙箱" else ERROR_COLOR)
             if not self._generating and self.size.width >= 80:
                 text.append(" (Shift+Tab 切换)")
         if self.provider_name != self._banner_provider:
@@ -2252,6 +2264,7 @@ class MossCodeApp(TerminalApp[None]):
             text.append(
                 "需要授权 · "
                 + labels.get(operation.tool, operation.tool)
+                + (" · 在沙箱外运行" if operation.unsandboxed else "")
                 + (f" · {request.source}" if request.source else "")
                 + "\n",
                 style=f"bold {OPERATION_COLOR}",

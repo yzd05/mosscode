@@ -132,7 +132,7 @@ def test_malformed_commands_are_rejected(command):
         CommandRegistry([command])
 
 
-def test_builtin_registry_has_twenty_two_visible_commands():
+def test_builtin_registry_has_twenty_three_visible_commands():
     assert [c.name for c in BUILTIN.visible()] == [
         "help",
         "clear",
@@ -147,6 +147,7 @@ def test_builtin_registry_has_twenty_two_visible_commands():
         "do",
         "permissions",
         "status",
+        "sandbox",
         "mcp",
         "skills",
         "hooks",
@@ -182,9 +183,9 @@ def test_completion(tmp_path):
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
     conv = Conversation(FakeProvider(), registry=tools(tmp_path), memory=store)
     ctx = context(conv, Settings((ProviderConfig("only", "anthropic-messages", "m"),), "only"))
-    assert len(BUILTIN.matches(ctx, "/")) == 22
+    assert len(BUILTIN.matches(ctx, "/")) == 23
     hidden = CommandRegistry([*BUILTIN.visible(), Command("debug", "x", "/debug", "local", hidden=True, handler=noop)])
-    assert len(hidden.matches(ctx, "/")) == 22 and hidden.get("/debug") is not None
+    assert len(hidden.matches(ctx, "/")) == 23 and hidden.get("/debug") is not None
     assert [tuple(h) for h in BUILTIN.matches(ctx, "/q")] == [("/exit", "退出 MossCode（别名 /quit）", "/exit")]
     assert [h.value for h in BUILTIN.matches(ctx, "/permissions ")] == [
         "/permissions default",
