@@ -239,6 +239,18 @@ def test_plugin_skills_commands_and_agents(tmp_path):
     assert agent.source == "plugin" and project.as_posix() in agent.prompt
 
 
+def test_an_underscore_in_a_command_file_name_becomes_a_hyphen(tmp_path):
+    project, home = tmp_path / "project", tmp_path / "home"
+    root = make_plugin(tmp_path / "kit")
+    (root / "commands" / "clean_gone.md").write_text("# 清理分支\n删除已合并的分支\n", encoding="utf-8")
+    (root / "commands" / "Bad.md").write_text("# 不合法\n", encoding="utf-8")
+    install_record(home, root)
+    catalog = SkillCatalog.load(project, home, builtin=tmp_path / "none")
+    assert catalog.get("clean-gone").description == "清理分支"
+    assert catalog.get("clean_gone") is None
+    assert any("Bad.md" in problem and "_ 视为 -" in problem for problem in catalog.problems)
+
+
 def test_user_and_project_definitions_override_plugins(tmp_path):
     project, home = tmp_path / "project", tmp_path / "home"
     make_plugin(tmp_path / "kit")

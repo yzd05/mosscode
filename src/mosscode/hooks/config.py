@@ -141,10 +141,11 @@ def hook_paths(
 
 
 class TrustStore:
-    """SHA-256 of each project hook file's content when the user trusted it."""
+    """SHA-256 of each project hook file's content when the user trusted it; project plugins keep theirs in a
+    file of their own."""
 
-    def __init__(self, root: Path, home: Path | None = None):
-        self.path = project_dir(root, home) / "hooks-trust.json"
+    def __init__(self, root: Path, home: Path | None = None, name: str = "hooks-trust.json"):
+        self.path = project_dir(root, home) / name
 
     def _read(self) -> dict[str, str]:
         try:
@@ -160,7 +161,7 @@ class TrustStore:
     def trust(self, name: str, digest: str) -> None:
         files = {**self._read(), name: digest}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=".hooks-trust-", dir=self.path.parent)
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.stem}-", dir=self.path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump({"version": 1, "files": files}, stream, ensure_ascii=False, indent=2)
@@ -404,7 +405,7 @@ def load_hooks(
 ) -> HookConfig:
     """plugins: None reads the installed ones; installing a plugin was the user's confirmation of its hooks."""
     files, problems, seen = [], [], set()
-    for source, path, plugin in hook_paths(root, home, resolve(plugins, home)):
+    for source, path, plugin in hook_paths(root, home, resolve(plugins, home, root)):
         file, issues = read_file(source, path, plugin, Path(root).resolve())
         problems.extend(issues)
         unique = []

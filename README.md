@@ -17,6 +17,8 @@ moss --version
 
 支持 Windows、Linux 和 macOS：日常开发在 Windows（Windows Terminal）上进行，三个系统都由 CI 运行全部测试。搜索优先使用 PATH 中的 ripgrep（`rg`），没有时自动退回内置实现；Windows 上建议安装 Git for Windows，命令工具会优先使用 Git Bash。Agent 团队的分屏窗格需要 Windows Terminal 或 tmux，否则成员在进程内运行。
 
+也可以在 Docker 容器中运行，让命令只能接触挂载进去的项目目录：Dockerfile 和启动命令见 [在容器中运行](docs/reference/container.md)。
+
 从源码安装、开发与测试见 [参与贡献](CONTRIBUTING.md)。
 
 ## 配置
@@ -79,7 +81,7 @@ providers:
 | `~/.mosscode/skills/<名称>/`、`.mosscode/skills/<名称>/`，以及共享的 `.agents/skills/` | Skill：`SKILL.md` 规程和可选的 `tool.json` 脚本工具；项目级覆盖用户级和内置 | [Skill](docs/reference/skills.md) |
 | `~/.mosscode/hooks.yaml`、`.mosscode/hooks.yaml`、`.mosscode/hooks.local.yaml` | Hook：在会话、轮次、请求和工具调用前后执行命令、注入提示、发送 HTTP 请求或拦截工具调用；项目级文件需确认后启用 | [Hook](docs/reference/hooks.md) |
 | `~/.mosscode/agents/<名称>.md`、`.mosscode/agents/<名称>.md` | 子 Agent 定义：frontmatter 写名称、描述、工具范围、模型、轮数和权限档位，正文是系统提示词；项目级覆盖用户级和内置的 explore、plan、general | [子 Agent](docs/reference/subagents.md) |
-| `~/.mosscode/plugins.yaml` | 插件：一组 Skill、命令、子 Agent、MCP 和 Hook，兼容 Claude Code 的插件；用 `moss plugin install` 安装 | [插件](docs/reference/plugins.md) |
+| `~/.mosscode/plugins.yaml`、`.mosscode/plugins.yaml` | 插件：一组 Skill、命令、子 Agent、MCP 和 Hook，兼容 Claude Code 的插件；用 `moss plugin install` 安装，加 `--project` 声明到项目中与团队共享，项目插件需确认后启用 | [插件](docs/reference/plugins.md) |
 | `.worktreeinclude`（仓库根） | 用 `.gitignore` 语法列出创建工作树时要复制过去的被忽略文件，如 `.env` | [Git 工作树](docs/reference/worktree.md#初始化) |
 
 ## 使用
@@ -176,9 +178,9 @@ moss --resume                 # 启动后从列表中选择会话
 
 ### 安全说明
 
-- 路径检查是应用层限制，不是系统沙箱：确认过的命令以你的系统权限运行，确认前请看清命令内容。
+- 路径检查是应用层限制，不是系统沙箱：确认过的命令以你的系统权限运行，确认前请看清命令内容。需要隔离时在 Docker 或 Dev Container 中运行，见 [在容器中运行](docs/reference/container.md)；容器隔离文件和进程，不隔离网络。
 - 网页内容和搜索结果是不可信的数据，模型被要求不执行其中的指令；读取陌生网站时仍应留意它的回答。
-- 项目中的 Hook 和 MCP 配置会启动程序：项目级 Hook 需要你确认后才启用，`.mcp.json` 默认不读取；打开不熟悉的仓库前先查看 `.mosscode/` 下的文件。
+- 项目中的 Hook、MCP 配置和插件声明会启动程序：项目级 Hook 和项目插件需要你确认后才启用，`.mcp.json` 默认不读取；打开不熟悉的仓库前先查看 `.mosscode/` 下的文件。
 
 ### 无界面模式
 
@@ -189,7 +191,7 @@ moss -p "列出 src 下的模块" --output-format json
 Get-Content error.log | moss -p "解释这个错误"
 ```
 
-`-p`（`--prompt`）运行一个任务后退出；管道输入附在任务之后，只有管道输入时它就是任务。不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。未经确认的项目级 Hook 在 `-p` 中不启用（stderr 有提示），`--trust-project-hooks` 只在本次信任，`--no-hooks` 不加载任何 Hook。模型启动的后台子 Agent 在 `-p` 中照常运行：回复结束后等待它们完成，每个结果开启新的一轮，全部结束后才退出；stderr 提示任务的开始与结束。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
+`-p`（`--prompt`）运行一个任务后退出；管道输入附在任务之后，只有管道输入时它就是任务。不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。未经确认的项目级 Hook 在 `-p` 中不启用（stderr 有提示），`--trust-project-hooks` 只在本次信任，`--no-hooks` 不加载任何 Hook；未确认的项目插件同样不加载，`--trust-project-plugins` 只在本次信任。模型启动的后台子 Agent 在 `-p` 中照常运行：回复结束后等待它们完成，每个结果开启新的一轮，全部结束后才退出；stderr 提示任务的开始与结束。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
 
 ## 架构
 
@@ -239,7 +241,7 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[插件](docs/reference/plugins.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
+| 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[在容器中运行](docs/reference/container.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[插件](docs/reference/plugins.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
 | 版本变化 | [更新日志](CHANGELOG.md) |
 | 开发与贡献 | [参与贡献](CONTRIBUTING.md)、[开发说明](AGENTS.md)、[安全策略](SECURITY.md) |
 

@@ -7,7 +7,7 @@ from mosscode.builtin_commands import BUILTIN
 from mosscode.config import ProviderConfig, Settings
 from mosscode.conversation import Conversation
 from mosscode.messages import Completed, ContentBlock, Delta, Message
-from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ProviderSelectApp
+from mosscode.tui import ChatEntry, MossCodeApp, PluginTrustApp, PromptArea, ProviderSelectApp
 from test_conversation import FakeProvider
 
 
@@ -53,6 +53,15 @@ async def test_escape_exits_startup_picker_without_selection():
     async with picker.run_test() as pilot:
         await pilot.press("escape")
     assert picker.return_value is None
+
+
+@pytest.mark.parametrize("keys,expected", [(("enter",), True), (("down", "enter"), False), (("escape",), None)])
+async def test_project_plugin_panel_trusts_only_on_the_first_choice(keys, expected):
+    panel = PluginTrustApp(["kit", "later"])
+    async with panel.run_test() as pilot:
+        assert "kit、later" in str(panel.query_one("#selection-help", Static).render())
+        await pilot.press(*keys)
+    assert panel.return_value is expected
 
 
 async def send(app, pilot, text):

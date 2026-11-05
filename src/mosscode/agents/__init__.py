@@ -233,7 +233,7 @@ class AgentCatalog:
     ) -> AgentCatalog:
         """A later place replaces a same-named definition; within a place the first file name wins. plugins: None
         reads the installed ones."""
-        plugins = resolve(plugins, home)
+        plugins = resolve(plugins, home, root)
         agents: dict[str, AgentDef] = {}
         problems: list[str] = []
         for source, base, plugin in agent_dirs(root, home, builtin, plugins=plugins, claude=claude):

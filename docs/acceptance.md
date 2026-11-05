@@ -580,7 +580,7 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 
 ### 插件与 .claude 目录
 
-规格见 [插件安装与 .claude 目录](specs/plugins/spec.md)。插件装在你的用户目录（`~\.mosscode\plugins.yaml`、`~\.mosscode\plugins\`），M163 会删除它们；开始前 `moss plugin list` 应显示没有安装插件。`moss plugin …` 在验收项目中运行（下文写作 `& "$moss\.venv\Scripts\python.exe" -m mosscode plugin …`，简称 `moss plugin …`），每次安装、停用后重新启动界面再检查。
+规格见 [插件安装与 .claude 目录](specs/plugins/spec.md)。插件装在你的用户目录（`~\.mosscode\plugins.yaml`、`~\.mosscode\plugins\`），M163 会删除它们，M164 的项目插件也在最后删除；开始前 `moss plugin list` 应显示没有安装插件。`moss plugin …` 在验收项目中运行（下文写作 `& "$moss\.venv\Scripts\python.exe" -m mosscode plugin …`，简称 `moss plugin …`），每次安装、停用后重新启动界面再检查。
 
 | 编号 | 操作 | 预期 |
 | --- | --- | --- |
@@ -590,6 +590,7 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 | M161 marketplace | `moss plugin install anthropics/claude-code`；再 `moss plugin install anthropics/claude-code#feature-dev`，确认安装；启动界面输入 `/plugins feature-dev`、`/agents`，再让模型“用 code-explorer 子 Agent 找出 src 中定义的函数” | 第一次列出这个 marketplace 中的 12 个插件和描述，退出码 1，`~\.mosscode\plugins\.tmp\` 中没有留下目录；第二次显示来源是 anthropics/claude-plugins-official 的 `plugins/feature-dev`、命令 `/feature-dev` 和三个子 Agent 后安装；`/agents` 中 code-architect、code-explorer、code-reviewer 来源为“插件 feature-dev”，`model: sonnet` 注明使用当前模型；子 Agent 正常完成 |
 | M162 覆盖与停用 | `Copy-Item -Recurse ..\extras\kit-greet .mosscode\skills\` 后启动界面，输入 `/skills kit-greet`，再输入 `/kit-greet`；退出，`moss plugin disable kit-demo` 后启动，输入 `/plugins`、`/skills`、`/mcp` | 项目版本生效，回答“项目版本的 kit-greet”，`/skills kit-greet` 列出被覆盖的插件版本；停用后 `/plugins` 显示 kit-demo 已停用，`/skills` 中没有 kit-extra 和 `/kit-note`，`/mcp` 中没有 kit-demo。之后删除 `.mosscode\skills\kit-greet`，`moss plugin enable kit-demo` |
 | M163 删除 | `moss plugin remove kit-demo`、`moss plugin remove feature-dev`；`moss plugin list` | 克隆目录 `repos\kit-demo` 和数据目录 `data\kit-demo` 都删除，`..\plugin-demo` 仍在；最后显示没有安装插件 |
+| M164 项目级插件 | 1. `moss plugin install file:///<验收目录>/plugin-demo --project`，输入 y；查看 `.mosscode\plugins.yaml`；2. `moss -p "请插件问候我"`，再加 `--trust-project-plugins` 运行一次；3. 启动界面，选“信任”，输入 `/plugins kit-demo`；退出后再启动；4. 在 `.mosscode\plugins.yaml` 末尾加一行 `# changed`，启动界面，按 Esc；5. 换一个用户目录：`$env:USERPROFILE = "$env:TEMP\moss-other-home"` 后启动界面，退出；`moss plugin install`，输入 y；再启动界面；最后恢复 `$env:USERPROFILE`，`moss plugin remove kit-demo --project` | 1. 声明只有 name、source（没有 enabled），克隆在 `~\.mosscode\plugins\project\kit-demo-<8 位>\`，输出提示提交这个文件；2. 第一次 stderr 显示“项目插件 kit-demo 未经确认，未加载；…”，回答中没有插件的问候；第二次输出“来自插件的问候：plugin-demo”；3. 启动前列出插件内容和确认面板“信任并启用项目插件 kit-demo？”；`/plugins kit-demo` 显示（项目级）和已确认；再次启动不再询问；4. 再次询问；Esc 后启动区提示“本次未启用项目插件；下次启动时会再次询问。”，`/plugins` 中没有 kit-demo；5. 启动区提示“项目声明了 1 个插件尚未安装（kit-demo），运行 moss plugin install 安装。”；install 列出内容后安装到临时用户目录；再启动时询问是否信任。删除后声明文件中没有 kit-demo，克隆目录删除 |
 
 ## 已知限制
 

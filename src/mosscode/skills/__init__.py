@@ -397,9 +397,10 @@ def parse_command(
     """A Claude Code command file (commands/<name>.md): an inline skill only the user calls by name."""
     text = _read(path)
     meta, body = _split(text, path) if text.startswith("---") else ({}, text.strip())
-    name = path.stem
+    # Claude Code names commands after the file as it is (clean_gone.md); here a name is also typed as /<name>.
+    name = path.stem.replace("_", "-")
     if not NAME.fullmatch(name) or len(name) > NAME_LIMIT:
-        raise SkillError(f"{path}：命令名（文件名）只能含小写字母、数字和 -，最长 {NAME_LIMIT} 个字符。")
+        raise SkillError(f"{path}：命令名（文件名，_ 视为 -）只能含小写字母、数字和 -，最长 {NAME_LIMIT} 个字符。")
     if not body:
         raise SkillError(f"{path}：正文为空。")
     body = checked(plugin, body, project, lambda problem: SkillError(f"{path}：{problem}。"))
@@ -538,7 +539,7 @@ class SkillCatalog:
         """Scan every place; a later place replaces a same-named skill of an earlier one. plugins: None reads
         the installed ones."""
         reserved = set(reserved)
-        plugins = resolve(plugins, home)
+        plugins = resolve(plugins, home, root)
         skills: dict[str, SkillDef] = {}
         problems: list[str] = []
         for place in skill_places(root, home, builtin, plugins=plugins, claude=claude):

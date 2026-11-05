@@ -1,4 +1,4 @@
-"""`moss plugin`: install, list, update, remove, enable and disable user-level plugins.
+"""`moss plugin`: install, list, update, remove, enable and disable plugins, for the user or declared by a project.
 
 Git sources are cloned with the git command; nothing else reaches the network, and a session never does.
 Like `moss key`, this module imports neither the interface nor a provider SDK.
@@ -24,15 +24,21 @@ from .plugins import (
     Plugin,
     PluginError,
     PluginRecord,
+    ProjectPlugins,
     check_name,
     components,
     data_dir,
     is_plugin,
+    load_project_records,
     load_records,
     manifest_name,
     plugins_home,
+    project_plugins,
+    project_records_path,
+    read_head,
     read_plugin,
     repo_dir,
+    save_project_records,
     save_records,
     source_kind,
 )
@@ -80,14 +86,15 @@ def clone(url: str, ref: str | None, home: Path | None) -> Path:
     """Into a fresh directory under plugins/.tmp; a commit needs the full history, anything else is shallow."""
     target = plugins_home(home) / ".tmp" / secrets.token_hex(4)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # "--" keeps a source that starts with - from being read as an option.
     try:
         if ref and COMMIT.fullmatch(ref):
-            git("clone", "--quiet", url, str(target))
+            git("clone", "--quiet", "--", url, str(target))
             git("checkout", "--quiet", "--detach", ref, cwd=target)
         elif ref:
-            git("clone", "--quiet", "--depth", "1", "--branch", ref, url, str(target))
+            git("clone", "--quiet", "--depth", "1", "--branch", ref, "--", url, str(target))
         else:
-            git("clone", "--quiet", "--depth", "1", url, str(target))
+            git("clone", "--quiet", "--depth", "1", "--", url, str(target))
     except PluginError:
         remove_tree(target)
         raise
@@ -102,7 +109,7 @@ def head(directory: Path) -> str:
 
 
 def is_branch(url: str, ref: str) -> bool:
-    return bool(git("ls-remote", "--heads", url, ref))
+    return bool(git("ls-remote", "--heads", "--", url, ref))
 
 
 def remove_tree(path: Path) -> None:
@@ -124,6 +131,8 @@ def remove_tree(path: Path) -> None:
 def normalize(text: str) -> str:
     """An existing directory, a git address, or owner/repo on GitHub."""
     text = text.strip()
+    if text.startswith("-"):
+        raise PluginError(f"来源 {text} 不能以 - 开头")
     if source_kind(text) == "git":
         return text
     directory = Path(text).expanduser()
@@ -311,52 +320,100 @@ def _preview(fetched: Fetched, record: PluginRecord, home: Path | None) -> Plugi
     return replace(plugin, ref_root=record.root(home), create_data=False)
 
 
-def _place(fetched: Fetched, name: str, home: Path | None) -> None:
-    """Move a clone into repos/<name>, replacing what was there."""
-    target = repo_dir(name, home)
+def _place(fetched: Fetched, target: Path) -> None:
+    """Move a clone to where the record keeps it, replacing what was there."""
     if target.exists():
         remove_tree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(fetched.base), str(target))
 
 
+def _label(record: PluginRecord) -> str:
+    return f"插件 {record.name}" + ("（项目级）" if record.scope == "project" else "")
+
+
 # Subcommands ------------------------------------------------------------------------------
 
 
-def install(args, home: Path | None, stdin=None) -> int:
-    records, _ = load_records(home)
+def install(args, home: Path | None, root: Path, stdin=None) -> int:
+    if args.source is None:
+        if args.ref or args.name:
+            raise PluginError("--ref、--name 需要和来源一起使用")
+        return install_declared(args.yes, home, root, stdin)
+    project = args.project
+    records, _ = load_project_records(root) if project else load_records(home)
     fetched = fetch(args.source, args.ref, home)
     try:
+        if project and source_kind(fetched.source) != "git":
+            raise PluginError("项目级插件需要 git 来源，别人才能安装；本机目录请去掉 --project，装成用户级插件")
         if not fetched.root.is_dir() or not is_plugin(fetched.root):
             raise PluginError(f"{fetched.root} 不是插件目录")
         name = args.name or manifest_name(fetched.root) or fetched.name_hint
         if problem := check_name(name):
             raise PluginError(f"{problem}；当前为 {name!r}，用 --name 指定一个")
         if any(record.name == name for record in records):
-            raise PluginError(f"已安装名为 {name} 的插件；先 moss plugin remove {name}，或用 --name 换一个名称")
-        record = PluginRecord(name, fetched.source, fetched.ref, fetched.path)
+            where = "项目已声明" if project else "已安装"
+            remove = f"moss plugin remove {'--project ' if project else ''}{name}"
+            raise PluginError(f"{where}名为 {name} 的插件；先 {remove}，或用 --name 换一个名称")
+        record = PluginRecord(name, fetched.source, fetched.ref, fetched.path, scope="project" if project else "user")
         commit = head(fetched.base) if fetched.temporary else ""
         print("\n".join(describe(_preview(fetched, record, home), record, commit)))
         if not confirm("安装？", args.yes, stdin):
             print("已取消，没有安装。")
             return 1
         if fetched.temporary:
-            _place(fetched, name, home)
+            _place(fetched, record.base(home))
             fetched.temporary = False
-        save_records([*records, record], home)
+        if project:
+            save_project_records([*records, record], root)
+        else:
+            save_records([*records, record], home)
     finally:
         if fetched.temporary:
             remove_tree(fetched.base)
-    print(f"已安装插件 {name}，下次启动 moss 时生效。")
+    if project:
+        print(
+            f"已安装插件 {name}，并声明在 {project_records_path(root)} 中。下次启动 moss 时确认后生效；"
+            "提交这个文件后，别人运行 moss plugin install 即可安装。"
+        )
+    else:
+        print(f"已安装插件 {name}，下次启动 moss 时生效。")
     return 0
 
 
-def _find(name: str, home: Path | None) -> tuple[list[PluginRecord], int]:
-    records, _ = load_records(home)
+def install_declared(yes: bool, home: Path | None, root: Path, stdin=None) -> int:
+    """moss plugin install without a source: clone what the project declares and this machine lacks."""
+    records, problems = load_project_records(root)
+    for problem in problems:
+        print(f"moss plugin：{problem}", file=sys.stderr)
+    if not records:
+        raise PluginError(f"没有给出来源，当前项目也没有声明插件（{project_records_path(root)}）")
+    status = 0
+    for record in records:
+        if record.root(home).is_dir():
+            print(f"{_label(record)} 已安装。")
+            continue
+        try:
+            status = max(status, update_one(record, yes, home, stdin))
+        except PluginError as exc:
+            print(f"moss plugin：{_label(record)}：{exc}。", file=sys.stderr)
+            status = 1
+    return max(status, 1 if problems else 0)
+
+
+def _find(name: str, home: Path | None, root: Path, project: bool = False) -> tuple[list[PluginRecord], int]:
+    records, _ = load_project_records(root) if project else load_records(home)
     index = next((i for i, record in enumerate(records) if record.name == name), None)
-    if index is None:
-        raise PluginError(f"没有安装名为 {name} 的插件（moss plugin list 查看）")
-    return records, index
+    if index is not None:
+        return records, index
+    if project:
+        raise PluginError(f"项目没有声明名为 {name} 的插件（{project_records_path(root)}）")
+    if any(record.name == name for record in load_project_records(root)[0]):
+        raise PluginError(
+            f"{name} 是项目声明的插件：删除声明用 moss plugin remove --project {name}；"
+            "项目插件整体在启动时的确认面板中启用或不启用"
+        )
+    raise PluginError(f"没有安装名为 {name} 的插件（moss plugin list 查看）")
 
 
 def _diff(old: Plugin | None, new: Plugin) -> list[str]:
@@ -378,59 +435,76 @@ def _diff(old: Plugin | None, new: Plugin) -> list[str]:
 
 
 def update_one(record: PluginRecord, yes: bool, home: Path | None, stdin=None) -> int:
+    """Also clones a record whose directory is missing; that shows the whole plugin, as installing does."""
+    label = _label(record)
     if record.kind == "local":
-        print(f"插件 {record.name} 是本机目录，原地使用，无需更新。")
+        print(f"{label} 是本机目录，原地使用，无需更新。")
         return 0
-    repo = repo_dir(record.name, home)
+    repo = record.base(home)
     present = repo.is_dir()
     if present and record.ref and not is_branch(record.source, record.ref):
-        print(f"插件 {record.name} 固定在 {record.ref}，不更新（要跟随分支，把 plugins.yaml 中的 ref 改为分支名）。")
+        print(f"{label} 固定在 {record.ref}，不更新（要跟随分支，把 plugins.yaml 中的 ref 改为分支名）。")
         return 0
     fetched = _get(record.source, record.ref, home, record.name)
     fetched.path = record.path
     try:
         old_commit, new_commit = head(repo) if present else "", head(fetched.base)
         if present and old_commit == new_commit:
-            print(f"插件 {record.name} 已是最新（{new_commit[:7]}）。")
+            print(f"{label} 已是最新（{new_commit[:7]}）。")
             return 0
         if not fetched.root.is_dir() or not is_plugin(fetched.root):
-            raise PluginError(f"新版本中 {record.path or '仓库根目录'} 不是插件目录")
+            raise PluginError(f"{'新版本中 ' if present else ''}{record.path or '仓库根目录'} 不是插件目录")
         old = read_plugin(record.root(home), record.name, home, record) if record.root(home).is_dir() else None
         new = _preview(fetched, record, home)
-        print(f"插件 {record.name}：{old_commit[:7] or '（不在磁盘上）'} → {new_commit[:7]}")
-        print("\n".join(_diff(old and replace(old, create_data=False), new)))
-        if not confirm("更新？", yes, stdin):
-            print("已取消，没有更新。")
+        if old is None:
+            print("\n".join(describe(new, record, new_commit)))
+        else:
+            print(f"{label}：{old_commit[:7]} → {new_commit[:7]}")
+            print("\n".join(_diff(replace(old, create_data=False), new)))
+        if not confirm("更新？" if old is not None else "安装？", yes, stdin):
+            print(f"已取消，没有{'更新' if old is not None else '安装'}。")
             return 1
-        _place(fetched, record.name, home)
+        _place(fetched, repo)
         fetched.temporary = False
     finally:
         if fetched.temporary:
             remove_tree(fetched.base)
-    print(f"已更新插件 {record.name}，下次启动 moss 时生效。")
+    if record.scope == "project":
+        print(f"已{'更新' if old is not None else '安装'}{label}，下次启动 moss 时确认后生效。")
+    else:
+        print(f"已{'更新' if old is not None else '安装'}{label}，下次启动 moss 时生效。")
     return 0
 
 
-def update(args, home: Path | None, stdin=None) -> int:
-    records, _ = load_records(home)
+def update(args, home: Path | None, root: Path, stdin=None) -> int:
+    """The user's plugins, then the current project's; a name picks every record with that name."""
+    records = [*load_records(home)[0], *load_project_records(root)[0]]
     if args.name:
-        records = [records[_find(args.name, home)[1]]]
+        records = [record for record in records if record.name == args.name]
+        if not records:
+            raise PluginError(f"没有安装名为 {args.name} 的插件，项目也没有声明（moss plugin list 查看）")
     if not records:
-        print("没有安装插件。")
+        print("没有安装插件，项目也没有声明插件。")
         return 0
     status = 0
     for record in records:
         try:
             status = max(status, update_one(record, args.yes, home, stdin))
         except PluginError as exc:
-            print(f"moss plugin：插件 {record.name}：{exc}。", file=sys.stderr)
+            print(f"moss plugin：{_label(record)}：{exc}。", file=sys.stderr)
             status = 1
     return status
 
 
-def remove(args, home: Path | None) -> int:
-    records, index = _find(args.name, home)
+def remove(args, home: Path | None, root: Path) -> int:
+    records, index = _find(args.name, home, root, args.project)
     record = records.pop(index)
+    if args.project:
+        # The data directory is kept: it is shared by name with a user-level plugin of the same name.
+        save_project_records(records, root)
+        remove_tree(record.base(home))
+        print(f"已从 {project_records_path(root)} 删除插件 {record.name} 的声明，并删除本机的克隆。")
+        return 0
     save_records(records, home)
     if record.kind == "git":
         remove_tree(repo_dir(record.name, home))
@@ -441,92 +515,147 @@ def remove(args, home: Path | None) -> int:
     return 0
 
 
-def toggle(args, home: Path | None, enabled: bool) -> int:
-    records, index = _find(args.name, home)
+def toggle(args, home: Path | None, root: Path, enabled: bool) -> int:
+    records, index = _find(args.name, home, root)
     records[index] = replace(records[index], enabled=enabled)
     save_records(records, home)
     print(f"已{'启用' if enabled else '停用'}插件 {args.name}，下次启动 moss 时生效。")
     return 0
 
 
-def report(home: Path | None = None, name: str = "") -> str:
+def _fix(record: PluginRecord) -> str:
+    return "moss plugin install" if record.scope == "project" else f"moss plugin update {record.name}"
+
+
+def _row(record: PluginRecord, state: str, home: Path | None) -> list[str]:
+    root = record.root(home)
+    if not root.is_dir():
+        return [f"{record.name}  {state}  {record.source}  ! 不在磁盘上，运行 {_fix(record)}"]
+    try:
+        plugin = replace(read_plugin(root, record.name, home, record), create_data=False)
+    except PluginError as exc:
+        return [f"{record.name}  {state}  {record.source}  ! {exc}"]
+    commit = read_head(record.base(home))[:7] if record.kind == "git" else ""
+    parts = components(plugin, Path.cwd())
+    head_text = " ".join(filter(None, (record.name, plugin.version, state, record.source, commit)))
+    return [f"{head_text}  {parts.count()}", *(f"  ! {problem}" for problem in parts.problems)]
+
+
+def _trust_state(project: ProjectPlugins, home: Path | None) -> str:
+    if not project.plugins:
+        return ""
+    return "已确认" if project.trusted(home) else "未确认，启动 moss 时确认后加载"
+
+
+def report(home: Path | None = None, name: str = "", root: Path | None = None) -> str:
     """moss plugin list, and /plugins in a session."""
     records, problems = load_records(home)
+    project = project_plugins(Path.cwd() if root is None else root, home)
     if name:
-        record = next((item for item in records if item.name == name), None)
-        if record is None:
-            return f"没有安装名为 {name} 的插件。"
-        if not record.root(home).is_dir():
-            return f"插件 {name} 不在磁盘上（{record.root(home)}），运行 moss plugin update {name}。"
-        try:
-            plugin = replace(read_plugin(record.root(home), name, home, record), create_data=False)
-        except PluginError as exc:
-            return f"插件 {name}：{exc}。"
-        lines = describe(plugin, record, head(record.base(home)) if record.kind == "git" else "")
-        return "\n".join([*lines, f"  状态{' ' * 6}{'启用' if record.enabled else '已停用'}"])
-    if not records:
-        return "\n".join([*problems, "没有安装插件。用 moss plugin install <来源> 安装。"])
-    lines = [f"插件（{len(records)}）"]
+        return _detail(name, records, project, home)
+    if not records and not project.records:
+        return "\n".join([*problems, *project.problems, "没有安装插件。用 moss plugin install <来源> 安装。"])
+    lines = [f"插件（{len(records)}）"] if records else []
     for record in records:
-        root = record.root(home)
-        state = "启用" if record.enabled else "已停用"
-        commit = head(record.base(home))[:7] if record.kind == "git" and root.is_dir() else ""
-        if not root.is_dir():
-            lines.append(
-                f"{record.name}  {state}  {record.source}  ! 不在磁盘上，运行 moss plugin update {record.name}"
-            )
-            continue
-        try:
-            plugin = replace(read_plugin(root, record.name, home, record), create_data=False)
-        except PluginError as exc:
-            lines.append(f"{record.name}  {state}  {record.source}  ! {exc}")
-            continue
-        parts = components(plugin, Path.cwd())
-        head_text = " ".join(filter(None, (record.name, plugin.version, state, record.source, commit)))
-        lines.append(f"{head_text}  {parts.count()}")
-        lines += [f"  ! {problem}" for problem in parts.problems]
+        lines += _row(record, "启用" if record.enabled else "已停用", home)
     lines += [f"! {problem}" for problem in problems]
+    if project.records or project.problems:
+        state = _trust_state(project, home)
+        where = f"{project_records_path(project.root)}" + (f"，{state}" if state else "")
+        lines.append(f"项目插件（{len(project.records)}，{where}）")
+        overridden = {record.name for record in records} & {record.name for record in project.records}
+        for record in project.records:
+            lines += _row(record, "项目级", home)
+            if record.name in overridden:
+                lines.append(f"  覆盖同名的用户级插件 {record.name}")
+        lines += [f"! {problem}" for problem in project.problems]
+    return "\n".join(lines)
+
+
+def _detail(name: str, records: list[PluginRecord], project: ProjectPlugins, home: Path | None) -> str:
+    """The project's declaration first: it is the one that loads."""
+    record = next((item for item in (*project.records, *records) if item.name == name), None)
+    if record is None:
+        return f"没有安装名为 {name} 的插件，项目也没有声明。"
+    if not record.root(home).is_dir():
+        return f"{_label(record)} 不在磁盘上（{record.root(home)}），运行 {_fix(record)}。"
+    try:
+        plugin = replace(read_plugin(record.root(home), name, home, record), create_data=False)
+    except PluginError as exc:
+        return f"{_label(record)}：{exc}。"
+    lines = describe(plugin, record, read_head(record.base(home)) if record.kind == "git" else "")
+    if record.scope == "project":
+        state = f"项目级（{project_records_path(project.root)}），{_trust_state(project, home)}"
+    else:
+        state = "启用" if record.enabled else "已停用"
+    return "\n".join([*lines, f"  状态{' ' * 6}{state}"])
+
+
+def trust_text(project: ProjectPlugins, home: Path | None = None) -> str:
+    """What the startup panel asks about: everything the project's plugins would run."""
+    lines = [
+        f"项目在 {project_records_path(project.root)} 中声明的插件尚未确认（第一次使用，或声明、提交有变化）。",
+        "插件中的 Hook 和 MCP 服务器以你的权限运行；请先确认内容：",
+    ]
+    for plugin in project.plugins:
+        record = plugin.record  # Always set for a declared plugin.
+        lines += describe(replace(plugin, create_data=False), record, read_head(record.base(home)))
     return "\n".join(lines)
 
 
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(
         prog="moss plugin",
-        description="安装和管理用户级插件（~/.mosscode/plugins.yaml）。插件可以包含 Skill、命令、子 Agent、"
-        "MCP 服务器和 Hook；兼容 Claude Code 的插件目录。变化在下一次启动 moss 时生效。",
+        description="安装和管理插件：用户级记录在 ~/.mosscode/plugins.yaml，项目级声明在项目的 "
+        ".mosscode/plugins.yaml（随仓库共享）。插件可以包含 Skill、命令、子 Agent、MCP 服务器和 Hook；"
+        "兼容 Claude Code 的插件目录。变化在下一次启动 moss 时生效。",
     )
     actions = command.add_subparsers(dest="action", required=True, metavar="install | list | update | remove | …")
-    add = actions.add_parser("install", help="从 git 仓库、owner/repo 或本机目录安装", description="安装一个插件")
-    add.add_argument("source", help="git 地址、owner/repo（GitHub）或本机目录；marketplace 写成 <来源>#<插件名>")
+    add = actions.add_parser(
+        "install",
+        help="从 git 仓库、owner/repo 或本机目录安装；不给来源时安装项目声明的插件",
+        description="安装一个插件；不给来源时安装当前项目 .mosscode/plugins.yaml 中声明、本机还没有的插件",
+    )
+    add.add_argument(
+        "source", nargs="?", help="git 地址、owner/repo（GitHub）或本机目录；marketplace 写成 <来源>#<插件名>"
+    )
     add.add_argument("--ref", help="分支、标签或提交；标签和提交不随 update 移动")
     add.add_argument("--name", help="插件名（默认取 plugin.json 的 name 或仓库名）")
+    add.add_argument("--project", action="store_true", help="声明在当前项目的 .mosscode/plugins.yaml 中，随仓库共享")
     add.add_argument("-y", "--yes", action="store_true", help="不询问，直接安装")
-    actions.add_parser("list", help="列出已安装的插件", description="列出已安装的插件")
-    up = actions.add_parser("update", help="更新 git 来源的插件", description="更新插件；标签和提交固定的不移动")
+    actions.add_parser("list", help="列出已安装的插件和项目声明的插件", description="列出已安装的插件和项目声明的插件")
+    up = actions.add_parser(
+        "update",
+        help="更新 git 来源的插件（含项目声明的）",
+        description="更新用户级插件和当前项目声明的插件；标签和提交固定的不移动",
+    )
     up.add_argument("name", nargs="?", help="插件名；省略时更新全部")
     up.add_argument("-y", "--yes", action="store_true", help="不询问，直接更新")
-    for action, text in (
-        ("remove", "删除插件（记录、克隆目录和数据目录；本机目录来源只删除记录）"),
-        ("enable", "启用插件"),
-        ("disable", "停用插件（保留文件，不加载）"),
-    ):
+    text = "删除插件（记录、克隆目录和数据目录；本机目录来源只删除记录）"
+    drop = actions.add_parser("remove", help=text, description=text)
+    drop.add_argument("name", help="插件名")
+    drop.add_argument(
+        "--project", action="store_true", help="从当前项目的 .mosscode/plugins.yaml 中删除声明和本机的克隆"
+    )
+    for action, text in (("enable", "启用用户级插件"), ("disable", "停用用户级插件（保留文件，不加载）")):
         actions.add_parser(action, help=text, description=text).add_argument("name", help="插件名")
     return command
 
 
-def main(argv: list[str] | None = None, *, home: Path | None = None, stdin=None) -> int:
+def main(argv: list[str] | None = None, *, home: Path | None = None, root: Path | None = None, stdin=None) -> int:
     args = parser().parse_args(argv)
+    root = Path.cwd() if root is None else Path(root)
     try:
         if args.action == "install":
-            return install(args, home, stdin)
+            return install(args, home, root, stdin)
         if args.action == "list":
-            print(report(home))
+            print(report(home, root=root))
             return 0
         if args.action == "update":
-            return update(args, home, stdin)
+            return update(args, home, root, stdin)
         if args.action == "remove":
-            return remove(args, home)
-        return toggle(args, home, args.action == "enable")
+            return remove(args, home, root)
+        return toggle(args, home, root, args.action == "enable")
     except Listed:
         return 1
     except PluginError as exc:

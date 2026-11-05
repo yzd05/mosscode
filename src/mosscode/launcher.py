@@ -102,6 +102,11 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="本次运行信任项目级 Hook 文件（不写入确认记录），用于无界面模式",
     )
+    parser.add_argument(
+        "--trust-project-plugins",
+        action="store_true",
+        help="本次运行信任项目声明的插件（不写入确认记录），用于无界面模式",
+    )
     # A team member in a pane of its own; started by the lead, not by hand.
     parser.add_argument("--team-dir", help=argparse.SUPPRESS)
     parser.add_argument("--team-member", help=argparse.SUPPRESS)

@@ -6,6 +6,7 @@ A plugin is a directory laid out like a Claude Code plugin (skills/, commands/, 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,8 @@ NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 MANIFEST = Path(".claude-plugin") / "plugin.json"
 MARKETPLACE = Path(".claude-plugin") / "marketplace.json"
 RECORD_KEYS = {"name", "source", "ref", "path", "enabled"}
+PROJECT_RECORD_KEYS = {"name", "source", "ref", "path"}  # Shared with the repository: where, never whether.
+PLUGINS_TRUST = "plugins-trust.json"
 # Manifest fields read; the metadata ones are shown or ignored; anything else is a component MossCode lacks.
 MANIFEST_READ = {"name", "version", "description", "skills", "commands", "agents", "mcpServers"}
 MANIFEST_METADATA = {"$schema", "author", "homepage", "repository", "license", "keywords", "displayName"}
@@ -63,6 +66,17 @@ def repo_dir(name: str, home: Path | None = None) -> Path:
 
 def data_dir(name: str, home: Path | None = None) -> Path:
     return plugins_home(home) / "data" / name
+
+
+def project_records_path(root: Path) -> Path:
+    return Path(root) / ".mosscode" / "plugins.yaml"
+
+
+def project_clone_dir(name: str, source: str, ref: str | None, home: Path | None = None) -> Path:
+    # Keyed by source and ref too: two projects may give the same name to different repositories, and a
+    # same-named user-level plugin keeps its own clone.
+    key = hashlib.sha256(f"{source}\n{ref or ''}".encode()).hexdigest()[:8]
+    return plugins_home(home) / "project" / f"{name}-{key}"
 
 
 def source_kind(source: str) -> Literal["git", "local"]:
@@ -137,6 +151,7 @@ class PluginRecord:
     ref: str | None = None  # Branch, tag or commit; None follows the default branch.
     path: str | None = None  # Subdirectory inside the repository (a marketplace entry).
     enabled: bool = True
+    scope: Literal["user", "project"] = "user"  # Project records come from the project's .mosscode/plugins.yaml.
 
     @property
     def kind(self) -> Literal["git", "local"]:
@@ -144,7 +159,11 @@ class PluginRecord:
 
     def base(self, home: Path | None = None) -> Path:
         """The clone or the local directory, before the subdirectory."""
-        return repo_dir(self.name, home) if self.kind == "git" else Path(self.source)
+        if self.kind == "local":
+            return Path(self.source)
+        if self.scope == "project":
+            return project_clone_dir(self.name, self.source, self.ref, home)
+        return repo_dir(self.name, home)
 
     def root(self, home: Path | None = None) -> Path:
         base = self.base(home)
@@ -167,10 +186,10 @@ def check_name(name: str) -> str | None:
     return None
 
 
-def _record(raw, index: int) -> PluginRecord:
+def _record(raw, index: int, scope: Literal["user", "project"] = "user") -> PluginRecord:
     if not isinstance(raw, dict):
         raise PluginError(f"第 {index} 项必须是对象")
-    unknown = sorted(map(str, set(raw) - RECORD_KEYS))
+    unknown = sorted(map(str, set(raw) - (RECORD_KEYS if scope == "user" else PROJECT_RECORD_KEYS)))
     if unknown:
         raise PluginError(f"第 {index} 项有未知字段 {', '.join(unknown)}")
     name = raw.get("name")
@@ -183,18 +202,33 @@ def _record(raw, index: int) -> PluginRecord:
     for key in ("ref", "path"):
         if raw.get(key) is not None and (not isinstance(raw[key], str) or not raw[key].strip()):
             raise PluginError(f"插件 {name}：{key} 必须是非空字符串")
+    # git reads a leading - as one of its options (--upload-pack runs a program), and a project's file is
+    # written by someone else.
+    for key in ("source", "ref"):
+        if isinstance(raw.get(key), str) and raw[key].strip().startswith("-"):
+            raise PluginError(f"插件 {name}：{key} 不能以 - 开头")
     path = raw.get("path")
     if path is not None and (Path(path).is_absolute() or ".." in Path(path).parts):
         raise PluginError(f"插件 {name}：path 必须是仓库内的相对路径")
     enabled = raw.get("enabled", True)
     if type(enabled) is not bool:
         raise PluginError(f"插件 {name}：enabled 必须是 true 或 false")
-    return PluginRecord(name, source.strip(), raw.get("ref"), path, enabled)
+    record = PluginRecord(name, source.strip(), raw.get("ref"), path, enabled, scope)
+    if scope == "project" and record.kind != "git":
+        raise PluginError(f"插件 {name}：项目级插件的 source 必须是 git 地址，别人才能安装")
+    return record
 
 
 def load_records(home: Path | None = None) -> tuple[list[PluginRecord], list[str]]:
+    return _load(records_path(home), "user")
+
+
+def load_project_records(root: Path) -> tuple[list[PluginRecord], list[str]]:
+    return _load(project_records_path(root), "project")
+
+
+def _load(path: Path, scope: Literal["user", "project"]) -> tuple[list[PluginRecord], list[str]]:
     """Records and problems; a broken file is one problem and no plugins, never a failed start."""
-    path = records_path(home)
     try:
         if not path.is_file():
             return [], []
@@ -208,7 +242,7 @@ def load_records(home: Path | None = None) -> tuple[list[PluginRecord], list[str
     records, problems, seen = [], [], set()
     for index, item in enumerate(raw.get("plugins") or [], 1):
         try:
-            record = _record(item, index)
+            record = _record(item, index, scope)
         except PluginError as exc:
             problems.append(f"插件记录 {path}：{exc}，已跳过。")
             continue
@@ -221,7 +255,14 @@ def load_records(home: Path | None = None) -> tuple[list[PluginRecord], list[str
 
 
 def save_records(records: list[PluginRecord], home: Path | None = None) -> None:
-    path = records_path(home)
+    _save(records_path(home), records)
+
+
+def save_project_records(records: list[PluginRecord], root: Path) -> None:
+    _save(project_records_path(root), records)
+
+
+def _save(path: Path, records: list[PluginRecord]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump({"plugins": [record.to_yaml() for record in records]}, allow_unicode=True, sort_keys=False)
     temporary = path.with_name(path.name + ".tmp")
@@ -419,30 +460,123 @@ class Installed:
     notices: tuple[str, ...] = ()
 
 
-def installed(home: Path | None = None) -> Installed:
-    """Enabled plugins in plugins.yaml order (a later one overrides a same-named component of an earlier one)."""
+def installed(home: Path | None = None, root: Path | None = None) -> Installed:
+    """Enabled plugins in plugins.yaml order (a later one overrides a same-named component of an earlier one).
+    With root, the project's plugins follow once the user has trusted them; nobody is asked here."""
     records, notices = load_records(home)
     plugins = []
     for record in records:
         if not record.enabled:
             continue
-        root = record.root(home)
-        if not root.is_dir():
-            notices.append(f"插件 {record.name} 不在磁盘上（{root}），运行 moss plugin update {record.name}。")
+        directory = record.root(home)
+        if not directory.is_dir():
+            notices.append(f"插件 {record.name} 不在磁盘上（{directory}），运行 moss plugin update {record.name}。")
             continue
         try:
-            plugin = read_plugin(root, record.name, home, record)
+            plugin = read_plugin(directory, record.name, home, record)
         except PluginError as exc:
             notices.append(f"插件 {record.name} 未加载：{exc}。")
             continue
         notices.extend(f"插件 {record.name}：{problem}。" for problem in plugin.problems)
         plugins.append(plugin)
-    return Installed(tuple(plugins), tuple(notices))
+    user = Installed(tuple(plugins), tuple(notices))
+    if root is None:
+        return user
+    project = project_plugins(root, home)
+    return with_project(user, project) if project.trusted(home) else user
 
 
-def resolve(plugins, home: Path | None = None) -> tuple[Plugin, ...]:
-    """A loader's plugins argument: None reads the installed ones."""
-    return installed(home).plugins if plugins is None else tuple(plugins)
+def read_head(base: Path) -> str:
+    """The checked-out commit, read from .git so that starting a session runs no git."""
+    git_dir = base / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref: "):
+            return head
+        ref = head[5:].strip()
+        if (git_dir / ref).is_file():
+            return (git_dir / ref).read_text(encoding="utf-8").strip()
+        for line in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == ref:
+                return parts[0]
+    except (OSError, UnicodeError):
+        pass
+    return ""
+
+
+@dataclass(frozen=True)
+class ProjectPlugins:
+    """The plugins a project declares in .mosscode/plugins.yaml, as far as they are installed on this machine."""
+
+    root: Path
+    records: tuple[PluginRecord, ...] = ()
+    plugins: tuple[Plugin, ...] = ()  # Installed and readable; loaded only once trusted.
+    missing: tuple[PluginRecord, ...] = ()  # Declared but not cloned here yet.
+    problems: tuple[str, ...] = ()  # The declarations file and plugins that cannot be read.
+    digest: str = ""  # The declarations and each installed plugin's commit: any change asks again.
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """For the start of a session, trusted or not."""
+        if not self.missing:
+            return self.problems
+        names = "、".join(record.name for record in self.missing)
+        return (
+            *self.problems,
+            f"项目声明了 {len(self.missing)} 个插件尚未安装（{names}），运行 moss plugin install 安装。",
+        )
+
+    def _store(self, home: Path | None):
+        from .hooks.config import TrustStore
+
+        return TrustStore(self.root, home, PLUGINS_TRUST)
+
+    def trusted(self, home: Path | None = None) -> bool:
+        return bool(self.plugins) and self._store(home).trusted("plugins", self.digest)
+
+    def trust(self, home: Path | None = None) -> None:
+        self._store(home).trust("plugins", self.digest)
+
+
+def project_plugins(root: Path, home: Path | None = None) -> ProjectPlugins:
+    """Reads files only: a session never clones, and never runs git."""
+    root = Path(root).resolve()
+    records, problems = load_project_records(root)
+    plugins, missing, commits = [], [], {}
+    for record in records:
+        directory = record.root(home)
+        if not directory.is_dir():
+            missing.append(record)
+            continue
+        try:
+            plugins.append(read_plugin(directory, record.name, home, record))
+        except PluginError as exc:
+            problems.append(f"项目插件 {record.name} 未加载：{exc}。")
+            continue
+        commits[record.name] = read_head(record.base(home))
+    try:
+        declared = project_records_path(root).read_bytes() if records else b""
+    except OSError:
+        declared = b""
+    state = {"declared": hashlib.sha256(declared).hexdigest(), "commits": commits}
+    digest = hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+    return ProjectPlugins(root, tuple(records), tuple(plugins), tuple(missing), tuple(problems), digest)
+
+
+def with_project(user: Installed, project: ProjectPlugins) -> Installed:
+    """Project plugins after the user's; a same-named user plugin gives way entirely."""
+    names = {plugin.name for plugin in project.plugins}
+    problems = (f"项目插件 {plugin.name}：{problem}。" for plugin in project.plugins for problem in plugin.problems)
+    return Installed(
+        (*(plugin for plugin in user.plugins if plugin.name not in names), *project.plugins),
+        (*user.notices, *problems),
+    )
+
+
+def resolve(plugins, home: Path | None = None, root: Path | None = None) -> tuple[Plugin, ...]:
+    """A loader's plugins argument: None reads the installed ones, with the project's trusted ones."""
+    return installed(home, root).plugins if plugins is None else tuple(plugins)
 
 
 def checked(ref: PluginRef | None, value: Any, project: Path | None, error: Callable[[str], Exception]) -> Any:

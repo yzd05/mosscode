@@ -37,6 +37,7 @@ moss setup | doctor | models
 | `--list-providers` | 列出配置中的 Provider，不发请求 |
 | `--no-hooks` | 本次运行不加载 Hook |
 | `--trust-project-hooks` | 本次运行信任项目级 Hook 文件，不写入确认记录 |
+| `--trust-project-plugins` | 本次运行信任项目声明的插件，不写入确认记录；用于 `-p` |
 
 `--team-dir`、`--team-member` 是团队成员在分屏窗格中启动时用的内部参数，不在帮助中显示。
 
@@ -68,7 +69,7 @@ moss setup | doctor | models
 - `~/.mosscode` 是否可写；
 - ripgrep、git，Windows 上的 Git Bash 和 Windows Terminal（`wt.exe`，团队分屏窗格需要）；
 - 当前目录 `.mosscode/` 下的权限、MCP 和 Hook 文件能否解析；
-- 已安装的[插件](plugins.md)：有 git 来源时 git 是否可用，每个插件是否在磁盘上、能否读取，组件的问题；没有安装插件时不显示这一节。
+- 已安装的[插件](plugins.md)：有 git 来源时 git 是否可用，每个插件是否在磁盘上、能否读取，组件的问题；项目声明的插件是否已安装、是否已确认；没有插件时不显示这一节。
 
 ### models
 
@@ -102,6 +103,8 @@ moss key set deepseek
 ### plugin
 
 `moss plugin install|list|update|remove|enable|disable` 安装和管理用户级插件，记录在 `~/.mosscode/plugins.yaml`，见 [插件](plugins.md#moss-plugin)。安装和更新前列出插件的内容并询问，`-y` 跳过；git 来源需要 PATH 中有 `git`。
+
+`moss plugin install 来源 --project` 把插件声明到项目的 `.mosscode/plugins.yaml`（只接受 git 来源），提交这个文件后，团队成员在项目中运行不带来源的 `moss plugin install` 逐个安装；`moss plugin remove 名称 --project` 删除声明。项目插件首次加载前需要确认，见 [项目级插件](plugins.md#项目级插件)。
 
 ## 配置查找
 

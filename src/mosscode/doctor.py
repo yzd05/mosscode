@@ -304,14 +304,17 @@ def check_project(cwd: Path | None = None, config: str | None = None, home: Path
 
 
 def check_plugins(home: Path | None = None, cwd: Path | None = None, which=shutil.which) -> list[Item]:
-    """Installed plugins: git when one needs it, each one on disk, and the problems of its components."""
-    from .plugins import components, installed, load_records, read_plugin
+    """Installed plugins and the project's: git when one needs it, each one on disk, and the problems of its
+    components."""
+    from .plugins import components, installed, load_records, project_plugins, read_plugin
 
+    cwd = Path.cwd() if cwd is None else cwd
     records, problems = load_records(home)
-    if not records and not problems:
+    project = project_plugins(cwd, home)
+    if not records and not problems and not project.records and not project.problems:
         return []
     items = [Item(WARN, problem, "修改 ~/.mosscode/plugins.yaml") for problem in problems]
-    if any(record.kind == "git" for record in records) and which("git") is None:
+    if any(record.kind == "git" for record in (*records, *project.records)) and which("git") is None:
         items.append(Item(ERROR, "有 git 来源的插件，但找不到 git：无法安装和更新", "安装 git 并加入 PATH"))
     enabled = {plugin.name: plugin for plugin in installed(home).plugins}
     for record in records:
@@ -334,11 +337,27 @@ def check_plugins(home: Path | None = None, cwd: Path | None = None, which=shuti
                 except ValueError as exc:
                     items.append(Item(ERROR, f"插件 {record.name}：{exc}", f"moss plugin update {record.name}"))
             continue
-        parts = components(replace(plugin, create_data=False), Path.cwd() if cwd is None else cwd)
+        parts = components(replace(plugin, create_data=False), cwd)
         if parts.problems:
             items.extend(Item(WARN, f"插件 {record.name}：{problem}") for problem in parts.problems)
         else:
             items.append(Item(OK, f"插件 {record.name}：{parts.count()}"))
+    return items + _project_plugin_items(project, home, cwd)
+
+
+def _project_plugin_items(project, home: Path | None, cwd: Path) -> list[Item]:
+    from .plugins import components
+
+    items = [Item(WARN, problem, "修改项目的 .mosscode/plugins.yaml") for problem in project.problems]
+    items += [Item(WARN, f"项目插件 {record.name} 尚未安装", "moss plugin install") for record in project.missing]
+    if project.plugins and not project.trusted(home):
+        items.append(Item(WARN, "项目插件尚未确认，不会加载", "启动 moss 并在确认面板中选“信任并启用”"))
+    for plugin in project.plugins:
+        parts = components(replace(plugin, create_data=False), cwd)
+        if parts.problems:
+            items.extend(Item(WARN, f"项目插件 {plugin.name}：{problem}") for problem in parts.problems)
+        else:
+            items.append(Item(OK, f"项目插件 {plugin.name}：{parts.count()}"))
     return items
 
 

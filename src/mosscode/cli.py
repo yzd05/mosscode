@@ -38,13 +38,14 @@ from .messages import (
     UsageUpdate,
 )
 from .permissions import PermissionConfigError
+from .plugins import Installed, project_plugins, with_project
 from .plugins import installed as installed_plugins
 from .providers import create_provider
 from .session import Session, prune_all
 from .skills import ForkRequest, SkillCatalog
 from .tools import create_default_registry
 from .tools.shell import ShellNotFound
-from .tui import MossCodeApp, ProviderSelectApp, plan_text
+from .tui import MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
 from .usage import request_usage_text
 
 
@@ -424,6 +425,36 @@ def _memory_options(settings, *, interactive: bool) -> dict:
     return options
 
 
+def load_plugins(args, root: Path) -> Installed:
+    """The user's plugins and, once trusted, the project's: the interface asks before anything loads, -p loads
+    them only with --trust-project-plugins or an earlier confirmation."""
+    user = installed_plugins()
+    project = project_plugins(root)
+    notices = list(project.notices)
+    use = bool(project.plugins) and (args.trust_project_plugins or project.trusted())
+    if project.plugins and not use:
+        names = [plugin.name for plugin in project.plugins]
+        if args.prompt is None:
+            from .plugin_command import trust_text
+
+            print(trust_text(project))
+            use = bool(PluginTrustApp(names).run(inline=True, mouse=False))
+            if not use:
+                notices.append("本次未启用项目插件；下次启动时会再次询问。")
+            else:
+                try:
+                    project.trust()
+                except OSError as exc:
+                    notices.append(f"无法写入项目插件的确认记录（{exc.strerror or exc}），只在本次启用。")
+        else:
+            notices.append(
+                f"项目插件 {'、'.join(names)} 未经确认，未加载；请在交互界面中启动一次并确认，"
+                "或使用 --trust-project-plugins。"
+            )
+    combined = with_project(user, project) if use else user
+    return Installed(combined.plugins, (*combined.notices, *notices))
+
+
 def claude_notice(root: Path) -> str | None:
     """Definitions written for Claude Code in the project that stay unread while claude_directories is off."""
     agents = sum(1 for path in (root / ".claude" / "agents").glob("*.md") if path.is_file())
@@ -470,7 +501,7 @@ def run(args: argparse.Namespace) -> None:
                 print(f"{item.name}: {item.protocol} / {item.model}")
             return
         # Plugins are read once; skills come before the provider so that -p "/<name>" parses.
-        plugins = installed_plugins()
+        plugins = load_plugins(args, Path.cwd())
         claude = settings.claude_directories
         skills = SkillCatalog.load(Path.cwd(), reserved=BUILTIN.names(), plugins=plugins.plugins, claude=claude)
         commands, skipped = BUILTIN.with_skills(skills)

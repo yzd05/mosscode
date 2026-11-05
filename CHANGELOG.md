@@ -7,10 +7,12 @@
 ### 新增
 
 - 插件：`moss plugin install|list|update|remove|enable|disable` 安装和管理用户级插件，一个插件可以包含 Skill、命令、子 Agent、MCP 服务器和 Hook，兼容 Claude Code 的插件布局（`.claude-plugin/plugin.json`、`commands/`、`.mcp.json`、`${CLAUDE_PLUGIN_ROOT}` 等）。来源可以是 git 仓库、GitHub 的 `owner/repo` 或本机目录，支持 marketplace 仓库（`<来源>#<插件名>`）；安装和更新前列出其中的命令并询问，标签和提交固定的插件不随更新移动。记录在 `~/.mosscode/plugins.yaml`，启动时不联网。对话中 `/plugins` 查看，`moss doctor` 检查插件。
+- 项目级插件：`moss plugin install 来源 --project` 把插件声明到 `.mosscode/plugins.yaml`（只含来源、`ref`、路径，只接受 git 来源），随仓库共享；团队成员在项目中运行不带来源的 `moss plugin install` 逐个预览并安装，启动时提示尚未安装的声明。项目插件首次加载前在启动时确认，声明或插件的提交变化后再次询问；`-p` 不加载未确认的项目插件（stderr 说明原因），`--trust-project-plugins` 只在本次信任。项目插件覆盖同名的用户级插件；`moss plugin remove 名称 --project` 删除声明；`moss plugin list` 和 `moss doctor` 显示项目插件和确认状态。
 - `config.yaml` 新增 `claude_directories`：为 `true` 时另外读取 Claude Code 的 `.claude/skills/`、`.claude/agents/`（用户级和项目级）；未开启而项目中有这些定义时启动区提示一次。
 
 ### 变更
 
+- 命令文件名中的 `_` 视为 `-`：`clean_gone.md` 注册为 `/clean-gone`，Claude Code 插件中这类命令不再被跳过。
 - 子 Agent 的 `model` 写 Claude Code 的模型名（`sonnet`、`opus`、`haiku`、`fable` 或 `claude-…`）且没有同名 Provider 时，使用当前模型，不再报错。
 
 ## [0.2.0] - 2026-11-04

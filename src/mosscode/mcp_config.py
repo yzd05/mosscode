@@ -266,7 +266,7 @@ def load_mcp_settings(
     user, user_import = _read(user_file)
     project, project_import = _read(project_file)
     merged, notices = {}, []
-    for plugin in resolve(plugins):
+    for plugin in resolve(plugins, root=root):
         servers, issues = _plugin_servers(plugin, root)
         merged.update(servers)
         notices += issues

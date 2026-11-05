@@ -38,7 +38,15 @@ from .appearance import (
     moss_themes,
     startup_banner,
 )
-from .builtin_commands import BUILTIN, clean_text, confirm_tasks, dispatch, offer_trust, open_sessions
+from .builtin_commands import (
+    BUILTIN,
+    TRUST_OPTIONS,
+    clean_text,
+    confirm_tasks,
+    dispatch,
+    offer_trust,
+    open_sessions,
+)
 from .catalog import tokens_label
 from .clipboard import ClipboardError, is_image_file, pasted_image_paths, read_clipboard_async
 from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input, unknown_note
@@ -586,6 +594,35 @@ class ProviderSelectApp(TerminalApp[ProviderConfig]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.exit(self.settings.providers[event.option_index])
+
+
+class PluginTrustApp(TerminalApp[bool]):
+    """Asked before a session loads project plugins; their contents are printed above it, where they can be
+    scrolled. True trusts them; Esc and 本次不启用 return False or None."""
+
+    TITLE = "MossCode"
+    SUB_TITLE = "确认项目插件"
+    CSS = ProviderSelectApp.CSS
+    BINDINGS = ProviderSelectApp.BINDINGS
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__()
+        self.names = names
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            f"信任并启用项目插件 {'、'.join(self.names)}？↑ / ↓ 选择，Enter 确认；Esc 本次不启用。",
+            id="selection-help",
+            markup=False,
+        )
+        yield KeyboardOptions(*(Text(option) for option in TRUST_OPTIONS), id="selection")
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#selection", OptionList).focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.exit(event.option_index == 0)
 
 
 class ChatEntry(Vertical):

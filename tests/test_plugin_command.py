@@ -1,5 +1,6 @@
 """`moss plugin`: sources, marketplaces, confirmation, update, remove and the doctor section; git only on local repos."""
 
+import argparse
 import io
 import json
 import os
@@ -8,11 +9,28 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from mosscode import doctor
-from mosscode.plugin_command import main, report
-from mosscode.plugins import PluginRecord, data_dir, installed, load_records, plugins_home, repo_dir, save_records
-from test_plugins import install_record, make_plugin
+from mosscode.plugin_command import clone, main, normalize, report
+from mosscode.plugins import (
+    PluginError,
+    PluginRecord,
+    data_dir,
+    installed,
+    load_project_records,
+    load_records,
+    plugins_home,
+    project_clone_dir,
+    project_plugins,
+    project_records_path,
+    read_head,
+    records_path,
+    repo_dir,
+    save_records,
+)
+from mosscode.skills import SkillCatalog
+from test_plugins import install_record, make_plugin, write_skill
 
 
 class Terminal(io.StringIO):
@@ -77,12 +95,12 @@ def test_install_from_a_local_directory_uses_it_in_place(tmp_path, home, capsys)
 
 def test_install_from_git_clones_at_a_tag_and_previews_final_paths(tmp_path, home, capsys):
     url = repository(tmp_path / "repo")
-    commit_command(tmp_path / "repo", "bad_name")
+    commit_command(tmp_path / "repo", "Bad.Name")
     git(tmp_path / "repo", "tag", "v1")
     assert main(["install", url, "--ref", "v1", "-y"], home=home) == 0
     out = capsys.readouterr().out
     assert repo_dir("kit", home).as_posix() in out  # The server path as it will be, not the temporary clone.
-    assert str(repo_dir("kit", home) / "commands" / "bad_name.md") in out  # So is a problem's file.
+    assert str(repo_dir("kit", home) / "commands" / "Bad.Name.md") in out  # So is a problem's file.
     assert ".tmp" not in out
     [record] = load_records(home)[0]
     assert (record.source, record.ref, record.kind) == (url, "v1", "git")
@@ -338,3 +356,227 @@ async def test_the_plugins_command_lists_and_shows_one(tmp_path, home, monkeypat
     assert "插件（1）" in ui.notes[-1] and "moss plugin install" in ui.notes[-1]
     await run(ctx, "/plugin kit")
     assert "kit-server" in ui.notes[-1] and "下一次启动" in ui.notes[-1]
+
+
+# Project plugins ------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def project(tmp_path):
+    path = tmp_path / "project"
+    path.mkdir()
+    return path
+
+
+def declare(project: Path, *entries: dict) -> None:
+    """A project file as a teammate committed it."""
+    path = project_records_path(project)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"plugins": list(entries)}), encoding="utf-8")
+
+
+def declared(project: Path) -> list[dict]:
+    return yaml.safe_load(project_records_path(project).read_text(encoding="utf-8"))["plugins"]
+
+
+LATER = {"name": "later", "source": "https://example.com/later.git"}
+
+
+def test_a_project_install_declares_the_plugin_and_keeps_its_clone_apart(tmp_path, home, project, capsys):
+    url = repository(tmp_path / "repo")
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 0
+    assert "提交这个文件" in capsys.readouterr().out
+    assert declared(project) == [{"name": "kit", "source": url}]
+    [record] = load_project_records(project)[0]
+    assert record.scope == "project" and record.base(home) == project_clone_dir("kit", url, None, home)
+    assert head_of(record.base(home)) == head_of(tmp_path / "repo")
+    assert load_records(home)[0] == [] and not repo_dir("kit", home).exists()
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 1
+    assert "项目已声明名为 kit" in capsys.readouterr().err
+
+
+def test_a_project_install_needs_a_git_source(tmp_path, home, project, capsys):
+    source = make_plugin(tmp_path / "src")
+    assert main(["install", str(source), "--project", "-y"], home=home, root=project) == 1
+    assert "需要 git 来源" in capsys.readouterr().err
+    assert not project_records_path(project).exists()
+
+
+def test_install_without_a_source_installs_what_the_project_declares(tmp_path, home, project, capsys):
+    assert main(["install"], home=home, root=project) == 1
+    assert "没有声明插件" in capsys.readouterr().err
+    url = repository(tmp_path / "repo")
+    declare(project, {"name": "kit", "source": url})
+    assert "尚未安装（kit）" in project_plugins(project, home).notices[-1]
+    assert main(["install"], home=home, root=project, stdin=io.StringIO("")) == 1  # Not a terminal, no -y.
+    assert project_plugins(project, home).missing and leftovers(home) == []
+    assert main(["install"], home=home, root=project, stdin=Terminal("y\n")) == 0
+    out = capsys.readouterr().out
+    assert "插件 kit 1.0.0" in out and "以你的权限运行" in out and "确认后生效" in out
+    state = project_plugins(project, home)
+    assert not state.missing and [plugin.name for plugin in state.plugins] == ["kit"]
+    assert main(["install", "-y"], home=home, root=project) == 0
+    assert "插件 kit（项目级） 已安装" in capsys.readouterr().out
+    assert main(["install", "--ref", "v1"], home=home, root=project) == 1
+
+
+def test_project_plugins_load_once_trusted_and_ask_again_after_a_change(tmp_path, home, project, capsys):
+    source = tmp_path / "repo"
+    url = repository(source)
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 0
+    state = project_plugins(project, home)
+    assert not state.trusted(home) and installed(home, project).plugins == ()
+    state.trust(home)
+    assert [plugin.name for plugin in installed(home, project).plugins] == ["kit"]
+    assert SkillCatalog.load(project, home, builtin=tmp_path / "none").get("lint").source == "plugin"
+
+    path = project_records_path(project)
+    path.write_text(path.read_text(encoding="utf-8") + "# 改过\n", encoding="utf-8")  # The declarations changed.
+    assert not project_plugins(project, home).trusted(home) and installed(home, project).plugins == ()
+    project_plugins(project, home).trust(home)
+
+    commit_command(source, "deploy")  # So did the commit.
+    assert main(["update", "-y"], home=home, root=project) == 0
+    assert "+ 命令 /deploy" in capsys.readouterr().out
+    assert not project_plugins(project, home).trusted(home)
+
+
+def test_a_project_plugin_replaces_a_same_named_user_plugin(tmp_path, home, project):
+    user = make_plugin(tmp_path / "mine")
+    write_skill(user / "skills", "only-mine", "只有用户级的版本有")
+    install_record(home, user)
+    url = repository(tmp_path / "repo")
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 0
+    assert SkillCatalog.load(project, home, builtin=tmp_path / "none").get("only-mine") is not None
+    project_plugins(project, home).trust(home)
+    plugins = installed(home, project).plugins
+    assert [(plugin.name, plugin.record.scope) for plugin in plugins] == [("kit", "project")]
+    assert SkillCatalog.load(project, home, builtin=tmp_path / "none").get("only-mine") is None
+    assert "覆盖同名的用户级插件 kit" in report(home, root=project)
+
+
+def test_project_declarations_cannot_pass_options_to_git_or_point_at_this_machine(tmp_path, home, project):
+    declare(
+        project,
+        {"name": "dash", "source": "-uevil@example.com:"},
+        {"name": "ref", "source": "https://example.com/x.git", "ref": "--upload-pack=evil"},
+        {"name": "here", "source": str(make_plugin(tmp_path / "src"))},
+        {"name": "flag", "source": "https://example.com/x.git", "enabled": False},
+    )
+    records, problems = load_project_records(project)
+    assert records == []
+    text = "\n".join(problems)
+    assert "source 不能以 - 开头" in text and "ref 不能以 - 开头" in text
+    assert "必须是 git 地址" in text and "未知字段 enabled" in text
+    records_path(home).parent.mkdir(parents=True)
+    records_path(home).write_text("plugins:\n- {name: x, source: '-uevil@example.com:'}\n", encoding="utf-8")
+    assert "不能以 - 开头" in load_records(home)[1][0]
+    with pytest.raises(PluginError, match="不能以 - 开头"):
+        normalize("-uevil@example.com:")
+    # Whatever reaches git is a repository, never an option.
+    with pytest.raises(PluginError, match="git clone 失败"):
+        clone("--version", None, home)
+    assert leftovers(home) == []
+
+
+def test_remove_project_drops_the_declaration_and_the_clone(tmp_path, home, project, capsys):
+    url = repository(tmp_path / "repo")
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 0
+    clone_dir = load_project_records(project)[0][0].base(home)
+    assert main(["remove", "kit"], home=home, root=project) == 1
+    assert "remove --project kit" in capsys.readouterr().err
+    assert main(["disable", "kit"], home=home, root=project) == 1
+    assert main(["remove", "--project", "kit"], home=home, root=project) == 0
+    assert load_project_records(project)[0] == [] and not clone_dir.exists()
+    assert main(["remove", "--project", "kit"], home=home, root=project) == 1
+
+
+def test_list_and_details_show_project_plugins_and_whether_they_are_trusted(tmp_path, home, project):
+    url = repository(tmp_path / "repo")
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 0
+    declare(project, *declared(project), LATER)
+    text = report(home, root=project)
+    assert "项目插件（2" in text and "未确认" in text and "kit 1.0.0 项目级" in text
+    assert "later  项目级" in text and "运行 moss plugin install" in text
+    project_plugins(project, home).trust(home)
+    assert "已确认" in report(home, root=project)
+    detail = report(home, "kit", root=project)
+    assert "kit-server" in detail and "项目级" in detail and "已确认" in detail
+
+
+def test_doctor_reports_project_plugins(tmp_path, home, project):
+    url = repository(tmp_path / "repo")
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 0
+    declare(project, *declared(project), LATER)
+    items = doctor.check_plugins(home, project)
+    texts = {item.text: item for item in items}
+    assert texts["项目插件 later 尚未安装"].fix == "moss plugin install"
+    assert texts["项目插件尚未确认，不会加载"].level == doctor.WARN
+    assert any(item.level == doctor.OK and item.text.startswith("项目插件 kit：Skill 1") for item in items)
+
+
+def test_read_head_follows_loose_and_packed_refs(tmp_path):
+    source = tmp_path / "repo"
+    repository(source)
+    assert read_head(source) == head_of(source)
+    git(source, "pack-refs", "--all")
+    assert not (source / ".git" / "refs" / "heads" / "main").exists()
+    assert read_head(source) == head_of(source)
+    git(source, "checkout", "--quiet", "--detach")
+    assert read_head(source) == head_of(source)
+    assert read_head(tmp_path / "nowhere") == ""
+
+
+# Starting a session with project plugins ------------------------------------------------------
+
+
+def startup(project: Path, home: Path, monkeypatch, prompt=None, trust=False, answer=None):
+    from mosscode import cli
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    asked = []
+
+    class Panel:
+        def __init__(self, names):
+            asked.append(names)
+
+        def run(self, inline, mouse):
+            return answer
+
+    monkeypatch.setattr(cli, "PluginTrustApp", Panel)
+    args = argparse.Namespace(prompt=prompt, trust_project_plugins=trust)
+    return cli.load_plugins(args, project), asked
+
+
+@pytest.mark.parametrize("answer,loaded", [(True, True), (False, False), (None, False)])
+def test_the_interface_asks_once_before_loading_project_plugins(
+    tmp_path, home, project, monkeypatch, capsys, answer, loaded
+):
+    url = repository(tmp_path / "repo")
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 0
+    capsys.readouterr()
+    result, asked = startup(project, home, monkeypatch, answer=answer)
+    assert asked == [["kit"]] and "以你的权限运行" in capsys.readouterr().out
+    assert [plugin.name for plugin in result.plugins] == (["kit"] if loaded else [])
+    assert project_plugins(project, home).trusted(home) is loaded
+    if loaded:
+        assert startup(project, home, monkeypatch, answer=False)[1] == []  # Trusted: not asked again.
+    else:
+        assert any("下次启动时会再次询问" in notice for notice in result.notices)
+
+
+def test_headless_runs_load_project_plugins_only_when_trusted(tmp_path, home, project, monkeypatch):
+    url = repository(tmp_path / "repo")
+    assert main(["install", url, "--project", "-y"], home=home, root=project) == 0
+    result, asked = startup(project, home, monkeypatch, prompt="hi")
+    assert asked == [] and result.plugins == ()
+    assert any("--trust-project-plugins" in notice for notice in result.notices)
+    result, asked = startup(project, home, monkeypatch, prompt="hi", trust=True)
+    assert [plugin.name for plugin in result.plugins] == ["kit"]
+    assert not project_plugins(project, home).trusted(home)  # Trusted for this run only.
+
+
+def test_a_missing_declared_plugin_is_named_at_startup(home, project, monkeypatch):
+    declare(project, LATER)
+    result, asked = startup(project, home, monkeypatch, prompt="hi")
+    assert asked == [] and "运行 moss plugin install 安装" in result.notices[-1]

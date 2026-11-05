@@ -31,6 +31,27 @@ python -m pytest -q
 
 没有安装 ripgrep 时，搜索测试走内置实现；CI 中两种情况都会测试。
 
+## 在容器中开发
+
+在 Windows 或 macOS 上想在 Linux 中跑测试，或者不想让开发中的 MossCode 直接接触主机，可以用容器。虚拟环境要建在挂载目录之外，否则会覆盖主机上的 `.venv`：
+
+```
+docker run --rm -it -v "${PWD}:/src" -w /src -e UV_LINK_MODE=copy ghcr.io/astral-sh/uv:python3.12-bookworm-slim bash
+```
+
+进入容器后：
+
+```
+apt-get update && apt-get install -y --no-install-recommends git ripgrep
+uv venv /opt/venv && . /opt/venv/bin/activate
+uv pip install -e ".[dev]"
+python -m pytest -q -p no:cacheprovider --basetemp /tmp/pytest tests/test_permissions.py
+```
+
+`-p no:cacheprovider` 和 `--basetemp /tmp/pytest` 让测试不在挂载的仓库中留下文件。用 Dev Container 时同理：在 `devcontainer.json` 中把虚拟环境放在容器的家目录，例如 `"postCreateCommand": "uv venv ~/.venv && . ~/.venv/bin/activate && uv pip install -e '.[dev]'"`。
+
+把 MossCode 本身放在容器中使用（隔离模型执行的命令）见 [在容器中运行](docs/reference/container.md)。
+
 ## 代码检查
 
 ```
