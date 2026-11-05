@@ -55,7 +55,7 @@ Server 级规则按配置中的 Server 名称匹配，名称被摘要缩短的�
 
 ## 读取 .mcp.json
 
-**读取 `.mcp.json`（可选）。** 在任一 `mcp.yaml` 顶层设置 `import_mcp_json: true` 后，读取项目根目录的 `.mcp.json`（Claude Code 的 `mcpServers` 格式）。省略 `type` 且有 `command` 时视为 stdio；支持 `http`，`sse` 等其他类型提示“不受支持”并跳过；command、args、url、env、headers 都展开 `${VAR}` / `${VAR:-默认值}`。优先级：用户 `mcp.yaml` < `.mcp.json` < 项目 `mcp.yaml`，同名整项覆盖。`.mcp.json` 随仓库分发、会启动其中的程序，因此默认不读取；开启前请确认其内容可信。模型不能写入或编辑 `.mcp.json`（返回 policy_protected）。
+**读取 `.mcp.json`（可选）。** 在任一 `mcp.yaml` 顶层设置 `import_mcp_json: true` 后，读取项目根目录的 `.mcp.json`（Claude Code 的 `mcpServers` 格式）。省略 `type` 且有 `command` 时视为 stdio；支持 `http`，`sse` 等其他类型提示“不受支持”并跳过；command、args、url、env、headers 都展开 `${VAR}` / `${VAR:-默认值}`。优先级：[插件](plugins.md)中的服务器 < 用户 `mcp.yaml` < `.mcp.json` < 项目 `mcp.yaml`，同名整项覆盖。插件自带的 `.mcp.json` 不受这个开关限制（安装时已确认），其中可以用 `${CLAUDE_PLUGIN_ROOT}` 等[插件变量](plugins.md#变量)。`.mcp.json` 随仓库分发、会启动其中的程序，因此默认不读取；开启前请确认其内容可信。模型不能写入或编辑 `.mcp.json`（返回 policy_protected）。
 
 ## 安全边界与结果
 

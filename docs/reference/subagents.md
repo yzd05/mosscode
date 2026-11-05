@@ -31,10 +31,13 @@ max_turns: 40
 | 位置 | 来源 |
 | --- | --- |
 | MossCode 自带 | 内置 |
+| 已安装插件的 `agents/*.md` | 插件，见 [插件](plugins.md) |
+| `~/.claude/agents/*.md` | 用户级（Claude Code 的目录，`claude_directories: true` 时读取） |
 | `~/.mosscode/agents/*.md` | 用户级，所有项目可用 |
+| `<项目>/.claude/agents/*.md` | 项目级（Claude Code 的目录，`claude_directories: true` 时读取） |
 | `<项目>/.mosscode/agents/*.md` | 项目级，随仓库共享 |
 
-同名定义按 内置 < 用户 < 项目 覆盖，`/agents` 中标出被覆盖的个数。同一目录中两个文件写了同一个 `name` 时，按文件名排序靠前的生效，另一个列为问题。
+同名定义按 内置 < 插件 < 用户 < 项目 覆盖，同一级中 `.mosscode/agents/` 覆盖 `.claude/agents/`，`/agents` 中标出被覆盖的个数。`claude_directories` 的说明见 [Skill](skills.md#存放位置)。同一目录中两个文件写了同一个 `name` 时，按文件名排序靠前的生效，另一个列为问题。
 
 定义在会话开始时加载一次；修改文件后 `/agents reload` 重新加载，下一次请求起生效。
 
@@ -46,7 +49,7 @@ max_turns: 40
 | `description` | 必填，最多 1024 个字符。模型据此决定什么时候用这个类型，要写清楚适用的任务和 `prompt` 里需要给什么 |
 | `tools` | 工具白名单：列表或逗号分隔的字符串。不写表示主对话的全部工具（L1 的除外） |
 | `disallowed_tools` | 工具黑名单，先于白名单生效 |
-| `model` | 配置中的提供商名称（与 `/model` 的参数相同）；不写或写 `inherit` 使用当前提供商 |
+| `model` | 配置中的提供商名称（与 `/model` 的参数相同）；不写或写 `inherit` 使用当前提供商。Claude Code 的模型名 `sonnet`、`opus`、`haiku`、`fable` 和以 `claude-` 开头的名称，没有同名提供商时也使用当前提供商 |
 | `max_turns` | 最多请求模型的次数，正整数；不写时与主对话的 `max_iterations` 相同，写了也不会超过它 |
 | `permission_mode` | `default`、`acceptEdits`、`plan`、`bypassPermissions`，见 [权限](#权限) |
 | `background` | `true` 时这个类型总在后台运行 |
@@ -57,7 +60,7 @@ max_turns: 40
 - 写了当前没有的工具名不影响加载（MCP Server 可能还没连上），在 `/agents <名称>` 中列出。
 - Claude Code 的 `color`、`effort`、`skills`、`mcpServers`、`hooks`、`memory`、`initialPrompt` 不支持，读取时忽略，在 `/agents <名称>` 中列出。
 - YAML 错误、缺少必填字段、取值非法或拼错的字段名（如 `disalowed_tools`）会让这个文件被跳过：启动时提示一行，`/agents` 列出路径和原因。
-- `model` 指向不存在的提供商时定义照常加载，`/agents` 中标出；调用这个类型时返回错误，不会改用当前模型。
+- `model` 指向不存在的提供商时定义照常加载，`/agents` 中标出；调用这个类型时返回错误，不会改用当前模型。Claude Code 的模型名例外：`/agents <名称>` 注明“model: sonnet 不是这里的 Provider，使用当前模型”，运行时使用当前模型。
 
 ### 内置定义
 

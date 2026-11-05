@@ -11,7 +11,7 @@ from test_conversation import FakeProvider
 def setup_cli(monkeypatch, args, *, multiple=True, selection="second", default="first"):
     from mosscode.mcp_config import MCPSettings
 
-    monkeypatch.setattr(cli, "load_mcp_settings", lambda root: MCPSettings())
+    monkeypatch.setattr(cli, "load_mcp_settings", lambda root, **options: MCPSettings())
     configs = (
         ProviderConfig("first", "anthropic-messages", "model-a"),
         ProviderConfig("second", "openai-chat-completions", "model-b"),

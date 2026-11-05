@@ -14,6 +14,7 @@ import yaml
 
 from ..mcp_config import MCPConfigError, substitute_env
 from ..paths import mosscode_home, project_dir
+from ..plugins import Plugin, PluginError, PluginRef, resolve
 from .conditions import ConditionGroup, HookConfigError, check_field, parse_condition
 from .events import EVENTS
 
@@ -35,8 +36,8 @@ AGENT_TYPE = re.compile(r"[a-z][a-z0-9-]{0,63}")
 AGENT_TIMEOUT = 300  # A sub-agent needs longer than a command.
 TEMPLATE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}")
 REJECT_TYPE = "reject 需为拒绝原因；动态拒绝请让命令以退出码 2 结束。"
-SOURCES = ("user", "project", "local")
-SOURCE_LABELS = {"user": "用户级", "project": "项目级", "local": "本地"}
+SOURCES = ("user", "plugin", "project", "local")
+SOURCE_LABELS = {"user": "用户级", "plugin": "插件", "project": "项目级", "local": "本地"}
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ class Action:
 class Hook:
     id: str
     event: str
-    source: Literal["user", "project", "local"]
+    source: Literal["user", "plugin", "project", "local"]
     path: Path
     condition: ConditionGroup | None
     action: Action | None  # None only for a static rejection.
@@ -77,6 +78,7 @@ class Hook:
     once: bool = False
     background: bool = False  # async, or an event that always runs in the background
     raw: dict = field(default_factory=dict, compare=False)  # For /hooks <id>.
+    plugin: PluginRef | None = None
 
     def summary(self) -> str:
         if self.action is None:
@@ -125,12 +127,16 @@ class HookConfig:
         return tuple(file for file in self.files if file.needs_trust)
 
 
-def hook_paths(root: Path, home: Path | None = None) -> tuple[tuple[str, Path], ...]:
+def hook_paths(
+    root: Path, home: Path | None = None, plugins: tuple[Plugin, ...] = ()
+) -> tuple[tuple[str, Path, PluginRef | None], ...]:
+    """Load order: user, each plugin's hooks.yaml, project, local."""
     root = Path(root).resolve()
     return (
-        ("user", mosscode_home(home) / "hooks.yaml"),
-        ("project", root / ".mosscode" / "hooks.yaml"),
-        ("local", root / ".mosscode" / "hooks.local.yaml"),
+        ("user", mosscode_home(home) / "hooks.yaml", None),
+        *(("plugin", plugin.hooks_yaml, plugin.ref) for plugin in plugins if plugin.hooks_yaml is not None),
+        ("project", root / ".mosscode" / "hooks.yaml", None),
+        ("local", root / ".mosscode" / "hooks.local.yaml", None),
     )
 
 
@@ -342,8 +348,11 @@ def parse_hook(raw, source: str, path: Path) -> Hook:
     )
 
 
-def read_file(source: str, path: Path) -> tuple[HookFile, list[str]]:
-    """A file-level error skips the file; a hook-level error skips that hook."""
+def read_file(
+    source: str, path: Path, plugin: PluginRef | None = None, project: Path | None = None
+) -> tuple[HookFile, list[str]]:
+    """A file-level error skips the file; a hook-level error skips that hook. A plugin's hooks have its
+    ${CLAUDE_PLUGIN_ROOT} and friends replaced before they are checked."""
     try:
         if not path.is_file():
             return HookFile(source, path, None), []
@@ -371,7 +380,12 @@ def read_file(source: str, path: Path) -> tuple[HookFile, list[str]]:
     hooks, problems = [], []
     for index, entry in enumerate(entries, 1):
         try:
-            hooks.append(parse_hook(entry, source, path))
+            if plugin is not None:
+                try:
+                    entry = plugin.substitute_all(entry, project)
+                except PluginError as exc:
+                    raise HookConfigError(str(exc)) from None
+            hooks.append(replace(parse_hook(entry, source, path), plugin=plugin))
         except HookConfigError as exc:
             label = (
                 entry.get("id") if isinstance(entry, dict) and isinstance(entry.get("id"), str) else f"第 {index} 项"
@@ -381,11 +395,17 @@ def read_file(source: str, path: Path) -> tuple[HookFile, list[str]]:
 
 
 def load_hooks(
-    root: Path, home: Path | None = None, *, store: TrustStore | None = None, trust_project: bool = False
+    root: Path,
+    home: Path | None = None,
+    *,
+    store: TrustStore | None = None,
+    trust_project: bool = False,
+    plugins: tuple[Plugin, ...] | None = None,
 ) -> HookConfig:
+    """plugins: None reads the installed ones; installing a plugin was the user's confirmation of its hooks."""
     files, problems, seen = [], [], set()
-    for source, path in hook_paths(root, home):
-        file, issues = read_file(source, path)
+    for source, path, plugin in hook_paths(root, home, resolve(plugins, home)):
+        file, issues = read_file(source, path, plugin, Path(root).resolve())
         problems.extend(issues)
         unique = []
         for hook in file.hooks:
@@ -395,7 +415,7 @@ def load_hooks(
             seen.add(hook.id)
             unique.append(hook)
         trusted = (
-            source == "user"
+            source in ("user", "plugin")
             or trust_project
             or file.digest is None
             or (store is not None and store.trusted(path.name, file.digest))

@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 插件：`moss plugin install|list|update|remove|enable|disable` 安装和管理用户级插件，一个插件可以包含 Skill、命令、子 Agent、MCP 服务器和 Hook，兼容 Claude Code 的插件布局（`.claude-plugin/plugin.json`、`commands/`、`.mcp.json`、`${CLAUDE_PLUGIN_ROOT}` 等）。来源可以是 git 仓库、GitHub 的 `owner/repo` 或本机目录，支持 marketplace 仓库（`<来源>#<插件名>`）；安装和更新前列出其中的命令并询问，标签和提交固定的插件不随更新移动。记录在 `~/.mosscode/plugins.yaml`，启动时不联网。对话中 `/plugins` 查看，`moss doctor` 检查插件。
+- `config.yaml` 新增 `claude_directories`：为 `true` 时另外读取 Claude Code 的 `.claude/skills/`、`.claude/agents/`（用户级和项目级）；未开启而项目中有这些定义时启动区提示一次。
+
+### 变更
+
+- 子 Agent 的 `model` 写 Claude Code 的模型名（`sonnet`、`opus`、`haiku`、`fable` 或 `claude-…`）且没有同名 Provider 时，使用当前模型，不再报错。
+
 ## [0.2.0] - 2026-11-04
 
 ### 新增

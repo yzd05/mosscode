@@ -67,7 +67,8 @@ moss setup | doctor | models
 - 网络搜索服务（`web_search`）及其凭据状态；未配置时说明搜索不可用，读取网页不受影响；
 - `~/.mosscode` 是否可写；
 - ripgrep、git，Windows 上的 Git Bash 和 Windows Terminal（`wt.exe`，团队分屏窗格需要）；
-- 当前目录 `.mosscode/` 下的权限、MCP 和 Hook 文件能否解析。
+- 当前目录 `.mosscode/` 下的权限、MCP 和 Hook 文件能否解析；
+- 已安装的[插件](plugins.md)：有 git 来源时 git 是否可用，每个插件是否在磁盘上、能否读取，组件的问题；没有安装插件时不显示这一节。
 
 ### models
 
@@ -98,6 +99,10 @@ moss key set deepseek
 
 然后把配置中的 `api_key: ...` 一行改成 `api_key_keyring: deepseek`。没有可用的凭据管理器时报错并建议改用环境变量。
 
+### plugin
+
+`moss plugin install|list|update|remove|enable|disable` 安装和管理用户级插件，记录在 `~/.mosscode/plugins.yaml`，见 [插件](plugins.md#moss-plugin)。安装和更新前列出插件的内容并询问，`-y` 跳过；git 来源需要 PATH 中有 `git`。
+
 ## 配置查找
 
 未指定 `--config` 时依次查找，第一个存在的生效：
@@ -115,6 +120,7 @@ moss key set deepseek
 | `moss setup` | 0 写入完成或配置已存在；1 写入或校验失败；2 不在终端中；130 中途退出 |
 | `moss doctor` | 0 没有 ✗；1 有 ✗ |
 | `moss models` | 0 完成；1 配置无法读取，或更新时下载、解析、写入失败 |
+| `moss plugin` | 0 完成；1 失败、取消，或 marketplace 只列出了插件；2 参数错误；130 中途退出 |
 
 ## 启动速度
 

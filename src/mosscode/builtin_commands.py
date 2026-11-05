@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.cells import cell_len
 from rich.text import Text
 
-from .agents import SOURCE_LABELS as AGENT_SOURCES
+from .agents import claude_model
 from .agents.runtime import GLOBAL_BAN, WORKSPACE_TOOLS, effective_mode, stats
 from .agents.tasks import ORIGIN_LABELS, STATUS_LABELS
 from .appearance import KEY_HELP
@@ -19,7 +19,7 @@ from .memory import SCOPE_LABELS
 from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
 from .reasoning import DEFAULT, LEVEL_LABELS, LEVELS, Unsupported, thinking_options
-from .skills import SOURCE_LABELS, ForkRequest
+from .skills import ForkRequest, source_label
 from .usage import cost_text
 
 USAGE_WIDTH = 22
@@ -89,7 +89,7 @@ def help_text(registry: CommandRegistry, name: str = "", skills=None) -> str:
             return f"未知命令 /{name.removeprefix('/')}。输入 /help 查看命令。"
         skill = skills.get(command.skill) if skills is not None and command.kind == "skill" else None
         if skill is not None:
-            kind = f"Skill：{skill.mode}，来源{SOURCE_LABELS[skill.source]}（/skills {skill.name} 查看详情）"
+            kind = f"Skill：{skill.mode}，来源{source_label(skill)}（/skills {skill.name} 查看详情）"
         elif command.kind == "prompt":
             kind = "提示词命令：把预设的请求发给模型"
         else:
@@ -727,7 +727,7 @@ def skills_report(catalog, name: str = "", active=()) -> str:
             return f"未找到 Skill {name}。已加载：{names}"
         rows = [
             ("路径", str(skill.path)),
-            ("来源", SOURCE_LABELS[skill.source]),
+            ("来源", source_label(skill)),
             ("覆盖", "、".join(str(path) for path in skill.overrides) or "无"),
             ("模式", skill.mode + (f"（fork_context: {skill.fork_context}）" if skill.mode == "fork" else "")),
             ("模型", skill.model or "当前模型"),
@@ -756,8 +756,7 @@ def skills_report(catalog, name: str = "", active=()) -> str:
     for skill in catalog.skills.values():
         label = f"/{skill.name}"
         lines.append(
-            f"{label}{' ' * (width - cell_len(label))}  {SOURCE_LABELS[skill.source]}  {skill.mode:<6}  "
-            f"{skill.description}"
+            f"{label}{' ' * (width - cell_len(label))}  {source_label(skill)}  {skill.mode:<6}  {skill.description}"
         )
     lines.extend("! " + problem for problem in catalog.problems)
     noted = [name for name, skill in catalog.skills.items() if skill.warnings]
@@ -988,7 +987,7 @@ def agents_line(conversation) -> str:
     return line + "（/agents、/tasks 查看）"
 
 
-def _model_missing(conversation, agent) -> bool:
+def _no_provider(conversation, agent) -> bool:
     return (
         bool(agent.model)
         and not conversation._is_current(agent.model)
@@ -996,10 +995,16 @@ def _model_missing(conversation, agent) -> bool:
     )
 
 
+def _model_missing(conversation, agent) -> bool:
+    return _no_provider(conversation, agent) and not claude_model(agent.model)
+
+
 def _agent_model(conversation, agent) -> str:
-    """A missing provider is shown here, and the call fails; it never falls back to the current model."""
+    """A missing provider is shown here, and the call fails; only Claude Code's model names use the current one."""
     if not agent.model:
         return "继承当前模型"
+    if _no_provider(conversation, agent) and claude_model(agent.model):
+        return f"model: {agent.model} 不是这里的 Provider，使用当前模型"
     return f"{agent.model}（没有该提供商，调用时报错）" if _model_missing(conversation, agent) else agent.model
 
 
@@ -1018,7 +1023,7 @@ def agents_report(conversation, name: str = "") -> str:
         available = [tool for tool in available if tool not in lost]
         rows = [
             ("路径", str(agent.path)),
-            ("来源", AGENT_SOURCES[agent.source]),
+            ("来源", source_label(agent)),
             ("覆盖", "、".join(str(path) for path in agent.overrides) or "无"),
             ("描述", agent.description),
             ("模型", _agent_model(conversation, agent)),
@@ -1048,8 +1053,7 @@ def agents_report(conversation, name: str = "") -> str:
             f"  [模型 {agent.model} 不存在]" if _model_missing(conversation, agent) else ""
         )
         lines.append(
-            f"{agent.name}{' ' * (width - cell_len(agent.name))}  {AGENT_SOURCES[agent.source]}  "
-            f"{agent.description}{marks}"
+            f"{agent.name}{' ' * (width - cell_len(agent.name))}  {source_label(agent)}  {agent.description}{marks}"
         )
     lines.extend("! " + problem for problem in catalog.problems)
     lines.append("模型用 agent 工具调用；/agents 名称 查看详情；/agents reload 重新加载。")
@@ -1077,6 +1081,22 @@ async def _agents(ctx: CommandContext, argument: str) -> None:
     lines.extend("  ! " + problem for problem in catalog.problems)
     await ctx.ui.note("\n".join(lines))
     ctx.ui.refresh_status()
+
+
+async def _plugins(ctx: CommandContext, argument: str) -> None:
+    from .plugin_command import report
+
+    text = await asyncio.to_thread(report, None, argument.strip())
+    await ctx.ui.note(
+        text + "\n安装、更新、删除、停用在命令行中进行（moss plugin install|update|remove|disable …），"
+        "变化在下一次启动 moss 时生效。"
+    )
+
+
+def _plugin_names(ctx: CommandContext):
+    from .plugins import load_records
+
+    return [(record.name, record.source) for record in load_records()[0]]
 
 
 def _agent_names(ctx: CommandContext):
@@ -1520,6 +1540,17 @@ BUILTIN = CommandRegistry(
             argument_hint="[名称|reload]",
             handler=_agents,
             complete=_agent_names,
+        ),
+        Command(
+            "plugins",
+            "查看已安装的插件",
+            "/plugins [名称]",
+            "local",
+            aliases=("plugin",),
+            argument="optional",
+            argument_hint="[名称]",
+            handler=_plugins,
+            complete=_plugin_names,
         ),
         Command(
             "tasks",

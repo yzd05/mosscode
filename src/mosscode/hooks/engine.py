@@ -114,6 +114,7 @@ class HookEngine:
         enabled: bool = True,
         trust_project: bool = False,
         config: HookConfig | None = None,
+        plugins=None,
     ):
         self.root = Path(root).resolve()
         self.home = home
@@ -121,13 +122,8 @@ class HookEngine:
         self.enabled = enabled
         self.trust_project = trust_project
         self.store = TrustStore(self.root, home)
-        self.config = (
-            config
-            if config is not None
-            else (
-                load_hooks(self.root, home, store=self.store, trust_project=trust_project) if enabled else HookConfig()
-            )
-        )
+        self.plugins = plugins  # None reads the installed ones on every (re)load.
+        self.config = config if config is not None else self._load()
         self.declined: set[Path] = set()  # Files the user chose not to enable this run.
         self.recent: deque[HookRun] = deque(maxlen=RECENT)
         self.session = None
@@ -173,15 +169,18 @@ class HookEngine:
     def decline(self, file: HookFile) -> None:
         self.declined.add(file.path)
 
+    def _load(self) -> HookConfig:
+        if not self.enabled:
+            return HookConfig()
+        return load_hooks(
+            self.root, self.home, store=self.store, trust_project=self.trust_project, plugins=self.plugins
+        )
+
     def reload(self) -> tuple[list[str], list[str]]:
         """Reread the files; once state is kept by id. Returns (added, removed) ids."""
         before = {hook.id for hook in self.hooks}
         self.declined.clear()
-        self.config = (
-            load_hooks(self.root, self.home, store=self.store, trust_project=self.trust_project)
-            if self.enabled
-            else HookConfig()
-        )
+        self.config = self._load()
         after = {hook.id for hook in self.hooks}
         return sorted(after - before), sorted(before - after)
 
@@ -300,6 +299,8 @@ class HookEngine:
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
         }
+        if hook.plugin is not None:
+            env.update(hook.plugin.env(self.root))
         if EVENTS[event.name].tool:
             env["MOSSCODE_TOOL_NAME"] = event.tool
             env["MOSSCODE_FILE_PATH"] = str(event.file_path) if event.file_path is not None else ""

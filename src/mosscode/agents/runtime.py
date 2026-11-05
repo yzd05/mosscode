@@ -17,7 +17,7 @@ from ..prompts import git_snapshot, hook_notification
 from ..skills import ActiveSkills
 from ..tool_budget import bound_result
 from ..usage import price_of
-from . import FORK, AgentCatalog, AgentDef
+from . import FORK, AgentCatalog, AgentDef, claude_model
 from .tasks import STATUS_LABELS, Task, TaskManager
 
 if TYPE_CHECKING:
@@ -201,9 +201,21 @@ class SubAgents:
 
     # Building ------------------------------------------------------------------------------
 
+    def model_for(self, model: str | None) -> str | None:
+        """A Claude Code model name (sonnet, claude-...) with no provider of that name means the current model."""
+        conversation = self.conversation
+        if (
+            claude_model(model)
+            and not conversation._is_current(model)
+            and conversation._fork_provider_config(model) is None
+        ):
+            return None
+        return model
+
     def _provider(self, model: str | None, what: str):
         """(provider, budget, owned); owned providers are closed when the sub-agent ends."""
         conversation = self.conversation
+        model = self.model_for(model)
         if not model or conversation._is_current(model):
             return conversation.provider, self.main.budget, False
         config = conversation._fork_provider_config(model)
@@ -221,6 +233,7 @@ class SubAgents:
     def _check_provider(self, model: str | None, what: str) -> None:
         """An isolated sub-agent builds its loop inside the task; a wrong model is still a tool error."""
         conversation = self.conversation
+        model = self.model_for(model)
         if model and not conversation._is_current(model) and conversation._fork_provider_config(model) is None:
             names = "、".join(c.name for c in conversation.provider_configs) or "无"
             raise ProviderError(f"{what}未运行：没有名为 {model} 的提供商（可用：{names}）。")

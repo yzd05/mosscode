@@ -69,6 +69,7 @@ class SkillTool(Tool):
         self.validator = check_schema(self.schema)
         self.command = spec.command
         self.timeout = spec.timeout
+        self.plugin = skill.plugin  # A plugin's skill: its ${CLAUDE_PLUGIN_ROOT} and friends, and their variables.
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(self.name, self.description, deepcopy(self.schema), self.prompt_summary)
@@ -79,11 +80,19 @@ class SkillTool(Tool):
         return json_arguments(self.validator, raw, "Skill 工具")
 
     def argv(self) -> list[str]:
-        """${SKILL_DIR} and ${PYTHON} substituted."""
-        return [
+        """${SKILL_DIR} and ${PYTHON} substituted, and a plugin's variables."""
+        argv = [
             part.replace("${SKILL_DIR}", str(self.directory)).replace("${PYTHON}", sys.executable)
             for part in self.command
         ]
+        if self.plugin is None:
+            return argv
+        from ..plugins import PluginError
+
+        try:
+            return [self.plugin.substitute(part, self.root) for part in argv]
+        except PluginError as exc:
+            raise ToolFailure("plugin_config", f"{exc}。未执行。") from None
 
     def _executable(self, first: str) -> str:
         if os.sep in first or "/" in first:
@@ -102,6 +111,7 @@ class SkillTool(Tool):
             "MOSSCODE_PROJECT_ROOT": str(self.root),
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
+            **(self.plugin.env(self.root) if self.plugin is not None else {}),
         }
         data = json.dumps(params.model_dump(), ensure_ascii=False).encode("utf-8")
         details = await run_process(

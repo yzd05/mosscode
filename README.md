@@ -66,9 +66,10 @@ providers:
 | `teammate_mode` | `auto` | 团队成员在哪里运行：`auto`、`in-process`、`windows-terminal`、`tmux`，见 [Agent 团队](docs/reference/teams.md#后端) |
 | `team_max_members` | `4` | 每个团队的成员上限，1–8 |
 | `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE=1`，见 [Agent 团队](docs/reference/teams.md#协调者模式) |
+| `claude_directories` | `false` | 另外读取 Claude Code 的 `.claude/skills/`、`.claude/agents/`（用户级和项目级），见 [Skill](docs/reference/skills.md#存放位置) |
 | `web_search` | 无 | 搜索服务，如 `{provider: tavily, api_key_env: TAVILY_API_KEY}`；未配置时不提供搜索，见 [工具与 Agent Loop](docs/reference/tools.md#web_search) |
 
-### 权限、MCP、项目指令、Skill、Hook、子 Agent 与工作树
+### 权限、MCP、项目指令、Skill、Hook、子 Agent、插件与工作树
 
 | 文件 | 用途 | 说明 |
 | --- | --- | --- |
@@ -78,6 +79,7 @@ providers:
 | `~/.mosscode/skills/<名称>/`、`.mosscode/skills/<名称>/`，以及共享的 `.agents/skills/` | Skill：`SKILL.md` 规程和可选的 `tool.json` 脚本工具；项目级覆盖用户级和内置 | [Skill](docs/reference/skills.md) |
 | `~/.mosscode/hooks.yaml`、`.mosscode/hooks.yaml`、`.mosscode/hooks.local.yaml` | Hook：在会话、轮次、请求和工具调用前后执行命令、注入提示、发送 HTTP 请求或拦截工具调用；项目级文件需确认后启用 | [Hook](docs/reference/hooks.md) |
 | `~/.mosscode/agents/<名称>.md`、`.mosscode/agents/<名称>.md` | 子 Agent 定义：frontmatter 写名称、描述、工具范围、模型、轮数和权限档位，正文是系统提示词；项目级覆盖用户级和内置的 explore、plan、general | [子 Agent](docs/reference/subagents.md) |
+| `~/.mosscode/plugins.yaml` | 插件：一组 Skill、命令、子 Agent、MCP 和 Hook，兼容 Claude Code 的插件；用 `moss plugin install` 安装 | [插件](docs/reference/plugins.md) |
 | `.worktreeinclude`（仓库根） | 用 `.gitignore` 语法列出创建工作树时要复制过去的被忽略文件，如 `.env` | [Git 工作树](docs/reference/worktree.md#初始化) |
 
 ## 使用
@@ -134,6 +136,7 @@ moss --resume                 # 启动后从列表中选择会话
 | `/skills`（别名 `/skill`） | 列出全部 Skill 及其来源、模式和描述；`/skills 名称` 查看详情，`/skills reload` 重新扫描 |
 | `/hooks`（别名 `/hook`） | 列出 Hook 及其来源、条件、状态和最近的执行记录；`/hooks id` 查看详情，`/hooks reload` 重新加载 |
 | `/agents`（别名 `/agent`） | 列出子 Agent 定义及其来源和描述；`/agents 名称` 查看实际可用的工具和有效权限档位，`/agents reload` 重新扫描 |
+| `/plugins`（别名 `/plugin`） | 列出已安装的插件；`/plugins 名称` 查看组件和问题。安装和管理用命令行的 `moss plugin` |
 | `/tasks`（别名 `/task`） | 列出本会话的子 Agent 任务及其状态、用时和 Token；`/tasks id` 查看详情，`/tasks stop id` 停止 |
 | `/worktree`（别名 `/worktrees`） | 列出 MossCode 管理的 git 工作树及其状态；`/worktree create 名称` 创建，`/worktree remove 名称 [--discard]` 删除，`/worktree clean` 清理过期的临时工作树 |
 | `/team`（别名 `/teams`） | 列出本项目的 Agent 团队；`/team 名称` 查看成员和任务，`/team stop 成员` 停止成员，`/team delete 名称` 删除团队 |
@@ -230,12 +233,13 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 | `launcher.py`、`cli.py` | 命令入口：参数、`--version` 和子命令不加载界面与 SDK；会话由 `cli.run` 启动 |
 | `config.py`、`setup.py`、`doctor.py` | 配置加载、配置引导（`moss setup`）与诊断（`moss doctor`） |
 | `credentials.py`、`key_command.py` | 系统凭据管理器（`moss key`），子进程环境与输出中的密钥隐藏 |
+| `plugins.py`、`plugin_command.py` | 插件的记录、读取与变量替换，交给 Skill、子 Agent、MCP、Hook 的加载函数；`moss plugin` 的安装、marketplace、更新与删除 |
 
 ### 文档
 
 | 主题 | 文档 |
 | --- | --- |
-| 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
+| 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[插件](docs/reference/plugins.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
 | 版本变化 | [更新日志](CHANGELOG.md) |
 | 开发与贡献 | [参与贡献](CONTRIBUTING.md)、[开发说明](AGENTS.md)、[安全策略](SECURITY.md) |
 

@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .plugins import Plugin, PluginError, PluginRef, resolve
+
 
 class MCPConfigError(ValueError):
     pass
@@ -158,28 +160,43 @@ def _server(name, raw):
     raise MCPConfigError("type 必须是 stdio 或 http（Streamable HTTP）。")
 
 
-def _read_mcp_json(path: Path) -> tuple[dict, list[str]]:
+def _read_mcp_json(
+    path: Path, label: str | None = None, plugin: PluginRef | None = None, project: Path | None = None
+) -> tuple[dict, list[str]]:
     """Claude Code's project file, converted to the mcp.yaml shape. Problems are notices, never fatal."""
+    label = label or path.name
     try:
         if not path.is_file():
             return {}, []
         raw = json.loads(path.read_text(encoding="utf-8"))
-        servers = raw.get("mcpServers", {}) if isinstance(raw, dict) else None
+        servers = raw.get("mcpServers", raw if plugin is not None else None) if isinstance(raw, dict) else None
         if not isinstance(servers, dict):
             raise ValueError
     except (OSError, UnicodeError, ValueError):
-        return {}, [f"MCP 配置 {path.name}：无法读取有效 UTF-8 JSON 或缺少 mcpServers 对象，已忽略。"]
+        return {}, [f"MCP 配置 {label}：无法读取有效 UTF-8 JSON 或缺少 mcpServers 对象，已忽略。"]
+    return _convert_mcp_json(servers, label, plugin, project)
+
+
+def _convert_mcp_json(
+    servers: dict, label: str, plugin: PluginRef | None = None, project: Path | None = None
+) -> tuple[dict, list[str]]:
     converted, notices = {}, []
     for name, entry in servers.items():
         if not isinstance(name, str) or not re.fullmatch(SERVER_NAME, name):
-            notices.append(f"MCP 配置 {path.name}：Server 名称需为 1–64 位英文字母、数字、下划线或连字符，已跳过一项。")
+            notices.append(f"MCP 配置 {label}：Server 名称需为 1–64 位英文字母、数字、下划线或连字符，已跳过一项。")
             continue
         if not isinstance(entry, dict):
             notices.append(f"MCP {name} 不可用：Server 配置必须是对象。")
             continue
+        if plugin is not None:
+            try:
+                entry = plugin.substitute_all(entry, project)
+            except PluginError as exc:
+                notices.append(f"MCP {name} 不可用：{exc}。")
+                continue
         kind = entry.get("type", "stdio" if "command" in entry else None)
         if kind not in {"stdio", "http"}:
-            notices.append(f"MCP {name} 不可用：.mcp.json 中的传输方式 {kind!s} 不受支持（支持 stdio、http）。")
+            notices.append(f"MCP {name} 不可用：{label} 中的传输方式 {kind!s} 不受支持（支持 stdio、http）。")
             continue
         keys = {"command", "args", "env"} if kind == "stdio" else {"url", "headers"}
         item = {"type": kind, **{k: entry[k] for k in keys | OPTIONS if k in entry}}
@@ -198,14 +215,66 @@ def _read_mcp_json(path: Path) -> tuple[dict, list[str]]:
     return converted, notices
 
 
-def load_mcp_settings(root: Path, *, user_path: Path | None = None) -> MCPSettings:
+def _plugin_servers(plugin: Plugin, root: Path) -> tuple[dict, list[str]]:
+    """A plugin's .mcp.json files, the servers in its plugin.json and its mcp.yaml, in that order. Its stdio
+    servers also get the plugin's directories as environment variables."""
+    ref, merged, notices = plugin.ref, {}, []
+    for path in plugin.mcp_json:
+        servers, issues = _read_mcp_json(path, f"插件 {plugin.name} 的 {path.name}", ref, root)
+        merged.update(servers)
+        notices += issues
+    if plugin.mcp_inline:
+        servers, issues = _convert_mcp_json(dict(plugin.mcp_inline), f"插件 {plugin.name} 的 plugin.json", ref, root)
+        merged.update(servers)
+        notices += issues
+    if plugin.mcp_yaml is not None:
+        try:
+            raw, _ = _read(plugin.mcp_yaml)
+        except MCPConfigError as exc:
+            notices.append(f"插件 {plugin.name}：{exc}")
+            raw = {}
+        for name, entry in raw.items():
+            try:
+                merged[name] = ref.substitute_all(entry, root)
+            except PluginError as exc:
+                notices.append(f"MCP {name} 不可用：{exc}。")
+    for entry in merged.values():
+        if isinstance(entry, dict) and entry.get("type", "stdio") == "stdio":
+            env = entry.get("env", {})
+            entry["env"] = {**ref.env(root), **env} if isinstance(env, dict) else env
+    return merged, notices
+
+
+def plugin_servers(plugin: Plugin, root: Path) -> tuple[list[ServerConfig], list[str]]:
+    """One plugin's servers, for showing it before installing and in /plugins."""
+    raw, notices = _plugin_servers(plugin, root)
+    servers = []
+    for name, entry in raw.items():
+        try:
+            servers.append(_server(name, entry))
+        except MCPConfigError as exc:
+            notices.append(f"MCP {name} 不可用：{exc}")
+    return servers, notices
+
+
+def load_mcp_settings(
+    root: Path, *, user_path: Path | None = None, plugins: tuple[Plugin, ...] | None = None
+) -> MCPSettings:
+    """Lowest first: plugins (plugins.yaml order), user mcp.yaml, .mcp.json when imported, project mcp.yaml.
+    plugins: None reads the installed ones."""
     user_file, project_file = config_paths(root, user_path)
     user, user_import = _read(user_file)
     project, project_import = _read(project_file)
-    merged, notices = dict(user), []
+    merged, notices = {}, []
+    for plugin in resolve(plugins):
+        servers, issues = _plugin_servers(plugin, root)
+        merged.update(servers)
+        notices += issues
+    merged.update(user)
     if user_import or project_import:
-        imported, notices = _read_mcp_json(mcp_json_path(root))
+        imported, issues = _read_mcp_json(mcp_json_path(root))
         merged.update(imported)
+        notices += issues
     merged.update(project)  # Replace the complete server, never merge transport fields.
     servers = []
     for name, raw in merged.items():

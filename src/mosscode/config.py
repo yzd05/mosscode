@@ -156,6 +156,7 @@ class Settings:
     teammate_mode: str = "auto"  # auto / in-process / windows-terminal / tmux.
     coordinator_mode: bool = False  # Also needs MOSSCODE_COORDINATOR_MODE.
     web_search: WebSearchConfig | None = None  # None: web_search is not offered.
+    claude_directories: bool = False  # Also read skills and sub-agents from .claude directories.
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -405,6 +406,7 @@ def load_settings(path: str | Path) -> Settings:
         "teammate_mode",
         "coordinator_mode",
         "web_search",
+        "claude_directories",
     }:
         raise ConfigError("配置顶层包含未知字段。")
     providers = tuple(_provider(item) for item in raw["providers"])
@@ -447,6 +449,9 @@ def load_settings(path: str | Path) -> Settings:
     coordinator = raw.get("coordinator_mode", Settings.coordinator_mode)
     if type(coordinator) is not bool:
         raise ConfigError("coordinator_mode 必须是布尔值。")
+    claude_directories = raw.get("claude_directories", Settings.claude_directories)
+    if type(claude_directories) is not bool:
+        raise ConfigError("claude_directories 必须是布尔值。")
     settings = Settings(
         providers,
         default,
@@ -463,6 +468,7 @@ def load_settings(path: str | Path) -> Settings:
         teammate_mode=teammate_mode,
         coordinator_mode=coordinator,
         web_search=_web_search(raw.get("web_search")),
+        claude_directories=claude_directories,
         **switches,
     )
     settings.select()

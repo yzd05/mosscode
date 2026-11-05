@@ -38,6 +38,7 @@ from .messages import (
     UsageUpdate,
 )
 from .permissions import PermissionConfigError
+from .plugins import installed as installed_plugins
 from .providers import create_provider
 from .session import Session, prune_all
 from .skills import ForkRequest, SkillCatalog
@@ -187,7 +188,7 @@ async def _turns(conversation: Conversation, prompt: str, *, command: str | None
         await tasks.finished.wait()
 
 
-def _hook_engine(args, registry, *, interactive: bool):
+def _hook_engine(args, registry, *, interactive: bool, plugins=None):
     """--no-hooks loads nothing; -p skips untrusted project files unless --trust-project-hooks."""
     tool = registry.get("execute_command")
     engine = HookEngine(
@@ -195,6 +196,7 @@ def _hook_engine(args, registry, *, interactive: bool):
         shell=getattr(tool, "shell", None),
         enabled=not args.no_hooks,
         trust_project=args.trust_project_hooks,
+        plugins=plugins,
     )
     notices = list(engine.problems)
     if not interactive:
@@ -422,6 +424,18 @@ def _memory_options(settings, *, interactive: bool) -> dict:
     return options
 
 
+def claude_notice(root: Path) -> str | None:
+    """Definitions written for Claude Code in the project that stay unread while claude_directories is off."""
+    agents = sum(1 for path in (root / ".claude" / "agents").glob("*.md") if path.is_file())
+    skills = sum(1 for path in (root / ".claude" / "skills").glob("*/SKILL.md") if path.is_file())
+    found = "、".join(
+        part for part in (f"{agents} 个子 Agent" if agents else "", f"{skills} 个 Skill" if skills else "") if part
+    )
+    if not found:
+        return None
+    return f"发现 .claude 中的 {found}，在 config.yaml 中设置 claude_directories: true 即可使用。"
+
+
 def _config_path(args) -> Path | None:
     """No configuration in an interactive terminal starts the setup; None when it was left."""
     if args.config is not None:
@@ -446,14 +460,6 @@ def run(args: argparse.Namespace) -> None:
         from .teams.process import run_member
 
         raise SystemExit(run_member(args.team_dir, args.team_member, args.config, args.provider))
-    # Skills are scanned first so that -p "/<name>" parses.
-    skills = SkillCatalog.load(Path.cwd(), reserved=BUILTIN.names())
-    commands, skipped = BUILTIN.with_skills(skills)
-    prompt, command, skill = (
-        _headless_input(args.prompt, commands, skills.problems + skipped)
-        if args.prompt is not None
-        else (None, None, None)
-    )
     try:
         path = _config_path(args)
         if path is None:
@@ -463,6 +469,16 @@ def run(args: argparse.Namespace) -> None:
             for item in settings.providers:
                 print(f"{item.name}: {item.protocol} / {item.model}")
             return
+        # Plugins are read once; skills come before the provider so that -p "/<name>" parses.
+        plugins = installed_plugins()
+        claude = settings.claude_directories
+        skills = SkillCatalog.load(Path.cwd(), reserved=BUILTIN.names(), plugins=plugins.plugins, claude=claude)
+        commands, skipped = BUILTIN.with_skills(skills)
+        prompt, command, skill = (
+            _headless_input(args.prompt, commands, plugins.notices + skills.problems + skipped)
+            if args.prompt is not None
+            else (None, None, None)
+        )
         protect(settings)
         config = settings.select(args.provider)
         if (
@@ -477,12 +493,14 @@ def run(args: argparse.Namespace) -> None:
         registry = create_default_registry(
             permission_mode=args.permission_mode, shell=settings.shell, web_search=settings.web_search
         )
-        mcp_settings = load_mcp_settings(Path.cwd())
+        mcp_settings = load_mcp_settings(Path.cwd(), plugins=plugins.plugins)
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
         prune_all()
         budget = config.budget()
-        hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None)
-        notices = skills.problems + skipped + hook_notices
+        hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None, plugins=plugins.plugins)
+        notices = plugins.notices + skills.problems + skipped + hook_notices
+        if args.prompt is None and not claude and (found := claude_notice(Path.cwd())):
+            notices += (found,)
         coordinator, coordinator_notice = decide_coordinator(
             settings.coordinator_mode, os.environ, interactive=args.prompt is None
         )
@@ -508,7 +526,7 @@ def run(args: argparse.Namespace) -> None:
             provider_factory=create_provider,
             provider_info=(config.name, config.protocol, config.model),
             hooks=hooks,
-            agents=AgentCatalog.load(Path.cwd()),
+            agents=AgentCatalog.load(Path.cwd(), plugins=plugins.plugins, claude=claude),
             agent_auto_background=settings.agent_auto_background,
             agent_max_background=settings.agent_max_background,
             worktree_links=settings.worktree_links,

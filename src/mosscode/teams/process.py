@@ -136,8 +136,9 @@ class MemberProcess:
         agent = conversation.subagents.catalog.get(member.agent_type) if member.agent_type != FORK else None
         if agent is None:
             raise TeamError("backend_failed", f"Agent 定义 {member.agent_type} 不存在。")
-        if agent.model and not conversation._is_current(agent.model):
-            config = conversation._fork_provider_config(agent.model)
+        model = conversation.subagents.model_for(agent.model)
+        if model and not conversation._is_current(model):
+            config = conversation._fork_provider_config(model)
             problem = missing_key(config) if config is not None else ""
             if problem:
                 raise TeamError("backend_failed", problem)
@@ -313,7 +314,7 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
         provider_factory=create_provider,
         provider_info=(config.name, config.protocol, config.model),
         hooks=hooks,
-        agents=AgentCatalog.load(project),
+        agents=AgentCatalog.load(project, claude=settings.claude_directories),
         worktree_links=settings.worktree_links,
         worktree_stale_hours=0,
     )

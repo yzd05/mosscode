@@ -36,6 +36,8 @@
 | `project\.mosscode\mcp.yaml` | `demo`（工具调用超时 3 秒），`import_mcp_json: true` |
 | `project\.mcp.json` | `fromjson`（省略 type，env 用 `${MOSS_ACCEPT_TAG:-json-default}`） |
 | `project\.mosscode\permissions.yaml` | deny `mcp__demo__fail`、`Bash(git push:*)` |
+| `plugin-demo\` | 演示插件 kit-demo，独立的 git 仓库（分支 main，标签 v1）：Skill `kit-greet`、命令 `/kit-note`、子 Agent `kit-reviewer`（`model: sonnet`）、MCP 服务器 `kit-demo`（`${CLAUDE_PLUGIN_ROOT}/server.py`，调用记录写到插件数据目录的 `calls.log`）、`hooks.yaml`（turn_end 时向数据目录的 `hook.log` 追加一行）和不支持的 `hooks/hooks.json` |
+| `extras\` | 插件用例手动复制的文件：`claude\agents`、`claude\skills`（为 Claude Code 写的定义）、`kit-greet\`（与插件同名的项目 Skill）、`kit-extra\`（插件 v2 新增的 Skill） |
 
 测试 MCP Server 提供 `echo`、`fail`、`slow`（耗时 5 秒）、`mixed` 四个工具，都带 `readOnlyHint`。
 
@@ -575,6 +577,19 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 | M155 读取时隐藏 | “读取 config.yaml，告诉我 dummy 的 api_key 是什么。” | `read_file` 结果中 dummy 的密钥显示为 `[已隐藏的密钥]`；模型回答看不到；会话存档 JSONL 中搜不到 `sk-accept-dummy` |
 | M156 不写回占位符 | “把刚才读到的 config.yaml 内容原样用 write_file 写回去。” | 文件中的 dummy 密钥不变：模型可能直接拒绝写回；若调用了 `write_file`，它失败并说明内容包含 `[已隐藏的密钥]` |
 | M157 moss key | `moss key set mosscode-acceptance`，输入任意测试值；`moss doctor --config` 指向一份 `api_key_keyring: mosscode-acceptance` 的配置；最后 `moss key delete mosscode-acceptance` | 保存时不回显，提示写 `api_key_keyring`；doctor 显示“系统凭据管理器 mosscode-acceptance 已设置”；删除后再删一次提示没有这个条目 |
+
+### 插件与 .claude 目录
+
+规格见 [插件安装与 .claude 目录](specs/plugins/spec.md)。插件装在你的用户目录（`~\.mosscode\plugins.yaml`、`~\.mosscode\plugins\`），M163 会删除它们；开始前 `moss plugin list` 应显示没有安装插件。`moss plugin …` 在验收项目中运行（下文写作 `& "$moss\.venv\Scripts\python.exe" -m mosscode plugin …`，简称 `moss plugin …`），每次安装、停用后重新启动界面再检查。
+
+| 编号 | 操作 | 预期 |
+| --- | --- | --- |
+| M158 .claude 目录 | `Copy-Item -Recurse ..\extras\claude .claude` 后启动界面；退出，在验收用的配置中加一行 `claude_directories: true` 再启动，输入 `/agents claude-helper`、`/skills`，再让模型“用 claude-helper 子 Agent 读取 notes.txt 的第一行” | 第一次启动区提示“发现 .claude 中的 1 个子 Agent、1 个 Skill，在 config.yaml 中设置 claude_directories: true 即可使用。”；开启后不再提示，`/agents claude-helper` 来源为项目、注明“model: sonnet 不是这里的 Provider，使用当前模型”，`/skills` 列出 `claude-skill`；子 Agent 用当前模型运行，回答以“Claude 目录的助手：”开头。之后删除 `.claude` 目录并去掉这一行配置 |
+| M159 安装本机插件 | `moss plugin install ..\plugin-demo`，看完内容后输入 y；`moss plugin list`；启动界面，依次：`/plugins kit-demo`；“请插件问候我”；`/kit-note 插件`；“用 kit-reviewer 子 Agent 看看 src/util.py 里有什么函数”；“调用 kit-demo 的 echo 工具，参数 text 为 你好” | 安装前列出 Skill、命令、子 Agent、MCP 服务器的完整命令（路径是插件目录，不是临时目录）、Hook 的命令，`hooks/hooks.json` 列为未支持；list 显示 kit-demo 1.0.0、启用、组件数量。界面中 `/plugins kit-demo` 显示同样的内容；Skill 运行插件目录中的 hello.py，输出“来自插件的问候：plugin-demo”；命令的回复以“插件命令：”开头；子 Agent 以“插件审查员：”开头；echo 工具返回结果；`~\.mosscode\plugins\data\kit-demo\` 中出现 `calls.log` 和 `hook.log` |
+| M160 从 git 安装与更新 | `moss plugin remove kit-demo`（本机目录保留）；`moss plugin install file:///<验收目录>/plugin-demo --ref v1 -y`；在 `..\plugin-demo` 中 `Copy-Item -Recurse ..\extras\kit-extra skills\`、`git add -A`、`git commit -m v2`、`git tag v2`；`moss plugin update`；把 `~\.mosscode\plugins.yaml` 中的 `ref: v1` 改为 `ref: main`，再 `moss plugin update`，启动界面输入 `/skills kit-extra` | 安装后克隆在 `~\.mosscode\plugins\repos\kit-demo\`，list 显示提交；第一次 update 提示“固定在 v1”，不更新；改为分支后列出新旧提交和“+ Skill kit-extra”，询问后更新；界面中能看到 kit-extra，来源“插件 kit-demo” |
+| M161 marketplace | `moss plugin install anthropics/claude-code`；再 `moss plugin install anthropics/claude-code#feature-dev`，确认安装；启动界面输入 `/plugins feature-dev`、`/agents`，再让模型“用 code-explorer 子 Agent 找出 src 中定义的函数” | 第一次列出这个 marketplace 中的 12 个插件和描述，退出码 1，`~\.mosscode\plugins\.tmp\` 中没有留下目录；第二次显示来源是 anthropics/claude-plugins-official 的 `plugins/feature-dev`、命令 `/feature-dev` 和三个子 Agent 后安装；`/agents` 中 code-architect、code-explorer、code-reviewer 来源为“插件 feature-dev”，`model: sonnet` 注明使用当前模型；子 Agent 正常完成 |
+| M162 覆盖与停用 | `Copy-Item -Recurse ..\extras\kit-greet .mosscode\skills\` 后启动界面，输入 `/skills kit-greet`，再输入 `/kit-greet`；退出，`moss plugin disable kit-demo` 后启动，输入 `/plugins`、`/skills`、`/mcp` | 项目版本生效，回答“项目版本的 kit-greet”，`/skills kit-greet` 列出被覆盖的插件版本；停用后 `/plugins` 显示 kit-demo 已停用，`/skills` 中没有 kit-extra 和 `/kit-note`，`/mcp` 中没有 kit-demo。之后删除 `.mosscode\skills\kit-greet`，`moss plugin enable kit-demo` |
+| M163 删除 | `moss plugin remove kit-demo`、`moss plugin remove feature-dev`；`moss plugin list` | 克隆目录 `repos\kit-demo` 和数据目录 `data\kit-demo` 都删除，`..\plugin-demo` 仍在；最后显示没有安装插件 |
 
 ## 已知限制
 

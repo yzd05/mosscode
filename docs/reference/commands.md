@@ -23,6 +23,7 @@
 | `/skills [名称\|reload]` | `/skill` | 本地 | 列出 Skill；带名称时显示详情，`reload` 重新扫描（见 [Skill](skills.md#skills)） |
 | `/hooks [id\|reload]` | `/hook` | 本地 | 列出 Hook 和最近的执行记录；带 `id` 时显示详情，`reload` 重新加载并询问未确认的项目级文件（见 [Hook](hooks.md#hooks)） |
 | `/agents [名称\|reload]` | `/agent` | 本地 | 列出子 Agent 定义；带名称时显示详情（含本会话实际的权限档位和可用工具），`reload` 重新加载（见 [子 Agent](subagents.md#命令与界面)） |
+| `/plugins [名称]` | `/plugin` | 本地 | 列出已安装的插件；带名称时显示它的组件、问题和状态。安装、更新、删除在命令行中进行（见 [插件](plugins.md#plugins)） |
 | `/tasks [id\|stop id]` | `/task` | 本地 | 列出本会话的子 Agent 任务；带 `id` 时显示详情，`stop id` 停止运行中的任务 |
 | `/worktree [list\|create 名称\|remove 名称 [--discard]\|clean]` | `/worktrees` | 本地 | 列出、创建、删除 MossCode 管理的 git 工作树，或清理过期的临时工作树（见 [Git 工作树](worktree.md#命令)） |
 | `/team [名称\|stop 成员\|delete 名称]` | `/teams` | 本地 | 列出本项目的 Agent 团队；带名称时显示成员和任务，`stop` 停止当前团队的一个成员，`delete` 确认后删除团队（见 [Agent 团队](teams.md#命令)） |

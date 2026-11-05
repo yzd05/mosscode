@@ -174,7 +174,80 @@ def build(target: Path) -> Path:
         write(project / "untracked.txt", "未跟踪的文件\n")
     else:
         print("未找到 git：跳过仓库初始化，Git 快照用例会显示“不是仓库”。")
+    plugin_fixtures(target)
     return project
+
+
+def plugin_fixtures(target: Path) -> None:
+    """plugin-demo/: a plugin with every component, its own git repository tagged v1.
+    extras/: files the plugin cases copy in by hand (.claude definitions, an override, a skill for v2), kept out
+    of the project so a normal start shows no notice."""
+    plugin = target / "plugin-demo"
+    write(
+        plugin / ".claude-plugin" / "plugin.json",
+        json.dumps({"name": "kit-demo", "version": "1.0.0", "description": "验收用的演示插件"}, ensure_ascii=False)
+        + "\n",
+    )
+    write(
+        plugin / "skills" / "kit-greet" / "SKILL.md",
+        "---\nname: kit-greet\ndescription: 插件中的问候 Skill，用户要求插件问候时使用\n---\n"
+        "先说“插件 Skill 已加载”，然后用 execute_command 运行 "
+        f'"{PYTHON.as_posix()}" "${{CLAUDE_PLUGIN_ROOT}}/hello.py"，把输出原样告诉用户。\n',
+    )
+    write(
+        plugin / "hello.py",
+        "from pathlib import Path\n\nprint('来自插件的问候：' + Path(__file__).parent.name)\n",
+    )
+    write(
+        plugin / "commands" / "kit-note.md",
+        "---\ndescription: 用一句话总结一个主题\nargument-hint: <主题>\n---\n"
+        "不要调用工具，用一句话总结 $ARGUMENTS，开头写“插件命令：”。\n",
+    )
+    write(
+        plugin / "agents" / "kit-reviewer.md",
+        "---\nname: kit-reviewer\ndescription: 插件中的只读审查员，用户点名 kit-reviewer 时使用\n"
+        "tools: Read, Grep, Glob\nmodel: sonnet\n---\n"
+        "你是插件中的审查员，只读。回答的第一行写“插件审查员：”，然后给出 ${CLAUDE_PROJECT_DIR} 中被问到的内容。\n",
+    )
+    shutil.copyfile(FIXTURE, plugin / "server.py")
+    server = {"command": str(PYTHON), "args": ["${CLAUDE_PLUGIN_ROOT}/server.py", "${CLAUDE_PLUGIN_DATA}/calls.log"]}
+    write(plugin / ".mcp.json", json.dumps({"mcpServers": {"kit-demo": server}}, indent=2) + "\n")
+    write(
+        plugin / "hooks.yaml",
+        "hooks:\n  - id: kit-turn-end\n    event: turn_end\n    action:\n      type: command\n"
+        f'      command: \'"{PYTHON.as_posix()}" "${{CLAUDE_PLUGIN_ROOT}}/hook.py"\'\n',
+    )
+    write(
+        plugin / "hook.py",
+        "import os\nfrom pathlib import Path\n\n"
+        "data = Path(os.environ['MOSSCODE_PLUGIN_DATA'])\ndata.mkdir(parents=True, exist_ok=True)\n"
+        "with (data / 'hook.log').open('a', encoding='utf-8') as log:\n    log.write('turn_end\\n')\n",
+    )
+    write(plugin / "hooks" / "hooks.json", '{"hooks": {}}\n')  # Claude Code's format: listed as unsupported.
+
+    extras = target / "extras"
+    write(
+        extras / "claude" / "agents" / "claude-helper.md",
+        "---\nname: claude-helper\ndescription: 为 Claude Code 写的助手，用户点名 claude-helper 时使用\n"
+        "tools: Read\nmodel: sonnet\n---\n回答的第一行写“Claude 目录的助手：”，然后回答问题。\n",
+    )
+    write(
+        extras / "claude" / "skills" / "claude-skill" / "SKILL.md",
+        "---\nname: claude-skill\ndescription: 为 Claude Code 写的 Skill\n---\n回答“来自 .claude 的 Skill”。\n",
+    )
+    write(
+        extras / "kit-greet" / "SKILL.md",
+        "---\nname: kit-greet\ndescription: 项目中的同名 Skill，覆盖插件版本\n---\n只回答“项目版本的 kit-greet”。\n",
+    )
+    write(
+        extras / "kit-extra" / "SKILL.md",
+        "---\nname: kit-extra\ndescription: 插件 v2 新增的 Skill\n---\n只回答“插件 v2 的新 Skill”。\n",
+    )
+    if shutil.which("git"):
+        git(plugin, "init", "-q", "--initial-branch", "main")
+        git(plugin, "add", "-A")
+        git(plugin, "commit", "-q", "-m", "kit-demo v1")
+        git(plugin, "tag", "v1")
 
 
 def backdate(project: Path, hours: int) -> int:

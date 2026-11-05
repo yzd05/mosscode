@@ -940,7 +940,7 @@ class TeamRuntime:
             choice.reason,
             "stopped" if pane else "idle",
             require_plan_approval,
-            model=agent.model or "",
+            model=self.conversation.subagents.model_for(agent.model) or "",
             worktree=worktree,
             transcript=f"transcripts/{name}.jsonl",
             prompt=prompt,

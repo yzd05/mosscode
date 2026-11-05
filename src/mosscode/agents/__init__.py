@@ -11,10 +11,13 @@ from typing import Literal
 
 from ..paths import mosscode_home
 from ..permissions import ALIASES, MODES
+from ..plugins import Plugin, PluginRef, checked, resolve
 from ..skills import NAME, NAME_LIMIT, SkillError, _field, _read, _split, _text, split_tool_list
 
-Source = Literal["builtin", "user", "project"]
-SOURCE_LABELS = {"builtin": "内置", "user": "用户", "project": "项目"}
+Source = Literal["builtin", "plugin", "user", "project"]
+SOURCE_LABELS = {"builtin": "内置", "plugin": "插件", "user": "用户", "project": "项目"}
+# Claude Code's model names: with no provider of that name, the sub-agent uses the current model.
+CLAUDE_MODELS = frozenset({"sonnet", "opus", "haiku", "fable"})
 DESCRIPTION_LIMIT = 1024
 CATALOG_DESCRIPTION = 250
 CATALOG_LIMIT = 8000
@@ -56,6 +59,7 @@ class AgentDef:
     isolation: str = "none"  # "worktree" runs it in its own git worktree.
     unsupported: tuple[str, ...] = ()
     overrides: tuple[Path, ...] = ()  # Same-named files this one replaced.
+    plugin: PluginRef | None = None
 
     def allows(self, tool: str) -> bool:
         """The blacklist first, then the whitelist."""
@@ -71,6 +75,10 @@ class AgentDef:
             for pattern in (*self.tools, *self.disallowed_tools)
             if not any(_matches(name, pattern) for name in available)
         ]
+
+
+def claude_model(model: str | None) -> bool:
+    return bool(model) and (model in CLAUDE_MODELS or model.startswith("claude-"))
 
 
 def _matches(tool: str, pattern: str) -> bool:
@@ -94,7 +102,9 @@ def _tools(meta: dict, path: Path, *names: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(items))
 
 
-def parse_agent(path: Path, source: Source) -> AgentDef:
+def parse_agent(
+    path: Path, source: Source, *, plugin: PluginRef | None = None, project: Path | None = None
+) -> AgentDef:
     try:
         meta, body = _split(_read(path), path)
         known = {name for names in FIELDS.values() for name in names}
@@ -114,6 +124,7 @@ def parse_agent(path: Path, source: Source) -> AgentDef:
         raise AgentError(f"{path}：description 超过 {DESCRIPTION_LIMIT} 个字符。")
     if not body:
         raise AgentError(f"{path}：正文为空。")
+    body = checked(plugin, body, project, lambda problem: AgentError(f"{path}：{problem}。"))
     try:
         tools = _tools(meta, path, *FIELDS["tools"])
         disallowed = _tools(meta, path, *FIELDS["disallowed_tools"])
@@ -147,6 +158,7 @@ def parse_agent(path: Path, source: Source) -> AgentDef:
         background,
         isolation,
         tuple(key for key in UNSUPPORTED if key in meta),
+        plugin=plugin,
     )
 
 
@@ -157,13 +169,50 @@ def builtin_dir() -> Path:
     return Path(str(resources.files(__name__).joinpath("builtin")))
 
 
-def agent_dirs(root: Path, home: Path | None = None, builtin: Path | None = None) -> list[tuple[Source, Path]]:
-    """Lowest priority first."""
-    return [
-        ("builtin", builtin if builtin is not None else builtin_dir()),
-        ("user", mosscode_home(home) / "agents"),
-        ("project", root / ".mosscode" / "agents"),
+def agent_dirs(
+    root: Path,
+    home: Path | None = None,
+    builtin: Path | None = None,
+    *,
+    plugins: Iterable[Plugin] = (),
+    claude: bool = False,
+) -> list[tuple[Source, Path, PluginRef | None]]:
+    """Lowest priority first: built-in, plugins in plugins.yaml order, user, project; within a level .claude (only
+    when claude_directories is on) before .mosscode. A plugin's path may be a single .md file."""
+    places: list[tuple[Source, Path, PluginRef | None]] = [
+        ("builtin", builtin if builtin is not None else builtin_dir(), None)
     ]
+    for plugin in plugins:
+        places += [("plugin", path, plugin.ref) for path in plugin.agents]
+    for source, base, own in (
+        ("user", Path.home() if home is None else home, mosscode_home(home) / "agents"),
+        ("project", root, root / ".mosscode" / "agents"),
+    ):
+        if claude:
+            places.append((source, base / ".claude" / "agents", None))
+        places.append((source, own, None))
+    return places
+
+
+def _files(base: Path) -> list[Path]:
+    if base.is_file():
+        return [base] if base.suffix == ".md" else []
+    try:
+        return sorted(child for child in base.iterdir() if child.is_file() and child.suffix == ".md")
+    except OSError:
+        return []
+
+
+def plugin_agents(plugin: Plugin, project: Path) -> tuple[list[AgentDef], list[str]]:
+    """One plugin's sub-agents, for showing it before installing and in /plugins."""
+    agents, problems = [], []
+    for base in plugin.agents:
+        for path in _files(base):
+            try:
+                agents.append(parse_agent(path, "plugin", plugin=plugin.ref, project=project))
+            except AgentError as exc:
+                problems.append(f"Agent 定义已跳过：{exc}")
+    return agents, problems
 
 
 @dataclass
@@ -173,19 +222,25 @@ class AgentCatalog:
     _origin: tuple = field(default=(), repr=False)
 
     @classmethod
-    def load(cls, root: Path, home: Path | None = None, *, builtin: Path | None = None) -> AgentCatalog:
-        """A later place replaces a same-named definition; within a place the first file name wins."""
+    def load(
+        cls,
+        root: Path,
+        home: Path | None = None,
+        *,
+        builtin: Path | None = None,
+        plugins: Iterable[Plugin] | None = None,
+        claude: bool = False,
+    ) -> AgentCatalog:
+        """A later place replaces a same-named definition; within a place the first file name wins. plugins: None
+        reads the installed ones."""
+        plugins = resolve(plugins, home)
         agents: dict[str, AgentDef] = {}
         problems: list[str] = []
-        for source, base in agent_dirs(root, home, builtin):
-            try:
-                files = sorted(child for child in base.iterdir() if child.is_file() and child.suffix == ".md")
-            except OSError:
-                continue
+        for source, base, plugin in agent_dirs(root, home, builtin, plugins=plugins, claude=claude):
             seen: dict[str, Path] = {}
-            for path in files:
+            for path in _files(base):
                 try:
-                    agent = parse_agent(path, source)
+                    agent = parse_agent(path, source, plugin=plugin, project=root)
                 except AgentError as exc:
                     problems.append(f"Agent 定义已跳过：{exc}")
                     continue
@@ -197,13 +252,13 @@ class AgentCatalog:
                 if previous is not None:
                     agent = replace(agent, overrides=previous.overrides + (previous.path,))
                 agents[agent.name] = agent
-        return cls(dict(sorted(agents.items())), tuple(problems), _origin=(root, home, builtin))
+        return cls(dict(sorted(agents.items())), tuple(problems), _origin=(root, home, builtin, plugins, claude))
 
     def reload(self) -> AgentCatalog:
         if not self._origin:
             return self
-        root, home, builtin = self._origin
-        return AgentCatalog.load(root, home, builtin=builtin)
+        root, home, builtin, plugins, claude = self._origin
+        return AgentCatalog.load(root, home, builtin=builtin, plugins=plugins, claude=claude)
 
     def get(self, name: str) -> AgentDef | None:
         return self.agents.get(name)

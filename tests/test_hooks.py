@@ -93,7 +93,7 @@ def names(seen):
 
 def test_three_files_append_in_order(tmp_path):
     root = project(tmp_path)
-    for (_source, path), hook_id in zip(hook_paths(root), ("u1", "p1", "l1")):
+    for (_source, path, _plugin), hook_id in zip(hook_paths(root), ("u1", "p1", "l1")):
         write_hooks(path, {"id": hook_id, "event": "turn_end", "action": {"type": "command", "command": "x"}})
     hooks = HookEngine(root, trust_project=True)
     assert [h.id for h in hooks.hooks] == ["u1", "p1", "l1"]

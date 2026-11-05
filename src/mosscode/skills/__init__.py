@@ -13,6 +13,7 @@ from typing import Literal
 import yaml
 
 from ..paths import mosscode_home
+from ..plugins import Plugin, PluginRef, checked, resolve
 
 # Agent Skills specification: no leading, trailing or doubled "-" (a "--" would also turn into the "__"
 # that separates the parts of a skill tool name).
@@ -75,8 +76,9 @@ KNOWN_FIELDS = frozenset(
         "metadata",
     }
 )
-Source = Literal["builtin", "user", "project"]
-SOURCE_LABELS = {"builtin": "内置", "user": "用户", "project": "项目"}
+Source = Literal["builtin", "plugin", "user", "project"]
+SOURCE_LABELS = {"builtin": "内置", "plugin": "插件", "user": "用户", "project": "项目"}
+COMMAND_FIELDS = {"description", "argument-hint", "argument_hint", "allowed-tools", "allowed_tools", "model"}
 
 
 class SkillError(ValueError):
@@ -112,6 +114,7 @@ class SkillDef:
     license: str = ""
     compatibility: str = ""
     warnings: tuple[str, ...] = ()  # Departures from the Agent Skills specification that do not stop loading.
+    plugin: PluginRef | None = None
 
     @property
     def directory(self) -> Path:
@@ -132,6 +135,12 @@ def expand_arguments(body: str, arguments: str) -> str:
     if "$ARGUMENTS" in body:
         return body.replace("$ARGUMENTS", arguments)
     return body + (f"\n\n补充要求：{arguments}" if arguments else "")
+
+
+def source_label(item) -> str:
+    """The source of a skill or sub-agent definition as shown; a plugin's carries the plugin's name."""
+    label = SOURCE_LABELS[item.source]
+    return f"{label} {item.plugin.name}" if item.plugin is not None else label
 
 
 def tool_full_name(skill: str, tool: str) -> str:
@@ -320,8 +329,16 @@ def _optional_text(meta: dict, key: str, limit: int | None = None) -> str:
     return " ".join(value.split())
 
 
-def parse_skill(directory: Path, source: Source) -> SkillDef:
-    """Read and check one skill directory, its tool whitelist included."""
+def parse_skill(
+    directory: Path,
+    source: Source,
+    *,
+    plugin: PluginRef | None = None,
+    project: Path | None = None,
+    any_directory: bool = False,
+) -> SkillDef:
+    """Read and check one skill directory, its tool whitelist included. any_directory: a plugin whose root is
+    the skill, so the directory carries the plugin's name rather than the skill's."""
     path = directory / "SKILL.md"
     if not path.is_file():
         raise SkillError(f"{directory}：没有 SKILL.md。")
@@ -331,11 +348,12 @@ def parse_skill(directory: Path, source: Source) -> SkillDef:
         raise SkillError(
             f"{path}：name 只能含小写字母、数字和 -，不能以 - 开头或结尾，不能有连续的 --，最长 {NAME_LIMIT} 个字符。"
         )
-    if name != directory.name:
+    if name != directory.name and not any_directory:
         raise SkillError(f"{path}：name（{name}）必须与目录名（{directory.name}）相同。")
     description = " ".join(_text(meta, path, "description", required=True).split())
     if not body:
         raise SkillError(f"{path}：正文为空。")
+    body = checked(plugin, body, project, lambda problem: SkillError(f"{path}：{problem}。"))
     mode = _choice(meta, path, "mode", ("inline", "fork"), None)
     context = _choice(meta, path, "context", ("fork",), None)
     if context and mode == "inline":
@@ -369,6 +387,49 @@ def parse_skill(directory: Path, source: Source) -> SkillDef:
         license=_optional_text(meta, "license"),
         compatibility=_optional_text(meta, "compatibility", SPEC_COMPATIBILITY_LIMIT),
         warnings=_spec_warnings(meta, path, description),
+        plugin=plugin,
+    )
+
+
+def parse_command(
+    path: Path, source: Source, *, plugin: PluginRef | None = None, project: Path | None = None
+) -> SkillDef:
+    """A Claude Code command file (commands/<name>.md): an inline skill only the user calls by name."""
+    text = _read(path)
+    meta, body = _split(text, path) if text.startswith("---") else ({}, text.strip())
+    name = path.stem
+    if not NAME.fullmatch(name) or len(name) > NAME_LIMIT:
+        raise SkillError(f"{path}：命令名（文件名）只能含小写字母、数字和 -，最长 {NAME_LIMIT} 个字符。")
+    if not body:
+        raise SkillError(f"{path}：正文为空。")
+    body = checked(plugin, body, project, lambda problem: SkillError(f"{path}：{problem}。"))
+    description = " ".join(_text(meta, path, "description").split())
+    if not description:
+        first = next(line.strip().lstrip("#").strip() for line in body.splitlines() if line.strip())
+        description = first[:DESCRIPTION_LIMIT]
+    allowed, warnings = [], []
+    for item in _allowed(meta, path):
+        # Commands written for Claude Code may name its other tools: dropped, not fatal.
+        if item in BUILTIN_TOOLS or item.startswith("mcp__"):
+            allowed.append(item)
+        elif item != LOAD_SKILL:
+            warnings.append(f"{path}：allowed-tools 中的 {item} 不是 MossCode 的工具，已忽略。")
+    unknown = [str(key) for key in meta if key not in COMMAND_FIELDS]
+    if unknown:
+        warnings.append(f"{path}：不认识的字段 {'、'.join(unknown)}，已忽略。")
+    if "model" in meta:
+        warnings.append(f"{path}：命令的 model 不生效，使用当前模型。")
+    return SkillDef(
+        name,
+        description,
+        body,
+        path,
+        source,
+        allowed_tools=tuple(allowed),
+        argument_hint=_text(meta, path, "argument-hint", "argument_hint"),
+        model_invocable=False,
+        warnings=tuple(warnings),
+        plugin=plugin,
     )
 
 
@@ -379,16 +440,81 @@ def builtin_dir() -> Path:
     return Path(str(resources.files(__name__).joinpath("builtin")))
 
 
-def skill_dirs(root: Path, home: Path | None = None, builtin: Path | None = None) -> list[tuple[Source, Path]]:
-    """Lowest priority first. .agents/skills is shared with other agents (Agent Skills); at the same level
-    MossCode's own directory wins."""
-    return [
-        ("builtin", builtin if builtin is not None else builtin_dir()),
-        ("user", (Path.home() if home is None else home) / ".agents" / "skills"),
-        ("user", mosscode_home(home) / "skills"),
-        ("project", root / ".agents" / "skills"),
-        ("project", root / ".mosscode" / "skills"),
-    ]
+@dataclass(frozen=True)
+class Place:
+    source: Source
+    path: Path
+    kind: Literal["skills", "skill", "commands"] = "skills"  # Children are skills / it is one / command files.
+    plugin: PluginRef | None = None
+
+
+def skill_places(
+    root: Path,
+    home: Path | None = None,
+    builtin: Path | None = None,
+    *,
+    plugins: Iterable[Plugin] = (),
+    claude: bool = False,
+) -> list[Place]:
+    """Lowest priority first: built-in, plugins in plugins.yaml order, user, project. Within a level
+    .claude (only when claude_directories is on) < .agents (shared Agent Skills) < .mosscode."""
+    user_home = Path.home() if home is None else home
+    places = [Place("builtin", builtin if builtin is not None else builtin_dir())]
+    for plugin in plugins:
+        places += _plugin_places(plugin)
+    for source, base, own in (
+        ("user", user_home, mosscode_home(home) / "skills"),
+        ("project", root, root / ".mosscode" / "skills"),
+    ):
+        if claude:
+            places.append(Place(source, base / ".claude" / "skills"))
+        places += [Place(source, base / ".agents" / "skills"), Place(source, own)]
+    return places
+
+
+def _plugin_places(plugin: Plugin) -> list[Place]:
+    ref = plugin.ref
+    places = [Place("plugin", path, "commands", ref) for path in plugin.commands]
+    places += [Place("plugin", path, "skills", ref) for path in plugin.skill_dirs]
+    if plugin.single_skill:
+        places.append(Place("plugin", plugin.root, "skill", ref))
+    return places
+
+
+def plugin_skills(plugin: Plugin, project: Path) -> tuple[list[SkillDef], list[str]]:
+    """One plugin's skills and commands, for showing it before installing and in /plugins."""
+    skills, problems = [], []
+    for place in _plugin_places(plugin):
+        for entry in _entries(place):
+            try:
+                skills.append(_parse(place, entry, project))
+            except SkillError as exc:
+                problems.append(f"Skill 已跳过：{exc}")
+    return skills, problems
+
+
+def _entries(place: Place) -> list[Path]:
+    """Skill directories or command files of one place; a missing place has none."""
+    if place.kind == "skill":
+        return [place.path]
+    try:
+        if place.kind == "commands":
+            if place.path.is_file():
+                return [place.path] if place.path.suffix == ".md" else []
+            return sorted(child for child in place.path.iterdir() if child.is_file() and child.suffix == ".md")
+        return sorted(
+            child
+            for child in place.path.iterdir()
+            if child.is_dir() and not child.name.startswith(".") and child.name != "__pycache__"
+        )
+    except OSError:
+        return []
+
+
+def _parse(place: Place, entry: Path, project: Path) -> SkillDef:
+    if place.kind == "commands":
+        return parse_command(entry, place.source, plugin=place.plugin, project=project)
+    return parse_skill(entry, place.source, plugin=place.plugin, project=project, any_directory=place.kind == "skill")
 
 
 @dataclass
@@ -400,24 +526,25 @@ class SkillCatalog:
 
     @classmethod
     def load(
-        cls, root: Path, home: Path | None = None, *, reserved: Iterable[str] = (), builtin: Path | None = None
+        cls,
+        root: Path,
+        home: Path | None = None,
+        *,
+        reserved: Iterable[str] = (),
+        builtin: Path | None = None,
+        plugins: Iterable[Plugin] | None = None,
+        claude: bool = False,
     ) -> SkillCatalog:
-        """Scan every place; a later place replaces a same-named skill of an earlier one."""
+        """Scan every place; a later place replaces a same-named skill of an earlier one. plugins: None reads
+        the installed ones."""
         reserved = set(reserved)
+        plugins = resolve(plugins, home)
         skills: dict[str, SkillDef] = {}
         problems: list[str] = []
-        for source, base in skill_dirs(root, home, builtin):
-            try:
-                children = sorted(
-                    child for child in base.iterdir() if child.is_dir() and not child.name.startswith(".")
-                )
-            except OSError:
-                continue  # A missing place is not a problem.
-            for directory in children:
-                if directory.name == "__pycache__":
-                    continue
+        for place in skill_places(root, home, builtin, plugins=plugins, claude=claude):
+            for entry in _entries(place):
                 try:
-                    skill = parse_skill(directory, source)
+                    skill = _parse(place, entry, root)
                 except SkillError as exc:
                     problems.append(f"Skill 已跳过：{exc}")
                     continue
@@ -430,14 +557,15 @@ class SkillCatalog:
                 if previous is not None:
                     skill = replace(skill, overrides=previous.overrides + (previous.path,))
                 skills[skill.name] = skill
-        return cls(dict(sorted(skills.items())), tuple(problems), _origin=(root, home, tuple(reserved), builtin))
+        origin = (root, home, tuple(reserved), builtin, plugins, claude)
+        return cls(dict(sorted(skills.items())), tuple(problems), _origin=origin)
 
     def reload(self) -> SkillCatalog:
         """Scan the same places again; a catalog that was not loaded from disk stays as it is."""
         if not self._origin:
             return self
-        root, home, reserved, builtin = self._origin
-        return SkillCatalog.load(root, home, reserved=reserved, builtin=builtin)
+        root, home, reserved, builtin, plugins, claude = self._origin
+        return SkillCatalog.load(root, home, reserved=reserved, builtin=builtin, plugins=plugins, claude=claude)
 
     def get(self, name: str) -> SkillDef | None:
         return self.skills.get(name)
@@ -446,7 +574,14 @@ class SkillCatalog:
         """Read the files again; on failure keep the last version that loaded."""
         cached = self._latest.get(name) or self.skills[name]
         try:
-            skill = parse_skill(cached.directory, cached.source)
+            project = self._origin[0] if self._origin else None
+            if cached.path.name != "SKILL.md":
+                skill = parse_command(cached.path, cached.source, plugin=cached.plugin, project=project)
+            else:
+                any_directory = cached.plugin is not None and cached.directory == cached.plugin.root
+                skill = parse_skill(
+                    cached.directory, cached.source, plugin=cached.plugin, project=project, any_directory=any_directory
+                )
         except SkillError as exc:
             return cached, f"Skill {name} 重新读取失败，已使用缓存版本：{exc}"
         skill = replace(skill, overrides=cached.overrides)

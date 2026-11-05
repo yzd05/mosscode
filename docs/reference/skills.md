@@ -9,14 +9,19 @@ Skill 是写在 Markdown 文件里的可复用操作规程（SOP），可以带�
 | 位置 | 来源 |
 | --- | --- |
 | 包内 `mosscode/skills/builtin/<名称>/` | 内置 |
+| 已安装插件的 `skills/<名称>/` 和 `commands/*.md` | 插件，见 [插件](plugins.md) |
+| `~/.claude/skills/<名称>/` | 用户级（Claude Code 的目录，`claude_directories: true` 时读取） |
 | `~/.agents/skills/<名称>/` | 用户级（与其他 agent 共用） |
 | `~/.mosscode/skills/<名称>/` | 用户级 |
+| `<启动目录>/.claude/skills/<名称>/` | 项目级（Claude Code 的目录，`claude_directories: true` 时读取） |
 | `<启动目录>/.agents/skills/<名称>/` | 项目级（与其他 agent 共用） |
 | `<启动目录>/.mosscode/skills/<名称>/` | 项目级 |
 
 `.agents/skills/` 是 [Agent Skills](https://agentskills.io/specification) 约定的共享目录，为其他 agent（如 pi）写的 Skill 放在这里即可直接使用。
 
-同名时项目级覆盖用户级，用户级覆盖内置；同一级中 `.mosscode/skills/` 覆盖 `.agents/skills/`。以整个目录为单位（专属工具一起替换）。被覆盖的版本在 `/skills <名称>` 中列出。
+同名时项目级覆盖用户级，用户级覆盖插件，插件覆盖内置；同一级中 `.mosscode/skills/` 覆盖 `.agents/skills/`，`.agents/skills/` 覆盖 `.claude/skills/`。以整个目录为单位（专属工具一起替换）。被覆盖的版本在 `/skills <名称>` 中列出，插件的版本来源显示为“插件 名称”。
+
+**Claude Code 的目录**：在 `config.yaml` 顶层设置 `claude_directories: true` 后，Skill 另外读取 `.claude/skills/`，子 Agent 另外读取 `.claude/agents/`（见 [子 Agent](subagents.md#存放位置)），用户级和项目级都读。默认不读，因为其中为 Claude Code 写的定义可能依赖它特有的工具；未开启而项目的 `.claude/skills/` 或 `.claude/agents/` 中有定义时，交互界面的启动区提示一次“发现 .claude 中的 N 个子 Agent、M 个 Skill，在 config.yaml 中设置 claude_directories: true 即可使用。”，`-p` 中不提示。
 
 启动时扫描一次，`/skills reload` 重新扫描。扫描出错的 Skill 会被跳过，并在启动区（`-p` 中为 stderr）提示文件路径和原因，不影响其他 Skill；被跳过的项目级 Skill 不会覆盖同名的用户级或内置版本。Skill 名与内置命令或其别名相同时（如 `help`、`quit`）同样跳过，并提示“与内置命令 /x 冲突”。
 

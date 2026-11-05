@@ -11,7 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -288,18 +288,57 @@ def check_project(cwd: Path | None = None, config: str | None = None, home: Path
     from .mcp_config import MCPConfigError, load_mcp_settings
 
     try:
-        mcp = load_mcp_settings(cwd, user_path=None if home is None else home / ".mosscode" / "mcp.yaml")
+        mcp = load_mcp_settings(cwd, user_path=None if home is None else home / ".mosscode" / "mcp.yaml", plugins=())
     except MCPConfigError as exc:
         items.append(Item(ERROR, f"MCP 配置：{exc}", "修改 .mosscode/mcp.yaml"))
     else:
         items.extend(Item(WARN, notice) for notice in mcp.notices)
     from .hooks.config import hook_paths, read_file
 
-    for source, path in hook_paths(cwd, home):
+    for source, path, _ in hook_paths(cwd, home):
         if source != "user":
             items.extend(Item(WARN, issue) for issue in read_file(source, path)[1])
     if not items:
         items.append(Item(OK, f"项目配置 {folder} 可以解析"))
+    return items
+
+
+def check_plugins(home: Path | None = None, cwd: Path | None = None, which=shutil.which) -> list[Item]:
+    """Installed plugins: git when one needs it, each one on disk, and the problems of its components."""
+    from .plugins import components, installed, load_records, read_plugin
+
+    records, problems = load_records(home)
+    if not records and not problems:
+        return []
+    items = [Item(WARN, problem, "修改 ~/.mosscode/plugins.yaml") for problem in problems]
+    if any(record.kind == "git" for record in records) and which("git") is None:
+        items.append(Item(ERROR, "有 git 来源的插件，但找不到 git：无法安装和更新", "安装 git 并加入 PATH"))
+    enabled = {plugin.name: plugin for plugin in installed(home).plugins}
+    for record in records:
+        if not record.enabled:
+            items.append(Item(OK, f"插件 {record.name}：已停用"))
+            continue
+        plugin = enabled.get(record.name)
+        if plugin is None:
+            if not record.root(home).is_dir():
+                items.append(
+                    Item(
+                        ERROR,
+                        f"插件 {record.name} 不在磁盘上（{record.root(home)}）",
+                        f"moss plugin update {record.name}",
+                    )
+                )
+            else:
+                try:
+                    read_plugin(record.root(home), record.name, home, record)
+                except ValueError as exc:
+                    items.append(Item(ERROR, f"插件 {record.name}：{exc}", f"moss plugin update {record.name}"))
+            continue
+        parts = components(replace(plugin, create_data=False), Path.cwd() if cwd is None else cwd)
+        if parts.problems:
+            items.extend(Item(WARN, f"插件 {record.name}：{problem}") for problem in parts.problems)
+        else:
+            items.append(Item(OK, f"插件 {record.name}：{parts.count()}"))
     return items
 
 
@@ -311,6 +350,7 @@ def run(config: str | None = None) -> list[Item]:
         *check_home(),
         *check_tools(),
         *check_project(config=config),
+        *check_plugins(),
     ]
 
 
