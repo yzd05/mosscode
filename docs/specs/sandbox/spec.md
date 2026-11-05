@@ -40,6 +40,8 @@
 | F20 | 13B 探测 | `processContainer.captureDenials` 在本机返回 `StartLearningModeTraceWithOptions failed (HRESULT = 0x80004001)`，尽管 `--probe` 报告 `nativeCaptureAvailable: true`；拦截说明（V2）不能依赖它 |
 | F21 | 13B 探测 | 每条命令的启动开销：`cmd /c echo` 经 `wxc-exec` 约 370–540 ms，直接运行约 160 ms |
 | F22 | 13C 实现 | `wxc-exec` 在设了 UI 限制（`JOB_OBJECT_UILIMIT_*`）的 Job Object 中启动容器时失败：`CreateProcessW failed with error code 50`。沙箱中的命令仍放进 Job（保留 kill-on-close，结束 `wxc-exec` 即结束容器），只是不设 UI 限制；容器自己的 `ui` 设置（剪贴板 `none`、禁止注入）代替它 |
+| F23 | 13E 预研 | MXC 的 ProcessContainer 网络“Model 2（proxy-only egress）”：请求写 `runtimeConfig.networkProxy: http://127.0.0.1:<端口>`、`egress.default: deny`、`ingress.default: allow`；代理是没有包标识的普通进程时省略 `processContainer.network.allowedProxyPeer` 并设 `hostLoopback: allow`（官方称为开发/测试用的弱部署：Windows 不核对端口归哪个进程所有）。WFP 只放行容器到该地址和端口的连接。MXC 给容器设置 WinHTTP 代理和 `HTTP(S)_PROXY`。来源：[process-container/networking.md](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/networking.md)、[schema.md](https://github.com/microsoft/mxc/blob/main/docs/schema.md)。本机 `--probe` 报告 `baseContainerSupportsIdentitylessLoopbackProxy: true` |
+| F24 | 13E 预研 | 实测（`.test-artifacts/mxc/probe/probe5.py`，宿主上一个 Python CONNECT 代理）：容器内连代理端口成功；直连 `127.0.0.1:7897`（用户的代理软件）和直连外网 IP 都以“access a socket in a way forbidden by its access permissions”失败，所以 `hostLoopback: allow` 在这种模式下不会打开通往用户代理的旁路（与 F19 的直接模式不同）。`Invoke-WebRequest -Proxy $env:HTTPS_PROXY` 经代理返回 200；不带 `-Proxy` 时 Windows PowerShell 5.1 用系统（IE）代理，即用户的代理软件，连接失败。`curl.exe` 的 CONNECT 到达了代理但返回 000，推测是 Schannel 的证书吊销检查无法联网（未核实，可试 `--ssl-no-revoke`） |
 
 ## 需求
 
@@ -182,7 +184,7 @@
 | 13B | Windows 探测 | 一次实验，结果决定 13D 的顺序；不写产品代码（已完成） |
 | 13C | S1–S6、B1、B4、A1–A5、V1–V5、D1–D4，网络只有 `none` | 公共层和 Windows MXC 后端；在用户机器上能完整验证 |
 | 13D | B2、B3、B5、B6，B7 | Linux、macOS 后端和 Windows 的保底后端；需要 CI |
-| 13E | N1–N5 | 代理依赖 13C 的拦截记录和审批面板 |
+| 13E | N1–N5 | 代理依赖 13C 的拦截记录和审批面板。Windows 上按 F23、F24 用 MXC 的 Model 2：MossCode 在回环上的代理即容器唯一的出口；Windows PowerShell 5.1 的 `Invoke-WebRequest` 不读代理环境变量，工具说明中要求带 `-Proxy $env:HTTPS_PROXY`，或在命令前设置 .NET 的默认代理（实现时实测选一种） |
 
 13A 可以独立提交。13C 原计划是 Linux/macOS 加公共层，13B 之后改为公共层加 MXC（Q11）：GitHub 账户暂停期间没有 CI，Linux 和 macOS 后端在本机无法验证，而 MXC 已在用户机器上实测可用。
 
