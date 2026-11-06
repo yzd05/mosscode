@@ -282,17 +282,17 @@ class ExecuteCommand(Tool):
             output += ("\n" if output else "") + "stderr:\n" + details["stderr"]
         if notes:
             output += ("\n" if output else "") + "沙箱：" + " ".join(notes)
+        hint = explain(details) if inside else ""
+        if hint:
+            sandbox.record(f"可能被拦截：{safe_command(params.command)}")
         if details["exit_code"] != 0:
             # The model sees only output, so the failing command's streams must be in it.
-            hint = explain(details) if inside else ""
-            if hint:
-                sandbox.record(f"可能被拦截：{safe_command(params.command)}")
             raise ToolFailure(
                 "nonzero_exit",
                 f"命令退出码为 {details['exit_code']}。" + (f"\n{output}" if output else "") + hint,
                 **details,
             )
-        return output or "命令完成，无输出。", details
+        return (output or "命令完成，无输出。") + hint, details
 
 
 def safe_command(command: str, limit: int = 120) -> str:

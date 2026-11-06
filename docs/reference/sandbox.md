@@ -79,6 +79,8 @@ sandbox:
 
 - 每条命令多出约 0.2–0.4 秒启动容器的时间。
 - 命令启动的后台进程（如开发服务器）随命令结束。
+- 读取是允许清单，项目的上级目录不可读。会向上查找配置的工具在项目嵌套于另一个项目中时可能失败：例如 pytest 找到上级目录的 `pyproject.toml` 后读取被拒，以 `PermissionError` 退出。把需要的文件加进 `sandbox.allow_read`，或在项目中放一份自己的配置（pytest 找到项目内的 `pytest.ini`、`pyproject.toml` 等就不再向上查找）。
+- Windows PowerShell 的部分命令被拒绝后仍以退出码 0 结束，这时 MossCode 依据错误输出附上同样的沙箱说明。
 - 受保护路径只在命令结束后检查：命令运行期间创建的 `.git/hooks/pre-commit` 等会在结束时删除，但同一条命令中紧接着运行的 git 可能已经执行了它。`.git/hooks` 不存在时 MossCode 会在运行命令前创建它，使它处于只读保护之下。
 - 只限制模型运行的命令。专用的文件工具（`write_file`、`edit_file`）仍由应用层的 [路径限制](permissions.md#路径限制) 和审批约束；MCP Server 和 Hook 不在沙箱中。
 - 项目目录的 `.mosscode/config.yaml` 存在时会整份代替用户配置（见 [配置](../../README.md#配置)），其中的 `sandbox` 同样生效；不要在不信任的仓库中使用项目级配置。

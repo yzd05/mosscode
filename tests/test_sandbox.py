@@ -241,7 +241,10 @@ def test_explain_only_when_the_output_looks_like_a_block():
     assert "F:/p" in hint and "outside_sandbox" in hint and "justification" in hint
     assert explain({**details, "stderr": "Invoke-WebRequest : 无法连接到远程服务器"})
     assert explain({**details, "stderr": "SyntaxError"}) == ""
-    assert explain({**details, "exit_code": 0}) == ""
+    # PowerShell exits 0 after a denied cmdlet; only stderr counts then.
+    assert explain({**details, "exit_code": 0})
+    assert explain({**details, "exit_code": 0, "stdout": "Access is denied.", "stderr": ""}) == ""
+    assert explain({**details, "exit_code": None}) == ""
 
 
 def test_startup_failure_reports_the_launcher_error():
@@ -261,6 +264,17 @@ async def test_sandboxed_commands_need_no_approval(tmp_path, monkeypatch, mode):
     reg = registry(tmp_path, mode)
     result = await reg.execute(command("python -m pytest -q"))
     assert not result.is_error and result.output.strip() == "inside" and len(calls) == 1
+
+
+async def test_a_denial_reported_with_exit_code_zero_still_gets_the_hint(tmp_path, monkeypatch):
+    box = turn_on(monkeypatch)
+    script = "import sys; print('0'); sys.stderr.write('Get-Content : Access is denied')"
+    monkeypatch.setattr(
+        box, "prepare", lambda argv, cwd, env, root: Prepared([sys.executable, "-c", script], env, box.policy(root))
+    )
+    result = await registry(tmp_path).execute(command("(Get-Content ~/.ssh/known_hosts).Count"))
+    assert not result.is_error and "outside_sandbox" in result.output
+    assert any("可能被拦截" in event for event in box.events)
 
 
 async def test_deny_rules_and_risky_commands_still_apply_in_the_sandbox(tmp_path, monkeypatch):

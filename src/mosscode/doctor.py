@@ -378,12 +378,18 @@ def check_sandbox(config: str | None = None, *, windows: bool | None = None) -> 
         )
     ]
     if not windows:
-        level = WARN if on else OK
-        items.append(Item(level, "这个系统的沙箱后端还没有实现：开启时模型的命令都会被拒绝", "用 --no-sandbox 运行"))
+        if on:
+            items.append(Item(WARN, "这个系统的沙箱后端还没有实现：模型的命令都会被拒绝", "用 --no-sandbox 运行"))
+        else:
+            items.append(Item(OK, "这个系统的沙箱后端还没有实现，打开后模型的命令都会被拒绝"))
         return items
     wxc = windows_mxc.find(sandbox.wxc_exec)
     if wxc is None:
-        items.append(Item(WARN if on else OK, "找不到 MXC 的 wxc-exec.exe（沙箱需要）", windows_mxc.MISSING))
+        if on:
+            items.append(Item(WARN, "找不到 MXC 的 wxc-exec.exe，模型的命令都会被拒绝", windows_mxc.MISSING))
+        else:
+            # Not a problem while the sandbox is off; say what turning it on needs.
+            items.append(Item(OK, "未安装 MXC 的 wxc-exec.exe；打开沙箱前需要安装，见 docs/reference/sandbox.md"))
         return items
     problem = windows_mxc.check(wxc)
     items.append(

@@ -350,8 +350,12 @@ DENIAL_SIGNS = (
 
 def explain(details: dict) -> str:
     """What to tell the model after a sandboxed command failed; empty when nothing points at the sandbox."""
-    text = (details.get("stdout", "") + "\n" + details.get("stderr", "")).lower()
-    if details.get("exit_code") in (None, 0) or not any(sign in text for sign in DENIAL_SIGNS):
+    code = details.get("exit_code")
+    if code is None:
+        return ""
+    # PowerShell reports a denied cmdlet on stderr and still exits 0, so a clean exit counts only stderr.
+    text = details.get("stderr", "") if code == 0 else details.get("stdout", "") + "\n" + details.get("stderr", "")
+    if not any(sign in text.lower() for sign in DENIAL_SIGNS):
         return ""
     writable = "、".join(details.get("sandbox", {}).get("writable", ()))
     return (
