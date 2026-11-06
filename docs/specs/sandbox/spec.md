@@ -42,6 +42,7 @@
 | F22 | 13C 实现 | `wxc-exec` 在设了 UI 限制（`JOB_OBJECT_UILIMIT_*`）的 Job Object 中启动容器时失败：`CreateProcessW failed with error code 50`。沙箱中的命令仍放进 Job（保留 kill-on-close，结束 `wxc-exec` 即结束容器），只是不设 UI 限制；容器自己的 `ui` 设置（剪贴板 `none`、禁止注入）代替它 |
 | F23 | 13E 预研 | MXC 的 ProcessContainer 网络“Model 2（proxy-only egress）”：请求写 `runtimeConfig.networkProxy: http://127.0.0.1:<端口>`、`egress.default: deny`、`ingress.default: allow`；代理是没有包标识的普通进程时省略 `processContainer.network.allowedProxyPeer` 并设 `hostLoopback: allow`（官方称为开发/测试用的弱部署：Windows 不核对端口归哪个进程所有）。WFP 只放行容器到该地址和端口的连接。MXC 给容器设置 WinHTTP 代理和 `HTTP(S)_PROXY`。来源：[process-container/networking.md](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/networking.md)、[schema.md](https://github.com/microsoft/mxc/blob/main/docs/schema.md)。本机 `--probe` 报告 `baseContainerSupportsIdentitylessLoopbackProxy: true` |
 | F24 | 13E 预研 | 实测（`.test-artifacts/mxc/probe/probe5.py`，宿主上一个 Python CONNECT 代理）：容器内连代理端口成功；直连 `127.0.0.1:7897`（用户的代理软件）和直连外网 IP 都以“access a socket in a way forbidden by its access permissions”失败，所以 `hostLoopback: allow` 在这种模式下不会打开通往用户代理的旁路（与 F19 的直接模式不同）。`Invoke-WebRequest -Proxy $env:HTTPS_PROXY` 经代理返回 200；不带 `-Proxy` 时 Windows PowerShell 5.1 用系统（IE）代理，即用户的代理软件，连接失败。`curl.exe` 的 CONNECT 到达了代理但返回 000，推测是 Schannel 的证书吊销检查无法联网（未核实，可试 `--ssl-no-revoke`） |
+| F25 | 13E 实现 | 实测（2026-11-06）：Model 2 下容器中的域名解析可用，一个从未查询过的随机名称（`t<随机数>-10-9-8-7.nip.io`）解析为 `10.9.8.7`，即查询到达了外部 DNS；同一台机器上 `network: none`（egress 全拒，不配代理）时解析失败。MossCode 无法在这种模式下拦截 DNS，所以代理模式留有经 DNS 查询带出少量数据的通道，写入用户文档的限制。直连本机端口和外网 IP 仍被拒绝（`tests/test_sandbox_proxy.py` 的真实 MXC 用例） |
 
 ## 需求
 
@@ -200,7 +201,19 @@
 - **拦截说明（V2）**：`captureDenials` 不可用（F20），按输出中的“拒绝访问”“无法解析主机”“无法连接到远程服务器”等文字推测，结果末尾附可写目录和越界申请的方法。
 - **受保护路径**：存在时只读；不存在时命令结束后检查并删除（结果注明），`.git/hooks` 在运行前创建以纳入只读保护。
 
-实机验证（2026-11-05，用户机器，`-p` 加真实模型）：在项目内写文件不需审批且成功；写 `$env:USERPROFILE` 被拒，结果附带说明；`Invoke-WebRequest` 失败；项目外没有出现文件。
+实机验证（2026-11-05，用户机器，`-p` 加真实模型）：在项目内写文件不需审批且成功；写 `$env:USERPROFILE` 被拒，结果附带说明；`Invoke-WebRequest` 失败；项目外没有出现文件。2026-11-06 按 M168–M171 的操作再跑一遍（`-p`）：测试与 `git commit` 不弹审批；`.git/hooks/pre-commit` 写入被拒；命令新建的 `.mosscode/permissions.yaml` 结束后被删除；越界写入被拒后模型带理由申请，`-p` 返回 `approval_required`；读 `~/.ssh` 和联网失败；去掉 `wxc-exec` 后返回 `sandbox_unavailable`。由此修了两处：PowerShell 被拒后仍以 0 退出时也附上说明；`doctor` 在沙箱关闭时不再把“找不到 wxc-exec.exe”显示得像检查通过。
+
+### 13E 设计
+
+- **代理**：`sandbox/proxy.py`，asyncio 实现，无新依赖。每条沙箱中的命令启动一个只属于它的监听（`127.0.0.1`，随机端口），命令结束即关闭。MXC 的 WFP 只放行容器到这个端口（F23、F24），所以不再需要 N1 的令牌：端口本身就标识了是哪条命令，宿主上的其他进程本来就不受沙箱约束。支持 `CONNECT`（HTTPS 等）和绝对形式的 HTTP 请求（改写为源形式并强制 `Connection: close`，一个连接只到一个主机）。
+- **放行**：域名先按 `WebFetch(domain:…)` 规则和档位判断（与 `web_fetch` 的 `decide` 相同：deny 规则拒绝，allow 规则或 `bypassPermissions` 放行），否则在界面询问：本次（这条命令内有效）、本会话、永久保存为 `WebFetch(domain:…)`、拒绝。`-p` 和后台子 Agent 中拒绝。同一条命令对同一主机的并发连接只问一次。
+- **地址**：IP 字面量和解析结果都要通过 `public_address`（fake-ip 段视为公网，与 `web_fetch` 相同），直连时连接检查过的地址；有上游代理（`HTTPS_PROXY` 等，取自 MossCode 自己的环境）时经上游 `CONNECT`，解析失败交给上游。`CONNECT` 之后若客户端的第一个 TLS 记录带 SNI 且与目标主机不同，断开连接。
+- **Windows 客户端**：MXC 设置 `HTTP(S)_PROXY` 和容器的 WinHTTP 代理；MossCode 再在 PowerShell 命令前设置 `[System.Net.WebRequest]::DefaultWebProxy`，让 Windows PowerShell 5.1 的 `Invoke-WebRequest` 也走代理（F24）。
+- **配置**：`sandbox.network: proxy`（默认）或 `none`。默认 `proxy`（Q14）。后端不支持无标识回环代理时退回 `none` 并在 `/sandbox` 和启动区说明。
+- **范围**：Skill 专属工具仍然断网（它们的审批按工具整体授权，联网按域名询问会变得难以理解）；`git` 的 SSH 地址（`git@…`）不走 HTTP 代理，仍然不通。
+- **结果**：命令结果末尾列出本次被拒绝的主机及原因；`/sandbox` 的记录中也有。
+
+实现记录（2026-11-06）：`sandbox/proxy.py` 的 `NetworkProxy`；`PermissionPolicy.connect` 做判断和询问（`Operation.network`，审批面板标题“沙箱中的命令联网”）；`execute_command` 在沙箱中且 `network == "proxy"` 时为每条命令启动代理，PowerShell 命令前加 `DefaultWebProxy` 的设置；`windows_mxc.loopback_proxy` 读 `--probe` 并与自检结果一起缓存。命令结束时还在等待回答的问题被撤回，界面上的审批面板随之撤下。实机验证（真实 MXC、会话规则放行几个域名，`.test-artifacts/mxc/probe/net_check.py`）：`Invoke-WebRequest`（PowerShell 5.1）返回 200；`curl.exe` 的 HTTP 和 HTTPS 都成功，F24 中 curl 失败的原因很可能不是吊销检查：curl 8.8 的 Schannel 与 `-w` 同用时报错 43、输出 000（输出到文件也一样，与沙箱无关），去掉 `-w` 即成功；Python `urllib` 访问 pypi.org 成功；未放行的 `www.baidu.com`、`github.com` 得到 403，结果末尾列出。实测中发现代理关闭时取消仍然打开的隧道（curl 的 keep-alive）会让 asyncio 打印错误，已修复并加测试。
 
 ## 不做
 
@@ -230,6 +243,7 @@
 | Q11 | 13C（Linux/macOS + 公共层）和 13D（Windows）谁先 | **已决定**：公共层加 MXC 先（见“分批”）。原推荐是 13C 先：公共层在 CI 上能完整验证，成熟做法可以照搬；13D 复用公共层 | 13D 先：用户日常在 Windows，先拿到对自己有用的部分；公共层要在没有成熟参照的平台上同时成形 |
 | Q12 | `.git` 整体只读（Codex）还是只保护 `.git/hooks`、`.git/config` | 只保护这两项：`git commit`、`git checkout` 在沙箱内照常可用 | 整体只读：杜绝所有 `.git` 投毒，但每次提交都要申请沙箱外执行 |
 | Q13 | 项目目录的 `.mosscode/config.yaml` 整份代替用户配置，仓库可借此放宽 `command_env.keep`、改 `base_url` | 放宽类字段（`command_env.keep`、沙箱可写路径、`base_url`）只认用户级配置，项目配置中出现时报错或忽略并提示 | 维持现状，在文档中说明不要在不信任的仓库中运行 |
+| Q14 | 沙箱的网络默认 `proxy` 还是 `none` | **已决定**：`proxy`。没有规则的域名都要用户确认，`-p` 中一律拒绝，所以除了域名解析（F25），默认值不会让数据在用户不知情时离开；而 `none` 下装依赖只能申请整条命令离开沙箱，放出去的权限反而更大 | `none`：最保守，联网一律申请沙箱外运行 |
 
 ## 验收
 

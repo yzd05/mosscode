@@ -145,6 +145,7 @@ class SandboxConfig:
     deny_read: tuple[str, ...] = ()
     allow_unsandboxed: str = "ask"  # ask / never
     wxc_exec: str | None = None  # Path to MXC's wxc-exec.exe when it is not on PATH.
+    network: str = "proxy"  # proxy: through MossCode's per-command proxy, domains approved; none: no network
 
 
 @dataclass(frozen=True)
@@ -209,7 +210,7 @@ def _command_env(raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
 def _sandbox(raw: Any) -> SandboxConfig:
     if raw is None:
         return SandboxConfig()
-    keys = {"mode", "allow_write", "allow_read", "deny_read", "allow_unsandboxed", "wxc_exec"}
+    keys = {"mode", "allow_write", "allow_read", "deny_read", "allow_unsandboxed", "wxc_exec", "network"}
     if not isinstance(raw, dict) or set(raw) - keys:
         raise ConfigError("sandbox 只能包含 " + "、".join(sorted(keys)) + "。")
     mode = raw.get("mode", "off")
@@ -218,6 +219,9 @@ def _sandbox(raw: Any) -> SandboxConfig:
     unsandboxed = raw.get("allow_unsandboxed", "ask")
     if unsandboxed not in {"ask", "never"}:
         raise ConfigError("sandbox.allow_unsandboxed 需为 ask 或 never。")
+    network = raw.get("network", "proxy")
+    if network not in {"proxy", "none"}:
+        raise ConfigError("sandbox.network 需为 proxy 或 none。")
     lists = {}
     for key in ("allow_write", "allow_read", "deny_read"):
         paths = raw.get(key, [])
@@ -227,7 +231,9 @@ def _sandbox(raw: Any) -> SandboxConfig:
     wxc = raw.get("wxc_exec")
     if wxc is not None and (not isinstance(wxc, str) or not wxc.strip()):
         raise ConfigError("sandbox.wxc_exec 需为 wxc-exec.exe 的路径。")
-    return SandboxConfig(mode, allow_unsandboxed=unsandboxed, wxc_exec=wxc.strip() if wxc else None, **lists)
+    return SandboxConfig(
+        mode, allow_unsandboxed=unsandboxed, wxc_exec=wxc.strip() if wxc else None, network=network, **lists
+    )
 
 
 def _links(raw: Any) -> tuple[str, ...]:

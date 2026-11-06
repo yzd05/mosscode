@@ -88,13 +88,15 @@ async def run_process(
     input: bytes | None = None,
     confined: bool = False,
     sandbox_root: Path | None = None,
+    network: str | None = None,
 ):
     """input, when given, is written to the child's stdin, which is then closed; otherwise stdin is empty.
 
     confined is for what the model runs (commands, Skill tools): secrets are removed from its environment, it gets
     a private temp directory, and on Windows its Job may not read the clipboard or touch the desktop.
 
-    sandbox_root runs it in the sandbox with that root's policy; details then carry what the sandbox did.
+    sandbox_root runs it in the sandbox with that root's policy; details then carry what the sandbox did. network is
+    the URL of the proxy listening for this command, its only way out; without it a sandboxed command is offline.
     """
     # Commands, hooks and skill tools never inherit the variables holding API keys.
     env = command_environment(env) if confined else child_environment(env)
@@ -102,7 +104,7 @@ async def run_process(
     if sandbox_root is not None:
         from ..sandbox import current
 
-        prepared = current().prepare(args, cwd, env, sandbox_root)
+        prepared = current().prepare(args, cwd, env, sandbox_root, network)
         args, env = prepared.argv, prepared.env
     try:
         # MXC cannot start its container inside a Job with UI limits; the container has its own.
@@ -111,7 +113,11 @@ async def run_process(
     finally:
         notes = prepared.finish() if prepared is not None else []
     if prepared is not None:
-        details["sandbox"] = {"writable": [str(p) for p in prepared.policy.writable], "notes": notes}
+        details["sandbox"] = {
+            "writable": [str(p) for p in prepared.policy.writable],
+            "notes": notes,
+            "network": "proxy" if network else "none",
+        }
     return details
 
 
@@ -246,9 +252,20 @@ class ExecuteCommand(Tool):
             "execute_command 超时或取消可能留下部分效果；重复有副作用的命令前先检查状态，不通过增大超时掩盖持续失败。",
         )
         if self.sandboxed:
+            sandbox.status()  # Detection decides whether the network goes through the proxy.
+            if sandbox.network == "proxy":
+                network = (
+                    "网络只经 MossCode 的代理（已写入 HTTP_PROXY/HTTPS_PROXY）连接域名，新域名由用户确认，"
+                    "不能直连 IP、本机或内网，git 的 SSH 远程不可用；"
+                )
+                escape = "写项目外的文件、连接被拒绝的域名"
+            else:
+                network = "网络断开；"
+                escape = "联网安装依赖、写项目外的文件"
             self.prompt_guidelines += (
-                "execute_command 的命令在沙箱中运行，无需审批：只能写项目目录和临时目录；网络断开；项目外只能读取系统目录和工具目录；"
-                ".mosscode、.git/hooks、.git/config 只读。被沙箱拦截且确实需要越界时（如联网安装依赖、写项目外的文件），"
+                f"execute_command 的命令在沙箱中运行，无需审批：只能写项目目录和临时目录；{network}"
+                "项目外只能读取系统目录和工具目录；.mosscode、.git/hooks、.git/config 只读。"
+                f"被沙箱拦截且确实需要越界时（如{escape}），"
                 "以 outside_sandbox: true 重新调用并在 justification 中写明理由，用户批准后在沙箱外运行；能在边界内完成的不要申请。",
             )
 
@@ -261,20 +278,34 @@ class ExecuteCommand(Tool):
         if inside and not sandbox.active:
             raise ToolFailure("sandbox_unavailable", sandbox.status().reason + UNAVAILABLE_HINT)
         shell = self.command_shell
-        details = await run_process(
-            shell.args(params.command),
-            cwd,
-            check=False,
-            limit=COMMAND_HEAD,
-            tail=COMMAND_TAIL,
-            env=shell.env(params.command),
-            confined=True,
-            sandbox_root=self.root if inside else None,
-        )
+        proxy = self._proxy(params.command) if inside and sandbox.network == "proxy" else None
+        script = params.command
+        if proxy is not None and shell.kind == "powershell":
+            # Windows PowerShell 5.1 ignores HTTPS_PROXY and would try the system proxy, which the sandbox blocks.
+            script = POWERSHELL_PROXY + script
+        try:
+            details = await run_process(
+                shell.args(script),
+                cwd,
+                check=False,
+                limit=COMMAND_HEAD,
+                tail=COMMAND_TAIL,
+                env=shell.env(params.command),
+                confined=True,
+                sandbox_root=self.root if inside else None,
+                network=await proxy.start() if proxy is not None else None,
+            )
+        finally:
+            if proxy is not None:
+                await proxy.close()
         if inside and (failure := startup_failure(details)):
             sandbox.record(failure)
             raise ToolFailure("sandbox_failed", failure, **details)
         notes = details.get("sandbox", {}).get("notes", [])
+        if proxy is not None:
+            notes = [*notes, *proxy.summary()]
+            for host in proxy.refused:
+                sandbox.record(f"拒绝联网：{host}")
         for note in notes:
             sandbox.record(note)
         output = details["stdout"]
@@ -293,6 +324,30 @@ class ExecuteCommand(Tool):
                 **details,
             )
         return (output or "命令完成，无输出。") + hint, details
+
+    def _proxy(self, command: str):
+        """The listener a sandboxed command reaches the network through; new domains go to the user."""
+        from ..sandbox.proxy import NetworkProxy
+        from .base import CURRENT_CALL, CURRENT_REGISTRY
+        from .web import environment_proxy, system_resolver
+
+        registry = CURRENT_REGISTRY.get()
+        call = CURRENT_CALL.get()
+
+        async def approve(host: str, port: int) -> str:
+            if registry is None:
+                return "无法请求审批"
+            decision = await registry.permissions.connect(call.id if call else "", host, port, command)
+            return "" if decision.action == "allow" else decision.reason or "未被允许"
+
+        return NetworkProxy(approve, resolver=system_resolver, upstream=environment_proxy)
+
+
+# Set before the command so Invoke-WebRequest and WebClient in Windows PowerShell 5.1 use the sandbox proxy.
+POWERSHELL_PROXY = (
+    "if ($env:HTTPS_PROXY) { [System.Net.WebRequest]::DefaultWebProxy = "
+    "New-Object System.Net.WebProxy($env:HTTPS_PROXY) }; "
+)
 
 
 def safe_command(command: str, limit: int = 120) -> str:

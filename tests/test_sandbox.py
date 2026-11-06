@@ -56,7 +56,7 @@ def fake_backend(monkeypatch, box, output="inside"):
     """Commands 'run in the sandbox' as a plain Python process that prints a marker."""
     calls = []
 
-    def prepare(argv, cwd, env, root):
+    def prepare(argv, cwd, env, root, proxy=None):
         calls.append(argv)
         policy = box.policy(root)
         return Prepared([sys.executable, "-c", f"print({output!r})"], env, policy)
@@ -217,7 +217,7 @@ async def test_run_process_finishes_the_backend_even_when_the_command_fails(tmp_
     leftover.write_text("{}", encoding="utf-8")
     policy = Policy(tmp_path, (tmp_path,), (), (), ())
 
-    def prepare(argv, cwd, env, root):
+    def prepare(argv, cwd, env, root, proxy=None):
         return Prepared([str(tmp_path / "missing.exe")], env, policy, files=(leftover,))
 
     monkeypatch.setattr(box, "prepare", prepare)
@@ -225,13 +225,13 @@ async def test_run_process_finishes_the_backend_even_when_the_command_fails(tmp_
         await run_process(["x"], tmp_path, sandbox_root=tmp_path)
     assert not leftover.exists()
 
-    def working(argv, cwd, env, root):
+    def working(argv, cwd, env, root, proxy=None):
         return Prepared([sys.executable, "-c", "print('ok')"], env, policy)
 
     monkeypatch.setattr(box, "prepare", working)
     details = await run_process(["x"], tmp_path, check=False, confined=True, sandbox_root=tmp_path)
     assert details["stdout"].strip() == "ok"
-    assert details["sandbox"] == {"writable": [str(tmp_path)], "notes": []}
+    assert details["sandbox"] == {"writable": [str(tmp_path)], "notes": [], "network": "none"}
     json.dumps(details)  # Details are stored with the session.
 
 
@@ -270,7 +270,9 @@ async def test_a_denial_reported_with_exit_code_zero_still_gets_the_hint(tmp_pat
     box = turn_on(monkeypatch)
     script = "import sys; print('0'); sys.stderr.write('Get-Content : Access is denied')"
     monkeypatch.setattr(
-        box, "prepare", lambda argv, cwd, env, root: Prepared([sys.executable, "-c", script], env, box.policy(root))
+        box,
+        "prepare",
+        lambda argv, cwd, env, root, proxy=None: Prepared([sys.executable, "-c", script], env, box.policy(root)),
     )
     result = await registry(tmp_path).execute(command("(Get-Content ~/.ssh/known_hosts).Count"))
     assert not result.is_error and "outside_sandbox" in result.output
@@ -417,7 +419,8 @@ async def test_mxc_enforces_the_boundaries(tmp_path, isolated_home):
     (root / ".git").mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    box = sandbox.configure(SandboxConfig(mode="on", wxc_exec=str(wxc_exec())))
+    # Fully offline; the proxy mode has its own test (where DNS lookups still work, see docs).
+    box = sandbox.configure(SandboxConfig(mode="on", wxc_exec=str(wxc_exec()), network="none"))
     assert box.status().state == "full", box.status().reason
     reg = registry(root)
     requests = isolated_home / ".mosscode" / "sandbox" / "requests"

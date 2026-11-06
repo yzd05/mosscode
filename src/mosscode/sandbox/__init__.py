@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..config import SandboxConfig
@@ -36,6 +36,7 @@ HOME_SECRETS = (
 )
 TOOL_DIRS = {"bin", "cmd", "scripts"}  # A PATH entry named so sits in a tool's own folder, which it needs.
 PROXY_NAMES = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "FTP_PROXY"}
+NETWORK_LABELS = {"proxy": "经 MossCode 的代理，新域名需要你确认", "none": "断开"}
 UNAVAILABLE_HINT = "可以用 /sandbox off 在本会话关闭沙箱（无界面模式用 --no-sandbox），修复后再打开。"
 
 
@@ -214,6 +215,8 @@ class Sandbox:
         self.source = source  # The configuration file in use; commands must not read it.
         self._status: Status | None = None
         self.events: list[str] = []  # Recent blocks and removals, shown by /sandbox.
+        self.network = "none"  # "proxy" once the backend is known to confine commands to MossCode's proxy.
+        self.network_note = ""  # Why the configured proxy is not in use.
 
     def status(self) -> Status:
         if not self.enabled:
@@ -236,6 +239,11 @@ class Sandbox:
         if problem:
             return Status("unavailable", "mxc", problem)
         self.wxc = found
+        if self.config.network == "proxy":
+            if windows_mxc.loopback_proxy(found):
+                self.network = "proxy"
+            else:
+                self.network_note = "本机的 MXC 不支持把容器限制在一个回环代理端口上，沙箱中的命令断网。"
         return Status("full", "mxc")
 
     @property
@@ -271,7 +279,7 @@ class Sandbox:
                 "  只读保护：" + "、".join(str(p) for p in policy.protected),
                 f"  项目外可读：系统目录和 {len(policy.readable)} 个工具目录",
                 "  禁止读取：" + ("、".join(str(p) for p in policy.deny_read) or "无"),
-                "  网络：断开",
+                "  网络：" + NETWORK_LABELS[self.network] + (f"（{self.network_note}）" if self.network_note else ""),
                 "  越界：" + ("禁止" if self.config.allow_unsandboxed == "never" else "模型带理由申请，每次询问"),
             ]
         if self.events:
@@ -285,13 +293,20 @@ class Sandbox:
     def policy(self, root: Path) -> Policy:
         from ..command_env import private_temp
 
-        return policy_for(root, self.config, private_temp(), secrets=(self.source,) if self.source else ())
+        policy = policy_for(root, self.config, private_temp(), secrets=(self.source,) if self.source else ())
+        return replace(policy, network=self.network)
 
-    def prepare(self, argv: list[str], cwd: Path, env: dict[str, str], root: Path) -> Prepared:
+    def prepare(
+        self, argv: list[str], cwd: Path, env: dict[str, str], root: Path, proxy: str | None = None
+    ) -> Prepared:
+        """proxy: this command's own listener, its only way out; without one the command has no network."""
         from . import windows_mxc
 
         policy = self.policy(root)
-        env = {k: v for k, v in env.items() if k.upper() not in PROXY_NAMES}  # The network is off.
+        # The user's proxy settings would point at a port the container cannot reach.
+        env = {k: v for k, v in env.items() if k.upper() not in PROXY_NAMES}
+        if proxy is not None:
+            env.update({name: proxy for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")})
         watched = tuple(p for p in policy.protected if not os.path.lexists(p))
         for git in _git_dirs(policy.root):
             # git creates hooks/ itself; making it now lets it be read-only rather than watched.
@@ -301,7 +316,7 @@ class Sandbox:
                     watched = tuple(p for p in watched if p != git / "hooks")
                 except OSError:
                     pass
-        request = windows_mxc.write_request(subprocess.list2cmdline(argv), cwd, env, policy)
+        request = windows_mxc.write_request(subprocess.list2cmdline(argv), cwd, env, policy, proxy)
         return Prepared([str(self.wxc), str(request)], env, policy, watched, (request,))
 
 
@@ -324,6 +339,11 @@ def badge() -> str:
 
 
 DENIAL_SIGNS = (
+    # The proxy's own refusal, and how clients report it.
+    "mosscode 沙箱",
+    "tunnel connection failed",
+    "(403)",
+    "403 forbidden",
     "access is denied",
     "拒绝访问",
     "permission denied",
@@ -357,10 +377,16 @@ def explain(details: dict) -> str:
     text = details.get("stderr", "") if code == 0 else details.get("stdout", "") + "\n" + details.get("stderr", "")
     if not any(sign in text.lower() for sign in DENIAL_SIGNS):
         return ""
-    writable = "、".join(details.get("sandbox", {}).get("writable", ()))
+    box = details.get("sandbox", {})
+    writable = "、".join(box.get("writable", ()))
+    network = (
+        "网络只经 MossCode 的代理连接用户允许的域名，结果末尾列出被拒绝的主机"
+        if box.get("network") == "proxy"
+        else "网络已断开"
+    )
     return (
-        "\n\n命令在沙箱中运行，失败可能是沙箱拦截造成的（推测，依据是输出中的拒绝访问或无法解析主机）："
-        f"只能写入 {writable}；网络已断开；项目外只能读取系统目录、PATH 中的工具目录和配置的 allow_read；"
+        "\n\n命令在沙箱中运行，失败可能是沙箱拦截造成的（推测，依据是输出中的拒绝访问、无法解析主机或代理拒绝）："
+        f"只能写入 {writable}；{network}；项目外只能读取系统目录、PATH 中的工具目录和配置的 allow_read；"
         "受保护的 .mosscode、.git/hooks、.git/config 只读。"
         "先确认能否在边界内完成；确需越界时，以 outside_sandbox: true 重新调用，并在 justification 中说明理由，"
         "用户批准后在沙箱外运行。"

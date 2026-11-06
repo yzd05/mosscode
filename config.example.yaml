@@ -40,12 +40,13 @@ default_provider: claude
 #   keep: [GITHUB_TOKEN]
 #   drop: [INTERNAL_*]
 
-# 命令沙箱（目前只有 Windows，需要 MXC 的 wxc-exec.exe）：模型的命令只能写项目目录、断网，越界时带理由申请。
+# 命令沙箱（目前只有 Windows，需要 MXC 的 wxc-exec.exe）：模型的命令只能写项目目录，联网经 MossCode 的代理、新域名需确认，越界时带理由申请。
 # sandbox:
 #   mode: on
 #   allow_write: [D:/cache]
 #   allow_read: [D:/sdk]
 #   allow_unsandboxed: ask  # never：不允许在沙箱外运行
+#   network: proxy          # none：完全断网
 
 providers:
   - name: claude

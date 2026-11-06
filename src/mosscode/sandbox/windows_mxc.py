@@ -49,33 +49,65 @@ def check(wxc: Path) -> str:
 
     The result is cached per launcher and Windows build, since a probe and a test run take about a second.
     """
-    cache = _home() / "sandbox-probe.json"
     try:
         key = _cache_key(wxc)
     except OSError as exc:
         return f"无法读取 {wxc}：{exc.strerror or exc}。"
-    try:
-        stored = json.loads(cache.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        stored = {}
-    if isinstance(stored, dict) and isinstance(stored.get(key), str):
+    stored = _cached()
+    if isinstance(stored.get(key), str):
         return stored[key]
     problem = _probe(wxc) or _self_test(wxc)
     if not problem:  # Failures are retried next time: they are often fixed by an update or a restart.
-        try:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(json.dumps({key: problem}, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
+        _store(key, problem)
     return problem
+
+
+def loopback_proxy(wxc: Path) -> bool:
+    """Whether a container can be held to one loopback port, where MossCode's proxy listens (no packaged proxy)."""
+    try:
+        key = "proxy|" + _cache_key(wxc)
+    except OSError:
+        return False
+    stored = _cached()
+    if isinstance(stored.get(key), bool):
+        return stored[key]
+    try:
+        report = _report(wxc)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    probes = report.get("probes") if isinstance(report, dict) else None
+    supported = isinstance(probes, dict) and probes.get("baseContainerSupportsIdentitylessLoopbackProxy") is True
+    _store(key, supported)
+    return supported
+
+
+def _cached() -> dict:
+    try:
+        stored = json.loads((_home() / "sandbox-probe.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def _store(key: str, value) -> None:
+    # Only the current launcher and Windows build matter; older entries are dropped.
+    current = key.removeprefix("proxy|")
+    kept = {k: v for k, v in _cached().items() if k.removeprefix("proxy|") == current}
+    try:
+        _home().mkdir(parents=True, exist_ok=True)
+        (_home() / "sandbox-probe.json").write_text(json.dumps({**kept, key: value}, ensure_ascii=False), "utf-8")
+    except OSError:
+        pass
+
+
+def _report(wxc: Path):
+    done = subprocess.run([str(wxc), "--probe"], capture_output=True, timeout=PROBE_TIMEOUT, creationflags=0x08000000)
+    return json.loads(done.stdout.decode("utf-8", "replace"))
 
 
 def _probe(wxc: Path) -> str:
     try:
-        done = subprocess.run(
-            [str(wxc), "--probe"], capture_output=True, timeout=PROBE_TIMEOUT, creationflags=0x08000000
-        )
-        report = json.loads(done.stdout.decode("utf-8", "replace"))
+        report = _report(wxc)
     except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
         return f"wxc-exec --probe 失败：{exc}。"
     tier = report.get("tier") if isinstance(report, dict) else None
@@ -131,10 +163,20 @@ def _base_request() -> dict:
     }
 
 
-def request(command_line: str, cwd: Path, env: dict[str, str], policy) -> dict:
+def request(command_line: str, cwd: Path, env: dict[str, str], policy, proxy: str | None = None) -> dict:
+    """proxy: MossCode's loopback proxy for this command, then the container's only way out."""
     existing = [p for p in policy.protected if p.exists()]
+    network = {}
+    if proxy is not None:
+        # Proxy-only egress: WFP lets the container reach that one loopback port and nothing else. Without a
+        # packaged proxy identity MXC requires host loopback and private-network capability to be granted.
+        network = {
+            "network": {"egress": {"default": "deny"}, "ingress": {"default": "allow", "hostLoopback": "allow"}},
+            "runtimeConfig": {"networkProxy": proxy},
+        }
     return {
         **_base_request(),
+        **network,
         "process": {
             "commandLine": command_line,
             "cwd": str(cwd),
@@ -148,10 +190,10 @@ def request(command_line: str, cwd: Path, env: dict[str, str], policy) -> dict:
     }
 
 
-def write_request(command_line: str, cwd: Path, env: dict[str, str], policy) -> Path:
+def write_request(command_line: str, cwd: Path, env: dict[str, str], policy, proxy: str | None = None) -> Path:
     """Requests live where no sandboxed command can write, so one command cannot rewrite another's policy."""
     folder = _home() / "sandbox" / "requests"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{os.getpid()}-{secrets.token_hex(8)}.json"
-    path.write_text(json.dumps(request(command_line, cwd, env, policy), ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(request(command_line, cwd, env, policy, proxy), ensure_ascii=False), encoding="utf-8")
     return path

@@ -149,6 +149,16 @@ def choice_label(request: ApprovalRequest, choice: str) -> str:
         return f"永久允许以 {request.operation.prefix} 开头的命令 · 保存到本项目本地配置"
     if choice == "accept_edits" and request.operation.tool in EDIT_TOOLS:
         return "本会话自动接受编辑 · 切换为接受编辑档位，命令仍需确认"
+    if request.operation.network:
+        host = request.operation.target
+        if choice == "once":
+            return f"本次允许 · 只在这条命令中连接 {host}"
+        if choice == "session":
+            return f"本会话允许这个域名 · 命令和 web_fetch 都可以访问 {host}，退出后失效"
+        if choice == "permanent":
+            return f"永久允许这个域名 · 保存为 WebFetch(domain:{host})"
+        if choice == "deny":
+            return "拒绝 · 这条命令连接这个域名会失败"
     if request.operation.tool == "web_fetch" and choice in {"session", "permanent"}:
         host = request.operation.target
         if choice == "session":
@@ -1571,8 +1581,14 @@ class MossCodeApp(TerminalApp[None]):
         )
 
     def _tick(self) -> None:
+        if self._approval_request is not None and not self._waiting(self._approval_request):
+            # Withdrawn without an answer, e.g. a sandboxed command ended while asking to connect.
+            self._hide_approval()
         if self._generating and self._shell_row is not None:
             self._shell_row.tick()
+            if self._approval_request is not None:  # A sandboxed command asking to connect.
+                self._status("等待授权 · Esc 拒绝本次 · Ctrl+C 取消任务")
+                return
             if monotonic() < self._hint_until:
                 return
             self._status(f"执行命令中 · {monotonic() - self._shell_row.started:.1f}s · Esc 取消")
@@ -2263,7 +2279,7 @@ class MossCodeApp(TerminalApp[None]):
         else:
             text.append(
                 "需要授权 · "
-                + labels.get(operation.tool, operation.tool)
+                + ("沙箱中的命令联网" if operation.network else labels.get(operation.tool, operation.tool))
                 + (" · 在沙箱外运行" if operation.unsandboxed else "")
                 + (f" · {request.source}" if request.source else "")
                 + "\n",

@@ -128,6 +128,7 @@ class Operation:
     notes: bool = False  # memory and load_skill: they touch only their own files, no approval.
     sandboxed: bool = False  # A command the full sandbox confines: no approval unless a rule or risk asks.
     unsandboxed: bool = False  # A command asking to leave the sandbox: asked even in bypassPermissions.
+    network: bool = False  # A sandboxed command's connection through the proxy; target is the host.
 
 
 @dataclass(frozen=True)
@@ -725,6 +726,44 @@ class PermissionPolicy:
                 return Decision("deny", "not_in_plan", "确认期间已离开计划模式；此调用未执行。")
             self.set_mode("acceptEdits" if choice == "accept_edits" else self.resume_mode)
             return Decision("allow")
+
+    async def connect(self, call_id: str, host: str, port: int, command: str) -> Decision:
+        """A sandboxed command wants to reach host through the proxy: WebFetch domain rules, the mode, then the user.
+
+        "once" covers this command only; the caller remembers it for the command's other connections.
+        """
+        preview = (
+            f"命令：{safe_display(command, 500)}\n连接：{host}:{port}（经沙箱代理）\n"
+            "允许后，这个命令可以向该域名发送和接收任意数据。"
+        )
+        operation = Operation("web_fetch", host, preview=preview, network=True)
+        decision = self.decide(operation, read_only=False)
+        if decision.action != "ask":
+            return decision
+        if not self.interactive:
+            return Decision("deny", "approval_required", self.noninteractive_reason)
+        async with self._approval_lock:
+            decision = self.decide(operation, read_only=False)  # A rule may have been added meanwhile.
+            if decision.action != "ask":
+                return decision
+            request = ApprovalRequest(uuid4().hex, call_id, operation, "沙箱中的命令要连接一个新的域名。", CHOICES)
+            try:
+                choice = await self._ask(request)
+            finally:
+                self._settle(request)
+        if choice == "deny":
+            if not self.interactive:
+                return Decision("deny", "approval_required", self.noninteractive_reason)
+            return Decision("deny", "permission_denied", "用户拒绝了这个域名")
+        rule = Rule("web_fetch", DOMAIN + host, "allow")
+        if choice == "session":
+            self.session.append(rule)
+        elif choice == "permanent":
+            try:
+                self._persist(rule)
+            except (PermissionConfigError, OSError, SecurityError):
+                return Decision("allow", reason="永久授权未保存成功，只在这条命令中允许。")
+        return Decision("allow")
 
     async def confirm(self, call_id: str, operation: Operation, reason: str, choices: tuple[str, ...]) -> str | None:
         """The user decides, never a rule or mode; None when nobody can be asked."""
