@@ -304,8 +304,6 @@ class ExecuteCommand(Tool):
         notes = details.get("sandbox", {}).get("notes", [])
         if proxy is not None:
             notes = [*notes, *proxy.summary()]
-            for host in proxy.refused:
-                sandbox.record(f"拒绝联网：{host}")
         for note in notes:
             sandbox.record(note)
         output = details["stdout"]
@@ -346,7 +344,7 @@ class ExecuteCommand(Tool):
 # Set before the command so Invoke-WebRequest and WebClient in Windows PowerShell 5.1 use the sandbox proxy.
 POWERSHELL_PROXY = (
     "if ($env:HTTPS_PROXY) { [System.Net.WebRequest]::DefaultWebProxy = "
-    "New-Object System.Net.WebProxy($env:HTTPS_PROXY) }; "
+    "New-Object System.Net.WebProxy($env:HTTPS_PROXY) }\n"
 )
 
 

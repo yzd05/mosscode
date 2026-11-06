@@ -11,7 +11,7 @@ import pytest
 from mosscode.messages import ToolCall
 from mosscode.tools import create_default_registry
 from mosscode.tools.base import ExecutionCancelled
-from mosscode.tools.shell import resolve_shell
+from mosscode.tools.shell import Shell, resolve_shell
 from waiting import until
 
 
@@ -211,6 +211,18 @@ def python_command(script):
     if SHELL.kind == "powershell":
         return "& '" + sys.executable.replace("'", "''") + "' -c '" + script.replace("'", "''") + "'"
     return shlex.join([Path(sys.executable).as_posix(), "-c", script])
+
+
+@pytest.mark.skipif(not shutil.which("powershell"), reason="Windows PowerShell only")
+def test_powershell_errors_point_at_the_command_not_the_prelude(tmp_path):
+    import subprocess
+
+    shell = Shell("powershell", shutil.which("powershell"), "PowerShell")
+    missing = tmp_path / "no-such-file"
+    result = subprocess.run(shell.args(f"Get-Item '{missing}'"), capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 1
+    shown = [line for line in result.stderr.splitlines() if line.startswith("+ ") and "~" not in line]
+    assert shown and all("Get-Item" in line and "OutputEncoding" not in line for line in shown), result.stderr
 
 
 async def test_command_success_failure_output_cap_and_timeout(tmp_path):

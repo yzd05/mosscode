@@ -404,7 +404,10 @@ async def test_a_sandboxed_command_reaches_the_network_only_through_its_proxy(tm
     assert ("DefaultWebProxy" in " ".join(argv)) == (tool.command_shell.kind == "powershell")
     assert "403" in result.output and "联网：example.com 被拒绝" in result.output
     assert result.details["sandbox"]["network"] == "proxy"
-    assert "拒绝联网：example.com" in box.events
+    # Recorded once, with the reason, for /sandbox.
+    assert [event for event in box.events if "example.com" in event] == [
+        "联网：example.com 被拒绝（此操作需要用户确认；无界面模式不会自动授权。）。"
+    ]
 
 
 async def test_without_the_proxy_commands_stay_offline(tmp_path, monkeypatch):

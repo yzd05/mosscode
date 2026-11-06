@@ -216,6 +216,8 @@
 
 实现记录（2026-11-06）：`sandbox/proxy.py` 的 `NetworkProxy`；`PermissionPolicy.connect` 做判断和询问（`Operation.network`，审批面板标题“沙箱中的命令联网”）；`execute_command` 在沙箱中且 `network == "proxy"` 时为每条命令启动代理，PowerShell 命令前加 `DefaultWebProxy` 的设置；`windows_mxc.loopback_proxy` 读 `--probe` 并与自检结果一起缓存。命令结束时还在等待回答的问题被撤回，界面上的审批面板随之撤下。实机验证（真实 MXC、会话规则放行几个域名，`.test-artifacts/mxc/probe/net_check.py`）：`Invoke-WebRequest`（PowerShell 5.1）返回 200；`curl.exe` 的 HTTP 和 HTTPS 都成功，F24 中 curl 失败的原因很可能不是吊销检查：curl 8.8 的 Schannel 与 `-w` 同用时报错 43、输出 000（输出到文件也一样，与沙箱无关），去掉 `-w` 即成功；Python `urllib` 访问 pypi.org 成功；未放行的 `www.baidu.com`、`github.com` 得到 403，结果末尾列出。实测中发现代理关闭时取消仍然打开的隧道（curl 的 keep-alive）会让 asyncio 打印错误，已修复并加测试。
 
+手动验收（2026-11-06）：M168–M172 全部通过。Windows Terminal 只授予了点击权限，无法输入，所以用 Textual 的无界面驱动（`.test-artifacts/sbx-drive.py`）运行真实的界面、真实模型和真实 MXC，记录每张审批卡片和每轮的屏幕文字；Windows Terminal 中的渲染未覆盖。发现并修复两处：PowerShell 报错的位置行显示的是 MossCode 加在命令前的编码和代理设置，而不是用户的命令（两段前缀各自换行，`tests/test_tools.py` 用真实 PowerShell 验证）；`/sandbox` 中每个被拒绝的主机记了两条（去掉不带原因的那条）。验收步骤的措辞也已修正：不说“用命令”时模型用 write_file 写文件，不说明是验收测试时模型拒绝改写受保护路径。另外，自动记忆把一条测试指令（“失败了不要申请沙箱外运行”）存成了用户级的偏好，已手动删除；这属于自动记忆的提取标准，不在本规格范围。
+
 ## 不做
 
 - Windows 严格模式（独立账户 + WFP）、Low IL、Windows Sandbox、直接使用 AppContainer。

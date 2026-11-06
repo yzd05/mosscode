@@ -14,7 +14,8 @@ class Shell:
 
     def args(self, command: str) -> list[str]:
         if self.kind == "powershell":
-            prelude = "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $LASTEXITCODE=$null; "
+            # On its own line, so PowerShell error positions show only the command.
+            prelude = "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $LASTEXITCODE=$null\n"
             suffix = "\n$mosscodeCommandSucceeded=$?; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; if (-not $mosscodeCommandSucceeded) { exit 1 }"
             return [self.path, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", prelude + command + suffix]
         if self.kind == "bash" and os.name == "nt":

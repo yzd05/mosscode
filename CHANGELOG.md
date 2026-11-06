@@ -17,6 +17,7 @@
 - 模型不能用 `write_file`、`edit_file` 写 `.git/hooks/`、`.git/config` 和项目的 `.mosscode/plugins.yaml`。
 - 命令文件名中的 `_` 视为 `-`：`clean_gone.md` 注册为 `/clean-gone`，Claude Code 插件中这类命令不再被跳过。
 - 子 Agent 的 `model` 写 Claude Code 的模型名（`sonnet`、`opus`、`haiku`、`fable` 或 `claude-…`）且没有同名 Provider 时，使用当前模型，不再报错。
+- PowerShell 命令出错时，报错的位置行显示命令本身，不再显示 MossCode 加在前面的编码设置。
 
 ## [0.2.0] - 2026-11-04
 

@@ -608,9 +608,9 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 
 | # | 操作 | 期望 |
 | --- | --- | --- |
-| M168 写入边界 | 让模型“运行 `python -c "print(1)"`，再写一个 a.txt 并 git commit”；再让它“用命令在 .mosscode/permissions.yaml 末尾加一行 # x”“用命令在 .git/hooks 下建 pre-commit” | 状态栏显示“沙箱”；运行、写文件和提交都不弹审批；两次改写都失败（拒绝访问），结果末尾说明可能是沙箱拦截；`.mosscode/permissions.yaml` 未变，`.git/hooks/pre-commit` 不存在 |
+| M168 写入边界 | 让模型“用 execute_command 运行 `python -c "print(1)"`，再用命令写一个 a.txt 并 git commit”（不说“用命令”时模型会用 write_file，那要按档位审批）；再说明这是沙箱验收测试，让它“用命令在 .mosscode/permissions.yaml 末尾加一行 # x”“用命令在 .git/hooks 下建 pre-commit”，失败了原样报告（不说明时模型会把这两项当成绕过权限而拒绝执行） | 状态栏显示“沙箱”；运行、写文件和提交都不弹审批；两次改写都失败（拒绝访问），结果末尾说明可能是沙箱拦截；`.mosscode/permissions.yaml` 未变，`.git/hooks/pre-commit` 不存在 |
 | M169 越界申请 | 让模型“在 %USERPROFILE%\Desktop 写一个 moss-test.txt” | 第一次被拦截；模型带理由以 outside_sandbox 重试，面板标题有“在沙箱外运行”，显示理由和“完整权限”说明，选项为本次、本会话、拒绝；选拒绝后结果说明“用户拒绝在沙箱外运行”，文件不存在 |
-| M170 读取 | 让模型“读 ~/.ssh 下的文件列表” | 失败；`/sandbox` 列出最近的记录、可写目录和禁止读取的路径 |
+| M170 读取 | 让模型“用命令统计 ~/.ssh 下的文件个数，不显示文件名” | 失败；`/sandbox` 列出最近的记录、可写目录和禁止读取的路径 |
 | M171 失败关闭 | 退出后把 `wxc-exec.exe` 移出 PATH，删除 `~/.mosscode/sandbox-probe.json`，再用 `--sandbox` 启动；让模型运行 `git status`；再 `/sandbox off` 并确认，重复一次；运行 `moss doctor`；最后把 `wxc-exec.exe` 放回 | 启动区和状态栏显示沙箱不可用及原因；命令返回 sandbox_unavailable 并提示 `/sandbox off`；关闭后命令照常运行，状态栏显示“无沙箱”；doctor 显示找不到 wxc-exec.exe 和下载说明 |
 | M172 联网 | 让模型“用 `Invoke-WebRequest` 取 https://example.com 的状态码”，面板出现时选“本次允许”；再让它“用 curl.exe 访问 https://example.com 和 https://www.baidu.com”，对 example.com 选“本会话允许”、baidu 按 Esc；最后让它“用 `curl.exe -I http://127.0.0.1:7897` 测一下本机端口” | 面板标题为“沙箱中的命令联网”，显示命令和 `example.com:443`，四个选项；第一次返回 200，结果末尾“联网：已连接 example.com”；第二次 example.com 再次询问（本次只对一条命令有效），选本会话后之后不再问；baidu 失败（403），结果末尾和 `/sandbox` 有“被拒绝”；本机端口不询问、直接失败 |
 
