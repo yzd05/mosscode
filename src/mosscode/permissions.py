@@ -514,7 +514,8 @@ class PermissionPolicy:
         if not sandbox.active:
             # Fail closed: running without the sandbox the user asked for is their call, not ours.
             raise SecurityError("sandbox_unavailable", sandbox.status().reason + UNAVAILABLE_HINT)
-        return True, False
+        # Partial confines writes only: reads and connections stay the user's to approve.
+        return sandbox.full, False
 
     def decide(self, operation: Operation, *, read_only: bool) -> Decision:
         matched = next(

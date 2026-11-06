@@ -12,6 +12,7 @@ import asyncio
 import base64
 import ipaddress
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from ..security import public_address
@@ -158,8 +159,14 @@ class NetworkProxy:
         self._decisions: dict[str, asyncio.Future[str]] = {}
         self._tasks: set[asyncio.Task] = set()
         self._server: asyncio.Server | None = None
+        self._socket: Path | None = None
 
-    async def start(self) -> str:
+    async def start(self, unix: Path | None = None) -> str:
+        """unix: listen on this socket file instead of a loopback port; the URL is then unix:<path>."""
+        if unix is not None:
+            self._socket = unix
+            self._server = await asyncio.start_unix_server(self._accept, str(unix), limit=HEAD_LIMIT)
+            return f"unix:{unix}"
         self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0, limit=HEAD_LIMIT)
         port = self._server.sockets[0].getsockname()[1]
         return f"http://127.0.0.1:{port}"
@@ -167,6 +174,8 @@ class NetworkProxy:
     async def close(self) -> None:
         if self._server is not None:
             self._server.close()
+        if self._socket is not None:
+            self._socket.unlink(missing_ok=True)
         for task in tuple(self._tasks):
             task.cancel()
         if self._tasks:

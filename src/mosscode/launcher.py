@@ -11,9 +11,9 @@ import sys
 from pathlib import Path
 
 OUTPUT_FORMATS = ("text", "json", "stream-json")
-SUBCOMMANDS = ("setup", "doctor", "models", "key", "plugin")
+SUBCOMMANDS = ("setup", "doctor", "models", "key", "plugin", "sandbox")
 NAMES = ("moss", "mosscode")
-USAGE = "%(prog)s [选项] [PROMPT]\n       %(prog)s setup | doctor | models | key | plugin"
+USAGE = "%(prog)s [选项] [PROMPT]\n       %(prog)s setup | doctor | models | key | plugin | sandbox"
 DESCRIPTION = "MossCode：终端中的 coding agent。在项目目录中运行即可开始。"
 EXAMPLES = """\
 子命令：
@@ -23,6 +23,7 @@ EXAMPLES = """\
   key set|delete 名称    在系统凭据管理器中保存或删除 API 密钥
   plugin install|list|update|remove|enable|disable
                         安装和管理插件（Skill、命令、子 Agent、MCP、Hook）
+  sandbox cleanup [项目] 移除 Windows 受限令牌沙箱加在目录上的访问控制
 
 例子：
   moss                                   在当前目录启动交互界面
@@ -31,7 +32,7 @@ EXAMPLES = """\
   Get-Content error.log | moss -p "解释这个错误"
   moss -c                                恢复本项目最近的会话
 
-moss 与 mosscode 是同一个命令。要把 setup、doctor、models、key 或 plugin 当作消息发送，写成 moss -- doctor。
+moss 与 mosscode 是同一个命令。要把 setup、doctor、models、key、plugin 或 sandbox 当作消息发送，写成 moss -- doctor。
 """
 
 
@@ -181,6 +182,10 @@ def _subcommand(name: str, argv: list[str]) -> int:
         from .plugin_command import main as plugin
 
         return plugin(argv)
+    if name == "sandbox":
+        from .sandbox_command import main as sandbox
+
+        return sandbox(argv)
     from .doctor import main as doctor
 
     return doctor(argv)

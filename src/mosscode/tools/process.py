@@ -101,34 +101,53 @@ async def run_process(
     # Commands, hooks and skill tools never inherit the variables holding API keys.
     env = command_environment(env) if confined else child_environment(env)
     prepared = None
+    gate_python = sys.executable
     if sandbox_root is not None:
-        from ..sandbox import current
+        from ..sandbox import UNAVAILABLE_HINT, SandboxFailure, current, safe_python
 
-        prepared = current().prepare(args, cwd, env, sandbox_root, network)
+        try:
+            prepared = current().prepare(args, cwd, env, sandbox_root, network)
+        except SandboxFailure as exc:
+            raise ToolFailure("sandbox_failed", f"{exc}{UNAVAILABLE_HINT}") from None
         args, env = prepared.argv, prepared.env
+        # The gate runs unsandboxed; a project's .venv python is something the last command could have replaced.
+        gate_python = safe_python(prepared.policy.writable) or ""
+        if not gate_python:
+            raise ToolFailure("sandbox_failed", "找不到可写目录之外的 Python 解释器，无法启动沙箱。" + UNAVAILABLE_HINT)
     try:
         # MXC cannot start its container inside a Job with UI limits; the container has its own.
-        ui_limits = confined and prepared is None
-        details = await _run(args, cwd, check=check, limit=limit, tail=tail, env=env, input=input, ui_limits=ui_limits)
+        ui_limits = confined and (prepared is None or prepared.ui_limits)
+        details = await _run(
+            args,
+            cwd,
+            check=check,
+            limit=limit,
+            tail=tail,
+            env=env,
+            input=input,
+            ui_limits=ui_limits,
+            gate_python=gate_python,
+        )
     finally:
         notes = prepared.finish() if prepared is not None else []
     if prepared is not None:
         details["sandbox"] = {
             "writable": [str(p) for p in prepared.policy.writable],
             "notes": notes,
-            "network": "proxy" if network else "none",
+            "network": "open" if prepared.policy.network == "open" else "proxy" if network else "none",
+            "backend": current().status().backend,
         }
     return details
 
 
-async def _run(args, cwd, *, check, limit, tail, env, input, ui_limits):
+async def _run(args, cwd, *, check, limit, tail, env, input, ui_limits, gate_python=None):
     options = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}
     # Windows commands wait on a one-byte gate until Job assignment completes.
     # This closes the race in which a fast shell could spawn before assignment.
     # os.read takes exactly the gate byte, so the child inherits the rest of the pipe as its stdin.
     inherit = "" if input is not None else ",stdin=subprocess.DEVNULL"
     gate = f"import os,subprocess,sys; os.read(0,1); sys.exit(subprocess.call(sys.argv[1:]{inherit}))"
-    command = [sys.executable, "-c", gate, *args] if os.name == "nt" else args
+    command = [gate_python or sys.executable, "-I", "-S", "-c", gate, *args] if os.name == "nt" else args
     piped = os.name == "nt" or input is not None
     spawn = asyncio.create_task(
         asyncio.create_subprocess_exec(
@@ -229,14 +248,15 @@ class ExecuteCommand(Tool):
 
     def __init__(self, root: Path, shell: Shell | str | None = None):
         super().__init__(root)
-        from ..sandbox import current
+        from ..sandbox import current, reads_outside
 
         self.shell = shell if isinstance(shell, Shell) else resolve_shell(shell or "auto")  # Hooks use it too.
         sandbox = current()
         self.sandboxed = sandbox.enabled
         self.command_shell = self.shell
-        if self.sandboxed and os.name == "nt" and self.shell.kind != "powershell":
-            # MSYS2 programs, Git Bash included, cannot start inside an MXC container.
+        status = sandbox.status() if self.sandboxed else None
+        if status is not None and status.backend in ("mxc", "token") and self.shell.kind != "powershell":
+            # MSYS2 programs, Git Bash included, cannot start inside an MXC container or under a restricted token.
             self.command_shell = resolve_shell("powershell")
         if self.sandboxed:
             self.params_model = SandboxCommandParams
@@ -251,8 +271,14 @@ class ExecuteCommand(Tool):
             "git status/diff/log/show、ls、cat、grep 等只读命令（参数限于项目内，不含管道和重定向）无需审批，计划模式中也可使用；其他命令按权限档位审批。",
             "execute_command 超时或取消可能留下部分效果；重复有副作用的命令前先检查状态，不通过增大超时掩盖持续失败。",
         )
-        if self.sandboxed:
-            sandbox.status()  # Detection decides whether the network goes through the proxy.
+        if status is not None and status.state == "partial":
+            self.prompt_guidelines += (
+                "execute_command 的命令在沙箱中运行，但沙箱只限制写入：只能写项目目录和临时目录，"
+                ".mosscode、.git/hooks、.git/config 只读；读取和网络不受沙箱限制，命令仍按权限档位审批。"
+                "被沙箱拦截且确实需要写项目外的文件时，以 outside_sandbox: true 重新调用并在 justification 中写明理由，"
+                "用户批准后在沙箱外运行；能在边界内完成的不要申请。",
+            )
+        elif self.sandboxed:
             if sandbox.network == "proxy":
                 network = (
                     "网络只经 MossCode 的代理（已写入 HTTP_PROXY/HTTPS_PROXY）连接域名，新域名由用户确认，"
@@ -264,7 +290,7 @@ class ExecuteCommand(Tool):
                 escape = "联网安装依赖、写项目外的文件"
             self.prompt_guidelines += (
                 f"execute_command 的命令在沙箱中运行，无需审批：只能写项目目录和临时目录；{network}"
-                "项目外只能读取系统目录和工具目录；.mosscode、.git/hooks、.git/config 只读。"
+                f"{reads_outside(status.backend if status else '')}；.mosscode、.git/hooks、.git/config 只读。"
                 f"被沙箱拦截且确实需要越界时（如{escape}），"
                 "以 outside_sandbox: true 重新调用并在 justification 中写明理由，用户批准后在沙箱外运行；能在边界内完成的不要申请。",
             )
@@ -279,6 +305,7 @@ class ExecuteCommand(Tool):
             raise ToolFailure("sandbox_unavailable", sandbox.status().reason + UNAVAILABLE_HINT)
         shell = self.command_shell
         proxy = self._proxy(params.command) if inside and sandbox.network == "proxy" else None
+        socket = sandbox.proxy_socket() if proxy is not None else None
         script = params.command
         if proxy is not None and shell.kind == "powershell":
             # Windows PowerShell 5.1 ignores HTTPS_PROXY and would try the system proxy, which the sandbox blocks.
@@ -293,7 +320,7 @@ class ExecuteCommand(Tool):
                 env=shell.env(params.command),
                 confined=True,
                 sandbox_root=self.root if inside else None,
-                network=await proxy.start() if proxy is not None else None,
+                network=await proxy.start(socket) if proxy is not None else None,
             )
         finally:
             if proxy is not None:

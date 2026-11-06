@@ -361,11 +361,11 @@ def _project_plugin_items(project, home: Path | None, cwd: Path) -> list[Item]:
     return items
 
 
-def check_sandbox(config: str | None = None, *, windows: bool | None = None) -> list[Item]:
+def check_sandbox(config: str | None = None, *, probe=None) -> list[Item]:
+    """probe: the Sandbox to detect with; tests pass one whose detection is replaced."""
     from .config import ConfigError, SandboxConfig, find_config, load_settings
-    from .sandbox import windows_mxc
+    from .sandbox import BACKEND_NAMES, PLATFORM_BACKENDS, Sandbox
 
-    windows = os.name == "nt" if windows is None else windows
     try:
         settings = load_settings(Path(config) if config is not None else find_config())
         sandbox = settings.sandbox
@@ -377,26 +377,36 @@ def check_sandbox(config: str | None = None, *, windows: bool | None = None) -> 
             OK, "沙箱：" + ("开启（sandbox.mode: on）" if on else "关闭（sandbox.mode: off，可用 --sandbox 临时打开）")
         )
     ]
-    if not windows:
+    system = "linux" if sys.platform.startswith("linux") else sys.platform
+    choices = "、".join(BACKEND_NAMES[name] for name in PLATFORM_BACKENDS.get(system, ())) or "无"
+    # Detection runs each backend's self-test whether or not the sandbox is on: doctor says what turning it on gives.
+    probe = probe or Sandbox(sandbox, enabled=True)
+    status = probe.status()
+    name = BACKEND_NAMES.get(status.backend, status.backend) or "沙箱后端"
+    if status.state == "unavailable":
         if on:
-            items.append(Item(WARN, "这个系统的沙箱后端还没有实现：模型的命令都会被拒绝", "用 --no-sandbox 运行"))
+            items.append(
+                Item(WARN, f"{name}不可用，模型的命令都会被拒绝：{status.reason}", "修复后重试，或用 --no-sandbox 运行")
+            )
         else:
-            items.append(Item(OK, "这个系统的沙箱后端还没有实现，打开后模型的命令都会被拒绝"))
+            items.append(Item(OK, f"这个系统可用的后端：{choices}；现在不可用：{status.reason}"))
         return items
-    wxc = windows_mxc.find(sandbox.wxc_exec)
-    if wxc is None:
-        if on:
-            items.append(Item(WARN, "找不到 MXC 的 wxc-exec.exe，模型的命令都会被拒绝", windows_mxc.MISSING))
-        else:
-            # Not a problem while the sandbox is off; say what turning it on needs.
-            items.append(Item(OK, "未安装 MXC 的 wxc-exec.exe；打开沙箱前需要安装，见 docs/reference/sandbox.md"))
-        return items
-    problem = windows_mxc.check(wxc)
-    items.append(
-        Item(WARN, f"MXC {wxc} 不可用：{problem}", "更新 Windows 后重试")
-        if problem
-        else Item(OK, f"MXC：{wxc}，隔离级别 base-container，自检通过")
-    )
+    level = "写入、读取和网络都由系统强制" if status.state == "full" else "只限制写入，命令仍需审批"
+    where = f"（{probe.executable}）" if probe.executable else ""
+    items.append(Item(OK, f"沙箱后端：{name}{where}，{level}，自检通过（这个系统可用：{choices}）"))
+    for note in (probe.fallback_note, probe.network_note, probe.open_note(Path.cwd())):
+        if note:
+            items.append(Item(WARN if on else OK, note))
+    if status.backend == "token":
+        from .sandbox import windows_token
+
+        if count := len(windows_token.load()["roots"]):
+            items.append(
+                Item(
+                    OK,
+                    f"受限令牌在 {count} 个项目上设置了访问控制，见 {windows_token.record_path()}；moss sandbox cleanup 可移除",
+                )
+            )
     return items
 
 

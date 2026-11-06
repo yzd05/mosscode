@@ -74,6 +74,7 @@ def test_sandbox_configuration(tmp_path):
         "on", allow_write=("D:/cache",), deny_read=("~/secrets",), allow_unsandboxed="never"
     )
     assert settings(tmp_path).sandbox.mode == "off"
+    assert settings(tmp_path, backend="token").sandbox.backend == "token"
 
 
 @pytest.mark.parametrize(
@@ -84,6 +85,7 @@ def test_sandbox_configuration(tmp_path):
         {"allow_write": "/tmp"},
         {"network": "all"},
         {"wxc_exec": ""},
+        {"backend": "docker"},
     ],
 )
 def test_invalid_sandbox_configuration(tmp_path, block):
@@ -231,7 +233,7 @@ async def test_run_process_finishes_the_backend_even_when_the_command_fails(tmp_
     monkeypatch.setattr(box, "prepare", working)
     details = await run_process(["x"], tmp_path, check=False, confined=True, sandbox_root=tmp_path)
     assert details["stdout"].strip() == "ok"
-    assert details["sandbox"] == {"writable": [str(tmp_path)], "notes": [], "network": "none"}
+    assert details["sandbox"] == {"writable": [str(tmp_path)], "notes": [], "network": "none", "backend": "mxc"}
     json.dumps(details)  # Details are stored with the session.
 
 
@@ -381,21 +383,23 @@ def test_command_line_flags():
     assert parse_arguments(["--no-sandbox"]).sandbox is False
 
 
-def test_doctor_reports_the_sandbox(tmp_path):
+def test_doctor_reports_the_sandbox(tmp_path, monkeypatch):
     from mosscode.doctor import OK, WARN, check_sandbox
 
     path = tmp_path / "config.yaml"
+    missing = sandbox.Sandbox(SandboxConfig(mode="on"))
+    monkeypatch.setattr(missing, "_detect", lambda: Status("unavailable", "bubblewrap", "找不到 bubblewrap。"))
     settings(tmp_path, mode="on")
-    items = check_sandbox(str(path), windows=False)
-    assert items[0].text.startswith("沙箱：开启") and items[1].level == WARN
+    items = check_sandbox(str(path), probe=missing)
+    assert items[0].text.startswith("沙箱：开启") and items[1].level == WARN and "找不到 bubblewrap" in items[1].text
     settings(tmp_path)
-    assert check_sandbox(str(path), windows=False)[0].level == OK
-
-
-@pytest.mark.skipif(WINDOWS, reason="the Windows backend is MXC")
-def test_other_systems_report_no_backend_yet(monkeypatch):
-    box = sandbox.configure(SandboxConfig(mode="on"))
-    assert box.status().state == "unavailable" and "还没有实现" in box.status().reason
+    items = check_sandbox(str(path), probe=missing)
+    assert all(item.level == OK for item in items) and "现在不可用" in items[1].text
+    working = sandbox.Sandbox(SandboxConfig(mode="on"))
+    monkeypatch.setattr(working, "_detect", lambda: Status("full", "bubblewrap"))
+    working.executable = "/usr/bin/bwrap"
+    items = check_sandbox(str(path), probe=working)
+    assert "bubblewrap（/usr/bin/bwrap），写入、读取和网络都由系统强制，自检通过" in items[1].text
 
 
 # The real backend ---------------------------------------------------------------------------------

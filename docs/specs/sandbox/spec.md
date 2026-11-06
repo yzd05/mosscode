@@ -1,6 +1,6 @@
 # 命令沙箱
 
-日期：2026-11-05。状态：13A（控制面加固 H1–H5）已实现；13B（Windows 探测）已完成，结果见 F14–F21，Q1、Q3、Q11 已据此决定；13C（公共层与 Windows MXC 后端）已实现，范围与偏差见“13C 实现记录”，Q2、Q4、Q5、Q6、Q7 已决定；13E（网络代理）已实现，见“13E 设计”，Q14 已决定；13D 未开始（2026-11-06）。
+日期：2026-11-05。状态：13A（控制面加固 H1–H5）已实现；13B（Windows 探测）已完成，结果见 F14–F21，Q1、Q3、Q11 已据此决定；13C（公共层与 Windows MXC 后端）已实现，范围与偏差见“13C 实现记录”，Q2、Q4、Q5、Q6、Q7 已决定；13E（网络代理）已实现，见“13E 设计”，Q14 已决定；13D（bubblewrap、Seatbelt、受限令牌）已实现，见“13D 实现记录”，Q3 已决定（2026-11-06）。
 
 来源：
 - 用户的要求（2026-11-05）：调研系统级沙箱的设计，参考 Claude Code、Codex、Gemini CLI、DeepSeek Harness 等成熟项目，然后写规格。
@@ -218,10 +218,34 @@
 
 手动验收（2026-11-06）：M168–M172 全部通过。Windows Terminal 只授予了点击权限，无法输入，所以用 Textual 的无界面驱动（`.test-artifacts/sbx-drive.py`）运行真实的界面、真实模型和真实 MXC，记录每张审批卡片和每轮的屏幕文字；Windows Terminal 中的渲染未覆盖。发现并修复两处：PowerShell 报错的位置行显示的是 MossCode 加在命令前的编码和代理设置，而不是用户的命令（两段前缀各自换行，`tests/test_tools.py` 用真实 PowerShell 验证）；`/sandbox` 中每个被拒绝的主机记了两条（去掉不带原因的那条）。验收步骤的措辞也已修正：不说“用命令”时模型用 write_file 写文件，不说明是验收测试时模型拒绝改写受保护路径。另外，自动记忆把一条测试指令（“失败了不要申请沙箱外运行”）存成了用户级的偏好，已手动删除；这属于自动记忆的提取标准，不在本规格范围。
 
+### 13D 实现记录
+
+用户文档见 [命令沙箱](../../reference/sandbox.md)。模块：`sandbox/bwrap.py` 与 `sandbox/linux_exec.py`（B2）、`sandbox/seatbelt.py`（B3）、`sandbox/windows_token.py`（B5、B6）、`sandbox_command.py`（`moss sandbox cleanup`）。`sandbox.backend`（S4）为 `auto` 或指定后端；`auto` 在 Windows 上先试 MXC，不可用时改用受限令牌并在启动区、`/sandbox`、`doctor` 中说明 MXC 不可用的原因（D4）；指定 `mxc` 时不退回。`doctor`（D3）按系统检测后端并运行它的自检，沙箱关闭时也检查。实现与规格的差异：
+
+- **bubblewrap 的读取**：整个文件系统只读挂载，禁止读取的路径用空目录或 `/dev/null` 遮住（`policy_for(reads_all=True)` 列出全部凭据路径，不只是授权范围内的），之后再把其中需要的私有临时目录、Skill 和插件目录挂回。受保护路径存在时只读挂载，并把它们与可写根目录之间的目录（如 `.git`）自绑定为挂载点，`mv .git`、`rm .git/config` 返回 EBUSY。没有在规格中的：`--new-session`（防 TIOCSTI 注入终端），以及 seccomp 禁止新建 `AF_UNIX` 套接字、`io_uring_setup` 和其他 ABI 的系统调用（原列在“不做”中；Unix 套接字不受只读挂载约束，会让命令经 `docker.sock`、ssh-agent 越界，所以做了）。启动器 `linux_exec.py` 只用标准库，由 `python -I -S -c` 运行，代码在 MossCode 导入时读入内存，命令改不到下一条命令的启动器。
+- **bubblewrap 的网络**：代理在宿主上监听私有临时目录中的 Unix 套接字；启动器的 `bridge` 模式在命令的网络命名空间中监听 `127.0.0.1:3128` 并转发过去，自己保留 `AF_UNIX`，再以 `exec` 模式（装 seccomp）启动命令。命名空间中没有 DNS，只能经代理联网。
+- **Seatbelt**：照 Gemini CLI 的配置档，默认允许，再拒绝可写根目录外的写入、受保护路径（含不存在的，及其上级目录本身的重命名）的写入、禁止读取的路径的 `file-read-data`（再允许其中挂回的路径），以及除代理端口外的全部网络。只有参数和配置档文本的单元测试，**没有在真实的 Mac 上运行过**。
+- **受限令牌（B5）**：与规格的差异：
+  - restricting SID 为项目的能力 SID（每个项目一个，形如 `S-1-5-21-a-b-c-d`，没有账户使用的域 SID 形式）、Everyone、登录 SID；令牌的默认 DACL 授予 SYSTEM、用户、能力 SID 和登录 SID，否则命令创建的对象（管道、自己的文件）自己都打不开。
+  - icacls 拒绝不能解析的 SID（错误 1332），ACE 改用 ctypes 调 `SetEntriesInAcl` / `SetNamedSecurityInfo` 写入；`REVOKE_ACCESS` 不移除拒绝 ACE，移除时自己遍历 ACL 删除该 SID 的显式 ACE。
+  - **删除不按 restricting SID 检查**（实测：删除受保护文件、重命名 `.git` 都成功）。规格写的“父目录拒绝 `FILE_DELETE_CHILD`”不够：删除只需要对象本身的 DELETE 权限或父目录的 `FILE_DELETE_CHILD`，前者由用户自己的 ACE 授予。改为启动器在命令运行期间以不共享删除的方式打开每个受保护路径（访问 `0x81`，只用 `0x80` 时 Windows 不做共享检查），使它们和上级目录都不能删除或重命名；再把命令放进一个设置了 `KILL_ON_JOB_CLOSE` 的嵌套 Job，启动器退出时命令的所有后代一起结束，句柄释放后不会有残留进程去删。
+  - 已知缺口：项目外用户有权删除的文件，命令可以删除或移进项目（DELETE 不受限制；重命名到项目外的位置需要写入目标目录，被拒绝）。文档写明；这也是 partial 仍要审批的原因之一。
+  - 网络标为 `open`：代理只经环境变量引导，命令可以绕开，而读取本来不受限，再加一层询问只是给已经批准的命令多一个对话框。所以受限令牌不启动代理，保留用户自己的代理变量。
+  - Git Bash 在受限令牌下启动失败（Q3），命令改用 PowerShell，与 MXC 相同。
+  - 项目目录的 ACE 可继承，大项目第一次写入要遍历整棵树；每个路径每个会话只检查一次（`Grants.checked`），ACE 跨会话保留。
+- **Everyone 可写的目录（B6）**：因为 Everyone 是 restricting SID，Everyone 可写的目录命令也能写。规格写的是“可写根目录中”，实际有意义的是可写根目录**之外**：检查项目的上级目录、PATH 中的目录、主目录、`%PUBLIC%`、`%ProgramData%` 及其一级子目录（不递归，最多 300 个，本机约 0.1 秒），发现时在启动区、`/sandbox`、`doctor` 中提示。
+- **审批（A2）**：partial 下与沙箱关闭时相同；审批面板标题加“沙箱只限制写入”；状态栏“沙箱·部分”为琥珀色。
+- **拦截说明**：结果末尾的说明按后端描述读取范围和网络（受限令牌下为“读取不受沙箱限制”“网络不受沙箱限制”），不再一律说“网络已断开”。
+
+验证（2026-11-06）：
+
+- **Windows 受限令牌**，本机实测，转成了 `tests/test_sandbox_backends.py` 中按平台运行的用例（B7）：写项目外、重命名项目外的文件、写或新建受保护路径、大小写变体、`..`、8.3 短文件名、删除受保护文件、删除后重建、重命名 `hooks`、`.git` 和项目目录、硬链接、符号链接、指向项目外和指向 `hooks` 的目录联接、`icacls` 给自己授权，全部失败；项目内写入、PowerShell、`git add` 和 `git commit` 成功；能力 SID 在清理后从全部路径上消失。另外离线运行 `pip install -e .`（`--no-index --no-build-isolation`，项目内的虚拟环境）成功并能导入。
+- **Linux bubblewrap**，在 WSL（Ubuntu，Python 3.12）中用 `.test-artifacts/sbx-bwrap-check.py` 加载真实的 `policy_for` 与 `bwrap.command`，28 项全部符合预期：上述写入、删除、重命名、硬链接、符号链接、卸载受保护挂载点、读 `~/.ssh`、`AF_UNIX`、直连都失败，私有临时目录（在被遮住的 `~/.mosscode` 中）可写，`git commit` 成功，命令结束后后台进程不再运行，经桥接的 `curl` 到达代理。这次实测发现桥接模式启动命令时没有带上 `SOURCE`，启动器以 `NameError` 退出，即开启代理时 Linux 上所有命令都会失败，已修复并加了测试。同样的用例在 `tests/test_sandbox_backends.py` 中，Linux 上有 `bwrap` 时运行（WSL 没有 pytest，没有在 pytest 下跑过）。
+- **macOS**：只有单元测试。
+
 ## 不做
 
 - Windows 严格模式（独立账户 + WFP）、Low IL、Windows Sandbox、直接使用 AppContainer。
-- Linux 上拦截 Unix socket 的 seccomp（`docker.sock` 是已知逃逸，文档写明，见 Q12）。
 - 密钥的哨兵值替换（Claude Code 的 `mask`，需要 TLS 终止）。
 - MCP stdio 服务器和 Hook 进沙箱。
 - 文件工具改走 OS 沙箱：保持应用层检查，但受保护路径和可写目录从同一份策略取值，避免两边不一致。
@@ -235,7 +259,7 @@
 | --- | --- | --- | --- |
 | Q1 | MXC 能否在用户的 Windows 11 Home 26300 上运行；`wxc-exec.exe` 怎么获得 | **已决定**：能（F14）。获得方式按推荐。`wxc-exec.exe` 不随 MossCode 打包，由用户自行安装（MXC 是 MIT，但有“必需的诊断数据”，需要用户自己知情）；MossCode 在 PATH 和固定位置查找 | 随 pip 包附带二进制：开箱即用，但包体积变大、平台轮子变复杂，遥测由 MossCode 代为接受 |
 | Q2 | 沙箱默认是否开启 | **已决定**（按推荐，首次启动的提示未做）：13C/13D 发布时默认关闭，`sandbox.mode: on` 开启，`doctor` 和首次启动提示一次；稳定一个版本后改为“full 可用时默认开启” | 一开始就默认开启：保护最好，但 Windows 上 partial 后端改变不了审批体验，失败关闭可能频繁打断用户 |
-| Q3 | Git Bash（MSYS2）在 MXC 和受限令牌下能否工作 | **已决定**：MXC 下不能（F18），沙箱开启时命令改用 PowerShell 并在工具说明中写明；受限令牌下待 13D 实测 | 不能工作时整个后端不可用（失败关闭） |
+| Q3 | Git Bash（MSYS2）在 MXC 和受限令牌下能否工作 | **已决定**：都不能（MXC 见 F18；受限令牌下 Git Bash 启动时在 bcryptPrimitives.dll 中崩溃，13D 实测），沙箱开启时命令改用 PowerShell 并在工具说明中写明 | 不能工作时整个后端不可用（失败关闭） |
 | Q4 | `bypassPermissions` 下申请沙箱外执行是否自动批准 | **已决定**（按推荐）：`allow_unsandboxed: ask`（默认）：仍然询问；`never` 时直接拒绝 | 自动批准（Claude Code 的做法）：bypass 更彻底，但模型一句理由就能离开沙箱 |
 | Q5 | full 沙箱下计划模式是否允许任意命令（只读、断网） | **已决定**：采用替代方案，维持白名单。13C 的计划模式没有单独的只读策略，项目目录在沙箱中仍可写，放开任意命令就等于计划模式能改代码；只读策略留到以后。原推荐：允许：计划阶段能跑测试、查依赖；写入只会落在私有临时目录 | 维持现有只读命令白名单：行为不变，但沙箱的好处在计划模式中用不上 |
 | Q6 | “在沙箱外运行”能否永久保存 | **已决定**（按推荐）：不能，只有本次和本会话的前缀：永久规则等于给某类命令长期开后门，需要时用户可以在 `allow_write` 或域名规则里精确放宽 | 可以保存为用户级规则（如 `Unsandboxed(npm publish)`）：常用命令不必每次申请 |

@@ -1,9 +1,10 @@
 """The command sandbox: what commands the model runs may write, read and reach, enforced by the operating system.
 
 Approval decides whether a command runs; the sandbox decides what it can touch. Only commands the model runs
-(execute_command, Skill tools) are sandboxed. The one backend so far is MXC on Windows (windows_mxc.py); on other
-systems a sandbox that is switched on reports itself unavailable, and commands are refused rather than run
-without it.
+(execute_command, Skill tools) are sandboxed. Backends: bubblewrap on Linux (bwrap.py), Seatbelt on macOS
+(seatbelt.py), MXC on Windows (windows_mxc.py) and, where MXC cannot run, a write-restricted token
+(windows_token.py), which confines writes only. A sandbox that is switched on but has no working backend reports
+itself unavailable, and commands are refused rather than run without it.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -36,7 +38,16 @@ HOME_SECRETS = (
 )
 TOOL_DIRS = {"bin", "cmd", "scripts"}  # A PATH entry named so sits in a tool's own folder, which it needs.
 PROXY_NAMES = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "FTP_PROXY"}
-NETWORK_LABELS = {"proxy": "经 MossCode 的代理，新域名需要你确认", "none": "断开"}
+NETWORK_LABELS = {
+    "proxy": "经 MossCode 的代理，新域名需要你确认",
+    "none": "断开",
+    "open": "不受沙箱限制（这个后端只限制写入）",
+}
+BACKEND_NAMES = {"bubblewrap": "bubblewrap", "seatbelt": "Seatbelt", "mxc": "MXC", "token": "受限令牌"}
+PLATFORM_BACKENDS = {"linux": ("bubblewrap",), "darwin": ("seatbelt",), "win32": ("mxc", "token")}
+# What a sandboxed command may read outside the project, as the model is told.
+READS_ALL = "项目外可以读取整个文件系统，凭据目录（~/.ssh 等）和 MossCode 的配置除外"
+READS = {"bubblewrap": READS_ALL, "seatbelt": READS_ALL, "token": "读取不受沙箱限制"}
 UNAVAILABLE_HINT = "可以用 /sandbox off 在本会话关闭沙箱（无界面模式用 --no-sandbox），修复后再打开。"
 
 
@@ -52,13 +63,13 @@ class Policy:
 
 @dataclass(frozen=True)
 class Status:
-    state: str  # "off", "full" or "unavailable"
+    state: str  # "off", "full" (writes, reads and network enforced), "partial" (writes only) or "unavailable"
     backend: str = ""
     reason: str = ""
 
     @property
     def label(self) -> str:
-        return {"full": "沙箱", "unavailable": "沙箱不可用"}.get(self.state, "无沙箱")
+        return {"full": "沙箱", "partial": "沙箱·部分", "unavailable": "沙箱不可用"}.get(self.state, "无沙箱")
 
 
 @dataclass
@@ -71,6 +82,7 @@ class Prepared:
     watched: tuple[Path, ...] = ()  # Protected paths that did not exist before the command.
     files: tuple[Path, ...] = ()
     notes: list[str] = field(default_factory=list)
+    ui_limits: bool = False  # The backend leaves desktop and clipboard to the Job, as for unsandboxed commands.
 
     def finish(self) -> list[str]:
         for path in self.files:
@@ -182,9 +194,20 @@ def _git_dirs(root: Path) -> tuple[Path, ...]:
 
 
 def policy_for(
-    root: Path, config: SandboxConfig, temp: Path, *, secrets: tuple[Path, ...] = (), home: Path | None = None
+    root: Path,
+    config: SandboxConfig,
+    temp: Path,
+    *,
+    secrets: tuple[Path, ...] = (),
+    home: Path | None = None,
+    reads_all: bool = False,
 ) -> Policy:
-    """secrets: files commands must not read wherever they are, such as the configuration file in use."""
+    """secrets: files commands must not read wherever they are, such as the configuration file in use.
+
+    reads_all: the backend lets commands read the whole filesystem and hides the denied paths (bubblewrap,
+    Seatbelt), so every one of them is listed, even where it holds the private temp or a readable grant; the
+    backend exposes those again. MXC instead reads only what is granted, so only denials inside a grant matter.
+    """
     root = _resolved(root)
     home = _resolved(home or Path.home())
     git = _git_dirs(root)
@@ -200,10 +223,26 @@ def policy_for(
         dict.fromkeys(
             p
             for p in candidates
-            if p.exists() and any(p.is_relative_to(g) for g in granted) and not _resolved(temp).is_relative_to(p)
+            if p.exists()
+            and (reads_all or (any(p.is_relative_to(g) for g in granted) and not _resolved(temp).is_relative_to(p)))
         )
     )
     return Policy(root, tuple(writable), readable, tuple(dict.fromkeys(protected)), deny)
+
+
+def safe_python(writable: tuple[Path, ...] = ()) -> str | None:
+    """An interpreter MossCode can run unsandboxed next to a command: never one inside a writable root.
+
+    A project's .venv sits in the root a command may write; a command replacing its python would have the next
+    command's unsandboxed launcher run its code. The base interpreter a virtual environment points at is outside.
+    """
+    candidates = [os.path.realpath(getattr(sys, "_base_executable", None) or sys.executable)]
+    if os.name != "nt":
+        candidates += [os.path.realpath(p) for p in ("/usr/bin/python3", "/bin/python3") if os.path.exists(p)]
+    for path in candidates:
+        if os.path.exists(path) and not any(Path(path).is_relative_to(root) for root in writable):
+            return path
+    return None
 
 
 class Sandbox:
@@ -217,6 +256,9 @@ class Sandbox:
         self.events: list[str] = []  # Recent blocks and removals, shown by /sandbox.
         self.network = "none"  # "proxy" once the backend is known to confine commands to MossCode's proxy.
         self.network_note = ""  # Why the configured proxy is not in use.
+        self.fallback_note = ""  # Why a weaker backend than the platform's best is in use.
+        self.executable = ""
+        self._open: list[Path] | None = None  # Folders Everyone may write, found once per session.
 
     def status(self) -> Status:
         if not self.enabled:
@@ -226,10 +268,56 @@ class Sandbox:
         return self._status
 
     def _detect(self) -> Status:
-        if os.name != "nt":
+        system = "linux" if sys.platform.startswith("linux") else sys.platform
+        choices = PLATFORM_BACKENDS.get(system, ())
+        wanted = self.config.backend
+        if not choices:
+            return Status("unavailable", reason="这个系统没有可用的沙箱后端（支持 Linux、macOS 和 Windows）。")
+        if wanted != "auto" and wanted not in choices:
             return Status(
-                "unavailable", reason="这个系统的沙箱后端还没有实现（计划中：Linux bubblewrap、macOS Seatbelt）。"
+                "unavailable",
+                wanted,
+                f"sandbox.backend 为 {wanted}，这个系统上不能使用；可选 auto、" + "、".join(choices) + "。",
             )
+        if wanted == "token":
+            return self._detect_token()
+        status = getattr(self, "_detect_" + choices[0])()
+        if status.state != "unavailable" or wanted != "auto" or len(choices) == 1:
+            return status
+        # Never silently weaker: the fallback says why the full backend is not in use, here and at startup.
+        fallback = self._detect_token()
+        if fallback.state == "unavailable":
+            return status
+        self.fallback_note = f"MXC 不可用（{status.reason.rstrip('。')}），改用受限令牌：只限制写入，命令仍需审批。"
+        return fallback
+
+    def _detect_bubblewrap(self) -> Status:
+        from . import bwrap
+
+        found = bwrap.find()
+        if found is None:
+            return Status("unavailable", "bubblewrap", bwrap.MISSING)
+        problem = bwrap.check(found)
+        if problem:
+            return Status("unavailable", "bubblewrap", problem)
+        self.executable = found
+        self.network = "proxy" if self.config.network == "proxy" else "none"
+        return Status("full", "bubblewrap")
+
+    def _detect_seatbelt(self) -> Status:
+        from . import seatbelt
+
+        found = seatbelt.find()
+        if found is None:
+            return Status("unavailable", "seatbelt", "找不到 sandbox-exec（macOS 自带，位于 /usr/bin/sandbox-exec）。")
+        problem = seatbelt.check(found)
+        if problem:
+            return Status("unavailable", "seatbelt", problem)
+        self.executable = found
+        self.network = "proxy" if self.config.network == "proxy" else "none"
+        return Status("full", "seatbelt")
+
+    def _detect_mxc(self) -> Status:
         from . import windows_mxc
 
         found = windows_mxc.find(self.config.wxc_exec)
@@ -238,7 +326,7 @@ class Sandbox:
         problem = windows_mxc.check(found)
         if problem:
             return Status("unavailable", "mxc", problem)
-        self.wxc = found
+        self.executable = self.wxc = found
         if self.config.network == "proxy":
             if windows_mxc.loopback_proxy(found):
                 self.network = "proxy"
@@ -246,8 +334,23 @@ class Sandbox:
                 self.network_note = "本机的 MXC 不支持把容器限制在一个回环代理端口上，沙箱中的命令断网。"
         return Status("full", "mxc")
 
+    def _detect_token(self) -> Status:
+        from . import windows_token
+
+        problem = windows_token.check()
+        if problem:
+            return Status("unavailable", "token", problem)
+        # Reads and connections are not confined, so a proxy would only add prompts to a command already approved.
+        self.network = "open"
+        return Status("partial", "token")
+
     @property
     def active(self) -> bool:
+        return self.status().state in ("full", "partial")
+
+    @property
+    def full(self) -> bool:
+        """Writes, reads and network all confined: what lets a command run without approval."""
         return self.status().state == "full"
 
     def set_enabled(self, enabled: bool) -> None:
@@ -260,6 +363,31 @@ class Sandbox:
             return "无沙箱" if self.started else ""
         return self.status().label
 
+    def notices(self, root: Path | None = None) -> list[str]:
+        """What the startup area says about the sandbox, besides it being on."""
+        if not self.enabled:
+            return []
+        if not self.active:
+            return ["沙箱不可用，模型的命令都会被拒绝：" + self.status().reason]
+        notes = [note for note in (self.fallback_note, self.network_note, self.open_note(root or Path.cwd())) if note]
+        return ["沙箱：" + note for note in notes]
+
+    def open_note(self, root: Path) -> str:
+        """The restricted token cannot keep commands out of folders whose ACL lets Everyone write."""
+        if self.status().backend != "token":
+            return ""
+        if self._open is None:
+            from . import windows_token
+
+            try:
+                self._open = windows_token.open_folders(self.policy(root))
+            except OSError:
+                self._open = []
+        if not self._open:
+            return ""
+        shown = "、".join(str(p) for p in self._open[:5]) + (f" 等 {len(self._open)} 个" if len(self._open) > 5 else "")
+        return f"{shown} 对 Everyone 可写，受限令牌挡不住命令写入这些目录；可以收紧它们的权限，或改用 MXC。"
+
     def report(self, root: Path) -> list[str]:
         """What /sandbox shows: state, boundaries and recent events."""
         status = self.status()
@@ -269,19 +397,34 @@ class Sandbox:
                 lines.append("  /sandbox on 重新打开。")
             else:
                 lines.append("  在 config.yaml 中设 sandbox.mode: on，或用 --sandbox 启动后才能使用。")
-        elif status.state != "full":
+        elif not self.active:
             lines = ["沙箱：不可用，模型的命令都会被拒绝", "  原因：" + status.reason, "  " + UNAVAILABLE_HINT]
         else:
             policy = self.policy(root)
+            backend = BACKEND_NAMES.get(status.backend, status.backend)
+            if status.state == "full":
+                level = "写入、读取和网络都由系统强制"
+            else:
+                level = "只限制写入，读取和网络不受限，命令仍需审批"
+            if status.backend in ("bubblewrap", "seatbelt"):
+                readable = "整个文件系统，禁止读取的路径除外"
+            elif status.backend == "token":
+                readable = "不受限制"
+            else:
+                readable = f"系统目录和 {len(policy.readable)} 个工具目录"
+            denied = "、".join(str(p) for p in policy.deny_read) or "无"
             lines = [
-                f"沙箱：开启（{status.backend.upper()}，写入、读取和网络都由系统强制）",
+                f"沙箱：开启（{backend}，{level}）",
                 "  可写：" + "、".join(str(p) for p in policy.writable),
                 "  只读保护：" + "、".join(str(p) for p in policy.protected),
-                f"  项目外可读：系统目录和 {len(policy.readable)} 个工具目录",
-                "  禁止读取：" + ("、".join(str(p) for p in policy.deny_read) or "无"),
+                "  项目外可读：" + readable,
+                "  禁止读取：" + ("不支持（这个后端只限制写入）" if status.backend == "token" else denied),
                 "  网络：" + NETWORK_LABELS[self.network] + (f"（{self.network_note}）" if self.network_note else ""),
                 "  越界：" + ("禁止" if self.config.allow_unsandboxed == "never" else "模型带理由申请，每次询问"),
             ]
+            for note in (self.fallback_note, self.open_note(root)):
+                if note:
+                    lines.append("  " + note)
         if self.events:
             lines.append("最近的记录：")
             lines.extend("  · " + event for event in self.events)
@@ -293,20 +436,41 @@ class Sandbox:
     def policy(self, root: Path) -> Policy:
         from ..command_env import private_temp
 
-        policy = policy_for(root, self.config, private_temp(), secrets=(self.source,) if self.source else ())
+        reads_all = self.status().backend in ("bubblewrap", "seatbelt")
+        secrets = (self.source,) if self.source else ()
+        policy = policy_for(root, self.config, private_temp(), secrets=secrets, reads_all=reads_all)
         return replace(policy, network=self.network)
+
+    def proxy_socket(self) -> Path | None:
+        """Where a command's proxy listens when the backend reaches it through a Unix socket, not a port."""
+        if self.status().backend != "bubblewrap":
+            return None
+        import secrets
+
+        from ..command_env import private_temp
+
+        return private_temp() / f"proxy-{secrets.token_hex(4)}.sock"
 
     def prepare(
         self, argv: list[str], cwd: Path, env: dict[str, str], root: Path, proxy: str | None = None
     ) -> Prepared:
-        """proxy: this command's own listener, its only way out; without one the command has no network."""
-        from . import windows_mxc
+        """proxy: this command's own listener, its only way out; without one the command has no network.
 
+        Raises SandboxFailure when the backend cannot wrap the command; it then does not run.
+        """
+        backend = self.status().backend
         policy = self.policy(root)
-        # The user's proxy settings would point at a port the container cannot reach.
-        env = {k: v for k, v in env.items() if k.upper() not in PROXY_NAMES}
-        if proxy is not None:
-            env.update({name: proxy for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")})
+        if backend != "token":
+            # The user's proxy settings would point at a port the sandbox cannot reach.
+            env = {k: v for k, v in env.items() if k.upper() not in PROXY_NAMES}
+            if proxy is not None:
+                if backend == "bubblewrap":
+                    from .bwrap import BRIDGE_PORT
+
+                    url = f"http://127.0.0.1:{BRIDGE_PORT}"
+                else:
+                    url = proxy
+                env.update({name: url for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")})
         watched = tuple(p for p in policy.protected if not os.path.lexists(p))
         for git in _git_dirs(policy.root):
             # git creates hooks/ itself; making it now lets it be read-only rather than watched.
@@ -316,8 +480,38 @@ class Sandbox:
                     watched = tuple(p for p in watched if p != git / "hooks")
                 except OSError:
                     pass
-        request = windows_mxc.write_request(subprocess.list2cmdline(argv), cwd, env, policy, proxy)
-        return Prepared([str(self.wxc), str(request)], env, policy, watched, (request,))
+        if backend == "mxc":
+            from . import windows_mxc
+
+            request = windows_mxc.write_request(subprocess.list2cmdline(argv), cwd, env, policy, proxy)
+            return Prepared([str(self.wxc), str(request)], env, policy, watched, (request,))
+        python = safe_python(policy.writable)
+        if python is None:
+            raise SandboxFailure("找不到可写目录之外的 Python 解释器，无法启动沙箱。")
+        if backend == "bubblewrap":
+            from ..command_env import private_temp
+            from . import bwrap
+
+            socket = proxy.removeprefix("unix:") if proxy is not None else None
+            wrapped = bwrap.command(
+                argv, cwd, policy, bwrap=self.executable, python=python, temp=private_temp(), socket=socket
+            )
+            return Prepared(wrapped, env, policy, watched)
+        if backend == "seatbelt":
+            from urllib.parse import urlsplit
+
+            from . import seatbelt
+
+            port = urlsplit(proxy).port if proxy is not None else None
+            return Prepared(seatbelt.command(argv, policy, exe=self.executable, port=port), env, policy, watched)
+        from . import windows_token
+
+        wrapped = windows_token.command(argv, cwd, policy, python=python)
+        return Prepared(wrapped, env, policy, watched, ui_limits=True)
+
+
+class SandboxFailure(Exception):
+    """The backend could not wrap a command; it did not run."""
 
 
 _current = Sandbox()
@@ -368,6 +562,10 @@ DENIAL_SIGNS = (
 )
 
 
+def reads_outside(backend: str) -> str:
+    return READS.get(backend, "项目外只能读取系统目录、PATH 中的工具目录和配置的 allow_read")
+
+
 def explain(details: dict) -> str:
     """What to tell the model after a sandboxed command failed; empty when nothing points at the sandbox."""
     code = details.get("exit_code")
@@ -379,14 +577,13 @@ def explain(details: dict) -> str:
         return ""
     box = details.get("sandbox", {})
     writable = "、".join(box.get("writable", ()))
-    network = (
-        "网络只经 MossCode 的代理连接用户允许的域名，结果末尾列出被拒绝的主机"
-        if box.get("network") == "proxy"
-        else "网络已断开"
-    )
+    network = {
+        "proxy": "网络只经 MossCode 的代理连接用户允许的域名，结果末尾列出被拒绝的主机",
+        "open": "网络不受沙箱限制",
+    }.get(box.get("network"), "网络已断开")
     return (
         "\n\n命令在沙箱中运行，失败可能是沙箱拦截造成的（推测，依据是输出中的拒绝访问、无法解析主机或代理拒绝）："
-        f"只能写入 {writable}；{network}；项目外只能读取系统目录、PATH 中的工具目录和配置的 allow_read；"
+        f"只能写入 {writable}；{network}；{reads_outside(box.get('backend', ''))}；"
         "受保护的 .mosscode、.git/hooks、.git/config 只读。"
         "先确认能否在边界内完成；确需越界时，以 outside_sandbox: true 重新调用，并在 justification 中说明理由，"
         "用户批准后在沙箱外运行。"

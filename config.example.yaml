@@ -43,6 +43,7 @@ default_provider: claude
 # 命令沙箱（目前只有 Windows，需要 MXC 的 wxc-exec.exe）：模型的命令只能写项目目录，联网经 MossCode 的代理、新域名需确认，越界时带理由申请。
 # sandbox:
 #   mode: on
+#   backend: auto           # 或 bubblewrap / seatbelt / mxc / token
 #   allow_write: [D:/cache]
 #   allow_read: [D:/sdk]
 #   allow_unsandboxed: ask  # never：不允许在沙箱外运行

@@ -23,7 +23,7 @@ Ask 在输入区下方申请授权。↑ / ↓ 选择、Enter 确认；Esc 拒�
 
 ## 沙箱
 
-打开 [命令沙箱](sandbox.md) 后，沙箱中的命令在 default、acceptEdits 和 bypassPermissions 下都不再询问：它能写、能读和能连接什么由系统限制。显式 deny 规则、灾难级命令的拒绝和高风险命令的确认照旧，plan 仍只开放只读命令。模型申请在沙箱外运行（`outside_sandbox`）时每次询问，bypassPermissions 也一样；选项只有本次、本会话（这条命令或它的前缀）和拒绝，不能永久保存，已有的 allow 规则也不会让它自动通过。沙箱打开但不可用时命令以 `sandbox_unavailable` 拒绝。
+打开 [命令沙箱](sandbox.md) 后，沙箱中的命令在 default、acceptEdits 和 bypassPermissions 下都不再询问：它能写、能读和能连接什么由系统限制。Windows 的受限令牌后端只限制写入（状态栏显示“沙箱·部分”），命令照常审批，审批面板注明“沙箱只限制写入”。显式 deny 规则、灾难级命令的拒绝和高风险命令的确认照旧，plan 仍只开放只读命令。模型申请在沙箱外运行（`outside_sandbox`）时每次询问，bypassPermissions 也一样；选项只有本次、本会话（这条命令或它的前缀）和拒绝，不能永久保存，已有的 allow 规则也不会让它自动通过。沙箱打开但不可用时命令以 `sandbox_unavailable` 拒绝。
 
 ## 子 Agent
 

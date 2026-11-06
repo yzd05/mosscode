@@ -540,10 +540,7 @@ def run(args: argparse.Namespace) -> None:
         )
         if coordinator_notice:
             notices += (coordinator_notice,)
-        if sandbox.enabled and not sandbox.active:
-            notices += ("沙箱不可用，模型的命令都会被拒绝：" + sandbox.status().reason,)
-        elif sandbox.enabled and sandbox.network_note:
-            notices += ("沙箱：" + sandbox.network_note,)
+        notices += tuple(sandbox.notices())
         notices += tuple(
             filter(None, (load_catalog().problem, config.window_note(), plaintext_notice(settings, Path.cwd())))
         )

@@ -145,6 +145,25 @@ async def test_a_tls_hello_for_another_host_closes_the_tunnel():
     assert "evil.example" in proxy.refused and asked == ["example.com"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bubblewrap reaches the proxy through a Unix socket")
+async def test_the_proxy_can_listen_on_a_unix_socket():
+    import tempfile
+
+    # Socket paths are limited to about 100 bytes; a short folder keeps clear of that.
+    folder = Path(tempfile.mkdtemp(prefix="mc"))
+    path = folder / "p.sock"
+    async with Origin(http=True) as origin:
+        proxy, asked, _ = make_proxy(origin)
+        assert await proxy.start(path) == f"unix:{path}"
+        reader, writer = await asyncio.open_unix_connection(str(path))
+        writer.write(b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        assert (await read_all(reader)).endswith(b"ok")
+        writer.close()
+        await proxy.close()
+    assert asked == ["example.com"] and not path.exists()
+    folder.rmdir()
+
+
 async def test_a_refused_host_gets_403_and_nothing_is_contacted():
     async def deny(host, port):
         return "用户拒绝了这个域名"

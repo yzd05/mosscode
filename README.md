@@ -17,7 +17,7 @@ moss --version
 
 支持 Windows、Linux 和 macOS：日常开发在 Windows（Windows Terminal）上进行，三个系统都由 CI 运行全部测试。搜索优先使用 PATH 中的 ripgrep（`rg`），没有时自动退回内置实现；Windows 上建议安装 Git for Windows，命令工具会优先使用 Git Bash。Agent 团队的分屏窗格需要 Windows Terminal 或 tmux，否则成员在进程内运行。
 
-也可以在 Docker 容器中运行，让命令只能接触挂载进去的项目目录：Dockerfile 和启动命令见 [在容器中运行](docs/reference/container.md)。Windows 11 上还可以打开命令沙箱，由系统限制模型的命令能写、能读和能连接什么，见 [命令沙箱](docs/reference/sandbox.md)。
+也可以在 Docker 容器中运行，让命令只能接触挂载进去的项目目录：Dockerfile 和启动命令见 [在容器中运行](docs/reference/container.md)。还可以打开命令沙箱，由系统限制模型的命令能写、能读和能连接什么（Linux 用 bubblewrap，macOS 用 Seatbelt，Windows 用 MXC 或只限制写入的受限令牌），见 [命令沙箱](docs/reference/sandbox.md)。
 
 从源码安装、开发与测试见 [参与贡献](CONTRIBUTING.md)。
 
@@ -69,7 +69,7 @@ providers:
 | `team_max_members` | `4` | 每个团队的成员上限，1–8 |
 | `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE=1`，见 [Agent 团队](docs/reference/teams.md#协调者模式) |
 | `claude_directories` | `false` | 另外读取 Claude Code 的 `.claude/skills/`、`.claude/agents/`（用户级和项目级），见 [Skill](docs/reference/skills.md#存放位置) |
-| `sandbox` | `mode: off` | 命令沙箱：`mode: on` 时模型的命令在系统隔离中运行（目前只有 Windows，需要 MXC），见 [命令沙箱](docs/reference/sandbox.md) |
+| `sandbox` | `mode: off` | 命令沙箱：`mode: on` 时模型的命令在系统隔离中运行（Linux、macOS、Windows），见 [命令沙箱](docs/reference/sandbox.md) |
 | `web_search` | 无 | 搜索服务，如 `{provider: tavily, api_key_env: TAVILY_API_KEY}`；未配置时不提供搜索，见 [工具与 Agent Loop](docs/reference/tools.md#web_search) |
 
 ### 权限、MCP、项目指令、Skill、Hook、子 Agent、插件与工作树

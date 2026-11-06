@@ -146,6 +146,7 @@ class SandboxConfig:
     allow_unsandboxed: str = "ask"  # ask / never
     wxc_exec: str | None = None  # Path to MXC's wxc-exec.exe when it is not on PATH.
     network: str = "proxy"  # proxy: through MossCode's per-command proxy, domains approved; none: no network
+    backend: str = "auto"  # auto, or one of bubblewrap / seatbelt / mxc / token
 
 
 @dataclass(frozen=True)
@@ -210,7 +211,7 @@ def _command_env(raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
 def _sandbox(raw: Any) -> SandboxConfig:
     if raw is None:
         return SandboxConfig()
-    keys = {"mode", "allow_write", "allow_read", "deny_read", "allow_unsandboxed", "wxc_exec", "network"}
+    keys = {"mode", "backend", "allow_write", "allow_read", "deny_read", "allow_unsandboxed", "wxc_exec", "network"}
     if not isinstance(raw, dict) or set(raw) - keys:
         raise ConfigError("sandbox 只能包含 " + "、".join(sorted(keys)) + "。")
     mode = raw.get("mode", "off")
@@ -222,6 +223,9 @@ def _sandbox(raw: Any) -> SandboxConfig:
     network = raw.get("network", "proxy")
     if network not in {"proxy", "none"}:
         raise ConfigError("sandbox.network 需为 proxy 或 none。")
+    backend = raw.get("backend", "auto")
+    if backend not in {"auto", "bubblewrap", "seatbelt", "mxc", "token"}:
+        raise ConfigError("sandbox.backend 需为 auto、bubblewrap、seatbelt、mxc 或 token。")
     lists = {}
     for key in ("allow_write", "allow_read", "deny_read"):
         paths = raw.get(key, [])
@@ -232,7 +236,12 @@ def _sandbox(raw: Any) -> SandboxConfig:
     if wxc is not None and (not isinstance(wxc, str) or not wxc.strip()):
         raise ConfigError("sandbox.wxc_exec 需为 wxc-exec.exe 的路径。")
     return SandboxConfig(
-        mode, allow_unsandboxed=unsandboxed, wxc_exec=wxc.strip() if wxc else None, network=network, **lists
+        mode,
+        allow_unsandboxed=unsandboxed,
+        wxc_exec=wxc.strip() if wxc else None,
+        network=network,
+        backend=backend,
+        **lists,
     )
 
 

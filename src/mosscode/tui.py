@@ -780,6 +780,15 @@ def plan_text(arguments: str) -> str:
     return plan if isinstance(plan, str) else ""
 
 
+def _writes_only(operation) -> bool:
+    """A command the partial sandbox runs: its approval still decides what the command may read and reach."""
+    from .sandbox import current
+
+    sandbox = current()
+    command = operation.tool == "execute_command" or operation.tool.startswith("skill__")
+    return command and not operation.unsandboxed and sandbox.enabled and sandbox.status().state == "partial"
+
+
 def shell_name(label: str | None) -> str:
     if label is None:
         return "PowerShell" if os.name == "nt" else "Shell"
@@ -1506,7 +1515,9 @@ class MossCodeApp(TerminalApp[None]):
                 text.append(" " + COORDINATOR_BADGE, style=f"bold {OPERATION_COLOR}")
             if badge := sandbox_badge():
                 text.append(" · ")
-                text.append(badge, style=TOOL_SUCCESS_COLOR if badge == "沙箱" else ERROR_COLOR)
+                # Partial confines writes only: amber, like an operation still awaiting approval.
+                colors = {"沙箱": TOOL_SUCCESS_COLOR, "沙箱·部分": OPERATION_COLOR}
+                text.append(badge, style=colors.get(badge, ERROR_COLOR))
             if not self._generating and self.size.width >= 80:
                 text.append(" (Shift+Tab 切换)")
         if self.provider_name != self._banner_provider:
@@ -2281,6 +2292,7 @@ class MossCodeApp(TerminalApp[None]):
                 "需要授权 · "
                 + ("沙箱中的命令联网" if operation.network else labels.get(operation.tool, operation.tool))
                 + (" · 在沙箱外运行" if operation.unsandboxed else "")
+                + (" · 沙箱只限制写入" if _writes_only(operation) else "")
                 + (f" · {request.source}" if request.source else "")
                 + "\n",
                 style=f"bold {OPERATION_COLOR}",

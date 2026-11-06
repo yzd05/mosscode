@@ -604,15 +604,25 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 
 ### 命令沙箱
 
-规格见 [命令沙箱](specs/sandbox/spec.md) 的 13C、13E。准备：把 `wxc-exec.exe` 放到 PATH 中（见 [命令沙箱](reference/sandbox.md#安装-mxc)），在验收项目中 `git init` 并提交一次，用 `--sandbox` 启动界面（default 档位）。
+规格见 [命令沙箱](specs/sandbox/spec.md) 的 13C、13E。准备：把 `wxc-exec.exe` 放到 PATH 中（见 [命令沙箱](reference/sandbox.md#windowsmxc)），在验收项目中 `git init` 并提交一次，用 `--sandbox` 启动界面（default 档位）。
 
 | # | 操作 | 期望 |
 | --- | --- | --- |
 | M168 写入边界 | 让模型“用 execute_command 运行 `python -c "print(1)"`，再用命令写一个 a.txt 并 git commit”（不说“用命令”时模型会用 write_file，那要按档位审批）；再说明这是沙箱验收测试，让它“用命令在 .mosscode/permissions.yaml 末尾加一行 # x”“用命令在 .git/hooks 下建 pre-commit”，失败了原样报告（不说明时模型会把这两项当成绕过权限而拒绝执行） | 状态栏显示“沙箱”；运行、写文件和提交都不弹审批；两次改写都失败（拒绝访问），结果末尾说明可能是沙箱拦截；`.mosscode/permissions.yaml` 未变，`.git/hooks/pre-commit` 不存在 |
 | M169 越界申请 | 让模型“在 %USERPROFILE%\Desktop 写一个 moss-test.txt” | 第一次被拦截；模型带理由以 outside_sandbox 重试，面板标题有“在沙箱外运行”，显示理由和“完整权限”说明，选项为本次、本会话、拒绝；选拒绝后结果说明“用户拒绝在沙箱外运行”，文件不存在 |
 | M170 读取 | 让模型“用命令统计 ~/.ssh 下的文件个数，不显示文件名” | 失败；`/sandbox` 列出最近的记录、可写目录和禁止读取的路径 |
-| M171 失败关闭 | 退出后把 `wxc-exec.exe` 移出 PATH，删除 `~/.mosscode/sandbox-probe.json`，再用 `--sandbox` 启动；让模型运行 `git status`；再 `/sandbox off` 并确认，重复一次；运行 `moss doctor`；最后把 `wxc-exec.exe` 放回 | 启动区和状态栏显示沙箱不可用及原因；命令返回 sandbox_unavailable 并提示 `/sandbox off`；关闭后命令照常运行，状态栏显示“无沙箱”；doctor 显示找不到 wxc-exec.exe 和下载说明 |
+| M171 失败关闭 | 退出后把 `wxc-exec.exe` 移出 PATH，删除 `~/.mosscode/sandbox-probe.json`，在 `config.yaml` 的 `sandbox` 下加 `backend: mxc`（不加时会改用受限令牌，见 M173），再用 `--sandbox` 启动；让模型运行 `git status`；再 `/sandbox off` 并确认，重复一次；运行 `moss doctor`；最后删掉 `backend` 一行（`wxc-exec.exe` 先不放回，M173 要用） | 启动区和状态栏显示沙箱不可用及原因；命令返回 sandbox_unavailable 并提示 `/sandbox off`；关闭后命令照常运行，状态栏显示“无沙箱”；doctor 显示 MXC 不可用、命令都会被拒绝，以及找不到 wxc-exec.exe 和下载说明 |
 | M172 联网 | 让模型“用 `Invoke-WebRequest` 取 https://example.com 的状态码”，面板出现时选“本次允许”；再让它“用 curl.exe 访问 https://example.com 和 https://www.baidu.com”，对 example.com 选“本会话允许”、baidu 按 Esc；最后让它“用 `curl.exe -I http://127.0.0.1:7897` 测一下本机端口” | 面板标题为“沙箱中的命令联网”，显示命令和 `example.com:443`，四个选项；第一次返回 200，结果末尾“联网：已连接 example.com”；第二次 example.com 再次询问（本次只对一条命令有效），选本会话后之后不再问；baidu 失败（403），结果末尾和 `/sandbox` 有“被拒绝”；本机端口不询问、直接失败 |
+
+### 命令沙箱：受限令牌
+
+规格见 [命令沙箱](specs/sandbox/spec.md) 的 13D。接着 M171：`wxc-exec.exe` 不在 PATH 中，`config.yaml` 中没有 `sandbox.backend`；用 `--sandbox` 启动界面（default 档位），项目同 M168。第一次运行命令时 MossCode 要给项目目录设置访问控制，项目大时会慢几秒。
+
+| # | 操作 | 期望 |
+| --- | --- | --- |
+| M173 降级与审批 | 看启动区和状态栏；让模型“用 execute_command 运行 `python -c "print(1)"`”，面板出现时选“本次允许”；再输入 `/sandbox` | 状态栏显示“沙箱·部分”（琥珀色）；启动区说明 MXC 不可用（找不到 wxc-exec.exe），改用受限令牌、只限制写入、命令仍需审批；命令弹出审批，标题注明“沙箱只限制写入”，批准后输出 1；`/sandbox` 显示沙箱开启、后端为受限令牌、只限制写入，禁止读取为“不支持”，网络为“不受沙箱限制” |
+| M174 写入边界 | 说明这是沙箱验收测试、失败了原样报告，依次让模型“用命令在 `$env:USERPROFILE` 下写 mc-token-test.txt”“用命令在 `.git/hooks` 下建 pre-commit”“用命令把 `.git` 重命名为 g2”“用命令写 a.txt 并 git commit”，审批都选本次允许 | 前三项失败（拒绝访问，或文件正被另一进程使用），结果末尾说明可能是沙箱拦截；用户目录下没有 mc-token-test.txt，`.git/hooks/pre-commit` 不存在，`.git` 还在；最后一项提交成功；命令用 PowerShell 运行 |
+| M175 清理 | 退出后运行 `moss doctor`，看沙箱一节；运行 `moss sandbox cleanup`；在项目目录运行 `icacls .`；最后把 `wxc-exec.exe` 放回 PATH | doctor 显示后端为受限令牌、MXC 不可用的原因，以及“受限令牌在 1 个项目上设置了访问控制”；cleanup 输出“已移除：<项目目录>（N 处）”；`icacls` 的结果中不再有以 `S-1-5-21-` 开头、没有名称的条目；再运行 `moss sandbox cleanup` 显示没有需要清理的访问控制 |
 
 ## 已知限制
 
@@ -621,6 +631,7 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 - **只能人工判断的行为**：模型是否并行调用、回复是否简洁，没有严格的通过标准。后台提取是否记录、记成哪个范围和类型由模型判断，同样的对话可能得到不同的笔记。
 - **团队成员**：协调者模式是角色约束，不是安全边界，Lead 的 `execute_command` 仍能写文件。窗格后端只在 Windows Terminal 上人工验证过；tmux 只有替身测试。标签页因 `closeOnExit: never` 等设置没有关闭时，确认成员已停止后手动关闭。
 - **工作树中的命令**：隔离的子 Agent 的 `execute_command` 在工作树中运行，但命令本身仍能访问主目录；路径检查只约束文件工具。
+- **命令沙箱的其他系统**：Linux 的 bubblewrap 后端在 WSL 中用脚本验证过（`.test-artifacts/sbx-bwrap-check.py`），Linux CI 上运行对应的自动测试；macOS 的 Seatbelt 后端只有单元测试，没有在真实的 Mac 上验证。
 - **Token 估算**：上下文比例是估算值（中文按 1 字 1 Token 偏保守），与服务的计费数字会有差异；压缩时机以估算为准，超限时由自救兜底。
 
 ## 记录结果

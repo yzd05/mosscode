@@ -70,6 +70,7 @@ moss setup | doctor | models
 - `~/.mosscode` 是否可写；
 - ripgrep、git，Windows 上的 Git Bash 和 Windows Terminal（`wt.exe`，团队分屏窗格需要）；
 - 当前目录 `.mosscode/` 下的权限、MCP 和 Hook 文件能否解析；
+- [命令沙箱](sandbox.md)：本系统可用的后端、会选用的后端和级别、它的自检结果（沙箱关闭时也检查，说明打开后会怎样）；Windows 上 MXC 不可用的原因、Everyone 可写的目录和受限令牌记录的项目数；
 - 已安装的[插件](plugins.md)：有 git 来源时 git 是否可用，每个插件是否在磁盘上、能否读取，组件的问题；项目声明的插件是否已安装、是否已确认；没有插件时不显示这一节。
 
 ### models
@@ -107,6 +108,10 @@ moss key set deepseek
 
 `moss plugin install 来源 --project` 把插件声明到项目的 `.mosscode/plugins.yaml`（只接受 git 来源），提交这个文件后，团队成员在项目中运行不带来源的 `moss plugin install` 逐个安装；`moss plugin remove 名称 --project` 删除声明。项目插件首次加载前需要确认，见 [项目级插件](plugins.md#项目级插件)。
 
+### sandbox
+
+`moss sandbox cleanup [项目目录]` 移除 Windows 受限令牌后端加在目录上的访问控制项（记录在 `~/.mosscode/sandbox-acl.json`），不写项目时移除全部，见 [命令沙箱](sandbox.md#windows受限令牌)。先关闭正在使用沙箱的会话。其他系统上没有需要清理的设置。
+
 ## 配置查找
 
 未指定 `--config` 时依次查找，第一个存在的生效：
@@ -125,6 +130,7 @@ moss key set deepseek
 | `moss doctor` | 0 没有 ✗；1 有 ✗ |
 | `moss models` | 0 完成；1 配置无法读取，或更新时下载、解析、写入失败 |
 | `moss plugin` | 0 完成；1 失败、取消，或 marketplace 只列出了插件；2 参数错误；130 中途退出 |
+| `moss sandbox cleanup` | 0 完成或没有需要清理的；1 指定的项目没有记录，或有访问控制项未能移除 |
 
 ## 启动速度
 
