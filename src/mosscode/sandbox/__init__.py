@@ -540,7 +540,11 @@ DENIAL_SIGNS = (
     "403 forbidden",
     "access is denied",
     "拒绝访问",
+    # .NET wording on Chinese Windows, e.g. Rename-Item's IOException under the restricted token.
+    "访问被拒绝",
     "permission denied",
+    # bubblewrap mounts everything outside the writable roots read-only.
+    "read-only file system",
     "unauthorizedaccess",
     "eacces",
     "eperm",

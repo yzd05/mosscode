@@ -255,7 +255,8 @@ class ExecuteCommand(Tool):
         self.sandboxed = sandbox.enabled
         self.command_shell = self.shell
         status = sandbox.status() if self.sandboxed else None
-        if status is not None and status.backend in ("mxc", "token") and self.shell.kind != "powershell":
+        windows_backend = sys.platform == "win32" and status is not None and status.backend in ("mxc", "token")
+        if windows_backend and self.shell.kind != "powershell":
             # MSYS2 programs, Git Bash included, cannot start inside an MXC container or under a restricted token.
             self.command_shell = resolve_shell("powershell")
         if self.sandboxed:

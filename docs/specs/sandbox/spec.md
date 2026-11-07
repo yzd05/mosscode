@@ -241,6 +241,8 @@
 
 - **Windows 受限令牌**，本机实测，转成了 `tests/test_sandbox_backends.py` 中按平台运行的用例（B7）：写项目外、重命名项目外的文件、写或新建受保护路径、大小写变体、`..`、8.3 短文件名、删除受保护文件、删除后重建、重命名 `hooks`、`.git` 和项目目录、硬链接、符号链接、指向项目外和指向 `hooks` 的目录联接、`icacls` 给自己授权，全部失败；项目内写入、PowerShell、`git add` 和 `git commit` 成功；能力 SID 在清理后从全部路径上消失。另外离线运行 `pip install -e .`（`--no-index --no-build-isolation`，项目内的虚拟环境）成功并能导入。
 - **Linux bubblewrap**，在 WSL（Ubuntu，Python 3.12）中用 `.test-artifacts/sbx-bwrap-check.py` 加载真实的 `policy_for` 与 `bwrap.command`，28 项全部符合预期：上述写入、删除、重命名、硬链接、符号链接、卸载受保护挂载点、读 `~/.ssh`、`AF_UNIX`、直连都失败，私有临时目录（在被遮住的 `~/.mosscode` 中）可写，`git commit` 成功，命令结束后后台进程不再运行，经桥接的 `curl` 到达代理。这次实测发现桥接模式启动命令时没有带上 `SOURCE`，启动器以 `NameError` 退出，即开启代理时 Linux 上所有命令都会失败，已修复并加了测试。同样的用例在 `tests/test_sandbox_backends.py` 中，Linux 上有 `bwrap` 时运行（WSL 没有 pytest，没有在 pytest 下跑过）。
+- **Linux 上的 pytest**：在 WSL 中用 `.test-artifacts/sbx-wsl-pytest.sh` 运行 `test_sandbox_backends.py`、`test_sandbox.py`、`test_sandbox_proxy.py`，全部通过（Windows 专用的用例跳过）。第一次运行发现两个问题并已修复：模拟 MXC 后端的测试在 Linux 上也切换到 PowerShell 而失败，现在只在 Windows 上切换；中文 Windows 上 .NET 的“访问被拒绝”和 bubblewrap 的 Read-only file system 没有触发沙箱提示，现在都会触发。
+- **受限令牌的人工验收**（M173–M175，真实模型，界面无头驱动）：状态栏“沙箱·部分”，审批面板注明“沙箱只限制写入”；写用户目录、写 `.git/hooks`、重命名 `.git` 都被拒绝，项目中的写入和提交成功；`moss sandbox cleanup` 移除 6 处访问控制项。
 - **macOS**：只有单元测试。
 
 ## 不做

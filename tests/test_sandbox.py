@@ -243,6 +243,10 @@ def test_explain_only_when_the_output_looks_like_a_block():
     assert "F:/p" in hint and "outside_sandbox" in hint and "justification" in hint
     assert explain({**details, "stderr": "Invoke-WebRequest : 无法连接到远程服务器"})
     assert explain({**details, "stderr": "SyntaxError"}) == ""
+    assert explain(
+        {**details, "stderr": "Rename-Item : 对路径“F:\\p\\.git”的访问被拒绝。\n    + CategoryInfo : WriteError"}
+    )
+    assert explain({**details, "stderr": "touch: cannot touch '/home/u/x': Read-only file system"})
     # PowerShell exits 0 after a denied cmdlet; only stderr counts then.
     assert explain({**details, "exit_code": 0})
     assert explain({**details, "exit_code": 0, "stdout": "Access is denied.", "stderr": ""}) == ""

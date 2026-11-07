@@ -622,7 +622,7 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 | --- | --- | --- |
 | M173 降级与审批 | 看启动区和状态栏；让模型“用 execute_command 运行 `python -c "print(1)"`”，面板出现时选“本次允许”；再输入 `/sandbox` | 状态栏显示“沙箱·部分”（琥珀色）；启动区说明 MXC 不可用（找不到 wxc-exec.exe），改用受限令牌、只限制写入、命令仍需审批；命令弹出审批，标题注明“沙箱只限制写入”，批准后输出 1；`/sandbox` 显示沙箱开启、后端为受限令牌、只限制写入，禁止读取为“不支持”，网络为“不受沙箱限制” |
 | M174 写入边界 | 说明这是沙箱验收测试、失败了原样报告，依次让模型“用命令在 `$env:USERPROFILE` 下写 mc-token-test.txt”“用命令在 `.git/hooks` 下建 pre-commit”“用命令把 `.git` 重命名为 g2”“用命令写 a.txt 并 git commit”，审批都选本次允许 | 前三项失败（拒绝访问，或文件正被另一进程使用），结果末尾说明可能是沙箱拦截；用户目录下没有 mc-token-test.txt，`.git/hooks/pre-commit` 不存在，`.git` 还在；最后一项提交成功；命令用 PowerShell 运行 |
-| M175 清理 | 退出后运行 `moss doctor`，看沙箱一节；运行 `moss sandbox cleanup`；在项目目录运行 `icacls .`；最后把 `wxc-exec.exe` 放回 PATH | doctor 显示后端为受限令牌、MXC 不可用的原因，以及“受限令牌在 1 个项目上设置了访问控制”；cleanup 输出“已移除：<项目目录>（N 处）”；`icacls` 的结果中不再有以 `S-1-5-21-` 开头、没有名称的条目；再运行 `moss sandbox cleanup` 显示没有需要清理的访问控制 |
+| M175 清理 | 退出后运行 `moss doctor`，看沙箱一节；运行 `moss sandbox cleanup`；在项目目录运行 `icacls .`；最后把 `wxc-exec.exe` 放回 PATH | doctor 显示后端为受限令牌、MXC 不可用的原因，以及“受限令牌在 1 个项目上设置了访问控制”；cleanup 输出“已移除：<项目目录>（N 处）”；`icacls` 的结果中不再有以 `S-1-5-21-` 开头、没有名称且不带 `(I)` 的条目（带 `(I)` 的从上级目录继承，不是 MossCode 加的）；再运行 `moss sandbox cleanup` 显示没有需要清理的访问控制 |
 
 ## 已知限制
 
@@ -631,7 +631,7 @@ tmux 后端在本机无法人工验收（没有 tmux），只有自动测试中�
 - **只能人工判断的行为**：模型是否并行调用、回复是否简洁，没有严格的通过标准。后台提取是否记录、记成哪个范围和类型由模型判断，同样的对话可能得到不同的笔记。
 - **团队成员**：协调者模式是角色约束，不是安全边界，Lead 的 `execute_command` 仍能写文件。窗格后端只在 Windows Terminal 上人工验证过；tmux 只有替身测试。标签页因 `closeOnExit: never` 等设置没有关闭时，确认成员已停止后手动关闭。
 - **工作树中的命令**：隔离的子 Agent 的 `execute_command` 在工作树中运行，但命令本身仍能访问主目录；路径检查只约束文件工具。
-- **命令沙箱的其他系统**：Linux 的 bubblewrap 后端在 WSL 中用脚本验证过（`.test-artifacts/sbx-bwrap-check.py`），Linux CI 上运行对应的自动测试；macOS 的 Seatbelt 后端只有单元测试，没有在真实的 Mac 上验证。
+- **命令沙箱的其他系统**：Linux 的 bubblewrap 后端在 WSL 中验证过：`.test-artifacts/sbx-bwrap-check.py` 跑绕过用例，`.test-artifacts/sbx-wsl-pytest.sh` 离线运行沙箱相关的测试文件（依赖取自 uv 缓存，缺 Pillow，图片相关的测试除外）；macOS 的 Seatbelt 后端只有单元测试，没有在真实的 Mac 上验证。
 - **Token 估算**：上下文比例是估算值（中文按 1 字 1 Token 偏保守），与服务的计费数字会有差异；压缩时机以估算为准，超限时由自救兜底。
 
 ## 记录结果
