@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import functools
 import json
 import os
 import ssl
@@ -449,6 +450,7 @@ async def test_without_the_proxy_commands_stay_offline(tmp_path, monkeypatch):
 # The real backend ---------------------------------------------------------------------------------
 
 
+@functools.cache  # Looked up once: tests replace the home folder, which is one of the places it is found in.
 def wxc_exec():
     configured = os.environ.get("MOSSCODE_TEST_WXC")
     return Path(configured).resolve() if configured else windows_mxc.find(None)

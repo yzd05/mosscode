@@ -144,6 +144,21 @@ sandbox:
   wxc_exec: D:/tools/wxc-exec.exe  # 不在 PATH 和 ~/.mosscode/bin 时填写
 ```
 
+### 项目配置只能收紧
+
+项目的 `.mosscode/config.yaml` 随仓库而来，克隆下来的仓库不应该能放宽自己的命令所受的限制。所以使用项目配置时（自动找到的，或用 `--config` 指向它），`sandbox` 和 `command_env` 以用户配置 `~/.mosscode/config.yaml` 为准，项目配置只能在它之上收紧：
+
+| 项目配置中的键 | 效果 |
+| --- | --- |
+| `mode: on`、`network: none`、`allow_unsandboxed: never` | 生效 |
+| `deny_read`、`command_env.drop` | 追加到用户配置的列表 |
+| `mode: off`、`network: proxy`、`allow_unsandboxed: ask` | 用户配置更严格时忽略 |
+| `allow_write`、`allow_read`、`backend`、`wxc_exec`、`command_env.keep` | 与用户配置不同时忽略 |
+
+被忽略的键在启动区（`-p` 中为 stderr）和 `moss doctor` 中列出：“项目配置不能放宽沙箱和命令环境，已忽略 sandbox.allow_write…”。需要这些设置时写进用户配置。没有用户配置时以默认值为准（沙箱关闭，没有额外路径）；用户配置无法解析时启动失败并说明原因，不会改用项目配置中的值。`--sandbox`、`--no-sandbox` 和 `/sandbox` 是你自己的操作，不受这条限制。
+
+用 `--config` 指向其他位置的文件（不是某个 `.mosscode/config.yaml`）时，这个文件是你自己选的，其中的设置全部生效。
+
 ## 限制
 
 - MXC 下每条命令多出约 0.2–0.4 秒启动容器的时间；其他后端只多出启动一个 Python 启动器的时间（受限令牌第一次为项目设置访问控制除外）。
@@ -159,4 +174,4 @@ sandbox:
 - 受限令牌把 Everyone 列为受限 SID，Everyone 可写的目录命令也能写：MossCode 检查项目的上级目录、PATH 中的目录和主目录、`C:\Users\Public`、`C:\ProgramData` 下的一级目录，发现时在启动区、`/sandbox` 和 `moss doctor` 中提示。
 - macOS 后端还没有在真实的 Mac 上验证过；遇到问题请用 `--no-sandbox` 并报告。
 - 只限制模型运行的命令。专用的文件工具（`write_file`、`edit_file`）仍由应用层的 [路径限制](permissions.md#路径限制) 和审批约束；MCP Server 和 Hook 不在沙箱中。
-- 项目目录的 `.mosscode/config.yaml` 存在时会整份代替用户配置（见 [配置](../../README.md#配置)），其中的 `sandbox` 同样生效；不要在不信任的仓库中使用项目级配置。
+- 项目目录的 `.mosscode/config.yaml` 存在时，除了 `sandbox` 和 `command_env`（见 [项目配置只能收紧](#项目配置只能收紧)），其余部分整份代替用户配置（见 [配置](../../README.md#配置)），包括 Provider 的服务地址和它引用的凭据名称；打开不熟悉的仓库前先查看这个文件。

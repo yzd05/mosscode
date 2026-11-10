@@ -3,7 +3,7 @@
 import math
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -175,6 +175,8 @@ class Settings:
     command_env_keep: tuple[str, ...] = ()
     command_env_drop: tuple[str, ...] = ()
     sandbox: SandboxConfig = field(default_factory=lambda: SandboxConfig())
+    # Keys in a project's file that would have widened the sandbox or the command environment, so were not applied.
+    ignored: tuple[str, ...] = ()
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -242,6 +244,59 @@ def _sandbox(raw: Any) -> SandboxConfig:
         network=network,
         backend=backend,
         **lists,
+    )
+
+
+def is_project_file(path: str | Path, home: Path | None = None) -> bool:
+    """A .mosscode/config.yaml other than the user's own arrives with a repository, however it was named to us."""
+    path = Path(os.path.abspath(path))
+    user = os.path.abspath((Path.home() if home is None else home) / ".mosscode" / "config.yaml")
+    named = os.path.normcase(path.name) == "config.yaml" and os.path.normcase(path.parent.name) == ".mosscode"
+    return named and os.path.normcase(path) != os.path.normcase(user)
+
+
+def _user_sections(home: Path | None) -> tuple[SandboxConfig, tuple[str, ...], tuple[str, ...]]:
+    """The sandbox and command environment in the user's own file; the defaults when there is none."""
+    path = (Path.home() if home is None else home) / ".mosscode" / "config.yaml"
+    if not path.is_file():
+        return SandboxConfig(), (), ()
+    # Falling back to the defaults here would turn off a sandbox the user had turned on.
+    problem = f"项目配置不能放宽沙箱和命令环境，这两项以用户配置 {path} 为准，但"
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError, UnicodeError):
+        raise ConfigError(problem + "它不是可读取的 UTF-8 YAML。") from None
+    if not isinstance(raw, dict):
+        raise ConfigError(problem + "它不是有效的配置。")
+    try:
+        return _sandbox(raw.get("sandbox")), *_command_env(raw.get("command_env"))
+    except ConfigError as exc:
+        raise ConfigError(problem + f"其中有错误：{exc}") from None
+
+
+def _tighten(user: SandboxConfig, project: SandboxConfig, given: set[str]) -> tuple[SandboxConfig, list[str]]:
+    """What a repository's file may do to the user's sandbox: narrow it. Also the keys it set that were not applied."""
+    ignored = [
+        f"sandbox.{key}"
+        for key in ("allow_write", "allow_read", "backend", "wxc_exec")
+        if key in given and getattr(project, key) != getattr(user, key)
+    ]
+    values = {}
+    for key, strict in (("mode", "on"), ("allow_unsandboxed", "never"), ("network", "none")):
+        values[key] = strict if strict in (getattr(user, key), getattr(project, key)) else getattr(user, key)
+        if key in given and getattr(project, key) != values[key]:
+            ignored.append(f"sandbox.{key}")
+    deny = user.deny_read + tuple(path for path in project.deny_read if path not in user.deny_read)
+    return replace(user, deny_read=deny, **values), ignored
+
+
+def project_notice(settings: Settings) -> str | None:
+    if not settings.ignored:
+        return None
+    return (
+        "项目配置不能放宽沙箱和命令环境，已忽略 "
+        + "、".join(settings.ignored)
+        + "；这些设置只在用户配置 ~/.mosscode/config.yaml 中生效。"
     )
 
 
@@ -451,7 +506,7 @@ def render_config(provider: dict[str, Any]) -> str:
     )
 
 
-def load_settings(path: str | Path) -> Settings:
+def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     try:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     except OSError:
@@ -528,6 +583,14 @@ def load_settings(path: str | Path) -> Settings:
     if type(claude_directories) is not bool:
         raise ConfigError("claude_directories 必须是布尔值。")
     keep, drop = _command_env(raw.get("command_env"))
+    sandbox, ignored = _sandbox(raw.get("sandbox")), []
+    if is_project_file(path, home):
+        # A cloned repository must not be able to widen what its own commands can reach.
+        user_sandbox, user_keep, user_drop = _user_sections(home)
+        sandbox, ignored = _tighten(user_sandbox, sandbox, set(raw.get("sandbox") or ()))
+        if set(keep) - set(user_keep):
+            ignored.append("command_env.keep")
+        keep, drop = user_keep, user_drop + tuple(name for name in drop if name not in user_drop)
     settings = Settings(
         providers,
         default,
@@ -547,7 +610,8 @@ def load_settings(path: str | Path) -> Settings:
         claude_directories=claude_directories,
         command_env_keep=keep,
         command_env_drop=drop,
-        sandbox=_sandbox(raw.get("sandbox")),
+        sandbox=sandbox,
+        ignored=tuple(ignored),
         **switches,
     )
     settings.select()

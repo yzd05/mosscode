@@ -1,6 +1,6 @@
 # 命令沙箱
 
-日期：2026-11-05。状态：13A（控制面加固 H1–H5）已实现；13B（Windows 探测）已完成，结果见 F14–F21，Q1、Q3、Q11 已据此决定；13C（公共层与 Windows MXC 后端）已实现，范围与偏差见“13C 实现记录”，Q2、Q4、Q5、Q6、Q7 已决定；13E（网络代理）已实现，见“13E 设计”，Q14 已决定；13D（bubblewrap、Seatbelt、受限令牌）已实现，见“13D 实现记录”，Q3 已决定（2026-11-06）。
+日期：2026-11-05。状态：13A（控制面加固 H1–H5）已实现；13B（Windows 探测）已完成，结果见 F14–F21，Q1、Q3、Q11 已据此决定；13C（公共层与 Windows MXC 后端）已实现，范围与偏差见“13C 实现记录”，Q2、Q4、Q5、Q6、Q7 已决定；13E（网络代理）已实现，见“13E 设计”，Q14 已决定；13D（bubblewrap、Seatbelt、受限令牌）已实现，见“13D 实现记录”，Q3 已决定（2026-11-06）；Q13 中沙箱和命令环境的部分已决定并实现，见“项目配置只能收紧”，服务地址的部分另列为 Q15（2026-11-09）。
 
 来源：
 - 用户的要求（2026-11-05）：调研系统级沙箱的设计，参考 Claude Code、Codex、Gemini CLI、DeepSeek Harness 等成熟项目，然后写规格。
@@ -64,7 +64,7 @@
 | S1 | 新增与平台无关的沙箱策略：可写根目录、受保护路径（可写根目录内也不可写）、禁止读取的路径、网络模式（`none` / `proxy`）和放行的域名。策略随每次调用传入，子 Agent、团队成员和越界重试可以用不同的策略 | 单元测试：同一后端同时编译两份不同的策略 |
 | S2 | 默认可写：项目根目录（工作树中的子 Agent 为工作树根）、H2 的私有临时目录。默认受保护：F9 中项目内的全部控制面文件和目录、`.git/hooks/`、`.git/config`；不存在的受保护路径也要拦截创建（后端能做到时预先建占位） | 沙箱内 `echo x >> .mosscode/permissions.yaml`、`mkdir -p .git/hooks && echo x > .git/hooks/pre-commit` 都失败，`git commit` 成功 |
 | S3 | 默认禁止读取（后端能强制时）：`~/.mosscode`（`skills/`、`plugins/` 除外，Skill 专属工具要读取自己的目录；其中的 `config.yaml` 可能有明文密钥）、当前使用的配置文件（包括 `--config` 指定的）、`~/.ssh`（保留 `config`、`known_hosts`）、`~/.aws`、`~/.azure`、`~/.kube`、`~/.docker`、`~/.config/gh`、`~/.git-credentials`、`~/.netrc`、`~/.pypirc`、浏览器配置目录、系统凭据目录。`~/.mosscode` 整体不可写 | full 后端下 `cat ~/.ssh/id_ed25519` 失败，`git fetch`（SSH）在越界申请后可用 |
-| S4 | 配置写在用户级 `config.yaml` 的 `sandbox:` 下：`mode`（`off` / `on`，默认见 Q2）、`backend`（`auto` 或指定）、`network`（`none` / `proxy`）、`allow_write`（追加可写路径）、`deny_read`（追加禁止读取）、`allow_unsandboxed`（`ask` / `never`）。项目级 `.mosscode/sandbox.yaml` 只能收紧：追加 `deny_read`、受保护路径、把 `network` 改成 `none`；写了放宽的键时忽略并提示 | 项目文件写 `allow_write: [/]` 时启动区提示“项目配置不能放宽沙箱，已忽略” |
+| S4 | 配置写在用户级 `config.yaml` 的 `sandbox:` 下：`mode`（`off` / `on`，默认见 Q2）、`backend`（`auto` 或指定）、`network`（`none` / `proxy`）、`allow_write`（追加可写路径）、`deny_read`（追加禁止读取）、`allow_unsandboxed`（`ask` / `never`）。项目的 `.mosscode/config.yaml` 只能收紧：打开沙箱、追加 `deny_read`、把 `network` 改成 `none`、把 `allow_unsandboxed` 改成 `never`；写了放宽的键时忽略并提示（见“项目配置只能收紧”） | 项目文件写 `allow_write: [/]` 时启动区提示“项目配置不能放宽沙箱和命令环境，已忽略 sandbox.allow_write” |
 | S5 | `--sandbox` / `--no-sandbox` 覆盖本次运行；`/sandbox` 查看当前后端、强制级别、可写目录、网络和最近的拦截，可在本会话中关闭（需确认）或打开 | |
 | S6 | 状态栏显示沙箱状态：`沙箱`（full）、`沙箱·部分`（partial）、`无沙箱`（关闭或失败后用户选择不用） | 三种状态各有界面测试 |
 
@@ -157,7 +157,7 @@
 
 最初设计是白名单（只保留 `PATH`、`HOME`、语言与工具链变量等）再清理。实现时改为只按名称和值去除：Windows 上 MSVC（`INCLUDE`、`LIB`、`VCToolsInstallDir`…）、MSYS2、各语言版本管理器需要的变量太多，白名单在用户机器上漏掉一个就会让构建莫名失败，而用户很难看出原因。黑名单的风险是漏掉名称和值都不像密钥的变量，这类变量由 `command_env.drop` 补上；真正的边界由后端的读取限制（S3）提供。
 
-判断顺序：`MOSSCODE_*` 与 `keep` 保留 → `drop` 去掉 → 代理变量保留 → 名称或值命中则去掉。`command_env` 写在当前使用的 `config.yaml` 中。项目目录的 `.mosscode/config.yaml` 存在时整份代替用户配置（现有行为，也决定 `base_url` 和密钥），所以 `keep` 并不比该文件的其他字段更危险；S4 实现时，放宽类字段（`keep`、沙箱的可写路径）应只接受用户级配置，见 Q13。
+判断顺序：`MOSSCODE_*` 与 `keep` 保留 → `drop` 去掉 → 代理变量保留 → 名称或值命中则去掉。`command_env` 写在当前使用的 `config.yaml` 中。项目目录的 `.mosscode/config.yaml` 存在时，其余部分整份代替用户配置（也决定 `base_url` 和引用哪个凭据，见 Q15），但 `command_env` 和 `sandbox` 以用户配置为准：项目的 `keep` 被忽略，`drop` 追加，见“项目配置只能收紧”。
 
 ### Windows 路线
 
@@ -194,7 +194,7 @@
 
 用户文档见 [命令沙箱](../../reference/sandbox.md)。实现与规格的差异：
 
-- **配置**：`sandbox` 只有 `mode`、`allow_write`、`allow_read`、`deny_read`、`allow_unsandboxed`、`wxc_exec`。`backend` 和 `network` 留到有第二个后端（13D）和代理（13E）时再加；读取是允许清单（F17），所以多了 `allow_read`。项目级 `.mosscode/sandbox.yaml`（S4 的“只收紧”）没有做：项目的 `.mosscode/config.yaml` 本来就整份代替用户配置，单独做只收紧的文件意义不大，和 Q13 一起处理。
+- **配置**：`sandbox` 只有 `mode`、`allow_write`、`allow_read`、`deny_read`、`allow_unsandboxed`、`wxc_exec`。`backend` 和 `network` 留到有第二个后端（13D）和代理（13E）时再加；读取是允许清单（F17），所以多了 `allow_read`。项目级 `.mosscode/sandbox.yaml`（S4 的“只收紧”）没有做：项目的 `.mosscode/config.yaml` 本来就整份代替用户配置，单独做只收紧的文件意义不大，和 Q13 一起处理（后来的做法见“项目配置只能收紧”）。
 - **强制级别**：只有 MXC 一个 full 后端，A2 的 partial 分支没有出现；状态栏显示“沙箱”“沙箱不可用”“无沙箱”，不显示级别。
 - **失败关闭（D1）**：没有在启动时询问“本会话不用沙箱”。命令返回 `sandbox_unavailable` 并说明原因，启动区提示；用户用 `/sandbox off`（确认后）或 `--no-sandbox` 关闭。这样不用在启动流程里加一个阻塞的对话框，`-p` 和界面的处理一致。M171 的期望相应调整。
 - **`/sandbox on`**：只在启动时已开启沙箱的会话中可用。命令工具（PowerShell、`outside_sandbox` 参数、工具说明）在启动时构建，中途打开会让模型看到的工具和实际行为不一致。
@@ -240,10 +240,42 @@
 验证（2026-11-06）：
 
 - **Windows 受限令牌**，本机实测，转成了 `tests/test_sandbox_backends.py` 中按平台运行的用例（B7）：写项目外、重命名项目外的文件、写或新建受保护路径、大小写变体、`..`、8.3 短文件名、删除受保护文件、删除后重建、重命名 `hooks`、`.git` 和项目目录、硬链接、符号链接、指向项目外和指向 `hooks` 的目录联接、`icacls` 给自己授权，全部失败；项目内写入、PowerShell、`git add` 和 `git commit` 成功；能力 SID 在清理后从全部路径上消失。另外离线运行 `pip install -e .`（`--no-index --no-build-isolation`，项目内的虚拟环境）成功并能导入。
-- **Linux bubblewrap**，在 WSL（Ubuntu，Python 3.12）中用 `.test-artifacts/sbx-bwrap-check.py` 加载真实的 `policy_for` 与 `bwrap.command`，28 项全部符合预期：上述写入、删除、重命名、硬链接、符号链接、卸载受保护挂载点、读 `~/.ssh`、`AF_UNIX`、直连都失败，私有临时目录（在被遮住的 `~/.mosscode` 中）可写，`git commit` 成功，命令结束后后台进程不再运行，经桥接的 `curl` 到达代理。这次实测发现桥接模式启动命令时没有带上 `SOURCE`，启动器以 `NameError` 退出，即开启代理时 Linux 上所有命令都会失败，已修复并加了测试。同样的用例在 `tests/test_sandbox_backends.py` 中，Linux 上有 `bwrap` 时运行（WSL 没有 pytest，没有在 pytest 下跑过）。
+- **Linux bubblewrap**，在 WSL（Ubuntu，Python 3.12）中用 `.test-artifacts/sbx-bwrap-check.py` 加载真实的 `policy_for` 与 `bwrap.command`，28 项全部符合预期：上述写入、删除、重命名、硬链接、符号链接、卸载受保护挂载点、读 `~/.ssh`、`AF_UNIX`、直连都失败，私有临时目录（在被遮住的 `~/.mosscode` 中）可写，`git commit` 成功，命令结束后后台进程不再运行，经桥接的 `curl` 到达代理。这次实测发现桥接模式启动命令时没有带上 `SOURCE`，启动器以 `NameError` 退出，即开启代理时 Linux 上所有命令都会失败，已修复并加了测试。同样的用例在 `tests/test_sandbox_backends.py` 中，Linux 上有 `bwrap` 时运行（见下一条）。
 - **Linux 上的 pytest**：在 WSL 中用 `.test-artifacts/sbx-wsl-pytest.sh` 运行 `test_sandbox_backends.py`、`test_sandbox.py`、`test_sandbox_proxy.py`，全部通过（Windows 专用的用例跳过）。第一次运行发现两个问题并已修复：模拟 MXC 后端的测试在 Linux 上也切换到 PowerShell 而失败，现在只在 Windows 上切换；中文 Windows 上 .NET 的“访问被拒绝”和 bubblewrap 的 Read-only file system 没有触发沙箱提示，现在都会触发。
 - **受限令牌的人工验收**（M173–M175，真实模型，界面无头驱动）：状态栏“沙箱·部分”，审批面板注明“沙箱只限制写入”；写用户目录、写 `.git/hooks`、重命名 `.git` 都被拒绝，项目中的写入和提交成功；`moss sandbox cleanup` 移除 6 处访问控制项。
 - **macOS**：只有单元测试。
+
+### 项目配置只能收紧
+
+Q13 中沙箱和命令环境的部分（2026-11-09）。用户文档见 [项目配置只能收紧](../../reference/sandbox.md#项目配置只能收紧)。
+
+参照：调研的项目里，凡是有项目级配置的，都不让仓库放宽自己的沙箱。
+
+| 项目 | 做法 |
+| --- | --- |
+| Kilo | 项目配置可以收紧，不能关闭全局已打开的沙箱、不能放开全局禁止的网络、不能追加目的地和可写路径 |
+| Junie | 只认 `~/.junie/sandbox.json`，项目里的同名文件忽略并警告 |
+| Qwen | 沙箱策略只认用户级和系统级设置，工作区设置即使在受信任的项目中也不能开关或修改 |
+| Claude Code | 放宽类的键只从用户级、托管设置和 `--settings` 读取；数组跨层合并，`deny` 项任何一层都删不掉 |
+
+Cursor 允许仓库的 `sandbox.json` 追加路径，没有采用。MossCode 的做法是 Kilo 的规则（能收紧、不能放宽）加 Claude Code 的合并方式（禁止类的列表追加，命令行指定的文件算用户的选择）。
+
+- **什么算项目文件**：不是用户自己那份 `~/.mosscode/config.yaml` 的 `.mosscode/config.yaml`，按路径判断，不看它是怎么找到的。按查找顺序找到、用 `--config` 指到、团队成员用 Lead 传来的路径启动，结果都一样；只按“是不是查找到的”判断的话，成员进程会把同一份文件当成用户指定的而全部采用。`--config` 指向其他位置的文件是用户的选择，全部生效（同 Claude Code 的 `--settings`）。
+- **合并**：项目文件生效时，`sandbox` 和 `command_env` 以用户文件为底；用户文件不存在时以默认值为底。
+
+  | 项目文件中的键 | 处理 |
+  | --- | --- |
+  | `sandbox.mode: on`、`network: none`、`allow_unsandboxed: never` | 生效 |
+  | `sandbox.deny_read`、`command_env.drop` | 追加到用户的列表之后 |
+  | `sandbox.mode: off`、`network: proxy`、`allow_unsandboxed: ask` | 用户的值更严格时忽略 |
+  | `sandbox.allow_write`、`allow_read`、`backend`、`wxc_exec`、`command_env.keep` | 与用户的值不同时忽略 |
+
+  `backend` 和 `wxc_exec` 也算放宽：前者能把 full 后端换成 partial，后者让仓库指定沙箱的可执行文件。
+- **用户文件读不了**（不是 YAML，或其中的 `sandbox`、`command_env` 有错误）：启动报错，不退回默认值。默认值是沙箱关闭，退回去等于仓库加一份项目配置就关掉了用户打开的沙箱。
+- **提示**：被忽略的键记在 `Settings.ignored`，在启动区（`-p` 中为 stderr）和 `moss doctor` 的警告中列出。不报错：仓库里的一份配置不应该让 MossCode 启动不了。
+- **没有做的**：S4 原来写的单独的 `.mosscode/sandbox.yaml`，项目文件里的 `sandbox:` 已经够用；`--sandbox`、`--no-sandbox` 和 `/sandbox` 是用户自己的操作，不受影响。Provider 的 `base_url` 和凭据名称不在这次范围内，见 Q15。
+
+验证：`tests/test_sandbox.py` 中的用例覆盖放宽被忽略、收紧生效、路径的各种写法（`..`、相对路径、Windows 上的大小写）、用户文件和 `--config` 指定的文件不受限、用户文件损坏时报错、`doctor` 的警告。
 
 ## 不做
 
@@ -271,8 +303,9 @@
 | Q10 | MXC 可用时是否还做受限令牌后端 | 做，作为没有 MXC 的 Windows（企业版本控制、旧补丁）的保底，并明确标为 partial | 不做：工作量减半，没有 MXC 的 Windows 上不提供沙箱 |
 | Q11 | 13C（Linux/macOS + 公共层）和 13D（Windows）谁先 | **已决定**：公共层加 MXC 先（见“分批”）。原推荐是 13C 先：公共层在 CI 上能完整验证，成熟做法可以照搬；13D 复用公共层 | 13D 先：用户日常在 Windows，先拿到对自己有用的部分；公共层要在没有成熟参照的平台上同时成形 |
 | Q12 | `.git` 整体只读（Codex）还是只保护 `.git/hooks`、`.git/config` | 只保护这两项：`git commit`、`git checkout` 在沙箱内照常可用 | 整体只读：杜绝所有 `.git` 投毒，但每次提交都要申请沙箱外执行 |
-| Q13 | 项目目录的 `.mosscode/config.yaml` 整份代替用户配置，仓库可借此放宽 `command_env.keep`、改 `base_url` | 放宽类字段（`command_env.keep`、沙箱可写路径、`base_url`）只认用户级配置，项目配置中出现时报错或忽略并提示 | 维持现状，在文档中说明不要在不信任的仓库中运行 |
+| Q13 | 项目目录的 `.mosscode/config.yaml` 整份代替用户配置，仓库可借此放宽 `command_env.keep`、改 `base_url` | **已决定**（沙箱和命令环境的部分，按推荐，2026-11-09）：`sandbox` 和 `command_env` 以用户配置为准，项目配置只能收紧，放宽的键忽略并提示，见“项目配置只能收紧”。`base_url` 的部分另列为 Q15。原推荐：放宽类字段（`command_env.keep`、沙箱可写路径、`base_url`）只认用户级配置，项目配置中出现时报错或忽略并提示 | 维持现状，在文档中说明不要在不信任的仓库中运行 |
 | Q14 | 沙箱的网络默认 `proxy` 还是 `none` | **已决定**：`proxy`。没有规则的域名都要用户确认，`-p` 中一律拒绝，所以除了域名解析（F25），默认值不会让数据在用户不知情时离开（2026-11-06 用户知道 F25 后确认仍用 `proxy`；参考项目的做法见 F26）；而 `none` 下装依赖只能申请整条命令离开沙箱，放出去的权限反而更大 | `none`：最保守，联网一律申请沙箱外运行 |
+| Q15 | 项目的 `.mosscode/config.yaml` 仍然决定 Provider：仓库可以写一个指向自己服务器的 `base_url`，再用 `api_key_env` 或 `api_key_keyring` 引用用户已有的凭据，第一次请求就把密钥发走 | 第一次使用某个项目配置时确认一次（显示每个 Provider 的服务地址主机名和引用的凭据名称），记录文件内容的哈希，内容变了重新确认；`-p` 中没有确认过就报错，加 `--trust-project-config` 跳过。与项目 Hook、项目插件的确认方式相同，也是 Claude Code 的做法（仓库提供的设置在信任对话框之前不生效）。项目级 Provider 配置继续可用 | `base_url` 和凭据名称只认用户配置（Q13 原来的推荐）：实现简单，但项目级的 Provider 配置就没有用了；或者维持现状，只在文档中提醒 |
 
 ## 验收
 

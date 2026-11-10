@@ -121,6 +121,8 @@ moss key set deepseek
 
 工作目录下的 `config.yaml` 不会被读取；需要时用 `--config` 指定。
 
+项目级配置生效时，`sandbox` 和 `command_env` 仍以用户级配置为准，项目级只能收紧，见 [项目配置只能收紧](sandbox.md#项目配置只能收紧)；其余部分整份代替用户级配置。
+
 ## 退出码
 
 | 命令 | 退出码 |

@@ -1,6 +1,7 @@
 """The command sandbox: policy, backend requests, approvals, fail-closed and, on Windows with MXC, the real thing."""
 
 import asyncio
+import functools
 import json
 import os
 import sys
@@ -10,7 +11,7 @@ import pytest
 import yaml
 
 from mosscode import sandbox
-from mosscode.config import ConfigError, SandboxConfig, load_settings
+from mosscode.config import ConfigError, SandboxConfig, find_config, load_settings, project_notice
 from mosscode.messages import ToolCall
 from mosscode.permissions import UNSANDBOXED_CHOICES, PermissionPolicy, parse_rule
 from mosscode.sandbox import Policy, Prepared, Status, explain, policy_for, readable_roots, startup_failure, windows_mxc
@@ -21,11 +22,15 @@ from mosscode.tools.process import run_process
 WINDOWS = sys.platform == "win32"
 
 
-def settings(tmp_path, **sandbox_block):
-    path = tmp_path / "config.yaml"
+def write_config(path, **sections):
     provider = {"name": "p", "protocol": "anthropic-messages", "model": "m", "api_key_env": "MOSS_TEST_PROVIDER"}
-    path.write_text(yaml.safe_dump({"providers": [provider], "sandbox": sandbox_block}), encoding="utf-8")
-    return load_settings(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"providers": [provider], **sections}), encoding="utf-8")
+    return path
+
+
+def settings(tmp_path, **sandbox_block):
+    return load_settings(write_config(tmp_path / "config.yaml", sandbox=sandbox_block))
 
 
 def turn_on(monkeypatch, state="full", **config):
@@ -91,6 +96,97 @@ def test_sandbox_configuration(tmp_path):
 def test_invalid_sandbox_configuration(tmp_path, block):
     with pytest.raises(ConfigError, match="sandbox"):
         settings(tmp_path, **block)
+
+
+WIDENING = {
+    "mode": "off",
+    "allow_write": ["/"],
+    "allow_read": ["~"],
+    "allow_unsandboxed": "ask",
+    "network": "proxy",
+    "backend": "token",
+    "wxc_exec": "./wxc-exec.exe",
+}
+
+
+def test_a_project_file_cannot_widen_the_sandbox_or_the_command_environment(tmp_path):
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    strict = {"mode": "on", "allow_write": ["D:/cache"], "allow_unsandboxed": "never", "network": "none"}
+    write_config(
+        home / ".mosscode" / "config.yaml",
+        sandbox={**strict, "deny_read": ["~/secrets"]},
+        command_env={"keep": ["CI_TOKEN"], "drop": ["OLD"]},
+    )
+    project = write_config(
+        repo / ".mosscode" / "config.yaml",
+        sandbox={**WIDENING, "deny_read": ["~/more"]},
+        command_env={"keep": ["CI_TOKEN", "*"], "drop": ["EXTRA"]},
+    )
+    assert find_config(repo, home) == project
+    loaded = load_settings(project, home)
+    assert loaded.sandbox == SandboxConfig(
+        "on", allow_write=("D:/cache",), deny_read=("~/secrets", "~/more"), allow_unsandboxed="never", network="none"
+    )
+    assert (loaded.command_env_keep, loaded.command_env_drop) == (("CI_TOKEN",), ("OLD", "EXTRA"))
+    assert set(loaded.ignored) == {f"sandbox.{key}" for key in WIDENING} | {"command_env.keep"}
+    notice = project_notice(loaded)
+    assert "已忽略" in notice and "sandbox.allow_write" in notice and "command_env.keep" in notice
+
+
+def test_a_project_file_can_tighten_the_sandbox(tmp_path):
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    tighter = {"mode": "on", "allow_unsandboxed": "never", "network": "none", "deny_read": ["~/more"]}
+    project = write_config(repo / ".mosscode" / "config.yaml", sandbox=tighter, command_env={"drop": ["EXTRA"]})
+    loaded = load_settings(project, home)  # No user file: its defaults are the base.
+    assert loaded.sandbox == SandboxConfig("on", deny_read=("~/more",), allow_unsandboxed="never", network="none")
+    assert loaded.command_env_drop == ("EXTRA",) and loaded.ignored == () and project_notice(loaded) is None
+    # Repeating what the user already allows is not a widening.
+    write_config(home / ".mosscode" / "config.yaml", sandbox={"allow_write": ["D:/cache"], "backend": "token"})
+    same = write_config(repo / ".mosscode" / "config.yaml", sandbox={"allow_write": ["D:/cache"], "backend": "token"})
+    assert load_settings(same, home).ignored == ()
+
+
+def test_a_project_file_is_recognised_however_it_is_named(tmp_path, monkeypatch):
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    project = write_config(repo / ".mosscode" / "config.yaml", sandbox={"allow_write": ["/"]})
+    (repo / "sub").mkdir()
+    monkeypatch.chdir(repo / "sub")
+    paths = [repo / "sub" / ".." / ".mosscode" / "config.yaml", Path("..") / ".mosscode" / "config.yaml", str(project)]
+    if WINDOWS:
+        paths.append(repo / ".MossCode" / "Config.YAML")
+    for path in paths:
+        loaded = load_settings(path, home)
+        assert loaded.sandbox.allow_write == () and loaded.ignored == ("sandbox.allow_write",), path
+    # Without a user file nothing in the project's file is taken as the user's word.
+    assert load_settings(project).sandbox.allow_write == ()
+
+
+def test_the_users_own_file_and_one_they_point_at_set_the_sandbox_freely(tmp_path):
+    home = tmp_path / "home"
+    user = write_config(home / ".mosscode" / "config.yaml", sandbox=WIDENING, command_env={"keep": ["*"]})
+    loaded = load_settings(user, home)
+    assert loaded.sandbox.allow_write == ("/",) and loaded.command_env_keep == ("*",) and loaded.ignored == ()
+    chosen = write_config(tmp_path / "repo" / "config.yaml", sandbox=WIDENING)
+    assert load_settings(chosen, home).sandbox.backend == "token" and load_settings(chosen, home).ignored == ()
+
+
+@pytest.mark.parametrize("content", ["providers: [", "- not a mapping", "sandbox: {mode: maybe}"])
+def test_a_broken_user_file_does_not_leave_the_sandbox_to_the_project(tmp_path, content):
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    project = write_config(repo / ".mosscode" / "config.yaml", sandbox={"mode": "off"})
+    (home / ".mosscode").mkdir(parents=True)
+    (home / ".mosscode" / "config.yaml").write_text(content, encoding="utf-8")
+    with pytest.raises(ConfigError, match="用户配置"):
+        load_settings(project, home)
+
+
+def test_doctor_lists_the_project_keys_that_were_ignored(tmp_path):
+    from mosscode.doctor import WARN, check_config
+
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    write_config(repo / ".mosscode" / "config.yaml", sandbox={"allow_write": ["/"]})
+    items = check_config(cwd=repo, home=home)
+    assert [item.level for item in items if "sandbox.allow_write" in item.text] == [WARN]
 
 
 # Policy -------------------------------------------------------------------------------------------
@@ -409,6 +505,7 @@ def test_doctor_reports_the_sandbox(tmp_path, monkeypatch):
 # The real backend ---------------------------------------------------------------------------------
 
 
+@functools.cache  # Looked up once: tests replace the home folder, which is one of the places it is found in.
 def wxc_exec() -> Path | None:
     configured = os.environ.get("MOSSCODE_TEST_WXC")
     return Path(configured).resolve() if configured else windows_mxc.find(None)

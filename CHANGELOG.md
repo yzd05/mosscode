@@ -15,6 +15,7 @@
 ### 变更
 
 - 模型运行的命令（`execute_command`、Skill 工具）看不到形似密钥的环境变量：名称含 TOKEN、SECRET、PASSWORD 等，或值形似私钥、JWT、服务令牌、带密码的 URL；`config.yaml` 新增 `command_env.keep` / `drop` 调整。这些命令的 `TEMP`、`TMP`、`TMPDIR` 改为每个 MossCode 进程私有的 `~/.mosscode/tmp/` 子目录，退出时删除；Windows 上不能读取剪贴板。Hook 和 `!` 命令不变。
+- 项目的 `.mosscode/config.yaml` 不能再放宽命令沙箱和命令的环境变量：`sandbox` 和 `command_env` 以用户配置 `~/.mosscode/config.yaml` 为准，项目配置只能收紧（`mode: on`、`network: none`、`allow_unsandboxed: never`、追加 `deny_read` 和 `command_env.drop`）；`allow_write`、`allow_read`、`backend`、`wxc_exec`、`command_env.keep` 和关闭沙箱的写法被忽略，并在启动区和 `moss doctor` 中列出。**不兼容**：原来写在项目配置里的这些设置需要移到用户配置。
 - 模型不能用 `write_file`、`edit_file` 写 `.git/hooks/`、`.git/config` 和项目的 `.mosscode/plugins.yaml`。
 - 命令文件名中的 `_` 视为 `-`：`clean_gone.md` 注册为 `/clean-gone`，Claude Code 插件中这类命令不再被跳过。
 - 子 Agent 的 `model` 写 Claude Code 的模型名（`sonnet`、`opus`、`haiku`、`fable` 或 `claude-…`）且没有同名 Provider 时，使用当前模型，不再报错。

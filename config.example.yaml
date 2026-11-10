@@ -36,11 +36,13 @@ default_provider: claude
 #   api_key_env: TAVILY_API_KEY
 # 模型运行的命令看不到形似密钥的环境变量（名称含 TOKEN、SECRET、PASSWORD 等）。命令确实需要的写在 keep，
 # 要额外去掉的写在 drop；变量名可用 *。
+# command_env 和下面的 sandbox 以用户配置（~/.mosscode/config.yaml）为准：写在项目的 .mosscode/config.yaml 中时
+# 只能收紧（mode: on、network: none、allow_unsandboxed: never、deny_read、drop），放宽的键被忽略并提示。
 # command_env:
 #   keep: [GITHUB_TOKEN]
 #   drop: [INTERNAL_*]
 
-# 命令沙箱（目前只有 Windows，需要 MXC 的 wxc-exec.exe）：模型的命令只能写项目目录，联网经 MossCode 的代理、新域名需确认，越界时带理由申请。
+# 命令沙箱（Linux 用 bubblewrap，macOS 用 Seatbelt，Windows 用 MXC 或受限令牌）：模型的命令只能写项目目录，联网经 MossCode 的代理、新域名需确认，越界时带理由申请。
 # sandbox:
 #   mode: on
 #   backend: auto           # 或 bubblewrap / seatbelt / mxc / token

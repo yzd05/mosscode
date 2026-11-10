@@ -13,7 +13,7 @@ from .appearance import compact_notice
 from .builtin_commands import BUILTIN, typed
 from .catalog import load_catalog
 from .commands import CommandRegistry, argument_problem, parse_input, unknown_note
-from .config import ConfigError, find_config, load_settings
+from .config import ConfigError, find_config, load_settings, project_notice
 from .conversation import Conversation, Notice, Resumed
 from .coordinator import decide as decide_coordinator
 from .credentials import plaintext_notice, protect
@@ -540,7 +540,7 @@ def run(args: argparse.Namespace) -> None:
         )
         if coordinator_notice:
             notices += (coordinator_notice,)
-        notices += tuple(sandbox.notices())
+        notices += tuple(filter(None, (project_notice(settings),))) + tuple(sandbox.notices())
         notices += tuple(
             filter(None, (load_catalog().problem, config.window_note(), plaintext_notice(settings, Path.cwd())))
         )

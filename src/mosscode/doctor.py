@@ -150,7 +150,7 @@ def _catalog_match(provider) -> str:
 
 def check_config(config: str | None = None, cwd: Path | None = None, home: Path | None = None) -> list[Item]:
     from .catalog import load_catalog
-    from .config import ConfigError, find_config, load_settings
+    from .config import ConfigError, find_config, load_settings, project_notice
     from .setup import OFFICIAL
 
     cwd = Path.cwd() if cwd is None else cwd
@@ -162,11 +162,13 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
         path = None
     if path is not None:
         try:
-            settings = load_settings(path)
+            settings = load_settings(path, home)
         except ConfigError as exc:
             items.append(Item(ERROR, f"配置 {path}：{exc}", "对照 config.example.yaml 修改"))
         else:
             items.append(Item(OK, f"配置 {path}"))
+            if note := project_notice(settings):
+                items.append(Item(WARN, note, "需要时把它们写进用户配置"))
             catalog = load_catalog()
             where = catalog.path or "随程序发布"
             items.append(
@@ -275,7 +277,7 @@ def check_project(cwd: Path | None = None, config: str | None = None, home: Path
         from .config import ConfigError, load_settings
 
         try:
-            load_settings(project_config)
+            load_settings(project_config, home)
         except ConfigError as exc:
             items.append(Item(ERROR, f"{project_config}：{exc}", "对照 config.example.yaml 修改"))
     from .permissions import PermissionConfigError, read_policy
