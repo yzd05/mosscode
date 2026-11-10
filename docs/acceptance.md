@@ -142,6 +142,17 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | U16 /status 与 /session | 输入 `/status`；再输入 `/session` | `/status` 列出模型 `unreachable（… / offline-test）`、权限档位、“上下文 尚未发送请求”、会话 ID、工作目录、项目指令文件数、MCP 的已连接与失败数和记忆状态。`/session` 显示会话 ID、存档路径、“（尚无消息）”和开始时间，最后一行“/resume 恢复其他会话。” |
 | U17 参数与路径 | 输入 `/clear extra`；再输入 `/etc/hosts 是什么` | `/clear extra` 显示“/clear 不接受参数。用法：/clear”，屏幕不清空。`/etc/hosts 是什么` 作为普通消息发送（离线配置下随后出现重试和连接错误） |
 
+### 项目配置确认
+
+行为见 [项目配置需要确认](reference/cli.md#项目配置需要确认)。这一组把离线配置复制成验收项目的 `.mosscode\config.yaml`，启动时不加 `--config`，不需要 API。做完 C4 再继续：这份文件留着时，O1 和后面不带 `--config` 启动的用例都会用到它。下面的“用户配置”指 `~\.mosscode\config.yaml`；没有这个文件时，拒绝后直接退出（C2 的第二步）。
+
+| 编号 | 操作（在验收项目中） | 预期 |
+| --- | --- | --- |
+| C1 第一次询问 | `Copy-Item ..\offline-config.yaml .mosscode\config.yaml`；`& "$moss\.venv\Scripts\python.exe" -m mosscode`，在确认面板中直接按 Enter；退出后再启动一次 | 界面之前先输出“项目配置 …\project\.mosscode\config.yaml 尚未确认（第一次使用，或内容有变化）。”，列出 `unreachable（anthropic-messages / offline-test）`、服务地址 `127.0.0.1:9（HTTP，未加密）`、凭据“写在这份文件里的密钥”（不显示密钥本身）；面板为“信任并使用这份项目配置？…Esc 本次不使用（改用用户配置 …）。”，第一项高亮。Enter 后进入界面，状态栏模型为 `offline-test`，启动区有明文密钥的提示。第二次启动不询问。`~\.mosscode\projects\…acceptance-project-…\config-trust.json` 存在，项目中没有新文件 |
+| C2 内容变化与拒绝 | `Add-Content .mosscode\config.yaml "# changed"`；启动界面，按 ↓ 再按 Enter；退出后加 `--config .mosscode\config.yaml` 启动，按 Esc | 再次询问。选“本次不使用”后用用户配置进入界面（状态栏是你自己的模型），启动区提示“本次未使用项目配置 …，改用用户配置 …；下次启动时会再次询问。”。用 `--config` 指定时面板括号中为“退出”，Esc 后输出“未使用项目配置，已退出。…”并回到命令行 |
+| C3 无界面与 doctor | `& "$moss\.venv\Scripts\python.exe" -m mosscode -p hi`；再加 `--trust-project-config` 运行；然后运行 `& "$moss\.venv\Scripts\python.exe" -m mosscode doctor` | 第一次 stderr 为“MossCode: 项目配置 … 未经确认，不会使用；请在交互界面中启动一次并确认，或使用 --trust-project-config。”，退出码 1，没有重试提示（没有发请求）。第二次出现 O3 的重试和连接错误（用了这份配置）。doctor 的配置一节有“! 这份项目配置尚未确认（第一次使用，或内容有变化），-p 不会使用它”（`--trust-project-config` 不写确认记录） |
+| C4 清理 | `Remove-Item .mosscode\config.yaml`；`& "$moss\.venv\Scripts\python.exe" -m mosscode --list-providers` | 不再列出 `unreachable`：有用户配置时列出其中的 Provider，没有时退出码 1 并列出查找过的路径 |
+
 ## 三、真实模型用例
 
 使用你的配置启动（默认 Provider 为 DeepSeek V4.1 Flash）：
