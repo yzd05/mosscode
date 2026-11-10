@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Literal
 
 from .context import estimate_text
-from .messages import NOTIFICATION, Completed, ContentBlock, Message, ProviderError
+from .messages import CONTINUE, NOTIFICATION, Completed, ContentBlock, Message, ProviderError
 from .prompts import Supplement
 
 GOAL = "goal"  # Message.synthetic of the message that starts a continuation turn.
@@ -89,6 +89,8 @@ def _render(message: Message, shown_results: set[int]) -> str:
     if message.role == "user":
         if message.synthetic == GOAL:
             return "[目标续跑]\n" + message.text
+        if message.synthetic == CONTINUE:
+            return "[回复达到输出上限，自动请模型接着写]"
         if message.synthetic == "compact":
             return "[较早对话的摘要]\n" + message.text
         if message.synthetic == NOTIFICATION:

@@ -15,7 +15,9 @@ from .context import ContextBudget, ContextMeter
 from .credentials import redact, redact_value
 from .images import ImageRef
 from .messages import (
+    CONTINUE,
     NOTIFICATION,
+    AutoContinue,
     CompactFailed,
     CompactFinished,
     CompactStarted,
@@ -93,6 +95,19 @@ DEFAULT_MAX_ITERATIONS = 200
 REPLY_RETRIES = 2
 REFUSALS = frozenset({"refusal", "content_filter"})
 RETRY_REASONS = {"empty": "模型返回了空回复", "thinking_cut": "回复在思考阶段就达到了输出上限"}
+
+
+# A reply cut off at the output limit after some text is continued automatically, at most this often per turn.
+CONTINUATIONS = 3
+CONTINUE_PROMPT = (
+    "上一条回复达到输出上限，在中途被截断。请从中断处直接接着写：不要重复已经写出的内容，不要道歉或复述，"
+    "也不要另起开头；剩余内容较多时，先写完能写完的部分，需要写入文件的长内容分多次写入。"
+)
+
+
+def truncation_notice(continued: int) -> str:
+    done = f"已自动续写 {continued} 次，" if continued else ""
+    return f"回复达到输出上限（max_output_tokens），{done}仍被截断；可以输入“继续”或调高该配置。"
 
 
 def unusable(final: Completed) -> str | None:
@@ -468,6 +483,7 @@ class AgentLoop:
         user = _redacted(Message("user", user_content(prompt, images), command=command, synthetic=synthetic))
         attachments = None if attachments is None else _redacted(attachments)
         committed = False
+        continued, before = 0, ""
 
         def outcomes():
             return self.history[-1].tool_results if committed and self.history[-1].role == "tool" else ()
@@ -556,13 +572,15 @@ class AgentLoop:
                 truncated = final.stop_reason == "max_tokens"
                 if not calls:
                     yield UsageUpdate(iteration, final.usage, self.total_usage)
-                    yield final
+                    yield replace(final, before=before) if before else final
+                    if truncated and continued < CONTINUATIONS:
+                        continued += 1
+                        before += final.message.text
+                        self._append(Message("user", (ContentBlock("text", CONTINUE_PROMPT),), synthetic=CONTINUE))
+                        yield AutoContinue(continued, CONTINUATIONS)
+                        continue
                     if truncated:
-                        yield RunStopped(
-                            "max_tokens",
-                            "回复达到输出上限（max_output_tokens），已截断；可以输入“继续”或调高该配置。",
-                            iteration,
-                        )
+                        yield RunStopped("max_tokens", truncation_notice(continued), iteration)
                     else:
                         yield RunStopped("completed", "", iteration)
                     return

@@ -1,13 +1,16 @@
-"""Replies with nothing usable: dropped and sent again, a refusal reported, a clear error after the retries."""
+"""Replies with nothing usable are sent again; replies cut off after some text are continued automatically."""
 
 import asyncio
 import json
+from dataclasses import replace
 
 import pytest
 
 import mosscode.cli as cli
 from mosscode.conversation import Conversation
 from mosscode.messages import (
+    CONTINUE,
+    AutoContinue,
     Completed,
     ContentBlock,
     Delta,
@@ -88,13 +91,111 @@ async def test_a_reply_cut_while_thinking_asks_for_shorter_thinking():
     assert "缩短思考" in notes(provider.requests[1])[0]
 
 
-async def test_a_reply_cut_after_some_text_still_stops_with_the_truncation_notice():
-    from dataclasses import replace
+def cut(text):
+    return replace(response(text), stop_reason="max_tokens")
 
-    conv = Conversation(SequenceProvider(replace(response("写到一半"), stop_reason="max_tokens")))
+
+async def test_a_reply_cut_after_some_text_is_continued_where_it_stopped():
+    provider = SequenceProvider(cut("第一段，"), cut("第二段，"), response("结尾。"))
+    conv = Conversation(provider)
     events, error = await run(conv)
     assert error is None and not any(isinstance(e, ReplyRetry) for e in events)
-    assert events[-1].reason == "max_tokens"
+    assert [m.role for m in conv.history] == ["user", "assistant", "user", "assistant", "user", "assistant"]
+    assert [m.synthetic for m in conv.history if m.role == "user"] == [None, CONTINUE, CONTINUE]
+    # Each piece stays in the history as written; the request to go on is the last message sent.
+    assert [m.text for m in conv.history if m.role == "assistant"] == ["第一段，", "第二段，", "结尾。"]
+    second = provider.requests[1][0]
+    assert second[-2].text == "第一段，" and "从中断处直接接着写" in second[-1].text
+    assert [(e.attempt, e.max_attempts) for e in events if isinstance(e, AutoContinue)] == [(1, 3), (2, 3)]
+    answers = [e.answer for e in events if isinstance(e, Completed)]
+    assert answers == ["第一段，", "第一段，第二段，", "第一段，第二段，结尾。"]
+    assert events[-1] == RunStopped("completed", "", 3)
+
+
+async def test_after_three_continuations_the_turn_stops_at_the_output_limit():
+    provider = SequenceProvider(*(cut(f"段{n}") for n in range(4)), response("不会用到"))
+    conv = Conversation(provider)
+    events, error = await run(conv)
+    assert error is None and len(provider.requests) == 4
+    assert events[-1].reason == "max_tokens" and "已自动续写 3 次" in events[-1].notice
+    assert conv.history[-1].text == "段3"  # The last cut piece is kept, as before.
+    # The next turn starts afresh: its own cut reply is continued again.
+    provider.responses = [cut("再一段"), response("完")]
+    assert await conv.ask("继续") == "再一段完"
+
+
+async def test_a_cut_reply_with_tool_calls_is_not_continued(tmp_path):
+    truncated = replace(
+        response("写文件", [call("write_file", "w", path="a.txt", content="x")]), stop_reason="max_tokens"
+    )
+    provider = SequenceProvider(truncated, response("改为分段写入"))
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    conv = Conversation(provider, registry=registry)
+    events, _ = await run(conv)
+    assert not any(isinstance(e, AutoContinue) for e in events) and not (tmp_path / "a.txt").exists()
+    assert conv.history[2].tool_results[0].code == "output_truncated"
+
+
+async def test_the_whole_answer_reaches_ask_and_headless_results(capsys):
+    assert await Conversation(SequenceProvider(cut("前半"), response("后半"))).ask("任务") == "前半后半"
+    conv = Conversation(SequenceProvider(cut("前半"), response("后半")))
+    result = await cli._prompt(conv, "任务", output_format="json")
+    assert result["subtype"] == "completed" and result["result"] == "前半后半"
+    capsys.readouterr()
+    conv = Conversation(SequenceProvider(cut("前半"), response("后半")))
+    await cli._prompt(conv, "任务", output_format="stream-json")
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert {"type": "auto_continue", "attempt": 1, "max_attempts": 3} in lines
+    assert lines[-1]["result"] == "前半后半"
+    conv = Conversation(SequenceProvider(cut("前半"), response("后半")))
+    await cli._prompt(conv, "任务")
+    captured = capsys.readouterr()
+    assert "前半后半" in captured.out and "回复达到输出上限，自动续写（1/3）" in captured.err
+
+
+async def test_a_sub_agent_returns_the_whole_answer(tmp_path):
+    from test_subagents import ScriptProvider, agents_dir, conversation, main_requests, tool_results_of, write_agent
+
+    write_agent(agents_dir(tmp_path), "worker", "tools: Read\n", "SUB-WORKER")
+
+    def script(messages, system, tools):
+        if "SUB-WORKER" in system.stable:
+            return cut("前半") if len(messages) == 1 else response("后半")
+        if messages[-1].role == "user":
+            return response(calls=[call("agent", "a1", description="写", prompt="写长文", agent_type="worker")])
+        return response("主对话完成")
+
+    provider = ScriptProvider(script)
+    conv = conversation(tmp_path, provider)
+    await run(conv, "开始")
+    assert tool_results_of(main_requests(provider)[1])[0].output.startswith("前半后半")
+    await conv.close()
+
+
+async def test_the_interface_shows_each_piece_with_a_note_between():
+    from rich.console import Console
+
+    from mosscode.tui import ChatEntry, MossCodeApp, resumed_rows
+    from test_agent_tui import send
+
+    conv = Conversation(SequenceProvider(cut("前半"), response("后半")))
+    app = MossCodeApp(conv, "Demo")
+    async with app.run_test(size=(100, 36)) as pilot:
+        await send(app, pilot, "任务")
+        await app._reply_task
+        await pilot.pause()
+        replies = [e for e in app.query(ChatEntry) if e.speaker != "You"]
+        assert [e.body for e in replies] == ["前半", "后半"]
+        # The cut piece has no done summary; the note says what happened instead.
+        assert replies[0].completed_elapsed is None and replies[1].completed_elapsed is not None
+        notes = [str(note.render()) for note in app.query(".local-note")]
+        assert "↻ 回复达到输出上限，自动续写（1/3）" in notes
+        assert not app.query_one("#prompt").disabled
+    console = Console(record=True, width=80)
+    for row in resumed_rows(conv.history):
+        console.print(row)
+    shown = console.export_text()
+    assert "↻ 回复达到输出上限，自动续写" in shown and "从中断处" not in shown
 
 
 @pytest.mark.parametrize(

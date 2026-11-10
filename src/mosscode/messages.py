@@ -91,6 +91,13 @@ class Completed:
     message: Message
     stop_reason: str
     usage: Usage = field(default_factory=Usage)
+    # Text of this turn's earlier replies that were cut off and continued automatically.
+    before: str = ""
+
+    @property
+    def answer(self) -> str:
+        """The whole answer: the continued pieces and this reply, joined as the model wrote them."""
+        return self.before + self.message.text
 
 
 @dataclass(frozen=True)
@@ -196,6 +203,7 @@ class TasksNotified:
 NOTIFICATION = "task-notification"  # Message.synthetic of a background task notification.
 MENTIONS = "file-mentions"  # Message.synthetic of what a typed message's @ mentions hold, right after it.
 SHELL = "shell-command"  # Message.synthetic of a command the user ran with ! and its output.
+CONTINUE = "continue"  # Message.synthetic asking the model to go on after a reply was cut off.
 
 
 @dataclass(frozen=True)
@@ -222,6 +230,18 @@ class ReplyRetry:
     reason: str
     attempt: int
     max_attempts: int
+
+
+@dataclass(frozen=True)
+class AutoContinue:
+    """A reply was cut off at the output limit; the model is asked to go on where it stopped."""
+
+    attempt: int
+    max_attempts: int
+
+    @property
+    def text(self) -> str:
+        return f"回复达到输出上限，自动续写（{self.attempt}/{self.max_attempts}）"
 
 
 @dataclass(frozen=True)
@@ -258,6 +278,7 @@ StreamEvent = (
     | QuestionRequest
     | Retrying
     | ReplyRetry
+    | AutoContinue
     | UserInput
     | CompactStarted
     | CompactFinished

@@ -134,10 +134,10 @@ async def test_cancel_after_response_completion_does_not_mark_committed_turn_can
     resume = asyncio.Event()
     original_finish = ChatEntry.finish
 
-    async def slow_finish(self, message):
+    async def slow_finish(self, message, **options):
         rendered.set()
         await resume.wait()
-        await original_finish(self, message)
+        await original_finish(self, message, **options)
 
     monkeypatch.setattr(ChatEntry, "finish", slow_finish)
     conv = Conversation(FakeProvider())

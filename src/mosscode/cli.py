@@ -33,6 +33,7 @@ from .mcp_client import MCPManager
 from .mcp_config import MCPConfigError, load_mcp_settings
 from .memory import MemoryStore
 from .messages import (
+    AutoContinue,
     CompactFailed,
     CompactFinished,
     CompactStarted,
@@ -292,7 +293,7 @@ async def _prompt(
                     elif isinstance(event, RunStopped):
                         stopped = event
                     elif isinstance(event, Completed):
-                        final = event.message.text
+                        final = event.answer
                     if not stream_json:
                         continue
                     if isinstance(event, ResponseBoundary):
@@ -335,6 +336,8 @@ async def _prompt(
                                 "reason": event.reason,
                             }
                         )
+                    elif isinstance(event, AutoContinue):
+                        _emit({"type": "auto_continue", "attempt": event.attempt, "max_attempts": event.max_attempts})
                     elif isinstance(event, (CompactStarted, CompactFinished, CompactFailed)):
                         _emit(_compact_event(event))
                     elif isinstance(event, Notice):
@@ -427,6 +430,9 @@ async def _text_prompt(
                     print(
                         f"{event.reason}，重新请求（{event.attempt}/{event.max_attempts}）", file=sys.stderr, flush=True
                     )
+                elif isinstance(event, AutoContinue):
+                    # stdout stays one continuous answer; the note goes to stderr.
+                    print("\n" + event.text, file=sys.stderr, flush=True)
                 elif isinstance(event, UsageUpdate) and show_usage:
                     print(request_usage_text(event.usage, event.iteration), file=sys.stderr, flush=True)
                 elif isinstance(event, CompactStarted):

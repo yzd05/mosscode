@@ -418,7 +418,7 @@ class SubAgents:
                         task.last_tool = describe_call(event.call, task.root)
                         self.tasks.changed(task)
                     elif isinstance(event, Completed):
-                        final = event.message.text
+                        final = event.answer
                     elif isinstance(event, RunStopped):
                         stopped = event
         except asyncio.CancelledError:

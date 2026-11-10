@@ -351,7 +351,7 @@ class MemberRunner:
                     self.last_tool = describe_call(event.call, self.loop.registry.permissions.root)
                     self._status("running", last_tool=self.last_tool)
                 elif isinstance(event, Completed):
-                    final = event.message.text
+                    final = event.answer
                 elif isinstance(event, RunStopped):
                     stopped = event
         return final, stopped

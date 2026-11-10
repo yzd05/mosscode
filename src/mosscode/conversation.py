@@ -1324,7 +1324,7 @@ class Conversation:
                             stopped = event  # The one RunStopped comes after the exchange is added.
                             continue
                         if isinstance(event, Completed):
-                            final = event.message.text
+                            final = event.answer
                         if isinstance(event, UsageUpdate):
                             event = replace(event, total=main.total_usage)  # The session total, as before.
                         elif isinstance(event, ToolProgress) and event.phase == "running":
@@ -1358,12 +1358,15 @@ class Conversation:
                 await provider.close()
 
     async def ask(self, prompt: str) -> str:
+        answer = ""
         async with aclosing(self.reply(prompt)) as stream:
             async for event in stream:
                 if isinstance(event, Completed):
-                    return event.message.text
+                    if event.stop_reason != "max_tokens":
+                        return event.answer
+                    answer = event.answer  # Cut off: continued automatically, or the turn stops next.
                 if isinstance(event, RunStopped) and event.reason in {"unknown_tools", "max_iterations", "max_tokens"}:
-                    return event.notice
+                    return answer or event.notice
         raise ProviderError("没有完整回复。")
 
     async def run_command(self, command: str, *, keep: bool = True) -> CommandRun:

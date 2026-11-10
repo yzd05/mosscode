@@ -60,10 +60,12 @@ from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, Memb
 from .memory import SCOPE_LABELS
 from .mentions import FileIndex, mentioned, partial_mention, quoted
 from .messages import (
+    CONTINUE,
     IMAGE_MARK,
     MENTIONS,
     NOTIFICATION,
     SHELL,
+    AutoContinue,
     CompactFailed,
     CompactFinished,
     CompactStarted,
@@ -749,7 +751,8 @@ class ChatEntry(Vertical):
         self.query_one(".raw", Static).update("等待回复…")
         self.query_one(".message-row").display = True
 
-    async def finish(self, message: Message) -> None:
+    async def finish(self, message: Message, *, cut: bool = False) -> None:
+        """cut: stopped at the output limit; the note after it says what happens next, not a done summary."""
         self._finish_thinking()
         self.phase = "complete"
         self.body = message.text
@@ -758,6 +761,8 @@ class ChatEntry(Vertical):
         markdown.display = True
         self.query_one(".message-row").display = True
         self.query_one(".raw", Static).display = False
+        if cut:
+            return
         summary = self.query_one(".turn-summary", Static)
         self.completed_elapsed = monotonic() - self.started
         summary.update(f"✻ 完成 · {self.completed_elapsed:.1f}s")
@@ -976,6 +981,8 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
             rows.append(shell_heading(ran(message)))
         elif message.synthetic == GOAL:
             rows.append(Text("◎ 继续目标", style=PARAMETER_COLOR))
+        elif message.synthetic == CONTINUE:
+            rows.append(Text("↻ 回复达到输出上限，自动续写", style=PARAMETER_COLOR))
         elif message.role == "user":
             notes = [
                 f"{block.text} · {block.image.width}×{block.image.height} · {size_label(block.image.size)}"
@@ -2739,6 +2746,11 @@ class MossCodeApp(TerminalApp[None]):
                         if not continuation:  # Deltas of the dropped reply already went into this entry.
                             reply.discard()
                         self._hint(f"{event.reason}，重新请求（{event.attempt}/{event.max_attempts}）")
+                    elif isinstance(event, AutoContinue):
+                        # The cut reply is finished; the next piece gets its own entry, after this note.
+                        await self._local_note("↻ " + event.text, PARAMETER_COLOR)
+                        continuation = True
+                        self._generating = True
                     elif isinstance(event, Delta):
                         if continuation:
                             reply = ChatEntry("MossCode")
@@ -2809,7 +2821,7 @@ class MossCodeApp(TerminalApp[None]):
                             await chat.mount(reply)
                             self._active_reply = reply
                         self._generating = False
-                        await reply.finish(event.message)
+                        await reply.finish(event.message, cut=event.stop_reason == "max_tokens")
                         self._status("")
                     await self._commit_ready_transcript()
         except asyncio.CancelledError:

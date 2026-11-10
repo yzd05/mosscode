@@ -209,7 +209,7 @@ async def test_repeated_escape_waits_for_file_io_outcome_and_pairs_later_calls(t
         assert not app.query_one("#prompt", PromptArea).disabled
 
 
-async def test_retry_status_and_max_tokens_notice(tmp_path):
+async def test_retry_status_and_max_tokens_notice_after_the_continuations(tmp_path):
     arrived, release = asyncio.Event(), asyncio.Event()
 
     async def flaky():
@@ -219,7 +219,8 @@ async def test_retry_status_and_max_tokens_notice(tmp_path):
         yield Delta("text", "很长的回答")
         yield replace(response("很长的回答"), stop_reason="max_tokens")
 
-    conv = Conversation(SequenceProvider(flaky))
+    pieces = [replace(response(f"续{n}"), stop_reason="max_tokens") for n in range(1, 4)]
+    conv = Conversation(SequenceProvider(flaky, *pieces))
     app = MossCodeApp(conv, "Demo")
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "写长文")
@@ -230,6 +231,7 @@ async def test_retry_status_and_max_tokens_notice(tmp_path):
         release.set()
         await app._reply_task
         await pilot.pause()
-        assert "max_output_tokens" in str(list(app.query(".local-note"))[-1].render())
-        assert [e.body for e in app.query(ChatEntry) if e.speaker != "You"] == ["很长的回答"]
+        notes = [str(note.render()) for note in app.query(".local-note")]
+        assert "已自动续写 3 次" in notes[-1] and "max_output_tokens" in notes[-1]
+        assert [e.body for e in app.query(ChatEntry) if e.speaker != "You"] == ["很长的回答", "续1", "续2", "续3"]
         assert not app.query_one("#prompt", PromptArea).disabled

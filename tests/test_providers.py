@@ -326,7 +326,7 @@ async def test_http_error_retry_policy_no_secret_leak(protocol, cls, frames, pat
 
 
 @pytest.mark.parametrize("protocol,cls,frames,path", CASES)
-async def test_output_budget_exhaustion_stops_with_text_preserved(protocol, cls, frames, path):
+async def test_output_budget_exhaustion_continues_then_stops_with_text_preserved(protocol, cls, frames, path):
     def body():
         if protocol == "anthropic-messages":
             return SSEBody(frames(reason="max_tokens"))
@@ -345,10 +345,13 @@ async def test_output_budget_exhaustion_stops_with_text_preserved(protocol, cls,
         assert next(e for e in events if isinstance(e, Completed)).message.text == "你好"
         stopped = events[-1]
         assert (
-            isinstance(stopped, RunStopped) and stopped.reason == "max_tokens" and "max_output_tokens" in stopped.notice
+            isinstance(stopped, RunStopped) and stopped.reason == "max_tokens" and "已自动续写 3 次" in stopped.notice
         )
-        assert [m.role for m in conv.history] == ["user", "assistant"] and conv.history[1].text == "你好"
-        assert len(requests) == 1
+        # Every cut piece is kept, each followed by the request to go on; the service accepts that history.
+        assert [m.role for m in conv.history] == ["user", "assistant"] * 4
+        assert [m.synthetic for m in conv.history if m.role == "user"] == [None, "continue", "continue", "continue"]
+        assert [m.text for m in conv.history if m.role == "assistant"] == ["你好"] * 4
+        assert len(requests) == 4
     finally:
         await provider.close()
 
