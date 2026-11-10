@@ -76,6 +76,13 @@ class TodoList:
         if len(entries) > MAX_ITEMS:
             raise TodoError(f"清单最多 {MAX_ITEMS} 项。")
         known = {item.id for item in self.items}
+        # Models often resend the whole list without ids; an unchanged item keeps its number then,
+        # unless the same call names that id itself.
+        named = {item_id for item_id, _, _ in entries if item_id is not None}
+        unnamed: dict[str, list[str]] = {}
+        for item in self.items:
+            if item.id not in named:
+                unnamed.setdefault(item.content, []).append(item.id)
         seen: set[str] = set()
         items, next_id = [], self._next
         for item_id, content, status in entries:
@@ -84,7 +91,9 @@ class TodoList:
                 raise TodoError("content 不能为空。")
             if len(content) > MAX_CONTENT:
                 raise TodoError(f"content 最多 {MAX_CONTENT} 字。")
-            if item_id is None:
+            if item_id is None and unnamed.get(content):
+                item_id = unnamed[content].pop(0)
+            elif item_id is None:
                 item_id, next_id = str(next_id), next_id + 1
             elif item_id not in known:
                 raise TodoError(f"清单中没有 id 为 {item_id} 的项；新增的项不要带 id。")

@@ -35,6 +35,28 @@ def test_ids_are_assigned_kept_and_items_left_out_are_removed():
     assert render(todos.items).splitlines() == ["[x] 1. 读代码", "[>] 3. 改文档", "[ ] 4. 运行测试", "已完成 1/3"]
 
 
+def test_an_item_resent_without_its_id_keeps_its_number():
+    todos = TodoList()
+    todos.replace(entries((None, "读代码", "in_progress"), (None, "写测试", "pending"), (None, "写测试", "pending")))
+    todos.replace(
+        entries(
+            (None, "读代码", "completed"),
+            (None, "写测试", "in_progress"),
+            (None, "写测试", "pending"),
+            (None, "新项", "pending"),
+        )
+    )
+    assert [(i.id, i.status) for i in todos.items] == [
+        ("1", "completed"),
+        ("2", "in_progress"),
+        ("3", "pending"),
+        ("4", "pending"),
+    ]
+    # An id named in the same call is not taken by another entry with the same text.
+    todos.replace(entries((None, "读代码", "completed"), ("1", "读代码", "completed")))
+    assert [i.id for i in todos.items] == ["5", "1"]
+
+
 @pytest.mark.parametrize(
     "bad",
     [
