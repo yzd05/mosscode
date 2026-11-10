@@ -1004,6 +1004,10 @@ async def test_merge_card_in_the_ui(tmp_path):
         "r1", "", Operation("team_merge", "alice", preview="成员：alice"), "合并？", ("merge", "deny")
     )
     async with app.run_test(size=(100, 32)) as pilot:
+        # As in PermissionPolicy._ask: the request is pending before it reaches the window; a card without a
+        # waiting future counts as withdrawn and is taken down.
+        future = asyncio.get_running_loop().create_future()
+        conv.registry.permissions.pending["r1"] = future
         app._show_approval(request)
         await pilot.pause()
         detail = str(app.query_one("#approval-detail").render())
@@ -1017,8 +1021,6 @@ async def test_merge_card_in_the_ui(tmp_path):
             notes.append(text)
 
         app._local_note = note
-        future = asyncio.get_running_loop().create_future()
-        conv.registry.permissions.pending["r1"] = future
         await pilot.press("down", "enter")  # 不合并.
         await pilot.pause()
         assert future.result() == "deny" and any("直接在输入框告诉 Lead" in text for text in notes)
