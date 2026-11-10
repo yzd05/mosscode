@@ -640,7 +640,7 @@ Lead team_merge
 | T6 | 协调者模式 | T2 | AC41–AC44 |
 | T7 | 文档：`docs/reference/teams.md`、`docs/acceptance.md`、配置说明；全量测试 | T1–T6 | 全量 pytest |
 
-测试文件：`tests/test_teams_stage15.py`（T1–T4、T6）和 `tests/test_team_backends.py`（T5，命令调用用替身，Windows Terminal 的真实启动只在人工验收中验证）。
+测试文件：`tests/test_teams.py`（T1–T4、T6）和 `tests/test_team_backends.py`（T5，命令调用用替身，Windows Terminal 的真实启动只在人工验收中验证）。
 
 ## 验收
 

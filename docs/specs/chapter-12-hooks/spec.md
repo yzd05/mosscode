@@ -1,6 +1,6 @@
 # 第十二章：Hook 系统
 
-日期：2026-10-27。状态：已实现（2026-10-27）。测试见 `tests/test_hooks_stage12.py`，使用说明见 `docs/reference/hooks.md`。
+日期：2026-10-27。状态：已实现（2026-10-27）。测试见 `tests/test_hooks.py`，使用说明见 `docs/reference/hooks.md`。
 
 来源：
 - 课程第 12 章：理论、Python 源码解析、实战演练中的事件接入点。

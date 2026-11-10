@@ -281,9 +281,9 @@ Enter ─→ on_prompt_area_submitted
 
 | # | 内容 | 依赖 | 验证 |
 | --- | --- | --- | --- |
-| T1 | `commands.py`：`Command`、`CommandRegistry`（注册、冲突检测、查找、建议、补全匹配）、`parse_input` | — | `tests/test_commands_stage10.py` 的注册与解析部分（AC1–AC3） |
+| T1 | `commands.py`：`Command`、`CommandRegistry`（注册、冲突检测、查找、建议、补全匹配）、`parse_input` | — | `tests/test_commands.py` 的注册与解析部分（AC1–AC3） |
 | T2 | `builtin_commands.py`：把 10 个现有命令从 `tui._command` 迁过来，处理函数只用 `ctx`；`_mcp_report`、`_memory_report` 一并迁移 | T1 | `FakeUI` 测试；现有命令相关测试全部通过（AC4） |
-| T3 | TUI 接入：入口分流、实现 `CommandUI`（`choose` 封装现有面板）、补全和 `/help` 改为读注册表，删除 `COMMAND_HINTS`、`command_matches` 和特判 | T2 | `tests/test_tui.py`、`test_interaction_stage4.py`、`test_plan_commands.py` 按新接口更新后通过（AC5、AC6） |
+| T3 | TUI 接入：入口分流、实现 `CommandUI`（`choose` 封装现有面板）、补全和 `/help` 改为读注册表，删除 `COMMAND_HINTS`、`command_matches` 和特判 | T2 | `tests/test_tui.py`、`test_interaction.py`、`test_plan_commands.py` 按新接口更新后通过（AC5、AC6） |
 | T4 | `Message.command`：消息、序列化、`run` / `reply` 参数、标题、提取渲染、重放 | — | 序列化往返、旧存档兼容、标题与提取渲染测试（AC8） |
 | T5 | 新命令：`/do`、`/status`、`/session`、`/review`，`/help 命令`，`/memory` 名称补全 | T2、T4 | AC7、AC8 |
 | T6 | `-p` 支持提示词命令 | T1、T4 | `tests/test_cli.py`（AC9） |

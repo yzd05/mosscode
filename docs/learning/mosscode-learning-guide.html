@@ -628,19 +628,19 @@ EXEMPT = frozenset({<span class="s">"read_file"</span>})   <span class="c"># 已
   </div>
   <div class="table-wrap"><table>
     <tr><th>范围</th><th>测试文件</th><th>数量</th></tr>
-    <tr><td>Agent Loop 与对话</td><td>test_agent · test_agent_tui · test_conversation · test_tool_conversation</td><td>37</td></tr>
-    <tr><td>模型协议与配置</td><td>test_providers · test_tool_providers · test_config · test_cli · test_cache_probe</td><td>82</td></tr>
-    <tr><td>提示词与缓存（含阶段 1、6）</td><td>test_prompts · test_prompt_cache · test_model_side · test_prompts_stage6</td><td>44</td></tr>
-    <tr><td>工具（含阶段 2）</td><td>test_tools · test_tools_stage2 · test_tool_tui</td><td>31</td></tr>
-    <tr><td>权限与计划模式（含阶段 3、3b）</td><td>test_permissions · test_permission_modes · test_permission_tui · test_plan_commands · test_permissions_stage3b</td><td>236</td></tr>
-    <tr><td>MCP（含阶段 5）</td><td>test_mcp · test_mcp_stage5</td><td>39</td></tr>
-    <tr><td>界面与交互（含阶段 4）</td><td>test_tui · test_interaction_stage4 · test_scrollback · test_windows_input · test_windows_inline</td><td>67</td></tr>
-    <tr><td>文档</td><td>test_docs</td><td>9</td></tr>
-    <tr><td>上下文管理（第 8 章）</td><td>test_context_stage8</td><td>47</td></tr>
-    <tr><td>全部</td><td colspan="2">592 项：591 passed · 1 skipped（当前 Windows 用户不能创建文件符号链接）</td></tr>
+    <tr><td>Agent Loop 与对话</td><td>test_agent · test_agent_tui · test_conversation · test_tool_conversation</td><td>38</td></tr>
+    <tr><td>模型协议与配置</td><td>test_providers · test_tool_providers · test_config · test_cli · test_cache_probe</td><td>103</td></tr>
+    <tr><td>提示词与缓存（含阶段 1、6）</td><td>test_prompts · test_prompt_cache · test_model_side · test_prompt_size</td><td>44</td></tr>
+    <tr><td>工具（含阶段 2）</td><td>test_tools · test_tool_contracts · test_tool_tui</td><td>46</td></tr>
+    <tr><td>权限与计划模式（含阶段 3、3b）</td><td>test_permissions · test_permission_modes · test_permission_tui · test_plan_commands · test_permission_rules</td><td>257</td></tr>
+    <tr><td>MCP（含阶段 5）</td><td>test_mcp · test_mcp_manager</td><td>41</td></tr>
+    <tr><td>界面与交互（含阶段 4）</td><td>test_tui · test_interaction · test_scrollback · test_windows_input · test_windows_inline</td><td>77</td></tr>
+    <tr><td>文档</td><td>test_docs</td><td>21</td></tr>
+    <tr><td>上下文管理（第 8 章）</td><td>test_context</td><td>49</td></tr>
+    <tr><td>全部</td><td colspan="2">1684 项（2026-11-10 统计；数量随版本变化，以 pytest 的输出为准）</td></tr>
   </table></div>
 <pre><code><span class="c"># 在 F:\code-storage\PyCharm\MossCode 下运行</span>
-.\.venv\Scripts\python.exe -m pytest -q tests\test_context_stage8.py</code></pre>
+.\.venv\Scripts\python.exe -m pytest -q tests\test_context.py</code></pre>
 </section>
 
 <!-- 13 -->
@@ -650,11 +650,11 @@ EXEMPT = frozenset({<span class="s">"read_file"</span>})   <span class="c"># 已
   <ol class="steps">
     <li><a href="../../src/mosscode/messages.py">messages.py</a>：先熟悉所有数据类型和事件。</li>
     <li><a href="../../src/mosscode/agent.py">agent.py</a> 的 <code>run()</code>，对照 <a href="../../tests/test_agent.py">test_agent.py</a>。</li>
-    <li><a href="../../src/mosscode/tools/base.py">tools/base.py</a> 的 <code>execute()</code> 与 <a href="../../src/mosscode/tools/execution.py">execution.py</a>，对照 test_tools_stage2.py。</li>
-    <li><a href="../../src/mosscode/permissions.py">permissions.py</a> 的 <code>operation()</code>、<code>decide()</code>、<code>authorize()</code>，对照 test_permissions_stage3b.py。</li>
+    <li><a href="../../src/mosscode/tools/base.py">tools/base.py</a> 的 <code>execute()</code> 与 <a href="../../src/mosscode/tools/execution.py">execution.py</a>，对照 test_tool_contracts.py。</li>
+    <li><a href="../../src/mosscode/permissions.py">permissions.py</a> 的 <code>operation()</code>、<code>decide()</code>、<code>authorize()</code>，对照 test_permission_rules.py。</li>
     <li><a href="../../src/mosscode/providers.py">providers.py</a>：先读 <code>SDKProvider.stream</code>，再挑一个协议（推荐 Anthropic）读 <code>_stream</code>。</li>
     <li><a href="../../src/mosscode/prompts.py">prompts.py</a>：七个模块、<code>environment()</code>、<code>mode_reminder()</code>。</li>
-    <li>第八章：<a href="../../src/mosscode/context.py">context.py</a> → <a href="../../src/mosscode/tool_budget.py">tool_budget.py</a> → <a href="../../src/mosscode/compaction.py">compaction.py</a> → agent.py 的 <code>_compact</code>，对照 <a href="../../tests/test_context_stage8.py">test_context_stage8.py</a>（按 T1–T6 分节）。</li>
+    <li>第八章：<a href="../../src/mosscode/context.py">context.py</a> → <a href="../../src/mosscode/tool_budget.py">tool_budget.py</a> → <a href="../../src/mosscode/compaction.py">compaction.py</a> → agent.py 的 <code>_compact</code>，对照 <a href="../../tests/test_context.py">test_context.py</a>（按 T1–T6 分节）。</li>
     <li><a href="../../src/mosscode/conversation.py">conversation.py</a> 与 <a href="../../src/mosscode/cli.py">cli.py</a>：看事件如何被两种前端消费。</li>
     <li>最后读 <a href="../../src/mosscode/tui.py">tui.py</a> 的 <code>_respond()</code>、<code>_commit_ready_transcript()</code>、<code>_tick()</code>。</li>
   </ol>

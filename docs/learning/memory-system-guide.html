@@ -347,7 +347,7 @@ details{background:var(--white);border:1px solid var(--line);border-radius:8px;p
       <tr><td><code>src/mosscode/prompts.py</code></td><td>注入系统提示</td><td><code>MEMORY_NOTE</code>、<code>memory_section</code></td></tr>
       <tr><td><code>src/mosscode/conversation.py</code></td><td>把它们接起来</td><td>创建 <code>MemoryExtractor</code>、<code>_extract</code>（任务完成后）、压缩前回调、<code>/clear</code> 时重置游标</td></tr>
       <tr><td><code>src/mosscode/builtin_commands.py</code></td><td>命令</td><td><code>memory_report</code>（<code>/memory</code> 输出）；<code>tui.py</code> 显示“✎ 已更新记忆”</td></tr>
-      <tr><td><code>tests/test_memory_stage9c.py</code></td><td>44 个测试</td><td>按验收标准编号组织，读测试能最快理解每条规则</td></tr>
+      <tr><td><code>tests/test_memory.py</code></td><td>44 个测试</td><td>按验收标准编号组织，读测试能最快理解每条规则</td></tr>
     </tbody>
   </table></div>
   <h3>一个关键设计：提取游标</h3>

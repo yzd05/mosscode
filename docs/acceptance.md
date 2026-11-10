@@ -76,22 +76,22 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 
 | 阶段 | 测试文件 | 预期 |
 | --- | --- | --- |
-| 1 模型侧 | `tests\test_model_side.py tests\test_prompt_cache.py tests\test_config.py tests\test_providers.py` | 86 passed |
-| 2 工具 | `tests\test_tools_stage2.py` | 20 passed |
+| 1 模型侧 | `tests\test_model_side.py tests\test_prompt_cache.py tests\test_config.py tests\test_providers.py` | 107 passed |
+| 2 工具 | `tests\test_tool_contracts.py` | 22 passed |
 | 3 计划模式与危险命令 | `tests\test_plan_commands.py` | 52 passed |
-| 3b 权限 | `tests\test_permissions_stage3b.py` | 84 passed |
-| 4 交互 | `tests\test_interaction_stage4.py` | 22 passed |
+| 3b 权限 | `tests\test_permission_rules.py` | 84 passed |
+| 4 交互 | `tests\test_interaction.py` | 24 passed |
 | 界面修复（宽度重绘、按键、/clear） | `tests\test_scrollback.py tests\test_windows_input.py` | 17 passed |
-| 5 MCP | `tests\test_mcp_stage5.py` | 16 passed |
-| 6 提示与文档 | `tests\test_prompts_stage6.py tests\test_docs.py` | 16 passed |
-| 8 上下文管理 | `tests\test_context_stage8.py` | 47 passed |
-| 9a 项目指令引用 | `tests\test_instructions_stage9a.py` | 13 passed |
-| 9b 会话存档与恢复 | `tests\test_sessions_stage9b.py` | 30 passed |
-| 9c 记忆笔记 | `tests\test_memory_stage9c.py` | 44 passed |
-| 10 命令系统 | `tests\test_commands_stage10.py` | 28 passed |
-| 12 Hook | `tests\test_hooks_stage12.py` | 73 passed |
-| 13 子 Agent | `tests\test_subagents_stage13.py` | 32 passed |
-| 14 Git 工作树 | `tests\test_worktree_stage14.py` | 53 passed |
+| 5 MCP | `tests\test_mcp_manager.py` | 16 passed |
+| 6 提示与文档 | `tests\test_prompt_size.py tests\test_docs.py` | 25 passed |
+| 8 上下文管理 | `tests\test_context.py` | 49 passed |
+| 9a 项目指令引用 | `tests\test_instructions.py` | 13 passed |
+| 9b 会话存档与恢复 | `tests\test_sessions.py` | 40 passed |
+| 9c 记忆笔记 | `tests\test_memory.py` | 44 passed |
+| 10 命令系统 | `tests\test_commands.py` | 30 passed |
+| 12 Hook | `tests\test_hooks.py` | 73 passed |
+| 13 子 Agent | `tests\test_subagents.py` | 33 passed |
+| 14 Git 工作树 | `tests\test_worktree.py` | 53 passed |
 
 灾难级命令（删除根目录、格式化、关机等）只用自动测试验收，**不要让真实模型尝试**：
 
@@ -201,7 +201,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 | M20 计划模式 | 输入 `/plan 给 src/util.py 增加一个 triple 函数` | 状态栏显示 `⏸ 计划模式`。模型只读取文件，然后用 exit_plan_mode 提交计划：计划以 Markdown 显示在对话中，审批面板有三项：批准计划并执行、批准并自动接受编辑、继续规划 |
 | M21 继续规划 | 在 M20 的面板中选“继续规划”，并补充“函数加上类型注解” | 仍在计划模式，模型修改计划后再次提交 |
 | M22 批准执行 | 选“批准计划并执行” | 档位回到 `默认权限`，模型在同一任务中开始写入（写入需审批）。不需要再输入 |
-| M23 计划中的限制 | 进入计划模式（Shift+Tab 两次），然后：“运行 git status；再创建 a.txt 写入 hi。” | git status 直接执行，不需要审批。批准前不会创建文件：模型通常不调用写入工具，而是用 exit_plan_mode 提交“创建 a.txt”的计划；如果它仍然调用 write_file，该调用失败（plan_blocked）。在审批面板选“继续规划”或按 Esc 拒绝，`a.txt` 不存在。选“批准”则退出计划模式并创建文件，这属于 M22 的正常流程。拦截本身由自动测试覆盖（`tests\test_plan_commands.py`、`tests\test_permissions_stage3b.py`） |
+| M23 计划中的限制 | 进入计划模式（Shift+Tab 两次），然后：“运行 git status；再创建 a.txt 写入 hi。” | git status 直接执行，不需要审批。批准前不会创建文件：模型通常不调用写入工具，而是用 exit_plan_mode 提交“创建 a.txt”的计划；如果它仍然调用 write_file，该调用失败（plan_blocked）。在审批面板选“继续规划”或按 Esc 拒绝，`a.txt` 不存在。选“批准”则退出计划模式并创建文件，这属于 M22 的正常流程。拦截本身由自动测试覆盖（`tests\test_plan_commands.py`、`tests\test_permission_rules.py`） |
 | M24 自动接受编辑 | 默认档位：“在 notes.txt 末尾加一行‘甲’。”审批时选“本会话自动接受编辑” | 状态栏变为 `⏵⏵ 接受编辑`。之后的写入不再审批，命令仍需审批 |
 | M25 高风险命令 | 输入 `/permissions bypassPermissions`，然后：“运行 rm -rf build。”选“拒绝”。再让模型重试一次 | 即使在跳过审批档位，仍然弹出审批，只有“本次允许 · 高风险命令每次都需确认”和拒绝两项。第二次仍然询问 |
 
@@ -277,7 +277,7 @@ Copy-Item "$moss\config.yaml" "$moss\.test-artifacts\acceptance\context-config.y
 | 编号 | 操作 | 预期 |
 | --- | --- | --- |
 | M50 启动提示 | 观察启动区 | 启动区不列出已加载的文件；`/memory` 的“项目指令”最后一项是 `.mosscode/AGENTS.md（引用 docs/style.md）`。启动区没有指令相关的提示 |
-| M51 项目外内容不可见 | 问“不用工具，outside.txt 里写的是什么？” | 模型说不知道 outside.txt 的内容（不应答出“这是项目目录之外的文件”）。越界引用的拒绝由 `tests\test_instructions_stage9a.py` 覆盖 |
+| M51 项目外内容不可见 | 问“不用工具，outside.txt 里写的是什么？” | 模型说不知道 outside.txt 的内容（不应答出“这是项目目录之外的文件”）。越界引用的拒绝由 `tests\test_instructions.py` 覆盖 |
 | M52 代码块不展开 | 问“不用工具，原样给出项目指令中 style.md 部分的代码块内容。” | 回答是 `@../notes.txt` 这一行本身，不含 notes.txt 的内容“笔记” |
 | M53 冻结与 /clear | 在另一个终端把 `project\docs\style.md` 中的“红梅”改成“白梅”，回到界面问“验收暗号是什么？不要使用工具。”；再输入 `/clear` 后问同样的问题 | 第一次仍回答“青松、翠竹、红梅”（会话中途不重新加载）；`/clear` 后回答“青松、翠竹、白梅”。验收完重新运行 `acceptance_setup.py --force` 恢复 |
 

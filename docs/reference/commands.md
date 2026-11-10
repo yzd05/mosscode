@@ -105,4 +105,4 @@ Command("name", "一行描述", "/name [参数]", "local", aliases=("n",), argum
 | `switch_model(name)` | 切换到指定提供商 |
 | `exit()` | 退出应用 |
 
-`choose` 用回调而不是等待返回值：Textual 的消息处理函数中等待用户输入会让界面停止响应。测试用一个记录调用的假实现（见 `tests/test_commands_stage10.py` 的 `FakeUI`），不启动界面就能测试命令逻辑。
+`choose` 用回调而不是等待返回值：Textual 的消息处理函数中等待用户输入会让界面停止响应。测试用一个记录调用的假实现（见 `tests/test_commands.py` 的 `FakeUI`），不启动界面就能测试命令逻辑。

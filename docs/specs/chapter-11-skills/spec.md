@@ -431,7 +431,7 @@ Q3、Q4、Q6 按用户的初步设计调整后确认，Q1、Q2、Q5 按推荐值
 
 | # | 内容 | 依赖 | 验证 |
 | --- | --- | --- | --- |
-| T1 | `skills` 包：`SKILL.md` 与 `tool.json` 解析（F1–F6、X1–X3）、三层扫描与覆盖（L1–L4）、白名单启动检查（W1–W3）、重新读取（L6、X10）、目录一节（A1、A2） | — | `tests/test_skills_stage11.py` 的解析与扫描部分（AC1–AC3） |
+| T1 | `skills` 包：`SKILL.md` 与 `tool.json` 解析（F1–F6、X1–X3）、三层扫描与覆盖（L1–L4）、白名单启动检查（W1–W3）、重新读取（L6、X10）、目录一节（A1、A2） | — | `tests/test_skills.py` 的解析与扫描部分（AC1–AC3） |
 | T2 | 命令：`skill` 类命令、`with_skills`、`dispatch` 分支（inline）、`/skills`、`/help` 与补全的 `[skill]`；TUI 和 `-p` 使用每次运行的命令表 | T1 | `FakeUI` 测试、`tests/test_cli.py`（AC4、AC5） |
 | T3 | 两阶段加载：`load_skill`、`ActiveSkills`、`active-skills` 补充与 `PREFIX_KINDS`、估算、`/clear`、`skill_dirs`、调用时检查（W4） | T1 | 提供商请求结构测试、计划模式测试（AC6–AC8） |
 | T4 | 专属工具：`SkillTool`（校验、子进程、编码、超时、错误）、`ToolRegistry.unregister`、权限（X7）、注册与移除（X8、X9） | T1 | 用测试脚本的工具测试与权限测试（AC9–AC11） |
