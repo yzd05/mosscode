@@ -145,6 +145,14 @@ def todo_record(items, keep: int) -> dict:
     return {"type": "todo", "time": _now(), "keep": keep, "todos": [item.to_json() for item in items]}
 
 
+GOAL_EVENTS = frozenset({"set", "cleared", "achieved", "impossible"})
+
+
+def goal_record(event: str, condition: str, reason: str = "") -> dict:
+    """/goal: event is set, cleared, achieved or impossible; the latest record says whether a goal is still open."""
+    return {"type": "goal", "time": _now(), "event": event, "condition": condition, "reason": reason}
+
+
 def provider_record(name: str, protocol: str, model: str) -> dict:
     """Earlier messages lose their native data, as in a /model switch."""
     return {"type": "provider", "time": _now(), "name": name, "protocol": protocol, "model": model}
@@ -425,6 +433,7 @@ class Restored:
     snapshots: tuple[Snapshot, ...] = ()  # File checkpoints in record order.
     marks: dict[str, int] = field(default_factory=dict)  # Message id -> snapshots taken before it was sent.
     todos: tuple = ()  # The main agent's latest checklist (TodoItem).
+    goal: str | None = None  # The condition of a goal set and not yet ended.
 
 
 def _strip(history: Sequence[Message]) -> list[Message]:
@@ -477,6 +486,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     snapshots: list[Snapshot] = []
     marks: dict[str, int] = {}
     todos: list[tuple[int, tuple]] = []  # (keep, items) per change, so rewinds can step back.
+    goal: str | None = None
     images, lost = path.with_suffix("") / "images", []
     with path.open("rb") as stream:
         for raw in stream:
@@ -527,6 +537,11 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     if type(keep) is not int or keep < 0:
                         raise ValueError("keep 不合法")
                     todos.append((keep, items_from_json(record.get("todos"))))
+                elif kind == "goal":
+                    event, condition = record.get("event"), record.get("condition")
+                    if event not in GOAL_EVENTS or not isinstance(condition, str) or not condition:
+                        raise ValueError("goal 记录不合法")
+                    goal = condition if event == "set" else None
                 elif kind != "session":
                     pass  # A later version's record type.
             except (ValueError, TypeError, KeyError, UnicodeError):
@@ -560,6 +575,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
         tuple(snapshots),
         marks,
         todos[-1][1] if todos else (),
+        goal,
     )
 
 

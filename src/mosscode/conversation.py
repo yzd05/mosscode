@@ -14,6 +14,18 @@ from .agents.runtime import AUTO_BACKGROUND, GLOBAL_BAN, MAX_BACKGROUND, SubAgen
 from .checkpoints import Checkpoints, Restoration
 from .config import ProviderConfig
 from .context import ContextBudget, estimate_text
+from .goal import (
+    DEFAULT_MAX_TURNS,
+    FAILURE_LIMIT,
+    IDLE_LIMIT,
+    Goal,
+    GoalStep,
+    Verdict,
+    check_condition,
+    continue_prompt,
+    evaluate,
+    goal_reminder,
+)
 from .images import ImageRef, ProcessedImage, image_ref
 from .memory import INDEX_TOKENS, MemoryStore
 from .memory_extract import MemoryExtractor
@@ -49,6 +61,7 @@ from .session import (
     Transcript,
     checkpoint_record,
     find_session,
+    goal_record,
     list_sessions,
     load_session,
     provider_record,
@@ -138,6 +151,8 @@ class Conversation:
         teammate_mode: str = "in-process",
         team_launch: dict | None = None,
         coordinator: bool = False,
+        goal_max_turns: int = DEFAULT_MAX_TURNS,
+        goal_provider: Provider | None = None,
     ):
         self.provider, self.system, self.registry = provider, system, registry
         # The worktree manager is built on first use; it needs a git repository.
@@ -179,6 +194,11 @@ class Conversation:
             if registry is not None:
                 registry.hooks = hooks
         self._use_session(session)
+        # /goal: one per session; the evaluator uses goal_provider, else memory_provider, else the current one.
+        self.goal: Goal | None = None
+        self.last_goal: tuple[str, str, str] | None = None  # (condition, event, reason) of the latest ended goal.
+        self.goal_max_turns, self.goal_provider = goal_max_turns, goal_provider
+        self._goal_turn: tuple[str, bool] | None = None  # (how the latest turn ended, whether it called tools).
         # Notes are injected only when context is loaded (context_root); None turns memory off.
         self.memory = memory
         self.memory_provider = memory_provider
@@ -501,6 +521,8 @@ class Conversation:
         if self._busy:
             raise ProviderError("当前任务正在运行，不能清空会话。")
         await self.tasks.reset()  # Tasks belong to the session.
+        self.clear_goal()  # Recorded in the session being left.
+        self.last_goal = None
         await self._session_end("clear")
         self._agent.clear()  # Active skills too.
         self._drop_skills()
@@ -855,6 +877,11 @@ class Conversation:
         self._agent.restore(restored.history, gap_reminder(restored.last_time))
         if self.registry is not None:
             self.registry.todos.restore(restored.todos)
+        self.goal, self.last_goal, self._goal_turn = None, None, None
+        if restored.goal is not None:
+            # Counted afresh and never started on its own: the user's next message or /goal resumes it.
+            self.goal = Goal(restored.goal, self.goal_max_turns, self._goal_tokens(), paused="恢复的会话")
+        self._sync_goal()
         self._drop_skills()
         self._rewind()
         notices = []
@@ -869,6 +896,8 @@ class Conversation:
             notices.append(f"{restored.lost_images} 张图片的文件已丢失，已改为文字说明。")
         if restored.interrupted:
             notices.append(f"{restored.interrupted} 个工具调用在中断时没有结果，已标记为“会话中断”；模型会先检查状态。")
+        if self.goal is not None:
+            notices.append("会话有未完成的目标，已暂停：发送消息或输入 /goal 继续，/goal clear 清除。")
         if restored.unanswered:
             notices.append(f"最后 {len(restored.unanswered)} 条消息没有得到回复，已放回输入框，可以修改后重新发送。")
         await self._session_start("resume")
@@ -991,6 +1020,8 @@ class Conversation:
             await self.provider.close()
             if self.memory_provider is not None and self.memory_provider is not self.provider:
                 await self.memory_provider.close()
+            if self.goal_provider is not None and self.goal_provider not in (self.provider, self.memory_provider):
+                await self.goal_provider.close()
 
     async def reply(
         self,
@@ -1030,6 +1061,9 @@ class Conversation:
         images: Mapping[str, ProcessedImage] | None = None,
     ):
         await self.start()
+        self._goal_turn = None
+        if synthetic is None:
+            self.resume_goal()  # The user's own message: automatic turns run again afterwards.
         command = command or (f"/{fork.skill.name}" if fork else None)
         if self.hooks is not None:
             if self._busy:
@@ -1058,29 +1092,133 @@ class Conversation:
                 attachments=attached.message if attached is not None else None,
             )
         )
-        stopped = None
+        stopped, tools = None, False
         try:
             async with aclosing(run) as stream:
                 async for event in stream:
                     if isinstance(event, RunStopped):
                         stopped = event
+                    elif isinstance(event, ToolProgress):
+                        tools = True
                     self._observe(event)
                     yield event
                     for notice in self._drain():
                         yield notice
         except ProviderError as exc:
+            self._goal_turn = ("error", tools)
             self._agent.turn_notes = ()
             await self._turn_end("error", str(exc))
             raise
         except BaseException:  # Cancelled, or closed by the consumer.
+            self._goal_turn = ("cancelled", tools)
             self._agent.turn_notes = ()
             self._turn_end_later("cancelled")
             raise
+        self._goal_turn = (stopped.reason if stopped else "completed", tools)
         self._agent.turn_notes = ()
         if self.hooks is not None:
             await self._turn_end(stopped.reason if stopped else "completed", stopped.notice if stopped else "")
             for notice in self._drain():
                 yield notice
+
+    # Goal -------------------------------------------------------------------------------------
+
+    def _goal_tokens(self) -> int:
+        usage = self._agent.total_usage
+        return usage.input_tokens + usage.output_tokens
+
+    def goal_tokens(self) -> int:
+        """Tokens spent since the goal was set, its evaluations included."""
+        return self._goal_tokens() - self.goal.tokens if self.goal is not None else 0
+
+    def _sync_goal(self) -> None:
+        self._agent.goal_note = goal_reminder(self.goal)
+
+    def set_goal(self, condition: str) -> Goal:
+        """Replaces any goal; ValueError for an empty or too long condition."""
+        condition = check_condition(condition)
+        if self._busy:
+            raise ProviderError("当前任务正在运行，不能设置目标。")
+        self.clear_goal()
+        self.goal = Goal(condition, self.goal_max_turns, self._goal_tokens())
+        self._record(goal_record("set", condition))
+        self._sync_goal()
+        return self.goal
+
+    def clear_goal(self, event: str = "cleared", reason: str = "") -> Goal | None:
+        goal, self.goal = self.goal, None
+        if goal is not None:
+            self.last_goal = (goal.condition, event, reason)
+            self._record(goal_record(event, goal.condition, reason))
+        self._sync_goal()
+        return goal
+
+    def pause_goal(self, reason: str) -> GoalStep:
+        goal = self.goal
+        if goal is None:
+            return GoalStep("none")
+        goal.paused = reason
+        return GoalStep("paused", f"◎ 目标已暂停：{reason}。发送消息或输入 /goal 继续，/goal clear 清除。")
+
+    def resume_goal(self) -> bool:
+        """After a pause; a goal paused at its turn limit gets as many turns again."""
+        goal = self.goal
+        if goal is None or not goal.paused:
+            return False
+        if goal.turns >= goal.budget:
+            goal.budget = goal.turns + self.goal_max_turns
+        goal.paused, goal.idle, goal.failures = "", 0, 0
+        self._sync_goal()
+        return True
+
+    async def goal_after_turn(self) -> GoalStep:
+        """Judge the goal after a turn: another turn, the end of the goal, a pause, or a wait for background work."""
+        goal, turn, self._goal_turn = self.goal, self._goal_turn, None
+        if goal is None or turn is None or goal.paused:
+            return GoalStep("none")
+        reason, tools = turn
+        goal.turns += 1
+        goal.idle = 0 if tools else goal.idle + 1
+        stops = {
+            "cancelled": "本轮已取消",
+            "error": "本轮出错",
+            "max_iterations": "本轮达到最大迭代轮数",
+            "max_tokens": "回复达到输出上限被截断",
+            "unknown_tools": "模型连续调用不存在的工具",
+        }
+        if reason != "completed":
+            return self.pause_goal(stops.get(reason, "本轮没有正常结束"))
+        if self.tasks.running():
+            # Their notification starts a turn of its own; the goal is judged after that one.
+            return GoalStep("deferred")
+        provider = self.goal_provider or self.memory_provider or self.provider
+        try:
+            verdict = await evaluate(provider, goal.condition, self._agent.history, self._agent._usage)
+        except Exception as exc:  # A failed or unreadable evaluation counts as not met.
+            if self.goal is not goal:
+                return GoalStep("none")
+            goal.failures += 1
+            if goal.failures >= FAILURE_LIMIT:
+                return self.pause_goal(f"连续 {FAILURE_LIMIT} 次无法判断目标是否达成（{exc}）")
+            verdict = Verdict("not_met", "")
+        else:
+            goal.failures = 0
+        if self.goal is not goal:  # Cleared or replaced while the evaluation ran.
+            return GoalStep("none")
+        if verdict.verdict == "met":
+            self.clear_goal("achieved", verdict.reason)
+            return GoalStep("met", "◎ 目标已达成" + (f"：{verdict.reason}" if verdict.reason else ""))
+        if verdict.verdict == "impossible":
+            self.clear_goal("impossible", verdict.reason)
+            return GoalStep("impossible", f"◎ 目标无法达成，已清除：{verdict.reason or '没有给出原因'}")
+        goal.reason = verdict.reason
+        self._sync_goal()
+        if goal.idle >= IDLE_LIMIT:
+            return self.pause_goal(f"连续 {IDLE_LIMIT} 轮没有调用工具")
+        if goal.turns >= goal.budget:
+            return self.pause_goal(f"已自动运行 {goal.turns} 轮，达到上限")
+        note = "◎ 目标尚未达成" + (f"：{verdict.reason}" if verdict.reason else "") + "，继续下一轮"
+        return GoalStep("continue", note, continue_prompt(verdict.reason))
 
     # Fork skills ------------------------------------------------------------------------
 

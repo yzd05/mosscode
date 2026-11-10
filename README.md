@@ -69,6 +69,8 @@ providers:
 | `team_max_members` | `4` | 每个团队的成员上限，1–8 |
 | `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE=1`，见 [Agent 团队](docs/reference/teams.md#协调者模式) |
 | `todo_tool` | `true` | 提供 `todo_write`，模型在多步任务中维护任务清单，显示在输入框上方，见 [任务清单](docs/reference/tools.md#任务清单) |
+| `goal_max_turns` | `30` | `/goal` 自动续跑多少轮后暂停，1–1000；继续后再给同样多的轮数，见 [目标](docs/reference/commands.md#目标) |
+| `goal_provider` | `memory_provider` 或当前 Provider | 判断 `/goal` 是否达成使用的 Provider 名称，可以指定较便宜的模型 |
 | `claude_directories` | `false` | 另外读取 Claude Code 的 `.claude/skills/`、`.claude/agents/`（用户级和项目级），见 [Skill](docs/reference/skills.md#存放位置) |
 | `sandbox` | `mode: off` | 命令沙箱：`mode: on` 时模型的命令在系统隔离中运行（Linux、macOS、Windows），见 [命令沙箱](docs/reference/sandbox.md) |
 | `web_search` | 无 | 搜索服务，如 `{provider: tavily, api_key_env: TAVILY_API_KEY}`；未配置时不提供搜索，见 [工具与 Agent Loop](docs/reference/tools.md#web_search) |

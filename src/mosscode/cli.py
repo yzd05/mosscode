@@ -632,6 +632,13 @@ def run(args: argparse.Namespace) -> None:
             teammate_mode=settings.teammate_mode,
             team_launch={"config": settings.source, "provider": config.name, "digest": settings.project_digest},
             coordinator=coordinator,
+            goal_max_turns=settings.goal_max_turns,
+            # -p has no /goal; a provider of its own only where it can be used.
+            goal_provider=(
+                create_provider(settings.select(settings.goal_provider))
+                if args.prompt is None and settings.goal_provider
+                else None
+            ),
             **_memory_options(settings, interactive=args.prompt is None),
         )
         resume = args.resume

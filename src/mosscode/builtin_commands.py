@@ -14,6 +14,7 @@ from .agents.runtime import GLOBAL_BAN, WORKSPACE_TOOLS, effective_mode, stats
 from .agents.tasks import ORIGIN_LABELS, STATUS_LABELS
 from .appearance import KEY_HELP
 from .commands import Command, CommandContext, CommandRegistry, Parsed, argument_problem
+from .goal import GOAL, MAX_CONDITION, continue_prompt, elapsed_text
 from .hooks.config import SOURCE_LABELS as HOOK_SOURCES
 from .memory import SCOPE_LABELS
 from .messages import ProviderError
@@ -21,7 +22,7 @@ from .permissions import MODE_BADGES, MODE_LABELS, MODES
 from .reasoning import DEFAULT, LEVEL_LABELS, LEVELS, Unsupported, thinking_options
 from .skills import ForkRequest, source_label
 from .todo import render as render_todos
-from .usage import cost_text
+from .usage import approx_tokens, cost_text
 
 USAGE_WIDTH = 22
 
@@ -1283,6 +1284,72 @@ async def _todo(ctx: CommandContext, argument: str) -> None:
     await ctx.ui.note(todo_report(ctx.conversation))
 
 
+# Goal --------------------------------------------------------------------------------
+
+GOAL_CLEAR_WORDS = frozenset({"clear", "stop", "off", "cancel", "清除"})
+GOAL_ENDED = {"achieved": "已达成", "impossible": "无法达成", "cleared": "已清除"}
+GOAL_USAGE = f"用法：/goal <条件>（最多 {MAX_CONDITION} 字）设置目标并开始 · /goal 查看或继续 · /goal clear 清除"
+
+
+def goal_report(conversation) -> str:
+    goal = getattr(conversation, "goal", None)
+    if goal is None:
+        last = getattr(conversation, "last_goal", None)
+        if last is None:
+            return "当前没有目标。" + GOAL_USAGE
+        condition, event, reason = last
+        lines = [f"当前没有目标。最近一次目标{GOAL_ENDED.get(event, event)}：{condition}"]
+        if reason:
+            lines.append(f"  理由：{reason}")
+        return "\n".join(lines)
+    from time import monotonic
+
+    state = f"已暂停（{goal.paused}）" if goal.paused else "进行中"
+    lines = [
+        f"◎ 目标{state}",
+        f"  条件：{goal.condition}",
+        f"  已运行 {elapsed_text(monotonic() - goal.started)} · {goal.turns}/{goal.budget} 轮"
+        f" · {approx_tokens(conversation.goal_tokens())} Token",
+    ]
+    if goal.reason:
+        lines.append(f"  最近一次判断：尚未达成。{goal.reason}")
+    return "\n".join(lines)
+
+
+def _goal_reads(argument: str) -> bool:
+    """Showing and clearing are safe during a run; setting a goal waits."""
+    return not argument.strip() or argument.strip().lower() in GOAL_CLEAR_WORDS
+
+
+async def _goal(ctx: CommandContext, argument: str) -> None:
+    conversation = ctx.conversation
+    argument = argument.strip()
+    if argument.lower() in GOAL_CLEAR_WORDS:
+        goal = conversation.clear_goal()
+        ctx.ui.refresh_status()
+        await ctx.ui.note("└ 已清除目标。" if goal is not None else "└ 当前没有目标。")
+        return
+    if not argument:
+        goal = conversation.goal
+        await ctx.ui.note(goal_report(conversation))
+        if goal is not None and conversation.resume_goal():
+            ctx.ui.refresh_status()
+            await ctx.ui.note("└ 已继续目标。")
+            await ctx.ui.submit(continue_prompt(goal.reason), synthetic=GOAL)
+        return
+    try:
+        conversation.set_goal(argument)
+    except (ValueError, ProviderError) as exc:
+        await ctx.ui.note(f"└ {exc}")
+        return
+    ctx.ui.refresh_status()
+    await ctx.ui.note(
+        f"└ 已设置目标：每轮结束后判断是否达成，未达成时自动继续（最多 {conversation.goal.budget} 轮）。"
+        "Esc 暂停，/goal clear 清除。"
+    )
+    await ctx.ui.submit(argument, command=f"/goal {argument}")
+
+
 # Worktrees ---------------------------------------------------------------------------
 
 WORKTREE_USAGE = (
@@ -1665,6 +1732,18 @@ BUILTIN = CommandRegistry(
             while_running=True,
         ),
         Command("todo", "查看模型当前的完整任务清单", "/todo", "local", handler=_todo, while_running=True),
+        Command(
+            "goal",
+            "设置目标，自动续跑到达成；不带参数查看或继续",
+            "/goal [条件|clear]",
+            "local",
+            argument="optional",
+            argument_hint="[条件|clear]",
+            handler=_goal,
+            while_running=_goal_reads,
+            details="/goal <条件>：设置目标并立即开始，每轮结束后另一次模型调用判断是否达成，未达成时自动继续\n"
+            "/goal：查看目标；目标已暂停时继续\n/goal clear（stop、off）：清除目标；/clear 也会清除",
+        ),
         Command(
             "worktree",
             "查看、创建、删除 git 工作树",

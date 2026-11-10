@@ -174,6 +174,7 @@ class AgentLoop:
         self.hooks = None
         self.hook_context: Supplement | None = None  # session_start output, cached prefix.
         self.turn_notes: tuple[tuple[str, str], ...] = ()  # turn_start output, every request this turn.
+        self.goal_note: Supplement | None = None  # The /goal condition, set by the conversation.
         if registry is not None:
             registry.todos.on_change = lambda items, mark: self._commit(todo_record(items, mark))
 
@@ -283,7 +284,9 @@ class AgentLoop:
         definitions = self._definitions()
         todos = todo_reminder(self.registry.todos if self.registry is not None else None)
         extra = tuple(
-            item for item in (reminder, self._gap, todos, hook_notification((*self.turn_notes, *notes))) if item
+            item
+            for item in (reminder, self._gap, todos, self.goal_note, hook_notification((*self.turn_notes, *notes)))
+            if item
         )
         self._gap = None  # Never part of the history or the transcript; sent with the first request only.
         prefix = tuple(item for item in (env, self._active(), self.hook_context) if item)

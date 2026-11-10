@@ -53,7 +53,10 @@ class FakeUI:
     async def note(self, text, style=None):
         self.notes.append(text)
 
-    async def submit(self, prompt, *, command=None, fork=None):
+    async def submit(self, prompt, *, command=None, fork=None, synthetic=None):
+        if synthetic is not None:
+            self.calls.append(("submit", prompt, command, synthetic))
+            return
         self.calls.append(("submit", prompt, command) if fork is None else ("submit", prompt, command, fork))
 
     def refresh_status(self):
@@ -155,6 +158,7 @@ def test_builtin_registry_has_twenty_four_visible_commands():
         "plugins",
         "tasks",
         "todo",
+        "goal",
         "worktree",
         "team",
         "exit",
@@ -184,9 +188,9 @@ def test_completion(tmp_path):
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
     conv = Conversation(FakeProvider(), registry=tools(tmp_path), memory=store)
     ctx = context(conv, Settings((ProviderConfig("only", "anthropic-messages", "m"),), "only"))
-    assert len(BUILTIN.matches(ctx, "/")) == 24
+    assert len(BUILTIN.matches(ctx, "/")) == 25
     hidden = CommandRegistry([*BUILTIN.visible(), Command("debug", "x", "/debug", "local", hidden=True, handler=noop)])
-    assert len(hidden.matches(ctx, "/")) == 24 and hidden.get("/debug") is not None
+    assert len(hidden.matches(ctx, "/")) == 25 and hidden.get("/debug") is not None
     assert [tuple(h) for h in BUILTIN.matches(ctx, "/q")] == [("/exit", "退出 MossCode（别名 /quit）", "/exit")]
     assert [h.value for h in BUILTIN.matches(ctx, "/permissions ")] == [
         "/permissions default",

@@ -54,6 +54,7 @@ from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input
 from .config import ConfigError, ProviderConfig, Settings
 from .conversation import Conversation, MemoryUpdated, Notice, Resumed
 from .coordinator import BADGE as COORDINATOR_BADGE
+from .goal import GOAL, GoalStep, elapsed_text
 from .images import ImageError, ImageRef, ProcessedImage, load_image, size_label
 from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, MemberList, MemberPanel, MemberView
 from .memory import SCOPE_LABELS
@@ -963,6 +964,8 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
             rows.append(Text(attached_line(mentioned(message)), style=PARAMETER_COLOR))
         elif message.synthetic == SHELL:
             rows.append(shell_heading(ran(message)))
+        elif message.synthetic == GOAL:
+            rows.append(Text("◎ 继续目标", style=PARAMETER_COLOR))
         elif message.role == "user":
             notes = [
                 f"{block.text} · {block.image.width}×{block.image.height} · {size_label(block.image.size)}"
@@ -1284,6 +1287,7 @@ class MossCodeApp(TerminalApp[None]):
         self._context_share: tuple[str, str, int, bool] | None = None
         self._agent_rows: dict[str, ToolEntry] = {}  # Agent tool rows by call id.
         self._notify_waiting = False  # A notification turn waits for the running task.
+        self._goal_checking = False  # The /goal evaluation after a turn is running as _reply_task.
         self._announce = Announcer(self._task_note)
         # The member panel's rows, read off the loop, and the member view.
         self._member_rows: list[MemberRow] = []
@@ -1659,6 +1663,11 @@ class MossCodeApp(TerminalApp[None]):
         if (thinking := getattr(self.conversation, "thinking", None)) is not None:
             unsupported = self.conversation.thinking_problem() is not None
             text.append(f" · 思考 {thinking}" + ("（不支持）" if unsupported else ""))
+        if (goal := getattr(self.conversation, "goal", None)) is not None:
+            if goal.paused:
+                text.append(" · ◎ 目标已暂停", style=OPERATION_COLOR)
+            else:
+                text.append(f" · ◎ 目标 {elapsed_text(monotonic() - goal.started)}", style=TOOL_SUCCESS_COLOR)
         if note:
             stage, separator, rest = note.partition(" · ")
             stage_color = (
@@ -1741,6 +1750,10 @@ class MossCodeApp(TerminalApp[None]):
             if monotonic() < self._hint_until:
                 return
             self._status(f"执行命令中 · {monotonic() - self._shell_row.started:.1f}s · Esc 取消")
+            return
+        if self._generating and self._goal_checking:
+            if monotonic() >= self._hint_until:
+                self._status(f"判断目标是否达成 · {monotonic() - self.started:.1f}s · Esc 暂停目标")
             return
         if self._generating and self._compacting is not None:
             if self._compact_row is not None:
@@ -2049,7 +2062,7 @@ class MossCodeApp(TerminalApp[None]):
                 # Commands change state the running task depends on; keep the text for later.
                 self._hint_until = monotonic() + 2
                 self._status(
-                    "运行中只能排队消息和使用 /tasks、/todo、/status、/worktree list，其他命令请在完成后发送 · Esc 取消"
+                    "运行中只能排队消息和使用 /tasks、/todo、/goal、/status、/worktree list，其他命令请在完成后发送 · Esc 取消"
                 )
                 return
             field.remember(prompt)
@@ -2079,6 +2092,7 @@ class MossCodeApp(TerminalApp[None]):
         fork=None,
         notify: bool = False,
         images: dict[str, ProcessedImage] | None = None,
+        synthetic: str | None = None,
     ) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         reply = ChatEntry("MossCode")
@@ -2093,7 +2107,7 @@ class MossCodeApp(TerminalApp[None]):
         self._generating = True
         self._status("连接中…")
         await self._commit_ready_transcript()
-        self._reply_task = asyncio.create_task(self._respond(prompt, reply, command, fork, notify, images))
+        self._reply_task = asyncio.create_task(self._respond(prompt, reply, command, fork, notify, images, synthetic))
 
     async def _start_shell(self, command: str, *, keep: bool) -> None:
         chat = self.query_one("#chat", VerticalScroll)
@@ -2309,8 +2323,10 @@ class MossCodeApp(TerminalApp[None]):
     async def note(self, text: str, style: str | None = None) -> None:
         await self._local_note(text, style)
 
-    async def submit(self, prompt: str, *, command: str | None = None, fork=None) -> None:
-        await self._start_request(prompt, show_user=False, command=command, fork=fork)
+    async def submit(self, prompt: str, *, command: str | None = None, fork=None, synthetic: str | None = None) -> None:
+        if synthetic is not None and self._task_running:
+            return  # A resumed goal continues when the running turn ends.
+        await self._start_request(prompt, show_user=False, command=command, fork=fork, synthetic=synthetic)
 
     def refresh_status(self) -> None:
         self._usage = self.conversation.total_usage
@@ -2659,6 +2675,7 @@ class MossCodeApp(TerminalApp[None]):
         fork=None,
         notify: bool = False,
         images: dict[str, ProcessedImage] | None = None,
+        synthetic: str | None = None,
     ) -> None:
         chat = self.query_one("#chat", VerticalScroll)
         tool_rows: dict[str, ToolEntry] = {}
@@ -2675,7 +2692,7 @@ class MossCodeApp(TerminalApp[None]):
             turn = (
                 self.conversation.notify()
                 if notify
-                else self.conversation.reply(prompt, command=command, fork=fork, images=images)
+                else self.conversation.reply(prompt, command=command, fork=fork, images=images, synthetic=synthetic)
             )
             async with aclosing(turn) as stream:
                 async for event in stream:
@@ -2816,10 +2833,49 @@ class MossCodeApp(TerminalApp[None]):
                 elif queued:
                     # Stopped, cancelled or failed: never resend automatically.
                     field.value = "\n\n".join((*queued, field.value) if field.value.strip() else queued)
+                if getattr(self.conversation, "goal", None) is not None and not (queued and completed):
+                    self.call_later(self._start_goal_check)
                 self._refresh_queue()
                 notices, self._mcp_notices = self._mcp_notices, []
                 for notice in notices:
                     await self._local_note("└ " + notice)
+
+    async def _start_goal_check(self) -> None:
+        """After a turn while a goal is set: judge it, then continue, end or pause."""
+        if self._closing or self._task_running or getattr(self.conversation, "goal", None) is None:
+            return
+        self.started = monotonic()
+        self._generating = self._goal_checking = True
+        self._tick()
+        self._reply_task = asyncio.create_task(self._check_goal())
+
+    async def _check_goal(self) -> None:
+        step = GoalStep("none")
+        try:
+            step = await self.conversation.goal_after_turn()
+        except asyncio.CancelledError:
+            if self._closing:
+                raise
+            step = self.conversation.pause_goal("判断时按了 Esc")
+        finally:
+            self._generating = self._goal_checking = False
+        if self._closing:
+            return
+        if step.note:
+            style = (
+                TOOL_SUCCESS_COLOR if step.action == "met" else OPERATION_COLOR if step.action != "continue" else None
+            )
+            await self._local_note(step.note, style)
+        self._status("")
+        field = self.query_one("#prompt", PromptArea)
+        queued = self.conversation.take_queued()
+        if queued:
+            # Typed while the goal was judged: the user's message goes first and resumes a paused goal.
+            text = "\n\n".join(queued)
+            self.call_later(self._start_request, text, shown=queued, images=field.images_in(text))
+            self._refresh_queue()
+        elif step.action == "continue" and not self.conversation.notifications:
+            self.call_later(self._start_request, step.prompt, show_user=False, synthetic=GOAL)
 
     # Team members -------------------------------------------------------
 

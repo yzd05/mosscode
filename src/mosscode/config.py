@@ -167,6 +167,8 @@ class Settings:
     agent_max_background: int = 4  # Running background tasks at most.
     command_max_background: int = 8  # Running background commands at most; 0 turns them off.
     todo_tool: bool = True  # Offer todo_write, the model's task checklist.
+    goal_max_turns: int = 30  # /goal: automatic turns before it pauses; resuming allows as many again.
+    goal_provider: str | None = None  # /goal's evaluator; None uses memory_provider, then the current provider.
     worktree_links: tuple[str, ...] = ()  # Paths relative to the repository linked into each worktree.
     worktree_stale_hours: float = 24.0  # Unused sub-agent worktrees older than this go; 0 never.
     team_max_members: int = 4  # Members of one team at most (1–8).
@@ -604,6 +606,8 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         "agent_max_background",
         "command_max_background",
         "todo_tool",
+        "goal_max_turns",
+        "goal_provider",
         "worktree_links",
         "worktree_stale_hours",
         "team_max_members",
@@ -636,6 +640,12 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     memory_provider = raw.get("memory_provider")
     if memory_provider is not None and memory_provider not in {p.name for p in providers}:
         raise ConfigError("memory_provider 必须是已配置的 Provider 名称。")
+    goal_turns = raw.get("goal_max_turns", Settings.goal_max_turns)
+    if type(goal_turns) is not int or not 1 <= goal_turns <= 1000:
+        raise ConfigError("goal_max_turns 需为 1–1000 之间的整数。")
+    goal_provider = raw.get("goal_provider")
+    if goal_provider is not None and goal_provider not in {p.name for p in providers}:
+        raise ConfigError("goal_provider 必须是已配置的 Provider 名称。")
     auto_background = raw.get("agent_auto_background", Settings.agent_auto_background)
     if type(auto_background) not in {int, float} or not 0 <= auto_background <= 3600:
         raise ConfigError("agent_auto_background 需为 0–3600 之间的秒数（0 表示不自动转入后台）。")
@@ -679,6 +689,8 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         Path(path),
         shell.strip(),
         memory_provider=memory_provider,
+        goal_max_turns=goal_turns,
+        goal_provider=goal_provider,
         agent_auto_background=float(auto_background),
         agent_max_background=max_background,
         command_max_background=commands,
