@@ -105,7 +105,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 
 | 编号 | 操作（在验收项目中） | 预期 |
 | --- | --- | --- |
-| O1 配置查找 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --list-providers` | 退出码 1。错误按顺序列出查找过的三个路径：`project\.mosscode\config.yaml`、`project\config.yaml`、`~\.mosscode\config.yaml` |
+| O1 配置查找 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --list-providers` | 验收项目没有 `.mosscode\config.yaml`，所以用用户配置 `~\.mosscode\config.yaml`：列出其中的 Provider，退出码 0。没有用户配置时退出码 1，错误按顺序列出查找过的两个路径：`project\.mosscode\config.yaml`、`~\.mosscode\config.yaml`（工作目录下的 `config.yaml` 不查找） |
 | O2 strict 已删除 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config "$moss\config.yaml" --permission-mode strict -p hi` | 参数错误“权限模式 strict 已移除，请改用 default。”，退出码 2，不发请求 |
 | O3 重试与启动 | `& "$moss\.venv\Scripts\python.exe" -m mosscode --config ..\offline-config.yaml -p 你好` | stderr 依次出现：<br>1. 没有启动提示：不列出已加载的文件，没有指令、MCP 或 context_window 提示，也没有“已连接”提示；<br>2. `连接中断，约 1 秒后重试（1/2）`、`约 2 秒后重试（2/2）`，等待时间带抖动；<br>3. 最后是“连接中断或无法连接…”，退出码 1 |
 | O4 JSON 输出 | 同上，加 `--output-format json` | stdout 是一个 JSON 对象，`"subtype": "error"`、`"is_error": true`、`"model": "offline-test"`，退出码 1 |
@@ -124,7 +124,7 @@ pytest 的界面测试由 Textual 直接把按键交给应用，不经过 Window
 
 | 编号 | 操作 | 预期 |
 | --- | --- | --- |
-| U1 不阻塞启动 | 启动后立即输入文字 | 输入框立刻可用。启动区没有任何提示（只显示问题，验收项目没有问题），不列出已加载的文件。状态栏短暂显示 `MCP 连接中 n/2`，两个 Server 就绪后标记消失，不出现“已连接”提示 |
+| U1 不阻塞启动 | 启动后立即输入文字 | 输入框立刻可用。启动区没有任何提示（只显示问题，验收项目没有问题），不列出已加载的文件；例外是更新后第一次在沙箱关闭时启动界面，会有一条“命令沙箱默认关闭…”提示，只出现一次（这之前带 `--sandbox` 或 `--no-sandbox` 启动过界面的，不再出现）。状态栏短暂显示 `MCP 连接中 n/2`，两个 Server 就绪后标记消失，不出现“已连接”提示 |
 | U2 状态栏 | 观察空闲时的状态栏（窗口宽度 ≥ 80 列） | 最前面是 `默认权限 (Shift+Tab 切换)`，随后是模型名 `offline-test` |
 | U3 档位切换 | 连按 Shift+Tab | 依次为 `⏵⏵ 接受编辑` → `⏸ 计划模式` → `默认权限`。输入 `/permissions bypassPermissions` 后显示 `⏵⏵ 跳过审批`，再按 Shift+Tab 回到 `默认权限` |
 | U4 /mcp | 输入 `/mcp` | 列出 2 个 Server：fromjson、demo 都已连接（各 4 个工具），没有配置问题。输出中不含命令行或环境变量 |

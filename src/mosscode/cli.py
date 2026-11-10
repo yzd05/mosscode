@@ -52,6 +52,7 @@ from .plugins import Installed, project_plugins, with_project
 from .plugins import installed as installed_plugins
 from .providers import create_provider
 from .sandbox import configure as configure_sandbox
+from .sandbox import first_start_hint
 from .session import Session, prune_all
 from .skills import ForkRequest, SkillCatalog
 from .tools import create_default_registry
@@ -591,6 +592,8 @@ def run(args: argparse.Namespace) -> None:
         if coordinator_notice:
             notices += (coordinator_notice,)
         notices += tuple(filter(None, (project_notice(settings),))) + tuple(sandbox.notices())
+        if args.prompt is None and (hint := first_start_hint(sandbox, args.sandbox)):
+            notices += (hint,)
         notices += tuple(
             filter(None, (load_catalog().problem, config.window_note(), plaintext_notice(settings, Path.cwd())))
         )

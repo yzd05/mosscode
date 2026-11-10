@@ -569,3 +569,67 @@ async def test_mxc_removes_protected_paths_a_command_created(tmp_path, isolated_
     assert not result.is_error, result.output
     assert not (root / ".mosscode").exists() and not (root / ".mcp.json").exists()
     assert "已删除" in result.output and len(sandbox.current().events) == 2
+
+
+# The first-start hint -----------------------------------------------------------------------------
+
+
+def test_the_first_start_hint_is_shown_once(isolated_home):
+    box = sandbox.Sandbox(SandboxConfig())
+    assert sandbox.first_start_hint(box, None) == sandbox.FIRST_START_HINT
+    assert (isolated_home / ".mosscode" / sandbox.HINT_MARKER).exists()
+    assert sandbox.first_start_hint(box, None) is None
+
+
+@pytest.mark.parametrize("mode,override", [("on", None), ("off", True), ("off", False), ("on", False)])
+def test_someone_who_chose_a_sandbox_setting_is_not_told(mode, override):
+    box = sandbox.Sandbox(SandboxConfig(mode=mode), enabled=override)
+    assert sandbox.first_start_hint(box, override) is None
+    # Counted as seen: turning the sandbox off later does not bring the hint back.
+    assert sandbox.first_start_hint(sandbox.Sandbox(SandboxConfig()), None) is None
+
+
+def test_the_hint_is_not_shown_when_it_cannot_be_remembered(isolated_home):
+    (isolated_home / ".mosscode").write_text("not a folder", encoding="utf-8")
+    assert sandbox.first_start_hint(sandbox.Sandbox(SandboxConfig()), None) is None
+
+
+def test_no_hint_on_a_system_without_a_sandbox_backend(monkeypatch, isolated_home):
+    monkeypatch.setattr(sandbox.sys, "platform", "sunos5")
+    assert sandbox.first_start_hint(sandbox.Sandbox(SandboxConfig()), None) is None
+    assert not (isolated_home / ".mosscode" / sandbox.HINT_MARKER).exists()
+
+
+def test_a_headless_run_leaves_the_hint_for_the_interface(tmp_path, monkeypatch, isolated_home):
+    from mosscode import cli
+
+    path = write_config(tmp_path / "config.yaml")
+    monkeypatch.setenv("MOSS_TEST_PROVIDER", "test-key")
+
+    def stop(config):
+        raise RuntimeError("stopped before any request")
+
+    monkeypatch.setattr(cli, "create_provider", stop)
+    with pytest.raises(RuntimeError):
+        cli.main(["--config", str(path), "-p", "hi"])
+    assert not (isolated_home / ".mosscode" / sandbox.HINT_MARKER).exists()  # -p has no startup area.
+
+
+def test_the_interface_shows_the_hint_at_the_first_start_only(tmp_path, monkeypatch):
+    from mosscode import cli
+
+    path = write_config(tmp_path / "config.yaml")
+    monkeypatch.setenv("MOSS_TEST_PROVIDER", "test-key")
+    shown = []
+
+    class Chat:
+        def __init__(self, conversation, name, **kwargs):
+            shown.append(list(conversation._notices))
+
+        def run(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(cli, "MossCodeApp", Chat)
+    cli.main(["--config", str(path)])
+    cli.main(["--config", str(path)])
+    assert sandbox.FIRST_START_HINT in shown[0] and sandbox.FIRST_START_HINT not in shown[1]

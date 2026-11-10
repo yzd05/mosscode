@@ -524,6 +524,35 @@ def configure(config: SandboxConfig, *, override: bool | None = None, source: Pa
     return _current
 
 
+HINT_MARKER = "sandbox-hint-shown"
+FIRST_START_HINT = (
+    "命令沙箱默认关闭，模型的命令以你的权限运行（仍按权限档位审批）。用 moss --sandbox 启动，"
+    "或在用户配置中设 sandbox.mode: on，可以把命令的写入限制在项目内并管住联网；"
+    "moss doctor 显示这台机器能用哪种沙箱。这条提示只显示一次。"
+)
+
+
+def first_start_hint(sandbox: Sandbox, override: bool | None, home: Path | None = None) -> str | None:
+    """The sandbox is opt-in, so whoever has not read about it is told once that it exists. Someone who has
+    turned it on, or passed --sandbox / --no-sandbox, already knows: that counts as having seen the hint."""
+    from ..paths import mosscode_home
+
+    system = "linux" if sys.platform.startswith("linux") else sys.platform
+    if system not in PLATFORM_BACKENDS:
+        return None
+    marker = mosscode_home(home) / HINT_MARKER
+    if marker.exists():
+        return None
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        return None  # Shown only once it is remembered; otherwise it would come back at every start.
+    if sandbox.started or override is not None:
+        return None
+    return FIRST_START_HINT
+
+
 def current() -> Sandbox:
     return _current
 
