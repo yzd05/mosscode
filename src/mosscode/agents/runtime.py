@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from ..agent import AgentLoop, add_usage
 from ..messages import Completed, Message, ProviderError, RunStopped, ToolProgress, ToolResult
-from ..permissions import ApprovalRequest, stricter
+from ..permissions import ApprovalRequest, QuestionRequest, stricter
 from ..prompts import git_snapshot, hook_notification
 from ..skills import ActiveSkills
 from ..tool_budget import bound_result
@@ -30,6 +30,7 @@ AGENT_TOOL = "agent"
 GLOBAL_BAN = frozenset(
     {
         AGENT_TOOL,
+        "ask_user",  # Only the main conversation asks the user.
         "load_skill",
         "memory",
         "exit_plan_mode",
@@ -410,7 +411,7 @@ class SubAgents:
             prompt = await self.start_hooks(task, prompt)
             async with aclosing(loop.run(prompt)) as events:
                 async for event in events:
-                    if isinstance(event, ApprovalRequest):
+                    if isinstance(event, (ApprovalRequest, QuestionRequest)):
                         parent.requests.put_nowait(event)  # The main tool batch shows it.
                     elif isinstance(event, ToolProgress) and event.phase == "running":
                         task.tool_calls += 1

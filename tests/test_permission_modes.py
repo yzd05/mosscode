@@ -203,7 +203,7 @@ def test_cli_accepts_four_modes(monkeypatch, capsys, tmp_path, mode):
     original = create_default_registry
     observed = []
 
-    def make_registry(*, permission_mode, shell="auto", web_search=None, todo=True):
+    def make_registry(*, permission_mode, shell="auto", web_search=None, todo=True, ask=False):
         reg = original(
             tmp_path,
             permission_mode=permission_mode,
@@ -211,6 +211,7 @@ def test_cli_accepts_four_modes(monkeypatch, capsys, tmp_path, mode):
             shell=shell,
             web_search=web_search,
             todo=todo,
+            ask=ask,
         )
         observed.append(reg.permissions.mode)
         return reg

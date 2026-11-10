@@ -6,6 +6,7 @@
 
 ### 新增
 
+- 向用户提问：新增 `ask_user` 工具，模型遇到有歧义或需要你决定的地方时提出 1–4 个选择题，输入框下方的面板中单选、多选或选“其他”自己输入，Esc 不回答；回答作为工具结果返回，本轮直接继续。提问与审批排队显示，计划模式中可用；只在交互界面的主对话中提供，`-p`、子 Agent 和团队成员中没有。恢复会话后回放中仍能看到回答。
 - 任务清单：新增 `todo_write` 工具，模型处理多步任务时列出清单并边做边更新，输入框上方的面板显示进度和未完成的项，`/todo` 查看完整清单。清单快照随每次请求附在历史之后，不进入历史和提示缓存前缀；随会话记录保存，恢复、`/rewind`、压缩和 `/clear` 时保持一致。子 Agent 和团队成员各有自己的清单。不需要审批，计划模式中可用；`config.yaml` 中 `todo_tool: false` 关闭。
 - 后台命令：`execute_command` 新增 `run_in_background` 和 `description`，开发服务器、监视构建等长时间运行的命令在后台运行，调用立即返回任务 id；输出写入会话目录的 `commands/<任务 id>.log`，模型用 `read_file` 读取，命令结束时主对话收到通知（退出码、最后 20 行）。`task_output`、`task_stop`、`/tasks` 支持命令任务；界面中按 Ctrl+B 把前台命令转入后台。交互界面中不限时，`-p` 中默认 600 秒（`timeout` 最多 3600）；同时最多 8 个（`command_max_background`，0 关闭）；输出超过 256 MiB 时结束。沙箱中的后台命令联网不询问，没有规则的域名被拒绝并列在通知中。子 Agent 和团队成员的后台命令随它们结束。
 - 插件：`moss plugin install|list|update|remove|enable|disable` 安装和管理用户级插件，一个插件可以包含 Skill、命令、子 Agent、MCP 服务器和 Hook，兼容 Claude Code 的插件布局（`.claude-plugin/plugin.json`、`commands/`、`.mcp.json`、`${CLAUDE_PLUGIN_ROOT}` 等）。来源可以是 git 仓库、GitHub 的 `owner/repo` 或本机目录，支持 marketplace 仓库（`<来源>#<插件名>`）；安装和更新前列出其中的命令并询问，标签和提交固定的插件不随更新移动。记录在 `~/.mosscode/plugins.yaml`，启动时不联网。对话中 `/plugins` 查看，`moss doctor` 检查插件。

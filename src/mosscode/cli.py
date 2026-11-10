@@ -581,6 +581,7 @@ def run(args: argparse.Namespace) -> None:
             shell=settings.shell,
             web_search=settings.web_search,
             todo=settings.todo_tool,
+            ask=args.prompt is None,  # -p has nobody to answer.
         )
         mcp_settings = load_mcp_settings(Path.cwd(), plugins=plugins.plugins)
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None

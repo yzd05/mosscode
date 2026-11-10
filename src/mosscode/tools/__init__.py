@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from ..permissions import PermissionPolicy
+from .ask import AskUser
 from .base import ToolRegistry
 from .files import EditFile, FileState, ReadFile, WriteFile
 from .plan import ExitPlanMode
@@ -22,8 +23,12 @@ def create_default_registry(
     shell: Shell | str | None = "auto",
     web_search=None,
     todo: bool = True,
+    ask: bool = False,
 ) -> ToolRegistry:
-    """web_search (a WebSearchConfig) adds the search tool when its key is set; todo offers todo_write."""
+    """web_search (a WebSearchConfig) adds the search tool when its key is set; todo offers todo_write.
+
+    ask offers ask_user: only the interactive main conversation has someone to answer.
+    """
     root = Path.cwd() if root is None else root
     policy = permissions or PermissionPolicy(root, mode=permission_mode, load=load_permissions)
     state = FileState()  # Shared so edits can see what read_file returned.
@@ -39,6 +44,8 @@ def create_default_registry(
     )
     if todo:
         tools += (TodoWrite(root),)
+    if ask:
+        tools += (AskUser(root),)
     if web_search is not None:
         from ..web_search import create_backend
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TypeVar
 
+from rich.cells import cell_len
 from rich.console import Group
 from rich.padding import Padding
 from rich.table import Table
@@ -81,7 +82,7 @@ from .messages import (
     UserInput,
     image_mark,
 )
-from .permissions import CHOICES, EDIT_TOOLS, MODE_BADGES, ApprovalRequest, safe_display
+from .permissions import CHOICES, EDIT_TOOLS, MODE_BADGES, Answer, ApprovalRequest, QuestionRequest, safe_display
 from .sandbox import badge as sandbox_badge
 from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
 from .teams import TeamError
@@ -90,6 +91,7 @@ from .teams.view import TranscriptTail
 from .todo import completed as todos_completed
 from .tool_budget import persisted_note
 from .tools import shell_label
+from .tools.ask import OTHER as OTHER_ANSWER
 from .usage import approx_tokens, cache_hit_rate
 from .user_command import CommandRun, ran
 
@@ -834,6 +836,7 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
         "grep": "Grep",
         "exit_plan_mode": "Plan",
         "todo_write": "Todo",
+        "ask_user": "Ask",
         "agent": "Agent",
         "task_output": "TaskOutput",
         "task_stop": "TaskStop",
@@ -851,6 +854,10 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
             detail = agent_detail(args, args.get("isolation") == "worktree")
         elif call.name in {"task_output", "task_stop"}:
             detail = args.get("task_id", "")
+        elif call.name == "ask_user":
+            questions = args.get("questions")
+            questions = questions if isinstance(questions, list) else []
+            detail = "、".join(str(q.get("header", "")) for q in questions if isinstance(q, dict))
         elif call.name == "todo_write":
             todos = args.get("todos")
             todos = todos if isinstance(todos, list) else []
@@ -890,6 +897,30 @@ def todo_panel(items) -> Text:
     return text
 
 
+def answer_lines(details: dict) -> list[str]:
+    """ask_user's tool row: each question's label and what the user answered."""
+    lines = []
+    for question, answer in zip(details.get("questions") or [], details.get("answers") or [], strict=False):
+        if not isinstance(question, dict):
+            continue
+        if not isinstance(answer, dict):
+            said = "未回答"
+        else:
+            parts = ["、".join(str(c) for c in answer.get("choices") or [])] if answer.get("choices") else []
+            if answer.get("other"):
+                parts.append("“" + str(answer["other"]) + "”")
+            said = "；".join(parts) or "未回答"
+        lines.append(f"{question.get('header', '')}：{safe_display(said, 160)}")
+    return lines
+
+
+class QuestionOptions(KeyboardOptions):
+    BINDINGS = [Binding("space", "toggle", show=False)]
+
+    def action_toggle(self) -> None:
+        self.app._toggle_question()
+
+
 RESUMED_MESSAGES = 20
 DOUBLE_ESCAPE = 0.5  # Seconds between two Esc presses on an empty prompt that open /rewind.
 
@@ -913,6 +944,14 @@ def attached_line(entries) -> str:
 def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGES) -> list:
     """The latest messages in brief, for the scrollback after a resume."""
     shown = [m for m in history if m.role != "tool"][-limit:]
+    # ask_user's answers are shown with its call, so a resumed session still tells what the user chose.
+    answers = {
+        r.call_id: r.details
+        for m in history
+        if m.role == "tool"
+        for r in m.tool_results
+        if not r.is_error and r.details.get("answers") is not None
+    }
     rows = []
     for message in shown:
         if message.synthetic == "compact":
@@ -941,6 +980,8 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
                 line.append(detail, style=PARAMETER_COLOR)
                 line.append(")")
                 parts.append(line)
+                if call.name == "ask_user" and call.id in answers:
+                    parts.extend(Text(f"    └ {said}") for said in answer_lines(answers[call.id]))
             if parts:
                 rows.append(Group(*parts))
     return rows
@@ -1062,6 +1103,8 @@ class ToolEntry(Static):
             self.transcript = text
             self.update(text)
             return
+        if self.operation == "ask_user" and not result.is_error and result.details.get("answers") is not None:
+            shown = answer_lines(result.details) or shown
         if self.operation == "agent" and len(lines) > 3 and lines[-1].startswith("（子 Agent"):
             shown = [*lines[:2], lines[-1]]
         if result.is_error:
@@ -1133,6 +1176,10 @@ class MossCodeApp(TerminalApp[None]):
     #approval-options { height: 4; border: none; padding: 0; }
     #approval-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
     #approval-help { height: auto; }
+    #question-panel { height: auto; padding: 0 1; border-top: solid $foreground; }
+    #question-detail, #question-help { height: auto; }
+    #question-options { height: auto; border: none; padding: 0; }
+    #question-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
     .local-note { height: auto; margin: 0 0 1 2; color: $text-muted; }
     .resumed-entry { height: auto; margin-bottom: 1; }
     .tool-entry { height: auto; margin-bottom: 1; }
@@ -1220,6 +1267,13 @@ class MossCodeApp(TerminalApp[None]):
         self._redraw_timer = None
         self._approval_request: ApprovalRequest | None = None
         self._approval_queue: list[ApprovalRequest] = []  # Shown one at a time, in arrival order.
+        self._question: QuestionRequest | None = None  # ask_user's questions on screen.
+        self._question_waiting: QuestionRequest | None = None  # Arrived while a member's approval card was up.
+        self._question_step = 0
+        self._question_answers: list[Answer | None] = []
+        self._question_checked: set[int] = set()
+        self._question_typing = False  # The answer is being typed in the prompt ("其他").
+        self._question_draft = ""  # The prompt's text before typing an answer; put back afterwards.
         self._todo_shown: tuple | None = None  # The checklist the panel shows; None when hidden.
         self._todo_dismissed: tuple = ()  # A finished list the user has moved on from (sent a message since).
         self._startup_task = None
@@ -1268,6 +1322,11 @@ class MossCodeApp(TerminalApp[None]):
             yield Static("", id="approval-detail", markup=False)
             yield KeyboardOptions(*(CHOICE_LABELS[choice] for choice in CHOICES), id="approval-options")
             yield Static("↑ / ↓ 选择 · Enter 确认 · Esc 拒绝本次 · Ctrl+C 取消任务", id="approval-help", markup=False)
+        with Vertical(id="question-panel") as question:
+            question.display = False
+            yield Static("", id="question-detail", markup=False)
+            yield QuestionOptions(id="question-options")
+            yield Static("", id="question-help", markup=False)
         hints = KeyboardOptions(id="command-hints")
         hints.can_focus = False
         hints.display = False
@@ -1512,6 +1571,11 @@ class MossCodeApp(TerminalApp[None]):
             self.query_one("#approval-detail").styles.max_height = min(20, max(1, limit - fixed))
             # Its current size may predate the new preview; reserve what it may grow to.
             reserved += limit
+        if self.query_one("#question-panel").display and self._question is not None:
+            question = self._question.questions[self._question_step]
+            width = max(10, self.size.width - 2)
+            # Border, heading, the wrapped question, one row per option and "其他", help.
+            reserved += 3 + -(-cell_len(question.question) // width) + len(question.options) + 1
         hints = self.query_one("#command-hints")
         hint_limit = min(8, max(1, self.size.height - reserved - 2))
         if hints.styles.max_height is None or hints.styles.max_height.value != hint_limit:
@@ -1667,6 +1731,8 @@ class MossCodeApp(TerminalApp[None]):
         if self._approval_request is not None and not self._waiting(self._approval_request):
             # Withdrawn without an answer, e.g. a sandboxed command ended while asking to connect.
             self._hide_approval()
+        if self._question is not None and not self._waiting(self._question):
+            self._hide_question()  # The turn was cancelled while it waited.
         if self._generating and self._shell_row is not None:
             self._shell_row.tick()
             if self._approval_request is not None:  # A sandboxed command asking to connect.
@@ -1684,6 +1750,13 @@ class MossCodeApp(TerminalApp[None]):
         if self._generating and self._active_reply is not None:
             if self._approval_request is not None:
                 self._status("等待授权 · Esc 拒绝本次 · Ctrl+C 取消任务")
+                return
+            if self._question is not None:
+                self._status(
+                    "等待回答 · 输入回答后 Enter 提交 · Esc 返回选项"
+                    if self._question_typing
+                    else "等待回答 · Esc 不回答 · Ctrl+C 取消任务"
+                )
                 return
             if self._retry_notice:
                 self._status(self._retry_notice)
@@ -1949,6 +2022,12 @@ class MossCodeApp(TerminalApp[None]):
     async def on_prompt_area_submitted(self, event: PromptArea.Submitted) -> None:
         prompt = event.value
         field = event.text_area
+        if self._question is not None and self._question_typing:
+            if prompt.strip():
+                question = self._question.questions[self._question_step]
+                checked = tuple(question.options[i][0] for i in sorted(self._question_checked))
+                self._next_question(Answer(checked, prompt.strip()))
+            return
         parsed = parse_input(prompt, self.commands)
         if parsed.kind == "empty":
             return
@@ -2318,6 +2397,8 @@ class MossCodeApp(TerminalApp[None]):
                 await pick(event.option_index)
         elif event.option_list.id == "approval-options" and self._approval_request:
             self._answer_approval(self._approval_request.choices[event.option_index])
+        elif event.option_list.id == "question-options" and self._question is not None:
+            self._pick_question(event.option_index)
         elif event.option_list.id == "member-list":  # Enter opens the member view.
             rows = self.query_one("#member-panel", MemberPanel).rows
             if event.option_index < len(rows):
@@ -2340,6 +2421,10 @@ class MossCodeApp(TerminalApp[None]):
         self._show_approval(request)
 
     def _show_approval(self, request: ApprovalRequest) -> None:
+        if self._question is not None:
+            if all(item.id != request.id for item in self._approval_queue):
+                self._approval_queue.append(request)  # After the questions.
+            return
         if self._approval_request is not None and self._approval_request.id != request.id:
             if all(item.id != request.id for item in self._approval_queue):
                 self._approval_queue.append(request)  # After the one on screen.
@@ -2398,6 +2483,127 @@ class MossCodeApp(TerminalApp[None]):
         self._tick()
         self.call_later(self._fit_chat)
 
+    def _show_question(self, request: QuestionRequest) -> None:
+        if self._question is not None or self._closing or not self.query("#question-panel"):
+            return
+        if self._approval_request is not None:  # A member's card; the questions come next.
+            self._question_waiting = request
+            return
+        self._question, self._question_step, self._question_answers = request, 0, []
+        self._question_checked, self._question_typing = set(), False
+        members = self.query_one("#member-panel", MemberPanel)
+        if members.expanded:
+            self._stop_armed = None
+            members.collapse(monotonic())
+        self._render_question()
+
+    def _question_labels(self) -> list[Text]:
+        question = self._question.questions[self._question_step]
+        labels = []
+        for index, (label, description) in enumerate(question.options):
+            if question.multi_select:
+                mark = "[x] " if index in self._question_checked else "[ ] "
+            else:
+                mark = f"{index + 1}. "
+            text = Text(mark + safe_display(label, 30))
+            if description:
+                text.append(" — " + safe_display(description, 200))
+            labels.append(text)
+        labels.append(Text(("    " if question.multi_select else f"{len(question.options) + 1}. ") + OTHER_ANSWER))
+        return labels
+
+    def _render_question(self, highlighted: int = 0) -> None:
+        request = self._question
+        question = request.questions[self._question_step]
+        text = Text(question.header, style=f"bold {OPERATION_COLOR}")
+        if len(request.questions) > 1:
+            text.append(f" · 第 {self._question_step + 1}/{len(request.questions)} 题", style=f"bold {OPERATION_COLOR}")
+        if question.multi_select:
+            text.append(" · 可多选", style=f"bold {OPERATION_COLOR}")
+        if request.source:
+            text.append(f" · {request.source}")
+        text.append("\n" + safe_display(question.question, 1000))
+        self.query_one("#question-detail", Static).update(text)
+        options = self.query_one("#question-options", OptionList)
+        options.clear_options()
+        options.add_options(self._question_labels())
+        options.highlighted = highlighted
+        self.query_one("#question-help", Static).update(
+            "↑ / ↓ 选择 · 空格勾选 · Enter 确认 · Esc 不回答"
+            if question.multi_select
+            else "↑ / ↓ 选择 · Enter 确认 · Esc 不回答 · Ctrl+C 取消任务"
+        )
+        self.query_one("#question-panel").display = True
+        options.focus()
+        self._show_members()
+        self._status("等待回答 · Esc 不回答")
+        self.call_later(self._fit_chat)
+
+    def _toggle_question(self) -> None:
+        if self._question is None or self._question_typing:
+            return
+        question = self._question.questions[self._question_step]
+        index = self.query_one("#question-options", OptionList).highlighted
+        if not question.multi_select or index is None or index >= len(question.options):
+            return
+        self._question_checked ^= {index}
+        self._render_question(index)
+
+    def _pick_question(self, index: int) -> None:
+        question = self._question.questions[self._question_step]
+        if index >= len(question.options):  # "其他": the prompt takes the answer.
+            self._question_typing = True
+            field = self.query_one("#prompt", PromptArea)
+            self._question_draft, field.value = field.value, ""
+            self.query_one("#question-help", Static).update("在输入框中输入你的回答 · Enter 提交 · Esc 返回选项")
+            field.focus()
+            self._status("等待回答 · 输入回答后 Enter 提交 · Esc 返回选项")
+            return
+        picked = sorted(self._question_checked) if question.multi_select and self._question_checked else [index]
+        self._next_question(Answer(tuple(question.options[i][0] for i in picked)))
+
+    def _next_question(self, answer: Answer) -> None:
+        if self._question_typing:
+            self._question_typing = False
+            self.query_one("#prompt", PromptArea).value = self._question_draft
+        self._question_answers.append(answer)
+        self._question_checked = set()
+        if len(self._question_answers) < len(self._question.questions):
+            self._question_step += 1
+            self._render_question()
+            return
+        self._finish_question()
+
+    def _finish_question(self) -> None:
+        """Send the answers given so far; the remaining questions go unanswered."""
+        request = self._question
+        if request is None:
+            return
+        answers = tuple(self._question_answers)
+        answers += (None,) * (len(request.questions) - len(answers))
+        if self.conversation.registry is not None:
+            self.conversation.registry.permissions.answer(request.id, answers)
+        self._hide_question()
+
+    def _hide_question(self) -> None:
+        if self._question is None:
+            return
+        if self._question_typing and not self._closing:
+            self.query_one("#prompt", PromptArea).value = self._question_draft
+        self._question, self._question_answers, self._question_checked = None, [], set()
+        self._question_step, self._question_typing, self._question_draft = 0, False, ""
+        if self._closing:
+            return
+        self.query_one("#question-panel").display = False
+        if self._approval_queue:
+            self._hide_approval()  # A member's card that waited comes up.
+        else:
+            self._focus_home()
+            self._show_members()
+        self._status(self._status_note if self._generating else "")
+        self._tick()
+        self.call_later(self._fit_chat)
+
     def _hide_approval(self) -> None:
         """The next request still waiting stays or comes up (a member's outlives the lead's turn)."""
         waiting = [
@@ -2411,6 +2617,10 @@ class MossCodeApp(TerminalApp[None]):
             self._show_approval(waiting[0])
             return
         self.query_one("#approval-panel").display = False
+        question, self._question_waiting = self._question_waiting, None
+        if question is not None and self._waiting(question) and not self._closing:
+            self._show_question(question)
+            return
         if not self._closing:
             # The prompt stays usable while the task runs, e.g. to queue a correction.
             self._focus_home()
@@ -2556,6 +2766,11 @@ class MossCodeApp(TerminalApp[None]):
                         if event.call_id in tool_rows:
                             row = tool_rows[event.call_id]
                             row.update(row._heading("running") + Text("\n  └ 等待用户确认…", style=OPERATION_COLOR))
+                    elif isinstance(event, QuestionRequest):
+                        self._show_question(event)
+                        if event.call_id in tool_rows:
+                            row = tool_rows[event.call_id]
+                            row.update(row._heading("running") + Text("\n  └ 等待用户回答…", style=OPERATION_COLOR))
                     elif isinstance(event, Completed):
                         if continuation:
                             reply = ChatEntry("MossCode")
@@ -2586,6 +2801,7 @@ class MossCodeApp(TerminalApp[None]):
             self._agent_rows = {}
             self._refresh_context()
             if not self._closing:
+                self._hide_question()
                 self._hide_approval()
                 await self._commit_ready_transcript()
                 field = self.query_one("#prompt", PromptArea)
@@ -2720,7 +2936,7 @@ class MossCodeApp(TerminalApp[None]):
 
     def action_members(self) -> None:
         """Ctrl+T opens the panel to pick from, and closes it (or the member view) again."""
-        if self._approval_request or self.query_one("#model-panel").display:
+        if self._approval_request or self._question or self.query_one("#model-panel").display:
             return
         if self.query_one("#member-view").display:
             self._close_view(to_panel=False)
@@ -2872,7 +3088,7 @@ class MossCodeApp(TerminalApp[None]):
 
     def action_cycle_mode(self) -> None:
         registry = self.conversation.registry
-        if registry is None or self._approval_request or self.query_one("#model-panel").display:
+        if registry is None or self._approval_request or self._question or self.query_one("#model-panel").display:
             return
         if self._generating:
             self._hint_until = monotonic() + 2
@@ -2882,6 +3098,15 @@ class MossCodeApp(TerminalApp[None]):
         self._status("")
 
     def action_cancel(self) -> None:
+        if self._question is not None:
+            if self._question_typing:  # Back to the options.
+                self._question_typing = False
+                self.query_one("#prompt", PromptArea).value = self._question_draft
+                other = len(self._question.questions[self._question_step].options)
+                self._render_question(other)  # Still on "其他".
+            else:
+                self._finish_question()  # The rest stay unanswered.
+            return
         if self._approval_request:
             self._answer_approval("deny")
             return

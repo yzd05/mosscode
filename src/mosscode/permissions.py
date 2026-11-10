@@ -143,6 +143,31 @@ class ApprovalRequest:
 
 
 @dataclass(frozen=True)
+class Question:
+    question: str
+    header: str
+    options: tuple[tuple[str, str], ...]  # (label, description)
+    multi_select: bool = False
+
+
+@dataclass(frozen=True)
+class Answer:
+    choices: tuple[str, ...] = ()  # Labels of the options picked.
+    other: str = ""  # What the user typed instead of, or besides, the options.
+
+
+@dataclass(frozen=True)
+class QuestionRequest:
+    """ask_user's questions; queued with approvals so only one panel waits at a time."""
+
+    id: str
+    call_id: str
+    questions: tuple[Question, ...]
+    source: str = ""
+    choices: tuple[str, ...] = ()  # Empty: answered with answer(), never respond().
+
+
+@dataclass(frozen=True)
 class Decision:
     action: Literal["allow", "deny", "ask"]
     code: str = ""
@@ -780,6 +805,30 @@ class PermissionPolicy:
                 return await self._ask(request)
             finally:
                 self._settle(request)
+
+    async def ask_questions(self, call_id: str, questions) -> tuple[Answer | None, ...] | None:
+        """One answer per question (None: left unanswered); None when nobody can be asked."""
+        if not self.interactive:
+            return None
+        async with self._approval_lock:
+            if not self.interactive:
+                return None
+            request = QuestionRequest(uuid4().hex, call_id, tuple(questions))
+            try:
+                answers = await self._ask(request)
+            finally:
+                self._settle(request)
+        # A sub-agent sent to the background refuses what it was waiting for with "deny".
+        return answers if isinstance(answers, tuple) else None
+
+    def answer(self, request_id: str, answers: tuple[Answer | None, ...]) -> bool:
+        if self._choices.get(request_id, CHOICES) != ():
+            raise ValueError("该请求不是提问。")
+        future = self.pending.get(request_id)
+        if future is None or future.done():
+            return False
+        future.set_result(tuple(answers))
+        return True
 
     def respond(self, request_id: str, choice: str) -> bool:
         choices = self._choices.get(request_id)

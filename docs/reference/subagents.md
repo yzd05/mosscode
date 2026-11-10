@@ -95,7 +95,7 @@ max_turns: 40
 - Fork 的第一个请求与主对话最近一次请求共用同一个缓存前缀：系统提示、工具定义和直到这次调用为止的历史逐字节相同，只在末尾多一条工具结果（固定文字“已在后台分出 Fork 处理。”）和一条用户消息（Fork 指令加 `prompt`）。同一条回复中的几个 Fork 只有最后这条消息不同，所以 Fork 的首个请求通常大部分命中缓存。
 - Fork 指令要求它：不再创建子 Agent，不向用户提问，只做这项任务，最终报告以“范围：”开头，依次写范围、结果、涉及的关键文件和未完成的部分。
 - Fork 总在后台运行，`agent` 调用立即返回任务 id。
-- Fork 的工具定义与主对话相同（为了缓存），但调用 `agent`、`load_skill`、`memory`、`exit_plan_mode`、`task_output`、`task_stop` 会返回 `subagent_forbidden`。
+- Fork 的工具定义与主对话相同（为了缓存），但调用 `agent`、`ask_user`、`load_skill`、`memory`、`exit_plan_mode`、`task_output`、`task_stop` 会返回 `subagent_forbidden`。
 
 ## 前台与后台
 
@@ -167,7 +167,7 @@ max_turns: 40
 - 前台子 Agent 的审批照常弹出，面板标题注明来源，例如“需要授权 · 写入文件 · 子 Agent general · 批量改名”。
 - 后台子 Agent 不能请求审批：需要审批的调用直接返回 `approval_required`，模型会收到“后台子 Agent 不能请求审批，可以添加允许规则或在前台运行”。前台子 Agent 正在等审批时转入后台，这次审批按拒绝处理。需要后台写文件时，可以在 `permissions.yaml` 中添加对应的 allow 规则。
 - 拒绝规则、计划模式、受保护文件、危险命令检查和 `pre_tool_use` Hook 对子 Agent 一样生效。
-- 子 Agent 不能使用 `agent`、`load_skill`、`memory`、`exit_plan_mode`、`task_output`、`task_stop`：定义式的工具列表中没有它们，Fork 调用时返回 `subagent_forbidden`。
+- 子 Agent 不能使用 `agent`、`ask_user`、`load_skill`、`memory`、`exit_plan_mode`、`task_output`、`task_stop`：定义式的工具列表中没有它们，Fork 调用时返回 `subagent_forbidden`。
 
 ## 命令与界面
 

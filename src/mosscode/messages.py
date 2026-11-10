@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .images import ImageRef
-from .permissions import ApprovalRequest
+from .permissions import ApprovalRequest, QuestionRequest
 
 
 @dataclass(frozen=True)
@@ -246,6 +246,7 @@ StreamEvent = (
     | UsageUpdate
     | RunStopped
     | ApprovalRequest
+    | QuestionRequest
     | Retrying
     | UserInput
     | CompactStarted
