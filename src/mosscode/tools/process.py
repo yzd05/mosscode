@@ -342,7 +342,7 @@ class ExecuteCommand(Tool):
 
     def __init__(self, root: Path, shell: Shell | str | None = None):
         super().__init__(root)
-        from ..sandbox import current, reads_outside
+        from ..sandbox import current, local_ports, reads_outside
 
         self.shell = shell if isinstance(shell, Shell) else resolve_shell(shell or "auto")  # Hooks use it too.
         sandbox = current()
@@ -383,9 +383,10 @@ class ExecuteCommand(Tool):
             else:
                 network = "网络断开；"
                 escape = "联网安装依赖、写项目外的文件"
+            backend = status.backend if status else ""
             self.prompt_guidelines += (
                 f"execute_command 的命令在沙箱中运行，无需审批：只能写项目目录和临时目录；{network}"
-                f"{reads_outside(status.backend if status else '')}；.mosscode、.git/hooks、.git/config 只读。"
+                f"{reads_outside(backend)}；{local_ports(backend)}；.mosscode、.git/hooks、.git/config 只读。"
                 f"被沙箱拦截且确实需要越界时（如{escape}），"
                 "以 outside_sandbox: true 重新调用并在 justification 中写明理由，用户批准后在沙箱外运行；能在边界内完成的不要申请。",
             )

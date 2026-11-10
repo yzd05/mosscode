@@ -457,6 +457,27 @@ def test_the_command_tool_describes_the_sandbox_only_when_it_is_on(tmp_path, mon
         assert tool.command_shell.kind == "powershell"
 
 
+def test_the_model_is_told_who_can_reach_a_server_started_in_the_sandbox(tmp_path, monkeypatch):
+    turn_on(monkeypatch)
+    guidance = " ".join(registry(tmp_path).get("execute_command").prompt_guidelines)
+    # MXC: not even the command that started the server can connect to it.
+    assert "命令不能连接本机端口（包括它自己启动的服务器）" in guidance and "访问服务器的命令也是" in guidance
+    monkeypatch.setattr(turn_on(monkeypatch), "_detect", lambda: Status("full", "bubblewrap", ""))
+    guidance = " ".join(registry(tmp_path).get("execute_command").prompt_guidelines)
+    assert "只有同一条命令能连接" in guidance and "本机端口" not in guidance
+
+
+def test_a_refused_loopback_socket_points_at_the_sandbox():
+    stderr = "urlopen error [WinError 10013] 以一种访问权限不允许的方式做了一个访问套接字的尝试。"
+    details = {"exit_code": 1, "stdout": "", "stderr": stderr, "sandbox": {"writable": ["F:/p"], "backend": "mxc"}}
+    hint = explain(details)
+    assert "它自己启动的服务器" in hint and "outside_sandbox" in hint
+    english = "[WinError 10013] An attempt was made to access a socket in a way forbidden by its access permissions"
+    assert explain({**details, "stderr": english})
+    # The restricted token does not touch the network, so it says nothing about ports.
+    assert "本机端口" not in explain({**details, "sandbox": {"writable": ["F:/p"], "backend": "token"}})
+
+
 def test_status_badge(monkeypatch):
     assert sandbox.badge() == ""
     turn_on(monkeypatch)

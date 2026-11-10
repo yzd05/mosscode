@@ -48,6 +48,20 @@ PLATFORM_BACKENDS = {"linux": ("bubblewrap",), "darwin": ("seatbelt",), "win32":
 # What a sandboxed command may read outside the project, as the model is told.
 READS_ALL = "项目外可以读取整个文件系统，凭据目录（~/.ssh 等）和 MossCode 的配置除外"
 READS = {"bubblewrap": READS_ALL, "seatbelt": READS_ALL, "token": "读取不受沙箱限制"}
+# Who can reach a server a sandboxed command starts, as the model is told; without it, models start a dev server in
+# the sandbox and then wait on it. bubblewrap gives each command its own network namespace with a loopback. MXC lets
+# a container connect only to its proxy port, not even to its own listener, and connections from the host into it time
+# out (a limitation MXC documents for its proxy mode; measured with and without the proxy). Seatbelt denies all
+# networking but the proxy port. The restricted token leaves the network alone.
+LOCAL_PORTS = {
+    "bubblewrap": "沙箱中启动的服务器只有同一条命令能连接，其他命令（包括后台命令）和用户都连不上；"
+    "需要从别处访问时，服务器和访问它的命令都以 outside_sandbox 运行",
+    "token": "",
+}
+LOCAL_PORTS_CLOSED = (
+    "命令不能连接本机端口（包括它自己启动的服务器），其他命令和用户也连不上沙箱中的服务器；"
+    "开发服务器、要连本机端口的测试等以 outside_sandbox 运行，访问服务器的命令也是"
+)
 UNAVAILABLE_HINT = "可以用 /sandbox off 在本会话关闭沙箱（无界面模式用 --no-sandbox），修复后再打开。"
 
 
@@ -590,6 +604,9 @@ DENIAL_SIGNS = (
     "无法解析此远程名称",
     "failed to establish a new connection",
     "network is unreachable",
+    # A socket the container may not use, e.g. connecting to a loopback port under MXC (WinError 10013).
+    "forbidden by its access permissions",
+    "访问套接字",
     "0xc0000142",
     "0xc0000135",
 )
@@ -597,6 +614,10 @@ DENIAL_SIGNS = (
 
 def reads_outside(backend: str) -> str:
     return READS.get(backend, "项目外只能读取系统目录、PATH 中的工具目录和配置的 allow_read")
+
+
+def local_ports(backend: str) -> str:
+    return LOCAL_PORTS.get(backend, LOCAL_PORTS_CLOSED)
 
 
 def explain(details: dict) -> str:
@@ -614,9 +635,10 @@ def explain(details: dict) -> str:
         "proxy": "网络只经 MossCode 的代理连接用户允许的域名，结果末尾列出被拒绝的主机",
         "open": "网络不受沙箱限制",
     }.get(box.get("network"), "网络已断开")
+    ports = local_ports(box.get("backend", ""))
     return (
         "\n\n命令在沙箱中运行，失败可能是沙箱拦截造成的（推测，依据是输出中的拒绝访问、无法解析主机或代理拒绝）："
-        f"只能写入 {writable}；{network}；{reads_outside(box.get('backend', ''))}；"
+        f"只能写入 {writable}；{network}；{reads_outside(box.get('backend', ''))}；{ports + '；' if ports else ''}"
         "受保护的 .mosscode、.git/hooks、.git/config 只读。"
         "先确认能否在边界内完成；确需越界时，以 outside_sandbox: true 重新调用，并在 justification 中说明理由，"
         "用户批准后在沙箱外运行。"
