@@ -34,7 +34,7 @@ New-Item -ItemType Directory -Force $HOME\.mosscode | Out-Null
 Copy-Item config.example.yaml $HOME\.mosscode\config.yaml
 ```
 
-`~/.mosscode/config.yaml` 是用户级配置，在任意目录都生效；只给某个项目用的配置放在该项目的 `.mosscode/config.yaml`。未指定 `--config` 时依次查找 `./.mosscode/config.yaml`、`~/.mosscode/config.yaml`，第一个存在的生效；工作目录下的 `config.yaml` 不会被读取。项目级配置不能放宽命令沙箱和命令的环境变量（`sandbox`、`command_env`），这两项以用户级配置为准，见 [命令沙箱](docs/reference/sandbox.md#项目配置只能收紧)。
+`~/.mosscode/config.yaml` 是用户级配置，在任意目录都生效；只给某个项目用的配置放在该项目的 `.mosscode/config.yaml`。未指定 `--config` 时依次查找 `./.mosscode/config.yaml`、`~/.mosscode/config.yaml`，第一个存在的生效；工作目录下的 `config.yaml` 不会被读取。项目级配置不能放宽命令沙箱和命令的环境变量（`sandbox`、`command_env`），这两项以用户级配置为准，见 [命令沙箱](docs/reference/sandbox.md#项目配置只能收紧)；项目级配置第一次使用和内容变化后需要你确认，见 [项目配置需要确认](docs/reference/cli.md#项目配置需要确认)。
 
 ```yaml
 providers:

@@ -13,7 +13,17 @@ from .appearance import compact_notice
 from .builtin_commands import BUILTIN, typed
 from .catalog import load_catalog
 from .commands import CommandRegistry, argument_problem, parse_input, unknown_note
-from .config import ConfigError, find_config, load_settings, project_notice
+from .config import (
+    ConfigError,
+    Settings,
+    config_candidates,
+    confirm_project,
+    find_config,
+    load_settings,
+    project_confirmed,
+    project_notice,
+    project_summary,
+)
 from .conversation import Conversation, Notice, Resumed
 from .coordinator import decide as decide_coordinator
 from .credentials import plaintext_notice, protect
@@ -46,7 +56,7 @@ from .session import Session, prune_all
 from .skills import ForkRequest, SkillCatalog
 from .tools import create_default_registry
 from .tools.shell import ShellNotFound
-from .tui import MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
+from .tui import ConfigTrustApp, MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
 from .usage import request_usage_text
 
 
@@ -482,6 +492,34 @@ def _config_path(args) -> Path | None:
     return run_setup()
 
 
+def confirm_config(args, settings: Settings) -> tuple[Settings | None, tuple[str, ...]]:
+    """A project's configuration names where the conversation goes and which of the user's credentials go with
+    it, so it is used only once the user has seen that: the interface asks, -p refuses. Declined, the session
+    runs on the user's own configuration, or not at all (None) when the project's file was named with --config
+    or there is no other."""
+    if args.trust_project_config or project_confirmed(settings):
+        return settings, ()
+    if args.prompt is not None:
+        raise ConfigError(
+            f"项目配置 {settings.source} 未经确认，不会使用；"
+            "请在交互界面中启动一次并确认，或使用 --trust-project-config。"
+        )
+    user = config_candidates()[-1]
+    fallback = args.config is None and user.is_file()
+    print(project_summary(settings))
+    if ConfigTrustApp(f"改用用户配置 {user}" if fallback else "退出").run(inline=True, mouse=False):
+        try:
+            confirm_project(settings)
+        except OSError as exc:
+            return settings, (f"无法写入项目配置的确认记录（{exc.strerror or exc}），只在本次使用。",)
+        return settings, ()
+    if not fallback:
+        print("未使用项目配置，已退出。可以用 --config 指定另一份配置，或运行 moss setup 创建用户配置。")
+        return None, ()
+    note = f"本次未使用项目配置 {settings.source}，改用用户配置 {user}；下次启动时会再次询问。"
+    return load_settings(user), (note,)
+
+
 def main(argv: list[str] | None = None) -> None:
     """The arguments as launcher.main parses them, without its terminal checks (tests call this)."""
     run(parse_arguments(argv))
@@ -491,7 +529,16 @@ def run(args: argparse.Namespace) -> None:
     if args.team_dir is not None:
         from .teams.process import run_member
 
-        raise SystemExit(run_member(args.team_dir, args.team_member, args.config, args.provider, sandbox=args.sandbox))
+        raise SystemExit(
+            run_member(
+                args.team_dir,
+                args.team_member,
+                args.config,
+                args.provider,
+                sandbox=args.sandbox,
+                config_digest=args.team_config_digest,
+            )
+        )
     try:
         path = _config_path(args)
         if path is None:
@@ -500,6 +547,9 @@ def run(args: argparse.Namespace) -> None:
         if args.list_providers:
             for item in settings.providers:
                 print(f"{item.name}: {item.protocol} / {item.model}")
+            return
+        settings, config_notices = confirm_config(args, settings)
+        if settings is None:
             return
         # Plugins are read once; skills come before the provider so that -p "/<name>" parses.
         plugins = load_plugins(args, Path.cwd())
@@ -532,7 +582,7 @@ def run(args: argparse.Namespace) -> None:
         prune_all()
         budget = config.budget()
         hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None, plugins=plugins.plugins)
-        notices = plugins.notices + skills.problems + skipped + hook_notices
+        notices = config_notices + plugins.notices + skills.problems + skipped + hook_notices
         if args.prompt is None and not claude and (found := claude_notice(Path.cwd())):
             notices += (found,)
         coordinator, coordinator_notice = decide_coordinator(
@@ -569,7 +619,7 @@ def run(args: argparse.Namespace) -> None:
             teams=args.prompt is None,
             team_max_members=settings.team_max_members,
             teammate_mode=settings.teammate_mode,
-            team_launch={"config": settings.source, "provider": config.name},
+            team_launch={"config": settings.source, "provider": config.name, "digest": settings.project_digest},
             coordinator=coordinator,
             **_memory_options(settings, interactive=args.prompt is None),
         )

@@ -174,4 +174,4 @@ sandbox:
 - 受限令牌把 Everyone 列为受限 SID，Everyone 可写的目录命令也能写：MossCode 检查项目的上级目录、PATH 中的目录和主目录、`C:\Users\Public`、`C:\ProgramData` 下的一级目录，发现时在启动区、`/sandbox` 和 `moss doctor` 中提示。
 - macOS 后端还没有在真实的 Mac 上验证过；遇到问题请用 `--no-sandbox` 并报告。
 - 只限制模型运行的命令。专用的文件工具（`write_file`、`edit_file`）仍由应用层的 [路径限制](permissions.md#路径限制) 和审批约束；MCP Server 和 Hook 不在沙箱中。
-- 项目目录的 `.mosscode/config.yaml` 存在时，除了 `sandbox` 和 `command_env`（见 [项目配置只能收紧](#项目配置只能收紧)），其余部分整份代替用户配置（见 [配置](../../README.md#配置)），包括 Provider 的服务地址和它引用的凭据名称；打开不熟悉的仓库前先查看这个文件。
+- 项目目录的 `.mosscode/config.yaml` 存在时，除了 `sandbox` 和 `command_env`（见 [项目配置只能收紧](#项目配置只能收紧)），其余部分整份代替用户配置（见 [配置](../../README.md#配置)），包括 Provider 的服务地址和它引用的凭据名称；这份文件在你确认之后才会被使用，确认时列出这些内容，见 [项目配置需要确认](cli.md#项目配置需要确认)。

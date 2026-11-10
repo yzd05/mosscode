@@ -39,6 +39,7 @@ moss setup | doctor | models
 | `--sandbox`、`--no-sandbox` | 本次运行打开或关闭命令沙箱，覆盖 `sandbox.mode`，见 [命令沙箱](sandbox.md) |
 | `--trust-project-hooks` | 本次运行信任项目级 Hook 文件，不写入确认记录 |
 | `--trust-project-plugins` | 本次运行信任项目声明的插件，不写入确认记录；用于 `-p` |
+| `--trust-project-config` | 本次运行信任项目的 `.mosscode/config.yaml`，不写入确认记录；用于 `-p`，见 [项目配置需要确认](#项目配置需要确认) |
 
 `--team-dir`、`--team-member` 是团队成员在分屏窗格中启动时用的内部参数，不在帮助中显示。
 
@@ -122,6 +123,17 @@ moss key set deepseek
 工作目录下的 `config.yaml` 不会被读取；需要时用 `--config` 指定。
 
 项目级配置生效时，`sandbox` 和 `command_env` 仍以用户级配置为准，项目级只能收紧，见 [项目配置只能收紧](sandbox.md#项目配置只能收紧)；其余部分整份代替用户级配置。
+
+### 项目配置需要确认
+
+项目的 `.mosscode/config.yaml` 随仓库而来，它决定对话内容发往哪个服务，还可以用 `api_key_env`、`api_key_keyring` 引用你已经保存的凭据。所以它在你确认之前不会被使用：
+
+- **交互界面**：第一次在这个项目中启动时，先列出文件中每个 Provider 的服务地址主机名和它引用的凭据（环境变量名、凭据管理器中的名称，或“写在这份文件里的密钥”），以及 `web_search` 引用的凭据和 `shell` 指定的程序路径，然后询问。选“信任并使用”后记住文件内容的 SHA-256，记录在 `~/.mosscode/projects/<项目键>/config-trust.json`；文件内容有任何变化都会重新询问。
+- **选“本次不使用”或按 Esc**：有用户级配置时本次改用它，启动区说明；没有用户级配置，或者这份文件是用 `--config` 指定的，则退出。下次启动会再次询问。
+- **`-p`**：不询问。没有确认过的项目配置报错退出（退出码 1），不发任何请求；先在交互界面中确认一次，或加 `--trust-project-config`（只在本次信任，不写入记录）。
+- **团队成员**：成员进程不询问，只接受 Lead 正在使用的那份内容；文件在 Lead 启动后改过时，成员启动失败并说明原因，重新启动 `moss` 确认后再创建成员。
+
+按路径判断：`.mosscode/config.yaml` 只要不是 `~/.mosscode/config.yaml`，无论是自动找到的还是用 `--config` 指定的，都需要确认。用户级配置和 `--config` 指定的其他位置的文件不需要。`--list-providers`、`moss doctor`、`moss models` 只读取这份文件，不向其中的服务发请求，也不取用凭据，不需要确认；`moss doctor` 会指出尚未确认的项目配置。
 
 ## 退出码
 

@@ -555,7 +555,8 @@ def test_pane_wrapper_always_exits_zero(tmp_path):
 
 def test_member_arguments_are_hidden_from_help():
     done = subprocess.run([sys.executable, "-m", "mosscode", "--help"], capture_output=True, timeout=60)
-    assert b"--team-dir" not in done.stdout and b"--team-member" not in done.stdout
+    assert not any(name in done.stdout for name in (b"--team-dir", b"--team-member", b"--team-config-digest"))
+    assert b"--trust-project-config" in done.stdout
 
 
 @pytest.mark.skipif(os.name != "nt", reason="taskkill is Windows-only")

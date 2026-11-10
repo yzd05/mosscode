@@ -348,7 +348,7 @@ class TeamRuntime:
         self.poll = poll
         # Where members run, and what a pane member needs to load the same configuration.
         self.teammate_mode = teammate_mode
-        self.launch = dict(launch or {})  # {"config": path, "provider": name}
+        self.launch = dict(launch or {})  # {"config": path, "provider": name, "digest": project file content}
         self.env: dict | None = None  # Tests replace these; None/defaults use the real environment.
         self.which = shutil.which
         self.run = subprocess.run
@@ -988,7 +988,10 @@ class TeamRuntime:
         await asyncio.to_thread(store.modify, reset)
         self._synced_mode = mode
         cwd = root or self.project
-        arguments = member_arguments(store.directory, name, self.launch.get("config"), self.launch.get("provider"))
+        launch = self.launch
+        arguments = member_arguments(
+            store.directory, name, launch.get("config"), launch.get("provider"), launch.get("digest") or ""
+        )
         window = team_window(store.directory) if choice.backend == WINDOWS_TERMINAL else ""
         try:
             pane = await asyncio.to_thread(backend.launch, cwd, arguments, member=name, team=store.name, window=window)

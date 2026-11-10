@@ -1,5 +1,6 @@
 """Endpoint configuration is independent of the service's vendor name."""
 
+import hashlib
 import math
 import os
 import re
@@ -177,6 +178,8 @@ class Settings:
     sandbox: SandboxConfig = field(default_factory=lambda: SandboxConfig())
     # Keys in a project's file that would have widened the sandbox or the command environment, so were not applied.
     ignored: tuple[str, ...] = ()
+    # SHA-256 of a project file's content: what the user confirms before the file is used. Empty for other files.
+    project_digest: str = ""
 
     def select(self, name: str | None = None) -> ProviderConfig:
         selected = name or self.default_provider or self.providers[0].name
@@ -298,6 +301,74 @@ def project_notice(settings: Settings) -> str | None:
         + "、".join(settings.ignored)
         + "；这些设置只在用户配置 ~/.mosscode/config.yaml 中生效。"
     )
+
+
+CONFIG_TRUST = "config-trust.json"
+
+
+def _config_trust(settings: Settings, home: Path | None):
+    from .hooks.config import TrustStore
+
+    return TrustStore(Path(settings.source).resolve().parent.parent, home, CONFIG_TRUST)
+
+
+def project_confirmed(settings: Settings, home: Path | None = None) -> bool:
+    """False for a project's file whose present content the user has not confirmed; any other file needs no asking."""
+    return not settings.project_digest or _config_trust(settings, home).trusted("config", settings.project_digest)
+
+
+def confirm_project(settings: Settings, home: Path | None = None) -> None:
+    _config_trust(settings, home).trust("config", settings.project_digest)
+
+
+def _shown(value: Any) -> str:
+    """A value from the file as it goes to the terminal: nothing in it may move the cursor or hide a line."""
+    return "".join(ch if ch.isprintable() else "?" for ch in str(value))
+
+
+def _host(item: ProviderConfig) -> str:
+    from .setup import OFFICIAL
+
+    parsed = urlsplit(item.base_url or OFFICIAL[item.protocol])
+    host = parsed.hostname or ""
+    if not host.isascii():  # Look-alike letters must not pass for a familiar name.
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            host = ascii(host)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    notes = ("" if item.base_url else "（官方地址）") + ("（HTTP，未加密）" if parsed.scheme == "http" else "")
+    return _shown(host) + (f":{port}" if port else "") + notes
+
+
+def _credential(item: ProviderConfig | WebSearchConfig) -> str:
+    if item.api_key_env:
+        return f"环境变量 {_shown(item.api_key_env)}"
+    if item.api_key_keyring:
+        return f"凭据管理器中的 {_shown(item.api_key_keyring)}"
+    return "写在这份文件里的密钥" if item.api_key else "无"
+
+
+def project_summary(settings: Settings) -> str:
+    """What the user confirms: where each provider sends the conversation and which stored credential goes with it."""
+    lines = [
+        f"项目配置 {settings.source} 尚未确认（第一次使用，或内容有变化）。",
+        "它决定对话内容发往哪里，并且可以引用你已保存的凭据；请先确认：",
+    ]
+    for item in settings.providers:
+        lines += [
+            f"  {_shown(item.name)}（{item.protocol} / {_shown(item.model)}）",
+            f"    服务地址  {_host(item)}",
+            f"    凭据      {_credential(item)}",
+        ]
+    if settings.web_search is not None:
+        lines.append(f"  网页搜索 {settings.web_search.provider}，凭据：{_credential(settings.web_search)}")
+    if settings.shell.lower() not in {"auto", "bash", "powershell"}:
+        lines.append(f"  命令通过这个程序执行：{_shown(settings.shell)}")
+    return "\n".join(lines)
 
 
 def _links(raw: Any) -> tuple[str, ...]:
@@ -508,7 +579,8 @@ def render_config(provider: dict[str, Any]) -> str:
 
 def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     try:
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        content = Path(path).read_bytes()  # Hashed and parsed from one read: what is confirmed is what runs.
+        raw = yaml.safe_load(content.decode("utf-8"))
     except OSError:
         raise ConfigError("无法读取配置文件，请检查 --config 路径。") from None
     except (yaml.YAMLError, UnicodeError):
@@ -583,8 +655,9 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     if type(claude_directories) is not bool:
         raise ConfigError("claude_directories 必须是布尔值。")
     keep, drop = _command_env(raw.get("command_env"))
-    sandbox, ignored = _sandbox(raw.get("sandbox")), []
+    sandbox, ignored, digest = _sandbox(raw.get("sandbox")), [], ""
     if is_project_file(path, home):
+        digest = hashlib.sha256(content).hexdigest()
         # A cloned repository must not be able to widen what its own commands can reach.
         user_sandbox, user_keep, user_drop = _user_sections(home)
         sandbox, ignored = _tighten(user_sandbox, sandbox, set(raw.get("sandbox") or ()))
@@ -612,6 +685,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         command_env_drop=drop,
         sandbox=sandbox,
         ignored=tuple(ignored),
+        project_digest=digest,
         **switches,
     )
     settings.select()

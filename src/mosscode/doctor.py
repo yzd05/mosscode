@@ -150,7 +150,7 @@ def _catalog_match(provider) -> str:
 
 def check_config(config: str | None = None, cwd: Path | None = None, home: Path | None = None) -> list[Item]:
     from .catalog import load_catalog
-    from .config import ConfigError, find_config, load_settings, project_notice
+    from .config import ConfigError, find_config, load_settings, project_confirmed, project_notice
     from .setup import OFFICIAL
 
     cwd = Path.cwd() if cwd is None else cwd
@@ -169,6 +169,9 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
             items.append(Item(OK, f"配置 {path}"))
             if note := project_notice(settings):
                 items.append(Item(WARN, note, "需要时把它们写进用户配置"))
+            if not project_confirmed(settings, home):
+                fix = "启动 moss 并在确认面板中选“信任并使用”，或加 --trust-project-config"
+                items.append(Item(WARN, "这份项目配置尚未确认（第一次使用，或内容有变化），-p 不会使用它", fix))
             catalog = load_catalog()
             where = catalog.path or "随程序发布"
             items.append(

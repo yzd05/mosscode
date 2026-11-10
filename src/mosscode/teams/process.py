@@ -323,10 +323,18 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
 
 
 def run_member(
-    team_dir: str, name: str, config_path: str | None, provider: str | None, *, sandbox: bool | None = None
+    team_dir: str,
+    name: str,
+    config_path: str | None,
+    provider: str | None,
+    *,
+    sandbox: bool | None = None,
+    config_digest: str | None = None,
 ) -> int:
-    """cli.main with --team-dir/--team-member: the pane's window, or plain lines when not on a terminal."""
-    from ..config import ConfigError, find_config, load_settings
+    """cli.main with --team-dir/--team-member: the pane's window, or plain lines when not on a terminal.
+    config_digest: the project configuration the lead is using; nobody is asked here, so any other content of
+    that file needs the user's recorded confirmation."""
+    from ..config import ConfigError, find_config, load_settings, project_confirmed
     from ..credentials import protect
     from ..sandbox import configure
 
@@ -341,6 +349,10 @@ def run_member(
         return 1
     try:
         settings = load_settings(config_path if config_path else find_config())
+        if settings.project_digest != config_digest and not project_confirmed(settings):
+            raise ConfigError(
+                f"项目配置 {settings.source} 未经确认，或在 Lead 启动后有变化；请重新启动 moss 并确认后再创建成员。"
+            )
         protect(settings)
         configure(settings.sandbox, override=sandbox, source=settings.source)
         config = settings.select(provider)

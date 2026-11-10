@@ -91,12 +91,15 @@ def detect_backend(mode: str, env: Mapping[str, str] | None = None, which=shutil
 
 
 def member_arguments(
-    team_dir: Path, name: str, config: str | Path | None = None, provider: str | None = None
+    team_dir: Path, name: str, config: str | Path | None = None, provider: str | None = None, digest: str = ""
 ) -> list[str]:
-    """What follows `python -m mosscode`; the configuration by path, never a key."""
+    """What follows `python -m mosscode`; the configuration by path, never a key. digest: the content of the
+    project configuration the lead is using, so that the member takes that file only as the user accepted it."""
     arguments = ["--team-dir", str(team_dir), "--team-member", name]
     if config:
         arguments += ["--config", str(Path(config).resolve())]
+    if digest:
+        arguments += ["--team-config-digest", digest]
     if provider:
         arguments += ["--provider", provider]
     from ..sandbox import current

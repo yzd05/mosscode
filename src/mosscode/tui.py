@@ -644,6 +644,26 @@ class PluginTrustApp(TerminalApp[bool]):
         self.exit(event.option_index == 0)
 
 
+class ConfigTrustApp(PluginTrustApp):
+    """Asked before a session uses a project's configuration; what it names is printed above. True trusts it;
+    Esc and 本次不使用 return False or None."""
+
+    SUB_TITLE = "确认项目配置"
+    OPTIONS = ("信任并使用", "本次不使用")
+
+    def __init__(self, otherwise: str) -> None:
+        super().__init__([])
+        self.otherwise = otherwise  # What declining leads to.
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            f"信任并使用这份项目配置？↑ / ↓ 选择，Enter 确认；Esc 本次不使用（{self.otherwise}）。",
+            id="selection-help",
+            markup=False,
+        )
+        yield KeyboardOptions(*(Text(option) for option in self.OPTIONS), id="selection")
+
+
 class ChatEntry(Vertical):
     def __init__(self, speaker: str, text: str = "", notes: list[str] | tuple[str, ...] = ()) -> None:
         super().__init__(classes="entry user-entry" if speaker == "You" else "entry assistant-entry")
