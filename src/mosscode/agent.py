@@ -24,6 +24,7 @@ from .messages import (
     IterationProgress,
     Message,
     ProviderError,
+    ReplyRetry,
     ResponseBoundary,
     RunStopped,
     StreamEvent,
@@ -87,6 +88,47 @@ class ResponseCollector:
 
 
 DEFAULT_MAX_ITERATIONS = 200
+
+# A reply with neither text nor tool calls is dropped and the request sent again, at most this often.
+REPLY_RETRIES = 2
+REFUSALS = frozenset({"refusal", "content_filter"})
+RETRY_REASONS = {"empty": "模型返回了空回复", "thinking_cut": "回复在思考阶段就达到了输出上限"}
+
+
+def unusable(final: Completed) -> str | None:
+    """Why a complete reply cannot go into the history, or None when it can."""
+    message = final.message
+    if message.tool_calls or any(b.kind != "thinking" and b.text.strip() for b in message.content):
+        return None
+    if final.stop_reason in REFUSALS:
+        return "refusal"
+    return "thinking_cut" if final.stop_reason == "max_tokens" else "empty"
+
+
+def recovery_note(kind: str, request: Sequence[Message]) -> Supplement:
+    """Sent with the repeated request only: never part of the history or the cached prefix."""
+    if kind == "thinking_cut":
+        text = (
+            "上一次回复在写出任何正文或工具调用之前就达到了输出上限（多半是思考过长），已丢弃。"
+            "请缩短思考，直接给出回复或下一步的工具调用。"
+        )
+    elif request and request[-1].role == "tool":
+        text = "上一次回复是空的（没有正文，也没有工具调用），已丢弃。请根据上方的工具结果继续：给出回复，或调用工具进行下一步。"
+    else:
+        text = "上一次回复是空的（没有正文，也没有工具调用），已丢弃。请继续：给出回复，或调用工具进行下一步。"
+    return Supplement("reply-recovery", text)
+
+
+def unusable_notice(kind: str, final: Completed, attempts: int) -> str:
+    """Enough to tell a service problem from a model problem."""
+    stop = final.stop_reason or "未知"
+    if kind == "refusal":
+        return f"服务拒绝了这次请求，没有返回内容（停止原因：{stop}）；可以换个说法重新发送。"
+    kinds = "、".join(dict.fromkeys(b.kind if b.text.strip() else f"空 {b.kind}" for b in final.message.content))
+    notice = f"模型连续 {attempts} 次没有返回可用的内容（停止原因：{stop}；内容块：{kinds or '无'}），已停止。"
+    if kind == "thinking_cut":
+        return notice + "回复在思考阶段就达到了输出上限：可以调高 max_output_tokens 或降低思考强度后重新发送。"
+    return notice + "可以重新发送；反复出现时检查模型或服务的状态。"
 
 
 def add_usage(total: UsageTotals, usage: Usage, price: "ModelInfo | None" = None) -> UsageTotals:
@@ -278,14 +320,21 @@ class AgentLoop:
     def _active(self) -> Supplement | None:
         return active_skills(self.active_skills.texts())
 
-    def _model(self, messages, iteration, env, notes=()):
+    def _model(self, messages, iteration, env, notes=(), recovery: Supplement | None = None):
         reminder = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
         self._announced, self._reannounce = self.mode, False
         definitions = self._definitions()
         todos = todo_reminder(self.registry.todos if self.registry is not None else None)
         extra = tuple(
             item
-            for item in (reminder, self._gap, todos, self.goal_note, hook_notification((*self.turn_notes, *notes)))
+            for item in (
+                reminder,
+                self._gap,
+                todos,
+                self.goal_note,
+                hook_notification((*self.turn_notes, *notes)),
+                recovery,
+            )
             if item
         )
         self._gap = None  # Never part of the history or the transcript; sent with the first request only.
@@ -451,12 +500,15 @@ class AgentLoop:
                         async for event in events:
                             yield event
                 notes = await self._hook("pre_send", {"iteration": str(iteration)})
-                rescued = False
+                rescued, dropped, recovery = False, 0, None
                 while True:
                     request = deepcopy(self.history) + fresh
                     collector = ResponseCollector()
+                    # One-time reminders are consumed by _model; a dropped reply sends them again.
+                    once = (self._announced, self._reannounce, self._gap)
                     try:
-                        async with aclosing(collector.collect(self._model(request, iteration, env, notes))) as events:
+                        model = self._model(request, iteration, env, notes, recovery)
+                        async with aclosing(collector.collect(model)) as events:
                             async for event in events:
                                 yield event
                     except ProviderError as exc:
@@ -470,6 +522,17 @@ class AgentLoop:
                                 yield event
                         if not compacted:
                             raise exc
+                        continue
+                    final = collector.response
+                    kind = None if final is None or final.message.role != "assistant" else unusable(final)
+                    if kind is not None:
+                        self._usage(final.usage)  # Dropped, but its tokens were spent.
+                        if kind == "refusal" or dropped >= REPLY_RETRIES:
+                            raise ProviderError(unusable_notice(kind, final, dropped + 1), code="empty_reply")
+                        dropped += 1
+                        self._announced, self._reannounce, self._gap = once
+                        recovery = recovery_note(kind, request)
+                        yield ReplyRetry(RETRY_REASONS[kind], dropped, REPLY_RETRIES)
                         continue
                     break
                 final = collector.response

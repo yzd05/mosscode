@@ -216,6 +216,15 @@ class Retrying:
 
 
 @dataclass(frozen=True)
+class ReplyRetry:
+    """The model's reply had nothing usable; it was dropped and the same request is sent again."""
+
+    reason: str
+    attempt: int
+    max_attempts: int
+
+
+@dataclass(frozen=True)
 class CompactStarted:
     manual: bool
 
@@ -248,6 +257,7 @@ StreamEvent = (
     | ApprovalRequest
     | QuestionRequest
     | Retrying
+    | ReplyRetry
     | UserInput
     | CompactStarted
     | CompactFinished

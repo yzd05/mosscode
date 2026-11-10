@@ -157,6 +157,8 @@ MossCode 带有一份模型目录，记录各家模型的上下文窗口、输�
 
 请求在收到任何流事件之前遇到限流（429）、过载（529 / overloaded_error）、5xx、超时或连接中断时自动重试，默认最多 4 次，指数退避并带随机抖动，遵守服务给出的 `retry-after`（最长 60 秒）；界面状态行与 `--prompt` 的 stderr 显示重试原因和等待时间，等待期间 Esc 可取消。收到首个事件后的断流不重试，因为正文可能已显示。认证失败、请求不被接受等错误立即报告；上下文超限错误（HTTP 400/413 且报错提到 prompt is too long、maximum context length 等）标记为 `context_overflow`，由 Agent Loop 压缩后重试一次。`max_retries: 0` 关闭重试；SDK 自身的重试保持关闭，避免叠加。没有自动协议降级。未完整接收的 assistant 响应不进入历史；已经完整接收并执行的工具调用与实际结果保留。取消表示停止接收并关闭流，不保证远程服务已经停止计费。
 
+模型偶尔返回没有可用内容的回复：既没有正文也没有工具调用（只有空白或只有思考也算），或者还没写出任何正文和工具调用就碰到输出上限（多半是思考过长）。这样的回复不进入历史，MossCode 带一条说明重发同一请求：空回复时请模型继续（刚收到工具结果时请它根据结果继续），思考截断时请它缩短思考、直接给出回复或下一步工具调用。说明只随这次请求发送，排在历史之后，不改变提示缓存前缀。每次请求最多重发 2 次，界面状态行和 `--prompt` 的 stderr 显示“模型返回了空回复，重新请求（1/2）”。仍然没有内容时本轮以错误结束，说明中写出停止原因、收到的内容块类型和建议（思考截断时建议调高 `max_output_tokens` 或降低思考强度）。没有内容且停止原因是服务拒绝（`refusal`、`content_filter`）时不重发，直接报告。被丢弃的回复同样计入用量和费用。已经写出正文后才碰到输出上限的回复照常保留，本轮停止并提示可以输入“继续”。
+
 ## 无界面模式与输出格式
 
 `-p` 是 `--prompt` 的简写。`--output-format` 只用于无界面模式：
@@ -165,7 +167,7 @@ MossCode 带有一份模型目录，记录各家模型的上下文窗口、输�
 | --- | --- |
 | `text`（默认） | 正文流式输出到 stdout，提示与 `--show-usage` 用量输出到 stderr，与以往一致；任务中的 `@路径`（见 [终端界面](interface.md#引用文件)）附上后，stderr 打印一行“已附上 …” |
 | `json` | 结束时输出一个结果对象：`type`、`subtype`（`completed`、`max_iterations`、`error` 等停止原因）、`is_error`、`result`（最终正文或错误说明）、`num_turns`、`duration_ms`、`usage`、`total_cost_usd`（按[模型目录](#费用估算)估算的美元费用，没有价格时为 null）、`compactions`（成功压缩上下文的次数）、`model`、`permission_mode` |
-| `stream-json` | 每行一个 JSON 事件：`system`（init：cwd、model、permission_mode、tools）、`assistant`（text、tool_calls、stop_reason、usage）、`tool_result`（有图片时带 `images`：文件名、媒体类型、宽、高，不含图片数据）、`retry`、`notice`、`files_attached`（`entries`：每个 `@` 引用附上了什么，与界面中的说明相同）、`compact`（subtype 为 started、finished、failed，见 [上下文管理](context.md#界面与无界面输出)），最后一行是与 json 格式相同的 `result` |
+| `stream-json` | 每行一个 JSON 事件：`system`（init：cwd、model、permission_mode、tools）、`assistant`（text、tool_calls、stop_reason、usage）、`tool_result`（有图片时带 `images`：文件名、媒体类型、宽、高，不含图片数据）、`retry`、`reply_retry`（没有可用内容的回复被丢弃并重发：`attempt`、`max_attempts`、`reason`）、`notice`、`files_attached`（`entries`：每个 `@` 引用附上了什么，与界面中的说明相同）、`compact`（subtype 为 started、finished、failed，见 [上下文管理](context.md#界面与无界面输出)），最后一行是与 json 格式相同的 `result` |
 
 ```powershell
 moss -p "列出 src 下的模块" --output-format json

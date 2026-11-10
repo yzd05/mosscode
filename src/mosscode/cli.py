@@ -41,6 +41,7 @@ from .messages import (
     FilesAttached,
     Message,
     ProviderError,
+    ReplyRetry,
     ResponseBoundary,
     Retrying,
     RunStopped,
@@ -325,6 +326,15 @@ async def _prompt(
                                 "reason": event.reason,
                             }
                         )
+                    elif isinstance(event, ReplyRetry):
+                        _emit(
+                            {
+                                "type": "reply_retry",
+                                "attempt": event.attempt,
+                                "max_attempts": event.max_attempts,
+                                "reason": event.reason,
+                            }
+                        )
                     elif isinstance(event, (CompactStarted, CompactFinished, CompactFailed)):
                         _emit(_compact_event(event))
                     elif isinstance(event, Notice):
@@ -412,6 +422,10 @@ async def _text_prompt(
                         f"{event.reason}，{event.delay:.1f} 秒后重试（{event.attempt}/{event.max_attempts}）",
                         file=sys.stderr,
                         flush=True,
+                    )
+                elif isinstance(event, ReplyRetry):
+                    print(
+                        f"{event.reason}，重新请求（{event.attempt}/{event.max_attempts}）", file=sys.stderr, flush=True
                     )
                 elif isinstance(event, UsageUpdate) and show_usage:
                     print(request_usage_text(event.usage, event.iteration), file=sys.stderr, flush=True)

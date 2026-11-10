@@ -73,6 +73,7 @@ from .messages import (
     IterationProgress,
     Message,
     ProviderError,
+    ReplyRetry,
     ResponseBoundary,
     Retrying,
     RunStopped,
@@ -738,6 +739,15 @@ class ChatEntry(Vertical):
             self.body += event.text
             self.query_one(".message-row").display = True
             self.query_one(".raw", Static).update(self.body)
+
+    def discard(self) -> None:
+        """The streamed reply was dropped and the request is sent again: start over."""
+        self.thinking, self.body, self.thinking_started, self.thinking_elapsed = "", "", None, 0.0
+        self.phase = "waiting"
+        for selector in (".thinking-label", ".thinking"):
+            self.query_one(selector, Static).display = False
+        self.query_one(".raw", Static).update("等待回复…")
+        self.query_one(".message-row").display = True
 
     async def finish(self, message: Message) -> None:
         self._finish_thinking()
@@ -2725,6 +2735,10 @@ class MossCodeApp(TerminalApp[None]):
                     elif isinstance(event, Retrying):
                         self._retry_notice = f"{event.reason} · {event.delay:.0f} 秒后重试（{event.attempt}/{event.max_attempts}）· Esc 取消"
                         self._status(self._retry_notice)
+                    elif isinstance(event, ReplyRetry):
+                        if not continuation:  # Deltas of the dropped reply already went into this entry.
+                            reply.discard()
+                        self._hint(f"{event.reason}，重新请求（{event.attempt}/{event.max_attempts}）")
                     elif isinstance(event, Delta):
                         if continuation:
                             reply = ChatEntry("MossCode")
