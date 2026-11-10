@@ -131,10 +131,16 @@ def report(task: Task) -> str:
 
 def started(task: Task, *, moved: bool = False) -> str:
     info = task.command
-    first = f"已转入后台：任务 {task.id}" if moved else f"已在后台启动命令：任务 {task.id}"
     limit = f"时间限制 {info.time_limit:.0f} 秒；" if info.time_limit else ""
+    if moved:
+        # Without saying who moved it, models guess a reason ("a time limit") and then wait on it anyway.
+        return (
+            f"用户按 Ctrl+B 把命令转入了后台：任务 {task.id}，命令继续运行，输出（包括已收到的部分）写入 "
+            f"{info.log.path}（用 read_file 读取）。{limit}用户不想等它结束：先继续其他工作，没有其他工作就结束本轮，"
+            "不要用 sleep 或 task_output 的 wait 等它；命令结束时你会收到 <task-notification>。"
+        )
     return (
-        f"{first}，输出写入 {info.log.path}（用 read_file 读取）。{limit}"
+        f"已在后台启动命令：任务 {task.id}，输出写入 {info.log.path}（用 read_file 读取）。{limit}"
         "命令结束时你会收到 <task-notification>；不要用 sleep 轮询。"
     )
 

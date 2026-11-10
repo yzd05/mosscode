@@ -157,7 +157,11 @@ async def test_ctrl_b_moves_a_running_command_to_the_background(tmp_path):
     await asyncio.sleep(1)  # Let the first lines arrive.
     assert commands.detach_foreground() == 1
     result = await asyncio.wait_for(running, 5)
-    assert not result.is_error and result.details["moved"] and "已转入后台：任务 t1" in result.output
+    assert not result.is_error and result.details["moved"]
+    assert (
+        "用户按 Ctrl+B 把命令转入了后台：任务 t1" in result.output
+        and "不要用 sleep 或 task_output 的 wait" in result.output
+    )
     task = tasks.get("t1")
     assert task.status == "running" and commands.foreground_count() == 0
     text = task.command.log.path.read_text(encoding="utf-8")
