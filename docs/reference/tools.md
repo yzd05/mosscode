@@ -26,11 +26,13 @@
 
 `config.yaml` 顶层 `shell` 默认为 `auto`——Windows 优先使用 Git Bash（从 PATH 中的 git/bash 和常见安装位置查找，支持 Scoop shim，排除 System32 下的 WSL bash），找不到时使用 PowerShell；其他系统使用 bash，缺失时用 sh。可设为 `bash`、`powershell` 或 bash.exe 的完整路径；明确指定但找不到时启动报错。bash 以 `--noprofile --norc` 启动；Windows 上命令文本通过环境变量 `MOSSCODE_COMMAND` 交给 bash 执行，避免 MSYS 重新解析命令行时把 `\\` 合并为 `\`。系统提示的环境信息、工具描述和界面工具名都显示实际 shell。命令进程不继承保存 API 密钥的环境变量，见[密钥保护](providers.md#密钥保护)。
 
+命令的输出按行解码：是合法 UTF-8 的行按 UTF-8，其余的行在 Windows 上按系统的 OEM 代码页（中文 Windows 为 936/GBK）解码，所以 `ping`、`ipconfig`、`dir` 等 Windows 程序的中文输出可以正常显示，并可与 Python、Git Bash 工具的 UTF-8 输出混在一起。两种都不符合的行按 UTF-8 解码，无法解码的字节显示为 `�`。其他系统只按 UTF-8 解码。输出过长截断时，截断处被切开的半个字符会被丢弃。
+
 ## 后台命令
 
 开发服务器、监视构建和预计要跑几分钟以上的命令可以在后台运行。`execute_command` 带 `run_in_background: true` 时照常审批、照常进入沙箱，启动后立即返回任务 id 和输出文件路径，命令继续运行；可选的 `description`（最多 60 字）是任务标签，缺省为截短的命令文本。工具说明提醒模型不要用 `&`、`nohup`、`Start-Process` 放到后台，这些进程会随命令结束。
 
-- **输出文件**：stdout 和 stderr 按到达顺序写入 `<会话目录>/commands/<任务 id>.log`（不保存会话时写入系统临时目录的 `mosscode-commands/`）。文件由 MossCode 写入，命令不需要写会话目录的权限；模型用 `read_file` 读取，不需要审批。以 `[MossCode]` 开头的行是 MossCode 的说明：转入后台、被拒绝的域名、结束原因。
+- **输出文件**：stdout 和 stderr 按到达顺序写入 `<会话目录>/commands/<任务 id>.log`（不保存会话时写入系统临时目录的 `mosscode-commands/`）。文件由 MossCode 写入，命令不需要写会话目录的权限；模型用 `read_file` 读取，不需要审批。以 `[MossCode]` 开头的行是 MossCode 的说明：转入后台、被拒绝的域名、结束原因。Windows 上输出按[命令输出的解码规则](#命令-shell)转成 UTF-8 后写入（`read_file` 只读 UTF-8 文本）；没有换行的输出最多攒到 4 KiB 再写入。其他系统按原样写入命令输出的字节。
 - **结束时**：主对话收到一条 `<task-notification>`，包含任务 id、标签、命令、状态、退出码或被结束的原因、用时、输出文件路径和大小，以及最后 20 行（最多 2,000 字符）。送达方式与 [后台子 Agent 的通知](subagents.md#通知) 相同：主对话空闲时立即开启一轮，忙时在下一次请求前加入。退出码不为 0 时状态为失败。被 `task_stop`、`/tasks stop` 停止，或因 `/clear`、恢复会话、退出而结束的命令不发通知。
 - **查看和停止**：`task_output` 返回状态、输出文件和最后 50 行，`wait` 可以等待结束；`task_stop` 结束整个进程树。`/tasks` 列出命令任务，显示输出大小而不是 Token；`/tasks <id>` 显示命令、工作目录、沙箱、输出文件和最后几行。
 - **时间限制**：交互界面中默认不限时，模型给出的 `timeout` 就是限制。`-p` 中缺省为 600 秒。时间从启动或转入后台时算起，后台时 `timeout` 最大 3600 秒（前台仍最大 600 秒）。到时命令被结束并发通知。

@@ -24,6 +24,10 @@
 - 子 Agent 的 `model` 写 Claude Code 的模型名（`sonnet`、`opus`、`haiku`、`fable` 或 `claude-…`）且没有同名 Provider 时，使用当前模型，不再报错。
 - PowerShell 命令出错时，报错的位置行显示命令本身，不再显示 MossCode 加在前面的编码设置。
 
+### 修复
+
+- Windows 上按系统代码页输出的程序（如中文 Windows 上的 `ping`、`ipconfig`，代码页 936/GBK）在 `execute_command` 的结果、后台命令的输出文件、通知和 `task_output` 中不再显示为乱码：不是合法 UTF-8 的行改按 OEM 代码页解码，后台命令的输出文件转成 UTF-8 写入。
+
 ## [0.2.0] - 2026-11-04
 
 ### 新增

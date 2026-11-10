@@ -1,6 +1,7 @@
 """Background commands: run_in_background, ctrl+b, limits, notifications and who they end with."""
 
 import asyncio
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -8,11 +9,12 @@ import pytest
 from mosscode.agents.tasks import TaskManager, task_line
 from mosscode.messages import NOTIFICATION
 from mosscode.permissions import BACKGROUND_COMMAND_REASON, PermissionPolicy
-from mosscode.tools import create_default_registry
-from mosscode.tools.background import BackgroundCommands, notification, report
+from mosscode.tools import create_default_registry, output_text
+from mosscode.tools.background import BackgroundCommands, CommandLog, notification, report
+from mosscode.tools.output_text import DOUBLE_BYTE, console_encoding
 from test_agent import call, response
 from test_subagents import ScriptProvider, agents_dir, conversation, settle, write_agent
-from test_tools import process_alive, python_command
+from test_tools import GBK_BYTES, GBK_LINE, code_page_script, process_alive, python_command
 from waiting import until
 
 SLEEPER = "import sys,time; print('ready', flush=True); time.sleep(60)"
@@ -167,6 +169,83 @@ async def test_ctrl_b_moves_a_running_command_to_the_background(tmp_path):
     text = task.command.log.path.read_text(encoding="utf-8")
     assert "before" in text and "stderr:\nerr" in text and "命令已转入后台" in text
     await tasks.stop("t1")
+
+
+async def background_code_page_output(tmp_path, encoding: str, sample: str):
+    registry, tasks, _ = setup(tmp_path)
+    data = (sample + "\r\n").encode(encoding) * 3
+    await registry.execute(run(command=python_command(code_page_script(data, "done\n")), run_in_background=True))
+    task = await finished(tasks, "t1")
+    # Strict UTF-8, as read_file reads it; MossCode's own lines follow in the same encoding.
+    text = task.command.log.path.read_bytes().decode("utf-8")
+    assert text.startswith((sample + "\r\n") * 3 + "done\n") and "命令结束：退出码 0" in text
+    assert sample in notification(task) and sample in report(task) and "�" not in notification(task)
+
+
+async def test_code_page_output_reaches_the_log_and_notification_as_utf8(tmp_path, monkeypatch):
+    monkeypatch.setattr(output_text, "console_encoding", lambda: "gbk")
+    await background_code_page_output(tmp_path, "gbk", GBK_LINE.strip())
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console code pages")
+async def test_the_windows_console_code_page_reaches_the_log_as_utf8(tmp_path):
+    encoding = console_encoding()
+    if encoding is None:
+        pytest.skip("the OEM code page is UTF-8")
+    sample = "正在 Ping 具有 32 字节的数据" if encoding in DOUBLE_BYTE else "Résumé, naïve"
+    try:
+        sample.encode(encoding)
+    except UnicodeEncodeError:
+        pytest.skip(f"{encoding} cannot encode the sample")
+    await background_code_page_output(tmp_path, encoding, sample)
+
+
+async def test_ctrl_b_keeps_code_page_output_readable_across_the_move(tmp_path, monkeypatch):
+    monkeypatch.setattr(output_text, "console_encoding", lambda: "gbk")
+    registry, tasks, commands = setup(tmp_path)
+    marker, later = tmp_path / "go", "正在 Ping 具有 32 字节的数据"
+    script = (
+        f"import os,sys,time\nout=sys.stdout.buffer\nout.write({GBK_BYTES!r}); out.flush()\n"
+        f"while not os.path.exists({str(marker)!r}):\n    time.sleep(0.05)\n"
+        f"out.write({(later + chr(10)).encode('gbk')!r}); out.flush(); time.sleep(60)"
+    )
+    running = asyncio.create_task(registry.execute(run(command=python_command(script), timeout=60)))
+    await until(lambda: commands.foreground_count() == 1)
+    await asyncio.sleep(1)  # Let the first line arrive.
+    assert commands.detach_foreground() == 1
+    assert (await asyncio.wait_for(running, 5)).details["moved"]
+    marker.write_text("")
+    log = tasks.get("t1").command.log.path
+    await until(lambda: later in log.read_bytes().decode("utf-8"))
+    text = log.read_bytes().decode("utf-8")
+    assert text.startswith(GBK_LINE) and "命令已转入后台" in text and "�" not in text
+    await tasks.stop("t1")
+
+
+async def test_a_stopped_commands_unfinished_line_still_reaches_the_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(output_text, "console_encoding", lambda: "gbk")
+    registry, tasks, _ = setup(tmp_path)
+    prompt = "按 q 退出"  # No line break: the decoder holds it until the line ends or the stream does.
+    script = f"import sys,time; sys.stdout.buffer.write({prompt.encode('gbk')!r}); sys.stdout.flush(); time.sleep(60)"
+    await registry.execute(run(command=python_command(script), run_in_background=True))
+    await asyncio.sleep(1.5)  # Let the prompt arrive; it stays held in the decoder.
+    log = tasks.get("t1").command.log.path
+    assert prompt not in log.read_bytes().decode("utf-8")
+    await tasks.stop("t1")
+    text = log.read_bytes().decode("utf-8")
+    assert text.startswith(prompt + "\n[MossCode] 命令已被停止。"), text
+
+
+def test_last_lines_read_a_code_page_tail_cut_inside_a_character(tmp_path, monkeypatch):
+    monkeypatch.setattr(output_text, "console_encoding", lambda: "gbk")
+    # Two lines and all but the first byte of the one before: the kept tail starts inside 来.
+    monkeypatch.setattr("mosscode.tools.background.KEEP", 3 * len(GBK_BYTES) - 1)
+    log = CommandLog(tmp_path / "t1.log")
+    for _ in range(20):
+        log.write(GBK_BYTES)
+    log.close()
+    line = GBK_LINE.strip()
+    assert log.last_lines(3, 2000) == f"{line[1:]}\n{line}\n{line}"
 
 
 async def test_ctrl_b_leaves_a_sub_agents_command_alone(tmp_path):

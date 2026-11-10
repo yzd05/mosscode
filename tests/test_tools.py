@@ -9,8 +9,10 @@ from pathlib import Path
 import pytest
 
 from mosscode.messages import ToolCall
-from mosscode.tools import create_default_registry
+from mosscode.tools import create_default_registry, output_text
 from mosscode.tools.base import ExecutionCancelled
+from mosscode.tools.output_text import DOUBLE_BYTE, OutputDecoder, console_encoding, decode_output
+from mosscode.tools.process import Window
 from mosscode.tools.shell import Shell, resolve_shell
 from waiting import until
 
@@ -248,6 +250,79 @@ async def test_command_success_failure_output_cap_and_timeout(tmp_path):
         call("execute_command", command=python_command("import time; time.sleep(30)"), timeout=0.3)
     )
     assert timeout.code == "timeout"
+
+
+# What ping writes on Chinese Windows: the console code page (936), not UTF-8.
+GBK_LINE = "来自 127.0.0.1 的回复: 字节=32 时间<1ms TTL=128\r\n"
+GBK_BYTES = GBK_LINE.encode("gbk")
+
+
+def code_page_script(data: bytes, utf8: str = "") -> str:
+    """A command writing data as raw bytes, then utf8 encoded as UTF-8."""
+    return f"import sys; sys.stdout.buffer.write({data!r} + {utf8.encode()!r}); sys.stdout.flush()"
+
+
+def test_lines_that_are_not_utf8_decode_in_the_console_code_page():
+    own = "[MossCode] 命令结束：退出码 0。\n"
+    data = GBK_BYTES * 2 + own.encode() + "中文\n".encode()
+    assert decode_output(data, encoding="gbk") == GBK_LINE * 2 + own + "中文\n"
+    # Without a code page (systems other than Windows) every line is UTF-8, as before.
+    plain = decode_output(data, encoding=None)
+    assert "来自" not in plain and "�" in plain and plain.endswith(own + "中文\n")
+    # Bytes that fit neither are UTF-8 with replacement rather than code-page garbage.
+    assert decode_output(b"ok \xff\xfe\n", encoding="gbk") == "ok ��\n"
+
+
+def test_a_cut_drops_half_a_code_page_character_instead_of_garbling_the_line():
+    text = "正在 Ping 具有 32 字节的数据"
+    data = text.encode("gbk")
+    for skip in range(1, 8):
+        start = decode_output(data[skip:], cut_start=True, encoding="gbk")
+        end = decode_output(data[:-skip], cut_end=True, encoding="gbk")
+        assert text.endswith(start) and len(text) - len(start) <= skip, (skip, start)
+        assert text.startswith(end) and len(text) - len(end) <= skip, (skip, end)
+
+
+def test_a_streams_chunks_decode_as_its_whole_output_wherever_they_split():
+    data = GBK_BYTES * 3 + "[MossCode] 命令已转入后台。\n".encode() + GBK_BYTES
+    whole = decode_output(data, encoding="gbk")
+    for size in (1, 2, 3, 5, 8192):
+        decoder = OutputDecoder("gbk")
+        pieces = [decoder.decode(data[i : i + size]) for i in range(0, len(data), size)]
+        assert "".join(pieces) + decoder.decode(b"", final=True) == whole, size
+    # A line without a break still shows once it is long, and is not held whole.
+    decoder = OutputDecoder("gbk")
+    assert decoder.decode("中文".encode("gbk") * 3000) == "中文" * 3000 and not decoder.pending
+
+
+def test_kept_command_output_in_the_code_page_is_readable_on_both_sides_of_the_cut(monkeypatch):
+    monkeypatch.setattr(output_text, "console_encoding", lambda: "gbk")
+    window = Window(101, 101)  # Odd sizes cut inside characters.
+    for _ in range(50):
+        window.add(GBK_BYTES)
+    text, truncated = window.text()
+    head, rest = text.split("\n…（中间省略 ")
+    end = rest.split("）…\n", 1)[1]
+    assert truncated and "�" not in text
+    assert (GBK_LINE * 50).startswith(head) and (GBK_LINE * 50).endswith(end) and "来自" in end
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console code pages")
+async def test_a_windows_program_writing_the_console_code_page_reads_as_text(tmp_path):
+    encoding = console_encoding()
+    if encoding is None:
+        pytest.skip("the OEM code page is UTF-8")
+    sample = "正在 Ping 具有 32 字节的数据" if encoding in DOUBLE_BYTE else "Résumé, naïve"
+    try:
+        data = (sample + "\n").encode(encoding)
+    except UnicodeEncodeError:
+        pytest.skip(f"{encoding} cannot encode the sample")
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    result = await registry.execute(
+        call("execute_command", command=python_command(code_page_script(data, "中文\n")), timeout=10)
+    )
+    assert not result.is_error, result
+    assert result.details["stdout"] == sample + "\n中文\n"
 
 
 def process_alive(pid):

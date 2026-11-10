@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ..agents.tasks import STATUS_LABELS, CommandInfo, Task, TaskManager
 from .base import ToolFailure
+from .output_text import decode_output
 
 DEFAULT_LIMIT, MAX_LIMIT = 8, 64
 TIMEOUT_LIMIT = 3600  # The most a background command's own timeout may ask for.
@@ -65,10 +66,8 @@ class CommandLog:
         del self._tail[: max(0, len(self._tail) - KEEP)]
 
     def last_lines(self, lines: int, chars: int) -> str:
-        from .process import _decode_cut
-
         data = bytes(self._tail)
-        text = _decode_cut(data, start=True) if self.size > len(data) else data.decode("utf-8", errors="replace")
+        text = decode_output(data, cut_start=self.size > len(data))
         text = "\n".join(text.rstrip("\n").splitlines()[-lines:])
         return text if len(text) <= chars else "…" + text[-(chars - 1) :]
 

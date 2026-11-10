@@ -10,8 +10,10 @@ from pydantic import Field, model_validator
 
 from ..command_env import command_environment
 from ..credentials import child_environment
+from . import output_text
 from .background import TIMEOUT_LIMIT
 from .base import Params, Tool, ToolFailure
+from .output_text import OutputDecoder, decode_output
 from .shell import Shell, resolve_shell
 
 OUTPUT_LIMIT = 32768
@@ -51,21 +53,6 @@ async def terminate_tree(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
-def _decode_cut(data: bytes, *, start: bool) -> str:
-    """Decode one side of a cut without a broken character at the cut edge."""
-    if start:
-        skip = 0
-        while skip < min(3, len(data)) and 0x80 <= data[skip] < 0xC0:
-            skip += 1
-        return data[skip:].decode("utf-8", errors="replace")
-    for trim in range(min(3, len(data)) + 1):
-        try:
-            return data[: len(data) - trim].decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-    return data.decode("utf-8", errors="replace")
-
-
 class Window:
     """The first `limit` bytes and, with `tail`, a rolling window of the bytes after them."""
 
@@ -89,15 +76,19 @@ class Window:
     def marker(self) -> str:
         return f"\n…（中间省略 {self.omitted} 字节）…\n"
 
-    def text(self) -> tuple[str, bool]:
-        """The kept text and whether anything was dropped; head + end is the whole stream when nothing was."""
+    def text(self, rest: OutputDecoder | None = None) -> tuple[str, bool]:
+        """The kept text and whether anything was dropped; head + end is the whole stream when nothing was.
+
+        rest, when given, decodes the last part and keeps a character the stream has not finished for what follows.
+        """
+        final = rest is None
+        rest = rest or OutputDecoder()
         if self.omitted <= 0:
-            return (bytes(self.head) + bytes(self.end)).decode("utf-8", errors="replace"), False
+            return rest.decode(bytes(self.head) + bytes(self.end), final=final), False
+        head = decode_output(bytes(self.head), cut_end=True)
         if not self.tail:
-            return self.head.decode("utf-8", errors="replace"), True
-        return _decode_cut(bytes(self.head), start=False) + self.marker() + _decode_cut(
-            bytes(self.end), start=True
-        ), True
+            return head, True
+        return head + self.marker() + rest.decode(bytes(self.end), cut=True, final=final), True
 
     def raw(self) -> bytes:
         if self.omitted <= 0 or not self.tail:
@@ -111,16 +102,31 @@ class Output:
     def __init__(self, limit: int = OUTPUT_LIMIT, tail: int = 0, *, log=None):
         self.windows = {"stdout": Window(limit, tail), "stderr": Window(limit, tail)}
         self.log = log
+        # Where commands may write in a code page (Windows), the log is written as UTF-8: the model reads it with
+        # read_file, which reads only UTF-8, and MossCode's own lines in it are UTF-8 anyway. Converting as output
+        # arrives keeps the file readable while the command runs; each stream has its own decoder so a character
+        # split between chunks is not mixed with the other stream. Elsewhere the bytes go in as they were written.
+        self.decoders = {name: OutputDecoder() for name in self.windows} if output_text.console_encoding() else None
 
     def write(self, stream: str, chunk: bytes) -> None:
-        if self.log is not None:
+        if self.log is None:
+            self.windows[stream].add(chunk)
+        elif self.decoders is None:
             self.log.write(chunk)
         else:
-            self.windows[stream].add(chunk)
+            self.log.write(self.decoders[stream].decode(chunk).encode())
+
+    def end(self, stream: str) -> None:
+        """The stream closed: whatever its decoder still held goes to the log."""
+        if self.log is not None and self.decoders is not None:
+            self.log.write(self.decoders[stream].decode(b"", final=True).encode())
 
     def move_to(self, log) -> None:
         """ctrl+b: what was kept goes to the file first (stdout, then stderr), later output after it."""
-        stdout, stderr = self.windows["stdout"].raw(), self.windows["stderr"].raw()
+        if self.decoders is None:
+            stdout, stderr = self.windows["stdout"].raw(), self.windows["stderr"].raw()
+        else:
+            stdout, stderr = (self.windows[name].text(self.decoders[name])[0].encode() for name in self.windows)
         log.write(stdout)
         if stderr:
             log.write((b"" if not stdout or stdout.endswith(b"\n") else b"\n") + b"stderr:\n" + stderr)
@@ -268,6 +274,9 @@ async def _run(args, cwd, *, check, limit, tail, env, input, ui_limits, gate_pyt
     finally:
         await terminate_tree(process)
         await asyncio.gather(stdout_task, stderr_task, *(task for task in (feeder,) if task), return_exceptions=True)
+        # Also when the command was stopped: an unfinished last line still reaches the log, before MossCode's notes.
+        output.end("stdout")
+        output.end("stderr")
 
 
 DEFAULT_TIMEOUT, FOREGROUND_TIMEOUT = 120.0, 600
