@@ -64,7 +64,7 @@ cd "$moss\.test-artifacts\acceptance\project"
 
 预期：
 
-- **pytest**：`969 passed`，无跳过（本机已开启 Windows 开发者模式并安装 ripgrep；缺少其一时，文件符号链接测试或 rg 路径测试会跳过）。
+- **pytest**：没有失败。2026-11-10 在 Windows 11 上为 `1662 passed, 22 skipped`，数量随版本变化。在 Windows 上跳过的是只在 Linux/macOS 上运行的测试：bubblewrap 后端 18 项、bubblewrap 经 Unix 套接字连代理 1 项、非 Windows 系统的沙箱清理 1 项、反斜杠路径粘贴 1 项；剪贴板里没有文字时，命令不能读剪贴板的测试也会跳过（1 项）。未开启 Windows 开发者模式时文件符号链接测试会跳过，PATH 中没有 ripgrep 时 rg 路径测试会跳过。
 - **compileall**：没有输出。
 - **verify_inline_terminal.py**：在真实控制台里用假模型跑一遍界面，退出码为 0。需要在交互式终端中运行。
 - **verify_resize.py**：会弹出一个控制台窗口，几秒后自动关闭。输出 before、narrow、wide 三行，每行都是 `passed`，退出码为 0。加 `--no-redraw` 运行可以看到修复前的现象：narrow 和 wide 两行为 FAILED，状态栏出现多次。

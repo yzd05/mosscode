@@ -1,5 +1,6 @@
 """Session transcripts, resume and cleanup."""
 
+import io
 import json
 import os
 from datetime import datetime, timedelta
@@ -728,7 +729,7 @@ async def test_tui_lists_resumes_renders_and_returns_unanswered_text(tmp_path):
         await pilot.press("enter")
 
         def rendered():
-            console = Console(record=True, width=100)
+            console = Console(record=True, width=100, file=io.StringIO())
             for widget in app.query(Static):
                 console.print(getattr(widget, "transcript", None) or widget.render())
             return console.export_text()

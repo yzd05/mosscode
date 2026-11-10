@@ -1,6 +1,7 @@
 """Memory notes, injection, the memory tool and background extraction."""
 
 import asyncio
+import io
 import json
 from datetime import date
 from time import monotonic
@@ -613,7 +614,7 @@ async def test_tui_memory_command_and_update_line(tmp_path):
     app = MossCodeApp(conv, "test")
 
     def shown():
-        console = Console(record=True, width=160)
+        console = Console(record=True, width=160, file=io.StringIO())
         for widget in app.query(Static):
             console.print(getattr(widget, "transcript", None) or widget.render())
         return console.export_text()
