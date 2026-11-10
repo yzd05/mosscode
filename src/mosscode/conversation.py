@@ -421,6 +421,11 @@ class Conversation:
                 for notice in self._drain():
                     yield notice
 
+    @property
+    def todos(self) -> tuple:
+        """The main agent's checklist (todo_write), for the interface."""
+        return self.registry.todos.items if self.registry is not None else ()
+
     def rewind_points(self) -> list[RewindPoint]:
         """The typed messages still in the context, newest first."""
         points = []
@@ -848,6 +853,8 @@ class Conversation:
         if self.checkpoints is not None:
             self.checkpoints.load(restored.snapshots, restored.marks)
         self._agent.restore(restored.history, gap_reminder(restored.last_time))
+        if self.registry is not None:
+            self.registry.todos.restore(restored.todos)
         self._drop_skills()
         self._rewind()
         notices = []

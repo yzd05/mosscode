@@ -14,6 +14,7 @@ from ..credentials import redact, redact_value
 from ..messages import ToolCall, ToolDefinition, ToolResult
 from ..permissions import Decision, PermissionPolicy
 from ..security import SecurityError, project_path, resolve_path
+from ..todo import TodoList
 
 # The call a tool is executing, for tools that need its id (the agent tool's row in the UI).
 CURRENT_CALL: ContextVar[ToolCall | None] = ContextVar("mosscode_current_call", default=None)
@@ -173,6 +174,7 @@ class ToolRegistry:
         self.commands = None  # The session's BackgroundCommands; None runs every command in the foreground.
         # Who its background commands end with: "" for the main conversation, else a sub-agent task id or member:<name>.
         self.task_id = ""
+        self.todos = TodoList()  # This agent's own checklist (todo_write); a sub-agent's view starts empty.
         if any(tool.root != self.permissions.root for tool in self._tools.values()):
             raise ValueError("工具与权限策略必须使用同一个项目根目录。")
 

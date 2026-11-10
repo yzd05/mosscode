@@ -7,6 +7,7 @@ from .plan import ExitPlanMode
 from .process import ExecuteCommand
 from .search import Glob, Grep
 from .shell import Shell
+from .todo import TodoWrite
 from .web import WebFetch, WebSearch
 
 WEB_TOOLS = ("web_fetch", "web_search")
@@ -20,8 +21,9 @@ def create_default_registry(
     permissions: PermissionPolicy | None = None,
     shell: Shell | str | None = "auto",
     web_search=None,
+    todo: bool = True,
 ) -> ToolRegistry:
-    """web_search (a WebSearchConfig) adds the search tool when its key is set."""
+    """web_search (a WebSearchConfig) adds the search tool when its key is set; todo offers todo_write."""
     root = Path.cwd() if root is None else root
     policy = permissions or PermissionPolicy(root, mode=permission_mode, load=load_permissions)
     state = FileState()  # Shared so edits can see what read_file returned.
@@ -35,6 +37,8 @@ def create_default_registry(
         ExitPlanMode(root),
         WebFetch(root),
     )
+    if todo:
+        tools += (TodoWrite(root),)
     if web_search is not None:
         from ..web_search import create_backend
 

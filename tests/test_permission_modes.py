@@ -174,6 +174,7 @@ async def test_plan_is_approved_in_tui_then_writes_in_same_task(tmp_path, approv
             "execute_command",
             "exit_plan_mode",
             "web_fetch",
+            "todo_write",
             "task_output",
             "task_stop",
         }
@@ -184,7 +185,7 @@ async def test_plan_is_approved_in_tui_then_writes_in_same_task(tmp_path, approv
             assert [r.code for r in results] == [None, None]
             assert (tmp_path / "a").read_text() == "planned"
             assert reg.permissions.mode == "acceptEdits" and conv.mode == "normal"
-            assert len(provider.requests[1][2]) == 9
+            assert len(provider.requests[1][2]) == 10
         else:
             assert results[0].code == "permission_denied" and not (tmp_path / "a").exists()
             assert conv.mode == "plan" and reg.permissions.mode == "plan"
@@ -202,9 +203,14 @@ def test_cli_accepts_four_modes(monkeypatch, capsys, tmp_path, mode):
     original = create_default_registry
     observed = []
 
-    def make_registry(*, permission_mode, shell="auto", web_search=None):
+    def make_registry(*, permission_mode, shell="auto", web_search=None, todo=True):
         reg = original(
-            tmp_path, permission_mode=permission_mode, load_permissions=False, shell=shell, web_search=web_search
+            tmp_path,
+            permission_mode=permission_mode,
+            load_permissions=False,
+            shell=shell,
+            web_search=web_search,
+            todo=todo,
         )
         observed.append(reg.permissions.mode)
         return reg

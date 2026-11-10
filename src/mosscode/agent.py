@@ -48,8 +48,9 @@ from .prompts import (
     mode_reminder,
     stable_prompt,
 )
-from .session import compact_record, message_record, rewind_record
+from .session import compact_record, message_record, rewind_record, todo_record
 from .skills import ActiveSkills
+from .todo import todo_reminder
 from .tools import shell_label
 from .tools.base import ToolRegistry
 from .tools.execution import execute_batch
@@ -173,6 +174,8 @@ class AgentLoop:
         self.hooks = None
         self.hook_context: Supplement | None = None  # session_start output, cached prefix.
         self.turn_notes: tuple[tuple[str, str], ...] = ()  # turn_start output, every request this turn.
+        if registry is not None:
+            registry.todos.on_change = lambda items, mark: self._commit(todo_record(items, mark))
 
     def _commit(self, record: dict) -> None:
         if self.on_commit is not None:
@@ -197,6 +200,7 @@ class AgentLoop:
         self.compact_failures = 0
         if self.registry is not None:
             self.registry.forget_reads()
+            self.registry.todos.rewind(keep)
         self._commit(rewind_record(keep, message))
 
     def remind(self, reminder: Supplement) -> None:
@@ -246,6 +250,8 @@ class AgentLoop:
         self._gap = None
         self.active_skills.clear()
         self.hook_context, self.turn_notes = None, ()  # The next session_start regenerates it.
+        if self.registry is not None:
+            self.registry.todos.clear()
 
     def set_provider(self, provider: Provider, budget: ContextBudget | None = None):
         if self.busy:
@@ -275,7 +281,10 @@ class AgentLoop:
         reminder = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
         self._announced, self._reannounce = self.mode, False
         definitions = self._definitions()
-        extra = tuple(item for item in (reminder, self._gap, hook_notification((*self.turn_notes, *notes))) if item)
+        todos = todo_reminder(self.registry.todos if self.registry is not None else None)
+        extra = tuple(
+            item for item in (reminder, self._gap, todos, hook_notification((*self.turn_notes, *notes))) if item
+        )
         self._gap = None  # Never part of the history or the transcript; sent with the first request only.
         prefix = tuple(item for item in (env, self._active(), self.hook_context) if item)
         prompt = PromptRequest(self._prompt(definitions), prefix + extra)
@@ -323,6 +332,7 @@ class AgentLoop:
         self._commit(compact_record(done.history[0], len(done.history) - 1, str(done.record) if done.record else None))
         if self.registry is not None:
             self.registry.forget_reads()
+            self.registry.todos.rebase()
         # The mode rules may have been summarized away; the next request repeats them (as after /clear).
         self._announced, self._reannounce = "normal", True
         self.meter.invalidate()
@@ -515,6 +525,8 @@ class AgentLoop:
                 try:
                     # Read per batch: /model may have switched to a model with or without image input.
                     self.registry.images = getattr(getattr(self.provider, "config", None), "accepts_images", True)
+                    # Checklist changes in this batch are undone by a /rewind that drops this response.
+                    self.registry.todos.mark = len(self.history)
                     async with aclosing(execute_batch(final.message, self.registry, self.history)) as batch:
                         boundary = await anext(batch)
                         yield UsageUpdate(iteration, final.usage, self.total_usage)

@@ -23,7 +23,7 @@ def call(name, **arguments):
 
 async def test_registry_schema_and_validation(tmp_path):
     registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
-    assert len(registry.definitions()) == 7
+    assert len(registry.definitions()) == 8
     assert "web_fetch" in registry.names() and "web_search" not in registry.names()
     with pytest.raises(ValueError, match="重复"):
         registry.register(registry.get("read_file"))

@@ -20,6 +20,7 @@ from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
 from .reasoning import DEFAULT, LEVEL_LABELS, LEVELS, Unsupported, thinking_options
 from .skills import ForkRequest, source_label
+from .todo import render as render_todos
 from .usage import cost_text
 
 USAGE_WIDTH = 22
@@ -1271,6 +1272,17 @@ def _task_names(ctx: CommandContext):
     ]
 
 
+def todo_report(conversation) -> str:
+    items = getattr(conversation, "todos", ())
+    if not items:
+        return "当前没有任务清单。模型处理多步任务时会用 todo_write 建立清单，显示在输入框上方。"
+    return "任务清单\n" + render_todos(items)
+
+
+async def _todo(ctx: CommandContext, argument: str) -> None:
+    await ctx.ui.note(todo_report(ctx.conversation))
+
+
 # Worktrees ---------------------------------------------------------------------------
 
 WORKTREE_USAGE = (
@@ -1652,6 +1664,7 @@ BUILTIN = CommandRegistry(
             complete=_task_names,
             while_running=True,
         ),
+        Command("todo", "查看模型当前的完整任务清单", "/todo", "local", handler=_todo, while_running=True),
         Command(
             "worktree",
             "查看、创建、删除 git 工作树",

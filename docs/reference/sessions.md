@@ -30,6 +30,7 @@
 | `provider` | `/model` 切换：此前消息中只对原模型有效的数据（thinking 签名、加密推理）清除 |
 | `checkpoint` | 文件检查点：`message`（当时最新的用户消息 id）、`path`（工作区内为相对路径）、`blob`（快照文件名，`null` 表示文件当时不存在），过大的文件带 `too_large: true` |
 | `rewind` | `/rewind` 退回对话：历史变为前 `keep` 条，`message` 是退回的那条消息 |
+| `todo` | 模型用 `todo_write` 更新了任务清单：`todos`（完整清单，每项 `id`、`content`、`status`）和 `keep`（这次更新时的历史长度）。恢复时取最后一份；`rewind` 记录撤销 `keep` 大于退回位置的更新，见 [任务清单](tools.md#任务清单) |
 | `task` | 子 Agent 任务的开始（`event: start`）和结束（`event: end`）：任务 id、类型、标签、状态、对话记录路径。恢复时跳过，不重新运行旧任务 |
 
 子 Agent 的消息不进入主对话历史，写在会话目录的 `subagents/<任务 id>.jsonl` 中：第一行是 `{"type": "subagent", ...}` 任务信息，之后是与上表相同的 `message` 记录（见 [子 Agent](subagents.md#对话记录)）。后台任务的通知是 `synthetic` 为 `task-notification` 的用户消息，随主对话历史保存。消息中 `@` 引用的文件内容是紧跟在这条消息后面、`synthetic` 为 `file-mentions` 的用户消息（见 [终端界面](interface.md#引用文件)），同样随历史保存，恢复会话后仍在上下文中。在输入框中用 `!` 执行的命令及其输出是 `synthetic` 为 `shell-command` 的用户消息（见 [终端界面](interface.md#执行命令)），会话最后一条是它时也不会被当作“没有得到回复”的消息放回输入框。

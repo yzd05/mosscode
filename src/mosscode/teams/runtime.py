@@ -272,7 +272,10 @@ async def build_runner(
         from ..tools.background import share
 
         shell = getattr(main.registry.get("execute_command"), "shell", None)
-        fresh = create_default_registry(root, permissions=policy, shell=shell if shell is not None else "auto")
+        todo = main.registry.get("todo_write") is not None  # Only when the main conversation has it.
+        fresh = create_default_registry(
+            root, permissions=policy, shell=shell if shell is not None else "auto", todo=todo
+        )
         web = tuple(tool for tool in web_tools(main.registry, root) if keep(tool.name))
         registry = fresh.for_agent(
             agent="teammate", agent_type=agent.name, permissions=policy, keep=keep, extra=(*web, *extra)

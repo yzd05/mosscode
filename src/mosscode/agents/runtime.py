@@ -326,7 +326,10 @@ class SubAgents:
             from ..tools.background import share
 
             shell = getattr(main.registry.get("execute_command"), "shell", None)
-            fresh = create_default_registry(root, permissions=policy, shell=shell if shell is not None else "auto")
+            todo = main.registry.get("todo_write") is not None  # Only when the main conversation has it.
+            fresh = create_default_registry(
+                root, permissions=policy, shell=shell if shell is not None else "auto", todo=todo
+            )
             registry = fresh.for_agent(
                 agent="subagent",
                 agent_type=agent.name,

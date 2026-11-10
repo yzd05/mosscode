@@ -296,7 +296,9 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
     from ..session import Session
     from ..tools import create_default_registry
 
-    registry = create_default_registry(project, shell=settings.shell, web_search=settings.web_search)
+    registry = create_default_registry(
+        project, shell=settings.shell, web_search=settings.web_search, todo=settings.todo_tool
+    )
     registry.permissions.interactive = interactive
     tool = registry.get("execute_command")
     hooks = HookEngine(project, shell=getattr(tool, "shell", None), enabled=True, trust_project=False)

@@ -68,6 +68,7 @@ providers:
 | `teammate_mode` | `auto` | 团队成员在哪里运行：`auto`、`in-process`、`windows-terminal`、`tmux`，见 [Agent 团队](docs/reference/teams.md#后端) |
 | `team_max_members` | `4` | 每个团队的成员上限，1–8 |
 | `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE=1`，见 [Agent 团队](docs/reference/teams.md#协调者模式) |
+| `todo_tool` | `true` | 提供 `todo_write`，模型在多步任务中维护任务清单，显示在输入框上方，见 [任务清单](docs/reference/tools.md#任务清单) |
 | `claude_directories` | `false` | 另外读取 Claude Code 的 `.claude/skills/`、`.claude/agents/`（用户级和项目级），见 [Skill](docs/reference/skills.md#存放位置) |
 | `sandbox` | `mode: off` | 命令沙箱：`mode: on` 时模型的命令在系统隔离中运行（Linux、macOS、Windows），见 [命令沙箱](docs/reference/sandbox.md) |
 | `web_search` | 无 | 搜索服务，如 `{provider: tavily, api_key_env: TAVILY_API_KEY}`；未配置时不提供搜索，见 [工具与 Agent Loop](docs/reference/tools.md#web_search) |

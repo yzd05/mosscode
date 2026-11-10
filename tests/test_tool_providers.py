@@ -39,7 +39,7 @@ async def test_actual_sdk_repeated_tool_rounds_and_plan_filter(tmp_path, protoco
         assert await conv.ask("plan") == "你好"
         definitions = requests[-1][1]["tools"]
         names = {d["function"]["name"] if protocol == "openai-chat-completions" else d["name"] for d in definitions}
-        plan_tools = {"read_file", "glob", "grep", "execute_command", "exit_plan_mode", "web_fetch"}
+        plan_tools = {"read_file", "glob", "grep", "execute_command", "exit_plan_mode", "web_fetch", "todo_write"}
         assert names == plan_tools | {"task_output", "task_stop"}  # The task tools of background commands.
         assert all(body.closed for body in bodies)
     finally:
@@ -187,7 +187,7 @@ async def test_actual_sdk_tool_schema_stream_execution_and_replay(tmp_path, prot
         assert await conv.ask("write then read") == "你好"
         assert len(requests) == 2
         assert (tmp_path / "sample-中.txt").read_text(encoding="utf-8") == "你好\n"
-        assert len(requests[0][1]["tools"]) == 9
+        assert len(requests[0][1]["tools"]) == 10
         second = requests[1][1]
         if protocol == "anthropic-messages":
             assert second.get("tool_choice") != {"type": "none"}

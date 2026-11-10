@@ -577,7 +577,10 @@ def run(args: argparse.Namespace) -> None:
             if config is None:
                 return
         registry = create_default_registry(
-            permission_mode=args.permission_mode, shell=settings.shell, web_search=settings.web_search
+            permission_mode=args.permission_mode,
+            shell=settings.shell,
+            web_search=settings.web_search,
+            todo=settings.todo_tool,
         )
         mcp_settings = load_mcp_settings(Path.cwd(), plugins=plugins.plugins)
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None

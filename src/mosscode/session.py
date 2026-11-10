@@ -19,6 +19,7 @@ from .images import ImageRef, ProcessedImage, store_image
 from .messages import Message, ToolResult
 from .paths import SESSION_ID, mosscode_home, new_session_id, project_dir
 from .serialization import message_from_json, message_to_json
+from .todo import items_from_json
 
 MARKER = ".mosscode-session"
 KEEP_DAYS = 30
@@ -137,6 +138,11 @@ def checkpoint_record(message: str, path: str, blob: str | None, too_large: bool
 def skill_record(name: str, arguments: str, pinned: bool) -> dict:
     """A skill was used; pinned when its SOP went into <active-skills>."""
     return {"type": "skill", "time": _now(), "name": name, "arguments": arguments, "pinned": pinned}
+
+
+def todo_record(items, keep: int) -> dict:
+    """The checklist after a todo_write; keep is the history length that includes the call's response."""
+    return {"type": "todo", "time": _now(), "keep": keep, "todos": [item.to_json() for item in items]}
 
 
 def provider_record(name: str, protocol: str, model: str) -> dict:
@@ -418,6 +424,7 @@ class Restored:
     lost_images: int = 0  # Image files missing from the session directory.
     snapshots: tuple[Snapshot, ...] = ()  # File checkpoints in record order.
     marks: dict[str, int] = field(default_factory=dict)  # Message id -> snapshots taken before it was sent.
+    todos: tuple = ()  # The main agent's latest checklist (TodoItem).
 
 
 def _strip(history: Sequence[Message]) -> list[Message]:
@@ -469,6 +476,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     skills: list[tuple[str, str, bool]] = []
     snapshots: list[Snapshot] = []
     marks: dict[str, int] = {}
+    todos: list[tuple[int, tuple]] = []  # (keep, items) per change, so rewinds can step back.
     images, lost = path.with_suffix("") / "images", []
     with path.open("rb") as stream:
         for raw in stream:
@@ -491,12 +499,14 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     if type(keep) is not int or keep < 0:
                         raise ValueError("keep 不合法")
                     history = history[:keep]
+                    todos = [entry for entry in todos if entry[0] <= keep]
                 elif kind == "compact":
                     keep = record.get("keep")
                     if type(keep) is not int or keep < 0:
                         raise ValueError("keep 不合法")
                     boundary = message_from_json(record.get("boundary"), images, lost)
                     history = [boundary] + (history[len(history) - min(keep, len(history)) :] if keep else [])
+                    todos = [(0, todos[-1][1])] if todos else []
                 elif kind == "provider":
                     if not isinstance(record.get("name"), str) or not isinstance(record.get("protocol"), str):
                         raise ValueError("provider 记录不合法")
@@ -512,6 +522,11 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     ):
                         raise ValueError("skill 记录不合法")
                     skills.append((name, arguments, pinned))
+                elif kind == "todo":
+                    keep = record.get("keep")
+                    if type(keep) is not int or keep < 0:
+                        raise ValueError("keep 不合法")
+                    todos.append((keep, items_from_json(record.get("todos"))))
                 elif kind != "session":
                     pass  # A later version's record type.
             except (ValueError, TypeError, KeyError, UnicodeError):
@@ -544,6 +559,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
         len(lost),
         tuple(snapshots),
         marks,
+        todos[-1][1] if todos else (),
     )
 
 

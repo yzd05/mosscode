@@ -166,6 +166,7 @@ class Settings:
     agent_auto_background: float = 120.0  # Seconds before a foreground sub-agent moves on; 0 never.
     agent_max_background: int = 4  # Running background tasks at most.
     command_max_background: int = 8  # Running background commands at most; 0 turns them off.
+    todo_tool: bool = True  # Offer todo_write, the model's task checklist.
     worktree_links: tuple[str, ...] = ()  # Paths relative to the repository linked into each worktree.
     worktree_stale_hours: float = 24.0  # Unused sub-agent worktrees older than this go; 0 never.
     team_max_members: int = 4  # Members of one team at most (1–8).
@@ -602,6 +603,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         "agent_auto_background",
         "agent_max_background",
         "command_max_background",
+        "todo_tool",
         "worktree_links",
         "worktree_stale_hours",
         "team_max_members",
@@ -627,7 +629,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     if not isinstance(shell, str) or not shell.strip():
         raise ConfigError("shell 需为 auto、bash、powershell 或 shell 可执行文件路径。")
     switches = {}
-    for key in ("auto_compact", "persist_sessions", "memory", "auto_memory"):
+    for key in ("auto_compact", "persist_sessions", "memory", "auto_memory", "todo_tool"):
         switches[key] = raw.get(key, True)
         if type(switches[key]) is not bool:
             raise ConfigError(f"{key} 必须是布尔值。")

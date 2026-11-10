@@ -87,6 +87,7 @@ from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redr
 from .teams import TeamError
 from .teams.runtime import MemberRow
 from .teams.view import TranscriptTail
+from .todo import completed as todos_completed
 from .tool_budget import persisted_note
 from .tools import shell_label
 from .usage import approx_tokens, cache_hit_rate
@@ -832,6 +833,7 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
         "glob": "Glob",
         "grep": "Grep",
         "exit_plan_mode": "Plan",
+        "todo_write": "Todo",
         "agent": "Agent",
         "task_output": "TaskOutput",
         "task_stop": "TaskStop",
@@ -849,6 +851,11 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
             detail = agent_detail(args, args.get("isolation") == "worktree")
         elif call.name in {"task_output", "task_stop"}:
             detail = args.get("task_id", "")
+        elif call.name == "todo_write":
+            todos = args.get("todos")
+            todos = todos if isinstance(todos, list) else []
+            done = sum(isinstance(item, dict) and item.get("status") == "completed" for item in todos)
+            detail = f"已完成 {done}/{len(todos)}" if todos else "清空清单"
         else:
             detail = (
                 args.get("pattern", "")
@@ -861,6 +868,26 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
         detail = "参数无效"
     detail = " ".join(str(detail).splitlines())
     return names.get(call.name, call.name), detail[:100], arguments
+
+
+TODO_PANEL_ROWS = 4  # Unfinished items shown under the heading; /todo lists all.
+
+
+def todo_panel(items) -> Text:
+    """The checklist above the prompt: unfinished items in order, or one line once all are done."""
+    done = todos_completed(items)
+    if done == len(items):
+        return Text(f"✓ 清单已完成 {done} 项", style="dim")
+    text = Text(f"清单 · 已完成 {done}/{len(items)}", style="dim")
+    unfinished = [item for item in items if item.status != "completed"]
+    for item in unfinished[:TODO_PANEL_ROWS]:
+        if item.status == "in_progress":
+            text.append("\n▶ " + safe_display(item.content, 200), style=f"bold {PARAMETER_COLOR}")
+        else:
+            text.append("\n□ " + safe_display(item.content, 200))
+    if len(unfinished) > TODO_PANEL_ROWS:
+        text.append(f"\n… 另有 {len(unfinished) - TODO_PANEL_ROWS} 项未完成 · /todo 查看全部", style="dim")
+    return text
 
 
 RESUMED_MESSAGES = 20
@@ -1086,6 +1113,7 @@ class MossCodeApp(TerminalApp[None]):
     .answer MarkdownBlock > .code_inline { color: PARAMETER_COLOR !important; text-style: bold; }
     #status { height: auto; margin-top: 0; color: $text-muted; }
     #queue { height: auto; margin-top: 1; padding: 0 1; }
+    #todo-panel { height: auto; max-height: 6; margin-top: 1; padding: 0 1; }
     #attachments { height: auto; margin-top: 1; padding: 0 1; color: $text-muted; }
     .image-notes { height: auto; }
     #input-row { height: auto; margin-top: 1; padding: 0 1; border-top: solid $foreground 35%; border-bottom: solid $foreground 35%; }
@@ -1192,6 +1220,8 @@ class MossCodeApp(TerminalApp[None]):
         self._redraw_timer = None
         self._approval_request: ApprovalRequest | None = None
         self._approval_queue: list[ApprovalRequest] = []  # Shown one at a time, in arrival order.
+        self._todo_shown: tuple | None = None  # The checklist the panel shows; None when hidden.
+        self._todo_dismissed: tuple = ()  # A finished list the user has moved on from (sent a message since).
         self._startup_task = None
         self._compacting: float | None = None  # Start time while a compaction runs.
         self._compact_row: CompactRow | None = None
@@ -1215,6 +1245,9 @@ class MossCodeApp(TerminalApp[None]):
         view = MemberView(id="member-view")
         view.display = False
         yield view
+        todo = Static("", id="todo-panel", markup=False)
+        todo.display = False
+        yield todo
         queue = Static("", id="queue", markup=False)
         queue.display = False
         yield queue
@@ -1270,6 +1303,7 @@ class MossCodeApp(TerminalApp[None]):
         self._status("")
         self.set_interval(0.2, self._tick)
         self.set_interval(0.5, self._member_tick)
+        self.set_interval(0.5, self._refresh_todos)
         self.call_later(self._refresh_layout)
         self.call_after_refresh(self._commit_ready_transcript)
         # The prompt stays usable: a first task waits only for project context, and MCP
@@ -1461,6 +1495,11 @@ class MossCodeApp(TerminalApp[None]):
         queue = self.query_one("#queue")
         if queue.display:
             reserved += 1 + min(4, len(self.conversation.queued))
+        todo = self.query_one("#todo-panel")
+        if todo.display:
+            reserved += 1 + (
+                1 if self._todo_shown is None else min(6, len(str(todo_panel(self._todo_shown)).splitlines()))
+            )
         if self.query_one("#model-panel").display:
             reserved += 4 + min(8, self._panel_rows)
         if self.query_one("#approval-panel").display:
@@ -1931,7 +1970,7 @@ class MossCodeApp(TerminalApp[None]):
                 # Commands change state the running task depends on; keep the text for later.
                 self._hint_until = monotonic() + 2
                 self._status(
-                    "运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送 · Esc 取消"
+                    "运行中只能排队消息和使用 /tasks、/todo、/status、/worktree list，其他命令请在完成后发送 · Esc 取消"
                 )
                 return
             field.remember(prompt)
@@ -2415,6 +2454,12 @@ class MossCodeApp(TerminalApp[None]):
         tool_rows: dict[str, ToolEntry] = {}
         continuation = False
         completed = False
+        if not notify:
+            # A finished checklist stays until the user moves on to the next request.
+            items = self.conversation.todos
+            if items and todos_completed(items) == len(items):
+                self._todo_dismissed = items
+            self._refresh_todos()
 
         try:
             turn = (
@@ -2490,6 +2535,8 @@ class MossCodeApp(TerminalApp[None]):
                                 await chat.mount(row)
                             if event.result is not None:
                                 row.complete(event.result, event.elapsed)
+                                if event.call.name == "todo_write":
+                                    self._refresh_todos()
                                 reply.phase = (
                                     "tools" if any(r.elapsed is None for r in tool_rows.values()) else "waiting"
                                 )
@@ -2630,6 +2677,21 @@ class MossCodeApp(TerminalApp[None]):
         if view.display:
             view.head(next((row for row in rows if row.name == view.name_shown), None), asking)
         self._status(self._status_note)
+        self.call_later(self._fit_chat)
+
+    def _refresh_todos(self) -> None:
+        """The main conversation's checklist above the prompt; updated only when it changes."""
+        if self._closing or not self.query("#todo-panel"):
+            return
+        items = self.conversation.todos
+        shown = items if items and items != self._todo_dismissed else None
+        if shown == self._todo_shown:
+            return
+        self._todo_shown = shown
+        panel = self.query_one("#todo-panel", Static)
+        panel.display = shown is not None
+        if shown is not None:
+            panel.update(todo_panel(shown))
         self.call_later(self._fit_chat)
 
     def _member_tick(self) -> None:

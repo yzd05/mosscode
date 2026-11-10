@@ -26,13 +26,14 @@
 | `/agents [名称\|reload]` | `/agent` | 本地 | 列出子 Agent 定义；带名称时显示详情（含本会话实际的权限档位和可用工具），`reload` 重新加载（见 [子 Agent](subagents.md#命令与界面)） |
 | `/plugins [名称]` | `/plugin` | 本地 | 列出已安装的插件；带名称时显示它的组件、问题和状态。安装、更新、删除在命令行中进行（见 [插件](plugins.md#plugins)） |
 | `/tasks [id\|stop id]` | `/task` | 本地 | 列出本会话的子 Agent 任务；带 `id` 时显示详情，`stop id` 停止运行中的任务 |
+| `/todo` | — | 本地 | 显示模型用 `todo_write` 维护的完整任务清单（输入框上方的面板只显示未完成的前几项，见 [任务清单](tools.md#任务清单)） |
 | `/worktree [list\|create 名称\|remove 名称 [--discard]\|clean]` | `/worktrees` | 本地 | 列出、创建、删除 MossCode 管理的 git 工作树，或清理过期的临时工作树（见 [Git 工作树](worktree.md#命令)） |
 | `/team [名称\|stop 成员\|delete 名称]` | `/teams` | 本地 | 列出本项目的 Agent 团队；带名称时显示成员和任务，`stop` 停止当前团队的一个成员，`delete` 确认后删除团队（见 [Agent 团队](teams.md#命令)） |
 | `/exit` | `/quit` | 本地 | 退出并清理资源；有后台任务在运行时先确认 |
 
 除内置命令外，每个 Skill 是一条 `/<名称> [参数]` 命令，例如内置 Skill `/commit`、`/init`、`/review`、`/test`（见 [Skill](skills.md#内置-skill)）。补全菜单和 `/help` 中，Skill 命令的描述后面带 `[skill]`；`user-invocable: false` 的 Skill 不列出，但输入全名仍可执行。
 
-本地命令不请求模型，结果只显示在界面中，不进入模型上下文；`/compact` 例外，它用一次不带工具的请求生成摘要。任务运行期间只接受 `/tasks`、`/status`、`/worktree`、`/worktree list` 和 `/team`（`delete` 除外）（查看或停止子 Agent 任务、查看状态，不改变正在运行的任务所依赖的状态）；输入其他命令会提示“运行中只能排队消息和使用 /tasks、/status、/worktree list，其他命令请在完成后发送”，输入保留在框中。
+本地命令不请求模型，结果只显示在界面中，不进入模型上下文；`/compact` 例外，它用一次不带工具的请求生成摘要。任务运行期间只接受 `/tasks`、`/todo`、`/status`、`/worktree`、`/worktree list` 和 `/team`（`delete` 除外）（查看或停止子 Agent 任务、查看状态，不改变正在运行的任务所依赖的状态）；输入其他命令会提示“运行中只能排队消息和使用 /tasks、/todo、/status、/worktree list，其他命令请在完成后发送”，输入保留在框中。
 
 ## 输入如何解析
 

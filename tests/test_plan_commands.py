@@ -13,7 +13,7 @@ from test_permission_modes import RemoteTool
 from test_permissions import approve, registry
 
 # web_fetch is offered in plan mode too; every fetch still asks.
-PLAN_TOOLS = {"read_file", "glob", "grep", "execute_command", "exit_plan_mode", "web_fetch"}
+PLAN_TOOLS = {"read_file", "glob", "grep", "execute_command", "exit_plan_mode", "web_fetch", "todo_write"}
 CATASTROPHIC = ["rm -rf /", "Remove-Item C:\\ -Recurse -Force", "format C:", "dd if=x of=/dev/sda", "shutdown -h now"]
 RISKY = ["rm -rf build", "Remove-Item build -Recurse -Force", "git reset --hard", "git push --force", "git clean -fd"]
 

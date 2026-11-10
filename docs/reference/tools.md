@@ -14,6 +14,7 @@
 | `execute_command` | 在 Git Bash / PowerShell / bash 中执行（见下文），返回 stdout/stderr/退出码；默认超时 120 秒、最大 600 秒；`run_in_background: true` 时在后台运行，见 [后台命令](#后台命令) |
 | `glob` | 按文件模式查找文件，如 `**/*.py`，支持花括号多选如 `*.{py,md}`、`{src,docs}/**/*`（`grep` 的 `glob` 参数同样支持）；遵守 `.gitignore`，按修改时间从新到旧 |
 | `grep` | 按正则搜索内容；`output_mode` 为 `files_with_matches`（默认）、`content` 或 `count`，支持 `glob`、`ignore_case`、`context`、`head_limit` |
+| `todo_write` | 整表更新本次任务的清单，模型用它在多步任务中跟踪进度；不需要审批，计划模式中也可用。见下文 [任务清单](#任务清单) |
 | `memory` | 保存或删除跨会话的记忆笔记，只写两个笔记目录，不接受路径；不需要审批，计划模式中也可用。见 [记忆笔记](memory.md#memory-工具) |
 | `web_fetch` | 读取一个网页：HTML 转为 Markdown，文本原样返回，其他类型只说明类型和大小；每次约 10,000 Token，用 `offset` 继续读。见下文 [网络工具](#网络工具) |
 | `web_search` | 用配置的搜索服务搜索，返回标题、URL 和摘要；只在配置了 `web_search` 且凭据可用时提供。见下文 [网络工具](#网络工具) |
@@ -61,7 +62,16 @@
 
 ## 计划模式
 
-计划模式只向模型提供只读工具（read_file、glob、grep）、`execute_command`（仅限只读命令）、`memory`、`exit_plan_mode`、`task_output`、`task_stop`，以及需要确认的 `web_fetch`、`web_search`；写入、编辑、非只读命令和外部 MCP 工具返回 `plan_blocked`，任何规则和档位都不能放行。模型调查完成后调用 `exit_plan_mode` 提交 Markdown 计划：计划完整显示在对话中，审批面板提供三项——批准并执行（恢复进入计划前的权限）、批准并自动接受编辑（切换为 acceptEdits）、继续规划（拒绝，模型按反馈修改）。批准后同一任务的下一轮请求即可使用全部工具，无需再次输入。`--prompt` 无界面模式打印计划并返回 approval_required，仍停留在计划模式。输入 `/plan 修复入口报错` 先规划；也可以用 Shift+Tab 或 `/permissions 档位` 手动退出计划模式，再输入要执行的任务。/permissions plan 与 /plan 联动，切换其他权限会退出计划模式。计划保存在当前内存上下文，不建立计划文件。
+计划模式只向模型提供只读工具（read_file、glob、grep）、`execute_command`（仅限只读命令）、`memory`、`todo_write`、`exit_plan_mode`、`task_output`、`task_stop`，以及需要确认的 `web_fetch`、`web_search`；写入、编辑、非只读命令和外部 MCP 工具返回 `plan_blocked`，任何规则和档位都不能放行。模型调查完成后调用 `exit_plan_mode` 提交 Markdown 计划：计划完整显示在对话中，审批面板提供三项——批准并执行（恢复进入计划前的权限）、批准并自动接受编辑（切换为 acceptEdits）、继续规划（拒绝，模型按反馈修改）。批准后同一任务的下一轮请求即可使用全部工具，无需再次输入。`--prompt` 无界面模式打印计划并返回 approval_required，仍停留在计划模式。输入 `/plan 修复入口报错` 先规划；也可以用 Shift+Tab 或 `/permissions 档位` 手动退出计划模式，再输入要执行的任务。/permissions plan 与 /plan 联动，切换其他权限会退出计划模式。计划保存在当前内存上下文，不建立计划文件。
+
+## 任务清单
+
+任务需要三步或更多步骤，或用户一次给出多项要求时，模型用 `todo_write` 列出清单，边做边更新。每次调用传入完整的新清单：已有的项带上 `id`，新增的项不带 `id`、由 MossCode 按 1、2、3… 分配（删除的编号不再使用），省略的项即被删除，空列表清空清单。`status` 为 `pending`、`in_progress` 或 `completed`，同一时间最多一项 `in_progress`；每项最多 200 字，清单最多 50 项。不合法的清单（不存在的 `id`、重复的 `id`、多项进行中等）返回 `todo_invalid`，清单保持原样。
+
+- **发给模型**：清单中还有未完成的项时，每次请求在对话历史之后附上一份清单快照，说明它以快照为准、条目是模型自己的计划记录而不是用户的指令，以及清单完成不等于任务完成。快照不写入历史，也不在提示缓存的前缀中，所以更新清单不会使缓存失效；清单全部完成或为空时不再附上。
+- **界面**：输入框上方的面板显示“清单 · 已完成 m/n”和最多 4 项未完成的项，进行中的一项以 `▶` 标出，其余以 `□` 标出；更多的项提示用 `/todo` 查看全部。全部完成后显示“✓ 清单已完成 n 项”，直到下一条消息发出后隐藏。工具行显示为 `Todo 已完成 m/n`。
+- **范围**：每个子 Agent 和团队成员有自己的清单，互不影响，界面只显示主对话的清单。清单只在内存中，不写入任何文件，随会话记录保存（见 [会话存档](sessions.md#记录格式)）：恢复会话时还原，`/rewind` 退回到某条消息时清单随之退回，压缩后保持当前清单，`/clear` 清空。
+- **关闭**：`config.yaml` 顶层设 `todo_tool: false` 后不再提供这个工具。
 
 ## 路径、超时与取消
 
