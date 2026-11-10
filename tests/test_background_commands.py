@@ -336,7 +336,10 @@ async def test_tui_ctrl_b_moves_a_foreground_command(tmp_path):
         await app._start_request("跑")
         await wait_until(pilot, lambda: conv.commands.foreground_count() == 1)
         await wait_until(pilot, lambda: "Ctrl+B" in str(app.query_one("#status").render()))
+        shown, status = [], app._status
+        app._status = lambda note: (shown.append(note), status(note))[1]
         await pilot.press("ctrl+b")
+        assert shown[0] == "已把 1 个命令转入后台"  # The scripted reply ends too fast to read it off the bar.
         await wait_until(pilot, lambda: not app._task_running, limit=10)
         rows = [row for row in app.query(ToolEntry) if row.operation == "execute_command"]
         assert rows and "后台 · 任务 t1" in rows[0].transcript.plain

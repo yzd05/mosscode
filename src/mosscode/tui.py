@@ -1405,7 +1405,9 @@ class MossCodeApp(TerminalApp[None]):
         parts = [f"{moved} 个命令" if moved else "", f"{count} 个子 Agent" if count else ""]
         self._hint_until = monotonic() + 2
         if moved or count:
-            self._status("已把 " + "和".join(part for part in parts if part) + " 转入后台")
+            moved_text = "和".join(part for part in parts if part)
+            # A space only after a Latin word: "1 个子 Agent 转入后台" but "1 个命令转入后台".
+            self._status(f"已把 {moved_text}{' ' if moved_text[-1].isascii() else ''}转入后台")
         else:
             self._status("没有在前台运行的命令或子 Agent")
 
