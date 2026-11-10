@@ -11,7 +11,7 @@
 | `read_file` | 以“右对齐行号 + Tab + 原文”格式读取 UTF-8 文本；offset 从 1 开始，limit 默认 2000 行，超过 2000 字符的行截断，翻页提示下一页 offset；也能查看图片，见下文 [图片](#图片) |
 | `write_file` | 创建或覆盖文件，自动创建父目录；覆盖已有文件前须先读取 |
 | `edit_file` | 原文精确替换，默认要求唯一匹配；`replace_all: true` 替换全部；须先读取；CRLF 文件可用 LF 原文匹配并保持 CRLF |
-| `execute_command` | 在 Git Bash / PowerShell / bash 中执行（见下文），返回 stdout/stderr/退出码；默认超时 120 秒、最大 600 秒 |
+| `execute_command` | 在 Git Bash / PowerShell / bash 中执行（见下文），返回 stdout/stderr/退出码；默认超时 120 秒、最大 600 秒；`run_in_background: true` 时在后台运行，见 [后台命令](#后台命令) |
 | `glob` | 按文件模式查找文件，如 `**/*.py`，支持花括号多选如 `*.{py,md}`、`{src,docs}/**/*`（`grep` 的 `glob` 参数同样支持）；遵守 `.gitignore`，按修改时间从新到旧 |
 | `grep` | 按正则搜索内容；`output_mode` 为 `files_with_matches`（默认）、`content` 或 `count`，支持 `glob`、`ignore_case`、`context`、`head_limit` |
 | `memory` | 保存或删除跨会话的记忆笔记，只写两个笔记目录，不接受路径；不需要审批，计划模式中也可用。见 [记忆笔记](memory.md#memory-工具) |
@@ -25,6 +25,23 @@
 ## 命令 shell
 
 `config.yaml` 顶层 `shell` 默认为 `auto`——Windows 优先使用 Git Bash（从 PATH 中的 git/bash 和常见安装位置查找，支持 Scoop shim，排除 System32 下的 WSL bash），找不到时使用 PowerShell；其他系统使用 bash，缺失时用 sh。可设为 `bash`、`powershell` 或 bash.exe 的完整路径；明确指定但找不到时启动报错。bash 以 `--noprofile --norc` 启动；Windows 上命令文本通过环境变量 `MOSSCODE_COMMAND` 交给 bash 执行，避免 MSYS 重新解析命令行时把 `\\` 合并为 `\`。系统提示的环境信息、工具描述和界面工具名都显示实际 shell。命令进程不继承保存 API 密钥的环境变量，见[密钥保护](providers.md#密钥保护)。
+
+## 后台命令
+
+开发服务器、监视构建和预计要跑几分钟以上的命令可以在后台运行。`execute_command` 带 `run_in_background: true` 时照常审批、照常进入沙箱，启动后立即返回任务 id 和输出文件路径，命令继续运行；可选的 `description`（最多 60 字）是任务标签，缺省为截短的命令文本。工具说明提醒模型不要用 `&`、`nohup`、`Start-Process` 放到后台，这些进程会随命令结束。
+
+- **输出文件**：stdout 和 stderr 按到达顺序写入 `<会话目录>/commands/<任务 id>.log`（不保存会话时写入系统临时目录的 `mosscode-commands/`）。文件由 MossCode 写入，命令不需要写会话目录的权限；模型用 `read_file` 读取，不需要审批。以 `[MossCode]` 开头的行是 MossCode 的说明：转入后台、被拒绝的域名、结束原因。
+- **结束时**：主对话收到一条 `<task-notification>`，包含任务 id、标签、命令、状态、退出码或被结束的原因、用时、输出文件路径和大小，以及最后 20 行（最多 2,000 字符）。送达方式与 [后台子 Agent 的通知](subagents.md#通知) 相同：主对话空闲时立即开启一轮，忙时在下一次请求前加入。退出码不为 0 时状态为失败。被 `task_stop`、`/tasks stop` 停止，或因 `/clear`、恢复会话、退出而结束的命令不发通知。
+- **查看和停止**：`task_output` 返回状态、输出文件和最后 50 行，`wait` 可以等待结束；`task_stop` 结束整个进程树。`/tasks` 列出命令任务，显示输出大小而不是 Token；`/tasks <id>` 显示命令、工作目录、沙箱、输出文件和最后几行。
+- **时间限制**：交互界面中默认不限时，模型给出的 `timeout` 就是限制。`-p` 中缺省为 600 秒。时间从启动或转入后台时算起，后台时 `timeout` 最大 3600 秒（前台仍最大 600 秒）。到时命令被结束并发通知。
+- **上限**：同时运行的后台命令最多 8 个（配置项 `command_max_background`，0–64），与子 Agent 的 `agent_max_background` 分开计数；达到上限时返回 `too_many_tasks`。设为 0 关闭后台命令，`execute_command` 不再提供 `run_in_background`。
+- **输出上限**：输出文件超过 256 MiB 时命令被结束，通知中说明原因。
+- **Ctrl+B**：主对话的前台命令运行时按 Ctrl+B，命令转入后台。已收到的输出写进输出文件（stderr 另起一段），之后的输出接在后面；工具结果为“已转入后台：任务 tN”，前台的 `timeout` 不再生效（`-p` 中照样有 600 秒的限制）。有前台命令时状态栏提示 `Ctrl+B 转入后台`。
+- **子 Agent 和团队成员**：它们启动的后台命令在它们结束时一并结束，不发通知，它们自己用 `read_file` 读输出文件。进程内成员的命令也出现在 Lead 的 `/tasks` 中。Ctrl+B 只转主对话的前台命令。
+- **会话记录**：主对话记录中为每条命令写开始和结束两条 `{"type": "task"}` 记录（命令、工作目录、输出文件、退出码）；恢复会话不会重新运行旧命令，输出文件保留在会话目录。
+- **沙箱**：沙箱中的后台命令各有自己的沙箱实例和代理，到命令结束才关闭。联网不弹审批：没有规则放行的域名被拒绝，并列在输出文件末尾和通知中，见 [命令沙箱](sandbox.md#联网)。
+- **状态不保留**：与前台命令一样，每条命令是新的 shell，`cd` 和环境变量不影响之后的命令。
+- **已知限制**：Linux 和 macOS 上不开沙箱时，命令中用 `setsid` 等方式脱离进程组的进程不会随命令结束，前台命令也是这样。Windows 上的 Job Object 会结束整棵进程树。
 
 ## 结果、并发与历史
 
@@ -42,11 +59,11 @@
 
 ## 计划模式
 
-计划模式只向模型提供只读工具（read_file、glob、grep）、`execute_command`（仅限只读命令）、`memory`、`exit_plan_mode`，以及需要确认的 `web_fetch`、`web_search`；写入、编辑、非只读命令和外部 MCP 工具返回 `plan_blocked`，任何规则和档位都不能放行。模型调查完成后调用 `exit_plan_mode` 提交 Markdown 计划：计划完整显示在对话中，审批面板提供三项——批准并执行（恢复进入计划前的权限）、批准并自动接受编辑（切换为 acceptEdits）、继续规划（拒绝，模型按反馈修改）。批准后同一任务的下一轮请求即可使用全部工具，无需再次输入。`--prompt` 无界面模式打印计划并返回 approval_required，仍停留在计划模式。输入 `/plan 修复入口报错` 先规划；也可以用 Shift+Tab 或 `/permissions 档位` 手动退出计划模式，再输入要执行的任务。/permissions plan 与 /plan 联动，切换其他权限会退出计划模式。计划保存在当前内存上下文，不建立计划文件。
+计划模式只向模型提供只读工具（read_file、glob、grep）、`execute_command`（仅限只读命令）、`memory`、`exit_plan_mode`、`task_output`、`task_stop`，以及需要确认的 `web_fetch`、`web_search`；写入、编辑、非只读命令和外部 MCP 工具返回 `plan_blocked`，任何规则和档位都不能放行。模型调查完成后调用 `exit_plan_mode` 提交 Markdown 计划：计划完整显示在对话中，审批面板提供三项——批准并执行（恢复进入计划前的权限）、批准并自动接受编辑（切换为 acceptEdits）、继续规划（拒绝，模型按反馈修改）。批准后同一任务的下一轮请求即可使用全部工具，无需再次输入。`--prompt` 无界面模式打印计划并返回 approval_required，仍停留在计划模式。输入 `/plan 修复入口报错` 先规划；也可以用 Shift+Tab 或 `/permissions 档位` 手动退出计划模式，再输入要执行的任务。/permissions plan 与 /plan 联动，切换其他权限会退出计划模式。计划保存在当前内存上下文，不建立计划文件。
 
 ## 路径、超时与取消
 
-工具相对路径以启动目录为基准，项目内绝对路径也可使用。`read_file`、`glob`、`grep` 可以读取项目目录之外的路径，但需要用户确认（bypassPermissions 直接放行，无界面模式返回 `approval_required`）；写入和编辑始终限于项目目录。命令默认超时 120 秒，可指定正数 timeout，最大 600 秒；等待用户审批不计入执行超时。取消/超时会清理本次命令进程及其子进程。文件写入不可通过取消撤销；如果写入已开始，等待实际结果并保留历史，尚未执行的调用标记未执行。最终模型续答失败也不会丢弃工具结果。
+工具相对路径以启动目录为基准，项目内绝对路径也可使用。`read_file`、`glob`、`grep` 可以读取项目目录之外的路径，但需要用户确认（bypassPermissions 直接放行，无界面模式返回 `approval_required`）；写入和编辑始终限于项目目录。命令默认超时 120 秒，可指定正数 timeout，最大 600 秒（后台命令见 [后台命令](#后台命令)）；等待用户审批不计入执行超时。取消/超时会清理本次命令进程及其子进程。文件写入不可通过取消撤销；如果写入已开始，等待实际结果并保留历史，尚未执行的调用标记未执行。最终模型续答失败也不会丢弃工具结果。
 
 ## 搜索与截断
 

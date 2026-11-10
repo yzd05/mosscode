@@ -132,6 +132,10 @@ def describe_call(call, root: Path | None = None) -> str:
 
 
 def stats(task: Task) -> str:
+    if task.command is not None:
+        from ..tools.background import size_text
+
+        return f"输出 {size_text(task.command.log.size)}，用时 {task.elapsed:.0f} 秒"
     return f"工具调用 {task.tool_calls} 次，Token {task.tokens}，用时 {task.elapsed:.0f} 秒"
 
 
@@ -261,6 +265,7 @@ class SubAgents:
             self.tasks.changed(task)
 
         loop.on_usage = counted
+        loop.registry.task_id = task.id  # Its background commands end with it.
         conversation = self.conversation
         session = conversation.session
         if conversation.persist and session is not None:
@@ -318,6 +323,7 @@ class SubAgents:
             registry = main.registry.for_agent(agent="subagent", agent_type=agent.name, permissions=policy, keep=keep)
         else:
             from ..tools import create_default_registry, web_tools
+            from ..tools.background import share
 
             shell = getattr(main.registry.get("execute_command"), "shell", None)
             fresh = create_default_registry(root, permissions=policy, shell=shell if shell is not None else "auto")
@@ -329,6 +335,7 @@ class SubAgents:
                 extra=tuple(tool for tool in web_tools(main.registry, root) if keep(tool.name)),
             )
             registry.session, registry.hooks, registry.worktree = main.registry.session, main.registry.hooks, worktree
+            share(main.registry, registry)
         registry.nested = nested
         turns = min(agent.max_turns or main.max_iterations, main.max_iterations)
         loop = AgentLoop(provider, agent.prompt, registry, max_iterations=turns, unknown_limit=main.unknown_limit)
@@ -418,6 +425,9 @@ class SubAgents:
             task.status = "failed"
             return unfinished(str(exc), loop)
         finally:
+            commands = loop.registry.commands
+            if commands is not None:
+                await commands.stop_owned(task.id)
             if owned:
                 await loop.provider.close()
         if stopped is not None and stopped.reason in {"completed", "max_tokens"} and final is not None:
@@ -492,7 +502,19 @@ class SubAgents:
     def _finished(self, task: Task) -> None:
         """subagent_stop, the end record, and the notification of a background task."""
         conversation = self.conversation
-        conversation._record({"type": "task", "time": _now(), "id": task.id, "event": "end", "status": task.status})
+        record = {"type": "task", "time": _now(), "id": task.id, "event": "end", "status": task.status}
+        if task.command is not None:
+            conversation._record({**record, "exit_code": task.command.exit_code})
+            # A sub-agent's or member's commands end with it and are its own business.
+            if task.command.owner or task.notified:
+                return
+            from ..tools.background import notification
+
+            task.notified = True
+            self.main.notifications.append(notification(task))
+            conversation._tasks_ready()
+            return
+        conversation._record(record)
         hooks = conversation.hooks
         if hooks is not None and hooks.wants("subagent_stop"):
             from ..hooks import HookEvent

@@ -165,6 +165,7 @@ class Settings:
     memory_provider: str | None = None  # Background extraction; None uses the current provider.
     agent_auto_background: float = 120.0  # Seconds before a foreground sub-agent moves on; 0 never.
     agent_max_background: int = 4  # Running background tasks at most.
+    command_max_background: int = 8  # Running background commands at most; 0 turns them off.
     worktree_links: tuple[str, ...] = ()  # Paths relative to the repository linked into each worktree.
     worktree_stale_hours: float = 24.0  # Unused sub-agent worktrees older than this go; 0 never.
     team_max_members: int = 4  # Members of one team at most (1–8).
@@ -600,6 +601,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         "memory_provider",
         "agent_auto_background",
         "agent_max_background",
+        "command_max_background",
         "worktree_links",
         "worktree_stale_hours",
         "team_max_members",
@@ -638,6 +640,9 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     max_background = _positive_int(
         raw.get("agent_max_background", Settings.agent_max_background), "agent_max_background"
     )
+    commands = raw.get("command_max_background", Settings.command_max_background)
+    if type(commands) is not int or not 0 <= commands <= 64:
+        raise ConfigError("command_max_background 需为 0–64 之间的整数（0 表示关闭后台命令）。")
     links = _links(raw.get("worktree_links", []))
     stale = raw.get("worktree_stale_hours", Settings.worktree_stale_hours)
     if type(stale) not in {int, float} or not 0 <= stale <= 8760:
@@ -674,6 +679,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         memory_provider=memory_provider,
         agent_auto_background=float(auto_background),
         agent_max_background=max_background,
+        command_max_background=commands,
         worktree_links=links,
         worktree_stale_hours=float(stale),
         team_max_members=members,

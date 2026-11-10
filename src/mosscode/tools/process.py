@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 
 from ..command_env import command_environment
 from ..credentials import child_environment
+from .background import TIMEOUT_LIMIT
 from .base import Params, Tool, ToolFailure
 from .shell import Shell, resolve_shell
 
@@ -65,6 +66,68 @@ def _decode_cut(data: bytes, *, start: bool) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+class Window:
+    """The first `limit` bytes and, with `tail`, a rolling window of the bytes after them."""
+
+    def __init__(self, limit: int, tail: int):
+        self.limit, self.tail = limit, tail
+        self.head, self.end = bytearray(), bytearray()
+        self.total = 0
+
+    def add(self, chunk: bytes) -> None:
+        self.total += len(chunk)
+        room = max(0, self.limit - len(self.head))
+        self.head.extend(chunk[:room])
+        if self.tail:
+            self.end.extend(chunk[room:])
+            del self.end[: max(0, len(self.end) - self.tail)]
+
+    @property
+    def omitted(self) -> int:
+        return self.total - len(self.head) - len(self.end)
+
+    def marker(self) -> str:
+        return f"\n…（中间省略 {self.omitted} 字节）…\n"
+
+    def text(self) -> tuple[str, bool]:
+        """The kept text and whether anything was dropped; head + end is the whole stream when nothing was."""
+        if self.omitted <= 0:
+            return (bytes(self.head) + bytes(self.end)).decode("utf-8", errors="replace"), False
+        if not self.tail:
+            return self.head.decode("utf-8", errors="replace"), True
+        return _decode_cut(bytes(self.head), start=False) + self.marker() + _decode_cut(
+            bytes(self.end), start=True
+        ), True
+
+    def raw(self) -> bytes:
+        if self.omitted <= 0 or not self.tail:
+            return bytes(self.head) + bytes(self.end)
+        return bytes(self.head) + self.marker().encode() + bytes(self.end)
+
+
+class Output:
+    """Where a command's streams go: a window each, or once `log` is set, one file in arrival order."""
+
+    def __init__(self, limit: int = OUTPUT_LIMIT, tail: int = 0, *, log=None):
+        self.windows = {"stdout": Window(limit, tail), "stderr": Window(limit, tail)}
+        self.log = log
+
+    def write(self, stream: str, chunk: bytes) -> None:
+        if self.log is not None:
+            self.log.write(chunk)
+        else:
+            self.windows[stream].add(chunk)
+
+    def move_to(self, log) -> None:
+        """ctrl+b: what was kept goes to the file first (stdout, then stderr), later output after it."""
+        stdout, stderr = self.windows["stdout"].raw(), self.windows["stderr"].raw()
+        log.write(stdout)
+        if stderr:
+            log.write((b"" if not stdout or stdout.endswith(b"\n") else b"\n") + b"stderr:\n" + stderr)
+        log.note("命令已转入后台，之后的输出接在这里。")
+        self.log = log
+
+
 async def _feed(stream, data: bytes) -> None:
     """Write stdin and close it; a child that exits without reading is not an error."""
     try:
@@ -89,6 +152,7 @@ async def run_process(
     confined: bool = False,
     sandbox_root: Path | None = None,
     network: str | None = None,
+    output: Output | None = None,
 ):
     """input, when given, is written to the child's stdin, which is then closed; otherwise stdin is empty.
 
@@ -97,6 +161,8 @@ async def run_process(
 
     sandbox_root runs it in the sandbox with that root's policy; details then carry what the sandbox did. network is
     the URL of the proxy listening for this command, its only way out; without it a sandboxed command is offline.
+
+    output, when given, receives the streams instead of windows of limit and tail.
     """
     # Commands, hooks and skill tools never inherit the variables holding API keys.
     env = command_environment(env) if confined else child_environment(env)
@@ -127,6 +193,7 @@ async def run_process(
             input=input,
             ui_limits=ui_limits,
             gate_python=gate_python,
+            output=output,
         )
     finally:
         notes = prepared.finish() if prepared is not None else []
@@ -140,7 +207,8 @@ async def run_process(
     return details
 
 
-async def _run(args, cwd, *, check, limit, tail, env, input, ui_limits, gate_python=None):
+async def _run(args, cwd, *, check, limit, tail, env, input, ui_limits, gate_python=None, output=None):
+    output = output if output is not None else Output(limit, tail)
     options = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}
     # Windows commands wait on a one-byte gate until Job assignment completes.
     # This closes the race in which a fast shell could spawn before assignment.
@@ -178,31 +246,16 @@ async def _run(args, cwd, *, check, limit, tail, env, input, ui_limits, gate_pyt
     if piped:
         feeder = asyncio.create_task(_feed(process.stdin, (b"\n" if os.name == "nt" else b"") + (input or b"")))
 
-    async def drain(stream):
-        # Keep the first `limit` bytes and, with `tail`, a rolling window of the
-        # bytes after them; head + end is the whole stream when nothing was dropped.
-        head, end = bytearray(), bytearray()
-        total = 0
+    async def drain(name, stream):
         while chunk := await stream.read(8192):
-            total += len(chunk)
-            room = max(0, limit - len(head))
-            head.extend(chunk[:room])
-            if tail:
-                end.extend(chunk[room:])
-                del end[: max(0, len(end) - tail)]
-        omitted = total - len(head) - len(end)
-        if omitted <= 0:
-            return (bytes(head) + bytes(end)).decode("utf-8", errors="replace"), False
-        if not tail:
-            return head.decode("utf-8", errors="replace"), True
-        marker = f"\n…（中间省略 {omitted} 字节）…\n"
-        return _decode_cut(bytes(head), start=False) + marker + _decode_cut(bytes(end), start=True), True
+            output.write(name, chunk)
 
-    stdout_task = asyncio.create_task(drain(process.stdout))
-    stderr_task = asyncio.create_task(drain(process.stderr))
+    stdout_task = asyncio.create_task(drain("stdout", process.stdout))
+    stderr_task = asyncio.create_task(drain("stderr", process.stderr))
     try:
         await process.wait()
-        stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+        await asyncio.gather(stdout_task, stderr_task)
+        stdout, stderr = output.windows["stdout"].text(), output.windows["stderr"].text()
         details = {
             "stdout": stdout[0],
             "stderr": stderr[0],
@@ -217,10 +270,13 @@ async def _run(args, cwd, *, check, limit, tail, env, input, ui_limits, gate_pyt
         await asyncio.gather(stdout_task, stderr_task, *(task for task in (feeder,) if task), return_exceptions=True)
 
 
+DEFAULT_TIMEOUT, FOREGROUND_TIMEOUT = 120.0, 600
+
+
 class CommandParams(Params):
     command: str = Field(min_length=1)
     cwd: str | None = None
-    timeout: float = Field(default=120.0, gt=0, le=600, allow_inf_nan=False)
+    timeout: float = Field(default=DEFAULT_TIMEOUT, gt=0, le=FOREGROUND_TIMEOUT, allow_inf_nan=False)
 
 
 class SandboxCommandParams(CommandParams):
@@ -233,6 +289,35 @@ class SandboxCommandParams(CommandParams):
             raise ValueError("outside_sandbox 为 true 时必须在 justification 中说明理由")
         return self
 
+
+class BackgroundCommandParams(CommandParams):
+    # In the background timeout is the command's time limit; None there means the session's default.
+    timeout: float | None = Field(default=None, gt=0, le=TIMEOUT_LIMIT, allow_inf_nan=False)
+    run_in_background: bool = False
+    description: str | None = Field(default=None, max_length=60)
+
+    @model_validator(mode="after")
+    def _foreground_timeout(self):
+        if not self.run_in_background:
+            if self.timeout is None:
+                self.timeout = DEFAULT_TIMEOUT
+            elif self.timeout > FOREGROUND_TIMEOUT:
+                raise ValueError(
+                    f"前台命令的 timeout 最大 {FOREGROUND_TIMEOUT} 秒；运行更久的命令用 run_in_background: true"
+                )
+        return self
+
+
+class SandboxBackgroundCommandParams(BackgroundCommandParams, SandboxCommandParams):
+    pass
+
+
+BACKGROUND_GUIDELINE = (
+    "开发服务器、监视进程（vite、tsc --watch 等）和预计超过几分钟的命令用 run_in_background: true 启动；"
+    "不要用 &、nohup、setsid、Start-Process 把进程放到后台，命令结束时它们会被一起结束。"
+    "后台命令的输出用 read_file 读取输出文件，运行中也可以读；它结束时你会收到 <task-notification>，不要用 sleep 轮询。"
+)
+NETWORK_NAMES = {"proxy": "经代理", "none": "断开", "open": "不受限制"}
 
 SHELL_GUIDELINES = {
     "Git Bash": "当前 shell 是 Windows 上的 Git Bash：使用 bash 语法和正斜杠路径（如 C:/Users 或 /c/Users），空设备写 /dev/null 而不是 NUL；Windows 原生程序仍可直接调用。",
@@ -295,63 +380,165 @@ class ExecuteCommand(Tool):
                 f"被沙箱拦截且确实需要越界时（如{escape}），"
                 "以 outside_sandbox: true 重新调用并在 justification 中写明理由，用户批准后在沙箱外运行；能在边界内完成的不要申请。",
             )
+        self.background_enabled = False
+        self._description, self._guidelines = self.description, self.prompt_guidelines
+
+    def allow_background(self, time_limit: float | None = None) -> None:
+        """run_in_background and ctrl+b, when the session keeps background commands (registry.commands)."""
+        self.background_enabled = True
+        self.params_model = SandboxBackgroundCommandParams if self.sandboxed else BackgroundCommandParams
+        default = f"省略时为 {time_limit:.0f} 秒" if time_limit else "省略时不限时"
+        self.description = self._description + (
+            "run_in_background 为 true 时命令在后台运行：立即返回任务 id 和输出文件路径，命令结束时你会收到 "
+            f"<task-notification>；description 是 3–10 个字的任务标签；timeout 此时是时间限制，最大 {TIMEOUT_LIMIT}，"
+            f"{default}。"
+        )
+        self.prompt_guidelines = (*self._guidelines, BACKGROUND_GUIDELINE)
 
     async def execute(self, params: CommandParams):
-        from ..sandbox import UNAVAILABLE_HINT, current, explain, startup_failure
+        from ..sandbox import UNAVAILABLE_HINT, current
+        from .background import started
+        from .base import CURRENT_CALL, CURRENT_REGISTRY
 
         cwd = self.path(params.cwd) if params.cwd is not None else self.root
         sandbox = current()
         inside = sandbox.enabled and not getattr(params, "outside_sandbox", False)
         if inside and not sandbox.active:
             raise ToolFailure("sandbox_unavailable", sandbox.status().reason + UNAVAILABLE_HINT)
+        registry, call = CURRENT_REGISTRY.get(), CURRENT_CALL.get()
+        commands = getattr(registry, "commands", None) if self.background_enabled else None
+        background = getattr(params, "run_in_background", False)
+        if background:
+            if commands is None:
+                raise ToolFailure("background_unavailable", "这里不能在后台运行命令。")
+            commands.check()
+        state = {"background": background}  # Read by the proxy: background commands ask nobody.
+        proxy = self._proxy(params.command, state) if inside and sandbox.network == "proxy" else None
+        owner = getattr(registry, "task_id", "")
+
+        def open_task(time_limit: float | None):
+            return commands.open(
+                params.command,
+                cwd,
+                description=getattr(params, "description", None),
+                owner=owner,
+                call_id=call.id if call is not None else "",
+                sandbox=f"{sandbox.status().backend}，网络{NETWORK_NAMES.get(sandbox.network, '')}" if inside else "",
+                time_limit=time_limit,
+            )
+
+        def finish(details: dict | None) -> list[str]:
+            failure, notes, hint = self._sandbox_report(params.command, inside, proxy, details)
+            return [failure] if failure else [*notes, *([hint.strip()] if hint else [])]
+
+        output = Output(COMMAND_HEAD, COMMAND_TAIL)
+        if background:
+            task = open_task(params.timeout if params.timeout is not None else commands.time_limit)
+            output.log = task.command.log
+            commands.launch(task, asyncio.create_task(self._spawn(params.command, cwd, inside, proxy, output)), finish)
+            return started(task), {"task": task.id, "background": True, "log": str(task.command.log.path)}
+        process = asyncio.create_task(self._spawn(params.command, cwd, inside, proxy, output))
+        # Only the main conversation's commands move with ctrl+b; a sub-agent's end with it anyway.
+        detach = commands.foreground() if commands is not None and not owner else None
+        try:
+            details = await self._wait(process, detach)
+        finally:
+            if detach is not None:
+                commands.release(detach)
+        if details is None:  # ctrl+b
+            state["background"] = True
+            try:
+                task = open_task(commands.time_limit)
+            except ToolFailure:
+                process.cancel()
+                await asyncio.gather(process, return_exceptions=True)
+                raise
+            output.move_to(task.command.log)
+            commands.launch(task, process, finish)
+            return started(task, moved=True), {
+                "task": task.id,
+                "background": True,
+                "moved": True,
+                "log": str(task.command.log.path),
+            }
+        failure, notes, hint = self._sandbox_report(params.command, inside, proxy, details)
+        if failure:
+            raise ToolFailure("sandbox_failed", failure, **details)
+        text = details["stdout"]
+        if details["stderr"]:
+            text += ("\n" if text else "") + "stderr:\n" + details["stderr"]
+        if notes:
+            text += ("\n" if text else "") + "沙箱：" + " ".join(notes)
+        if details["exit_code"] != 0:
+            # The model sees only output, so the failing command's streams must be in it.
+            raise ToolFailure(
+                "nonzero_exit",
+                f"命令退出码为 {details['exit_code']}。" + (f"\n{text}" if text else "") + hint,
+                **details,
+            )
+        return (text or "命令完成，无输出。") + hint, details
+
+    @staticmethod
+    async def _wait(process: asyncio.Task, detach: asyncio.Event | None) -> dict | None:
+        """The process's details, or None when ctrl+b moved it to the background (it keeps running)."""
+        if detach is None:
+            return await process
+        waiter = asyncio.ensure_future(detach.wait())
+        try:
+            await asyncio.wait({process, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            process.cancel()
+            await asyncio.gather(process, return_exceptions=True)
+            raise
+        finally:
+            waiter.cancel()
+        return process.result() if process.done() else None
+
+    async def _spawn(self, command: str, cwd: Path, inside: bool, proxy, output: Output) -> dict:
+        from ..sandbox import current
+
         shell = self.command_shell
-        proxy = self._proxy(params.command) if inside and sandbox.network == "proxy" else None
-        socket = sandbox.proxy_socket() if proxy is not None else None
-        script = params.command
+        script = command
         if proxy is not None and shell.kind == "powershell":
             # Windows PowerShell 5.1 ignores HTTPS_PROXY and would try the system proxy, which the sandbox blocks.
             script = POWERSHELL_PROXY + script
         try:
-            details = await run_process(
+            return await run_process(
                 shell.args(script),
                 cwd,
                 check=False,
                 limit=COMMAND_HEAD,
                 tail=COMMAND_TAIL,
-                env=shell.env(params.command),
+                env=shell.env(command),
                 confined=True,
                 sandbox_root=self.root if inside else None,
-                network=await proxy.start(socket) if proxy is not None else None,
+                network=await proxy.start(current().proxy_socket()) if proxy is not None else None,
+                output=output,
             )
         finally:
             if proxy is not None:
                 await proxy.close()
-        if inside and (failure := startup_failure(details)):
+
+    def _sandbox_report(self, command: str, inside: bool, proxy, details: dict | None) -> tuple[str, list[str], str]:
+        """(start failure, notes, hint) once a command ended, each recorded for /sandbox; details is None when
+        MossCode ended it."""
+        from ..sandbox import current, explain, startup_failure
+
+        sandbox = current()
+        if inside and details is not None and (failure := startup_failure(details)):
             sandbox.record(failure)
-            raise ToolFailure("sandbox_failed", failure, **details)
-        notes = details.get("sandbox", {}).get("notes", [])
+            return failure, [], ""
+        notes = list((details or {}).get("sandbox", {}).get("notes", []))
         if proxy is not None:
-            notes = [*notes, *proxy.summary()]
+            notes += proxy.summary()
         for note in notes:
             sandbox.record(note)
-        output = details["stdout"]
-        if details["stderr"]:
-            output += ("\n" if output else "") + "stderr:\n" + details["stderr"]
-        if notes:
-            output += ("\n" if output else "") + "沙箱：" + " ".join(notes)
-        hint = explain(details) if inside else ""
+        hint = explain(details) if inside and details is not None else ""
         if hint:
-            sandbox.record(f"可能被拦截：{safe_command(params.command)}")
-        if details["exit_code"] != 0:
-            # The model sees only output, so the failing command's streams must be in it.
-            raise ToolFailure(
-                "nonzero_exit",
-                f"命令退出码为 {details['exit_code']}。" + (f"\n{output}" if output else "") + hint,
-                **details,
-            )
-        return (output or "命令完成，无输出。") + hint, details
+            sandbox.record(f"可能被拦截：{safe_command(command)}")
+        return "", notes, hint
 
-    def _proxy(self, command: str):
+    def _proxy(self, command: str, state: dict):
         """The listener a sandboxed command reaches the network through; new domains go to the user."""
         from ..sandbox.proxy import NetworkProxy
         from .base import CURRENT_CALL, CURRENT_REGISTRY
@@ -363,7 +550,9 @@ class ExecuteCommand(Tool):
         async def approve(host: str, port: int) -> str:
             if registry is None:
                 return "无法请求审批"
-            decision = await registry.permissions.connect(call.id if call else "", host, port, command)
+            decision = await registry.permissions.connect(
+                call.id if call else "", host, port, command, background=state["background"]
+            )
             return "" if decision.action == "allow" else decision.reason or "未被允许"
 
         return NetworkProxy(approve, resolver=system_resolver, upstream=environment_proxy)

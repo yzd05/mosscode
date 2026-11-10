@@ -1,4 +1,4 @@
-"""The sub-agents of one session, foreground or background."""
+"""The tasks of one session: sub-agents, foreground or background, and background commands."""
 
 from __future__ import annotations
 
@@ -12,15 +12,31 @@ from typing import Literal
 from ..messages import UsageTotals
 
 STATUS_LABELS = {"running": "运行中", "completed": "已完成", "failed": "失败", "cancelled": "已取消"}
-ORIGIN_LABELS = {"agent": "agent 工具", "skill": "Skill fork", "hook": "Hook"}
+ORIGIN_LABELS = {"agent": "agent 工具", "skill": "Skill fork", "hook": "Hook", "command": "execute_command"}
 CANCEL_WAIT = 5.0
+
+
+@dataclass
+class CommandInfo:
+    """What a background command task has instead of a conversation."""
+
+    command: str
+    cwd: Path
+    log: object  # The CommandLog its output goes to.
+    owner: str = ""  # "" for the main conversation, else the sub-agent task id or member:<name> it ends with.
+    sandbox: str = ""  # How it was confined, for /tasks; empty outside the sandbox.
+    time_limit: float | None = None  # Seconds from the start (or the move to the background); None for none.
+    exit_code: int | None = None
+    end_reason: str = ""  # Why MossCode ended it (time or output limit), empty when it exited on its own.
+    notes: list[str] = field(default_factory=list)  # Sandbox notes, the refused domains among them.
+    tail: str = ""  # The last lines of output when it ended, for the notification.
 
 
 @dataclass
 class Task:
     id: str
-    origin: Literal["agent", "skill", "hook"]
-    agent: Literal["fork", "subagent"]
+    origin: Literal["agent", "skill", "hook", "command"]
+    agent: Literal["fork", "subagent", "command"]
     agent_type: str
     description: str
     prompt: str
@@ -43,6 +59,11 @@ class Task:
     root: Path | None = None  # The worktree directory it works in; None for the project.
     # {"name", "path", "branch", "base", "outcome"}; outcome is 使用中 / 已保留 / 已删除 / 删除未完成.
     worktree: dict | None = None
+    command: CommandInfo | None = None  # Set for a background command.
+
+    @property
+    def kind(self) -> Literal["agent", "command"]:
+        return "command" if self.command is not None else "agent"
 
     @property
     def elapsed(self) -> float:
@@ -65,6 +86,8 @@ class Task:
 def task_line(task: Task) -> str:
     """The line shown when a background task starts or ends."""
     state = "已启动" if task.status == "running" else STATUS_LABELS[task.status]
+    if task.command is not None and task.status != "running" and task.command.exit_code is not None:
+        state += f"，退出码 {task.command.exit_code}"
     return f"后台任务 {task.id}（{task.label}）{state}"
 
 
@@ -116,7 +139,8 @@ class TaskManager:
         return [task for task in self.running() if task.background]
 
     def full(self) -> bool:
-        return len(self.background()) >= self.max_background
+        """Background commands have their own limit (BackgroundCommands)."""
+        return len([task for task in self.background() if task.kind == "agent"]) >= self.max_background
 
     def changed(self, task: Task) -> None:
         if self.on_change is not None:
@@ -134,7 +158,7 @@ class TaskManager:
         try:
             text = await run()
         except asyncio.CancelledError:
-            text = task.result or "[子 Agent 未完成：已取消]"
+            text = task.result or ("[命令已停止]" if task.kind == "command" else "[子 Agent 未完成：已取消]")
             task.status = "cancelled"
         except Exception as exc:  # run() turns provider errors into text; anything else is a bug.
             text = f"[子 Agent 未完成：内部错误 {type(exc).__name__}]"

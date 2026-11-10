@@ -1028,8 +1028,10 @@ class ToolEntry(Static):
             return
         text = self._heading(state)
         text.append(f" · {self.elapsed:.1f}s\n  └ ")
-        if self.operation == "agent" and result.details.get("background"):
+        if self.operation in {"agent", "execute_command"} and result.details.get("background"):
             text.append(f"后台 · 任务 {result.details.get('task', '')}", style=PARAMETER_COLOR)
+            if result.details.get("log"):
+                text.append(f" · {result.details['log']}", style=PARAMETER_COLOR)
             self.transcript = text
             self.update(text)
             return
@@ -1396,10 +1398,16 @@ class MossCodeApp(TerminalApp[None]):
         await self._start_request("", show_user=False, notify=True)
 
     def action_background(self) -> None:
-        """Ctrl+B moves every foreground sub-agent to the background; Esc still cancels."""
+        """Ctrl+B moves every foreground command and sub-agent to the background; Esc still cancels."""
+        commands = getattr(self.conversation, "commands", None)
+        moved = commands.detach_foreground() if commands is not None else 0
         count = self.conversation.tasks.detach_foreground()
+        parts = [f"{moved} 个命令" if moved else "", f"{count} 个子 Agent" if count else ""]
         self._hint_until = monotonic() + 2
-        self._status(f"已把 {count} 个子 Agent 转入后台" if count else "没有在前台运行的子 Agent")
+        if moved or count:
+            self._status("已把 " + "和".join(part for part in parts if part) + " 转入后台")
+        else:
+            self._status("没有在前台运行的命令或子 Agent")
 
     async def action_quit(self) -> None:
         async def leave() -> None:
@@ -1570,7 +1578,10 @@ class MossCodeApp(TerminalApp[None]):
         background = len(tasks.background())
         if background:
             text.append(f" · 后台任务 {background}", style=OPERATION_COLOR)
-        if any(not task.background and task.origin == "agent" for task in tasks.running()):
+        commands = getattr(self.conversation, "commands", None)
+        if any(not task.background and task.origin == "agent" for task in tasks.running()) or (
+            commands is not None and commands.foreground_count()
+        ):
             text.append(" · Ctrl+B 转入后台", style=OPERATION_COLOR)
         teams = getattr(self.conversation, "teams", None)
         if teams is not None and teams.current is not None:

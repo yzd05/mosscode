@@ -1166,6 +1166,8 @@ def tasks_report(conversation, task_id: str = "") -> str:
         task = tasks.get(task_id)
         if task is None:
             return f"没有任务 {task_id}。输入 /tasks 查看本会话的任务。"
+        if task.command is not None:
+            return _command_report(task)
         rows = [
             ("来源", ORIGIN_LABELS[task.origin]),
             ("类型", task.agent_type),
@@ -1189,15 +1191,53 @@ def tasks_report(conversation, task_id: str = "") -> str:
             lines.append(f"/tasks stop {task.id} 停止。")
         return "\n".join(lines)
     if not tasks.tasks:
-        return "本会话还没有子 Agent 任务。"
+        return "本会话还没有任务。"
     lines = [f"任务（{len(tasks.tasks)}）"]
     for task in tasks.tasks.values():
         place = "后台" if task.background else "前台"
+        if task.command is not None:  # A command has no tokens; its output size instead.
+            from .tools.background import size_text
+
+            amount = f"输出 {size_text(task.command.log.size)}"
+        else:
+            amount = f"Token {task.tokens:,}"
         lines.append(
-            f"  {task.id:<4} {STATUS_LABELS[task.status]}  {place}  {task.label}  "
-            f"{task.elapsed:.0f} 秒  Token {task.tokens:,}"
+            f"  {task.id:<4} {STATUS_LABELS[task.status]}  {place}  {task.label}  {task.elapsed:.0f} 秒  {amount}"
         )
     lines.append("/tasks <id> 查看详情；/tasks stop <id> 停止。")
+    return "\n".join(lines)
+
+
+def _command_report(task) -> str:
+    from .tools.background import OUTPUT_LINES, size_text, status_text
+
+    info = task.command
+    owner = info.owner
+    rows = [
+        ("来源", ORIGIN_LABELS[task.origin]),
+        ("类型", "命令"),
+        ("标签", task.description),
+        ("状态", status_text(task)),
+        ("用时", f"{task.elapsed:.0f} 秒" + (f"（时间限制 {info.time_limit:.0f} 秒）" if info.time_limit else "")),
+        ("工作目录", str(info.cwd)),
+        ("沙箱", info.sandbox or "不在沙箱中"),
+        ("输出文件", f"{info.log.path}（{size_text(info.log.size)}）"),
+    ]
+    if owner:
+        rows.append(
+            ("随之结束", f"成员 {owner.removeprefix('member:')}" if owner.startswith("member:") else f"任务 {owner}")
+        )
+    lines = [f"任务 {task.id}", *(f"  {label}{' ' * (10 - cell_len(label))}{value}" for label, value in rows)]
+    lines.append("  命令")
+    shown = info.command[:600].splitlines()[:6]
+    more = len(info.command) > 600 or len(info.command.splitlines()) > 6
+    lines.extend("    " + line for line in [*shown, *(["…"] if more else [])])
+    tail = info.log.last_lines(10, 2000)
+    if tail:
+        lines.append(f"  最后几行输出（完整输出见输出文件，task_output 给模型最后 {OUTPUT_LINES} 行）")
+        lines.extend("    " + line for line in tail.splitlines())
+    if task.status == "running":
+        lines.append(f"/tasks stop {task.id} 停止（连同它启动的进程）。")
     return "\n".join(lines)
 
 

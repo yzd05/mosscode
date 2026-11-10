@@ -875,7 +875,7 @@ async def test_tasks_command_and_status(tmp_path):
     ui = FakeUI()
     ctx = context(conv, ui=ui)
     await run(ctx, "/tasks")
-    assert ui.notes[-1] == "本会话还没有子 Agent 任务。"
+    assert ui.notes[-1] == "本会话还没有任务。"
     await drain(conv.reply("开始"))
     await run(ctx, "/tasks")
     assert "t1" in ui.notes[-1] and "运行中  后台  w · 子任务" in ui.notes[-1]

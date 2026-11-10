@@ -255,13 +255,14 @@ async def test_plan_offers_only_read_tools_and_blocks_writes_and_command(tmp_pat
     assert [r.code for r in conv.history[2].tool_results] == ["plan_blocked"] * 3 + [None]
     assert conv.mode == "plan"
     assert all(
-        {t.name for t in r[2]} == {"read_file", "glob", "grep", "execute_command", "exit_plan_mode", "web_fetch"}
+        {t.name for t in r[2]}
+        == {"read_file", "glob", "grep", "execute_command", "exit_plan_mode", "web_fetch", "task_output", "task_stop"}
         for r in provider.requests
     )
     assert "计划模式" in provider.requests[0][1].supplements[-1].text
     conv.set_mode("normal")
     assert await conv.ask("执行") == "完成"
-    assert (tmp_path / "a").read_text() == "new" and len(provider.requests[-1][2]) == 7
+    assert (tmp_path / "a").read_text() == "new" and len(provider.requests[-1][2]) == 9
 
 
 async def test_unexpected_stream_error_is_safe_stop_and_keeps_completed_tools(tmp_path):

@@ -174,6 +174,8 @@ async def test_plan_is_approved_in_tui_then_writes_in_same_task(tmp_path, approv
             "execute_command",
             "exit_plan_mode",
             "web_fetch",
+            "task_output",
+            "task_stop",
         }
         await pilot.press("enter" if approve else "escape")
         await asyncio.wait_for(app._reply_task, 3)
@@ -182,7 +184,7 @@ async def test_plan_is_approved_in_tui_then_writes_in_same_task(tmp_path, approv
             assert [r.code for r in results] == [None, None]
             assert (tmp_path / "a").read_text() == "planned"
             assert reg.permissions.mode == "acceptEdits" and conv.mode == "normal"
-            assert len(provider.requests[1][2]) == 7
+            assert len(provider.requests[1][2]) == 9
         else:
             assert results[0].code == "permission_denied" and not (tmp_path / "a").exists()
             assert conv.mode == "plan" and reg.permissions.mode == "plan"

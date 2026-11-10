@@ -94,6 +94,7 @@ EXIT_PLAN = "exit_plan_mode"
 PREFIX_SUFFIX = ":*"
 STRICTNESS = ("plan", "default", "acceptEdits", "bypassPermissions")  # Strictest first.
 NONINTERACTIVE = "此操作需要用户确认；无界面模式不会自动授权。"
+BACKGROUND_COMMAND_REASON = "后台命令不能请求联网审批；请用户添加允许该域名的规则，或在前台重新运行命令。"
 
 
 def stricter(a: str, b: str) -> str:
@@ -728,10 +729,11 @@ class PermissionPolicy:
             self.set_mode("acceptEdits" if choice == "accept_edits" else self.resume_mode)
             return Decision("allow")
 
-    async def connect(self, call_id: str, host: str, port: int, command: str) -> Decision:
+    async def connect(self, call_id: str, host: str, port: int, command: str, *, background: bool = False) -> Decision:
         """A sandboxed command wants to reach host through the proxy: WebFetch domain rules, the mode, then the user.
 
         "once" covers this command only; the caller remembers it for the command's other connections.
+        A background command asks nobody: an approval panel could appear while the user is doing something else.
         """
         preview = (
             f"命令：{safe_display(command, 500)}\n连接：{host}:{port}（经沙箱代理）\n"
@@ -741,6 +743,8 @@ class PermissionPolicy:
         decision = self.decide(operation, read_only=False)
         if decision.action != "ask":
             return decision
+        if background:
+            return Decision("deny", "approval_required", BACKGROUND_COMMAND_REASON)
         if not self.interactive:
             return Decision("deny", "approval_required", self.noninteractive_reason)
         async with self._approval_lock:

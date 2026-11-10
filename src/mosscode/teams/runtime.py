@@ -269,6 +269,7 @@ async def build_runner(
         git = main.git
     else:
         from ..tools import create_default_registry, web_tools
+        from ..tools.background import share
 
         shell = getattr(main.registry.get("execute_command"), "shell", None)
         fresh = create_default_registry(root, permissions=policy, shell=shell if shell is not None else "auto")
@@ -277,7 +278,11 @@ async def build_runner(
             agent="teammate", agent_type=agent.name, permissions=policy, keep=keep, extra=(*web, *extra)
         )
         registry.session, registry.hooks, registry.worktree = main.registry.session, main.registry.hooks, relative
+        share(main.registry, registry)
         git = await asyncio.to_thread(git_snapshot, root)
+    # Its background commands end with it (MemberRunner.close) and notify nobody.
+    registry.task_id = runner.owner = f"member:{member.name}"
+    runner.commands = registry.commands
     system = agent.prompt + "\n\n" + addendum(store.name, member.name, member.worktree)
     turns = min(agent.max_turns or main.max_iterations, main.max_iterations)
     loop = AgentLoop(provider, system, registry, max_iterations=turns, unknown_limit=main.unknown_limit)

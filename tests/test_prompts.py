@@ -138,7 +138,8 @@ async def test_mode_switch_changes_only_enabled_contributions_and_custom_overrid
     plan, normal = provider.requests[0][1].stable, provider.requests[1][1].stable
     assert "`exit_plan_mode`" in plan and "`write_file`" not in plan
     assert "`write_file`" in normal and "`exit_plan_mode`" not in normal
-    assert (len(provider.requests[0][2]), len(provider.requests[1][2])) == (6, 7)  # web_fetch in both
+    # web_fetch, task_output and task_stop in both.
+    assert (len(provider.requests[0][2]), len(provider.requests[1][2])) == (8, 9)
     custom_provider = SequenceProvider(response("答复"))
     custom_conv = Conversation(
         custom_provider,

@@ -137,7 +137,9 @@ async def test_plan_approval_switches_tools_within_one_task(tmp_path):
     codes = [r.code for m in conv.history if m.role == "tool" for r in m.tool_results]
     assert codes == ["plan_blocked", None, None]
     assert (tmp_path / "a").read_text() == "planned" and conv.mode == "normal"
-    assert [{t.name for t in r[2]} == PLAN_TOOLS for r in provider.requests] == [True, True, False, False]
+    # A conversation adds the task tools for background commands.
+    offered = PLAN_TOOLS | {"task_output", "task_stop"}
+    assert [{t.name for t in r[2]} == offered for r in provider.requests] == [True, True, False, False]
     # The environment supplement follows the switch within the same task.
     assert '"acceptEdits"' in provider.requests[2][1].supplements[0].text
 

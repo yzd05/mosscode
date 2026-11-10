@@ -40,7 +40,7 @@ async def test_plan_then_permissions_command_help_and_chinese_completion(tmp_pat
         await send(app, pilot, "/plan 创建 a")
         await app._reply_task
         assert provider.requests[0][0][0].text == "创建 a"
-        assert len(provider.requests[0][2]) == 6  # read-only tools, web_fetch included
+        assert len(provider.requests[0][2]) == 8  # read-only tools, web_fetch, task_output and task_stop
         assert not (tmp_path / "a").exists()
         await send(app, pilot, "/permissions bypassPermissions")
         assert conv.mode == "normal" and len(provider.requests) == 1
@@ -50,7 +50,7 @@ async def test_plan_then_permissions_command_help_and_chinese_completion(tmp_pat
         assert "跳过审批" in str(app.query_one("#status", Static).render())
         assert "计划模式" not in str(app.query_one("#status", Static).render())
         assert "按计划执行" in provider.requests[1][0][-1].text
-        assert len(provider.requests[1][2]) == 7
+        assert len(provider.requests[1][2]) == 9  # The default tools, task_output and task_stop included.
         user_rows = [e.body for e in app.query(ChatEntry) if e.speaker == "You"]
         assert user_rows == ["/plan", "/plan 创建 a", "/permissions bypassPermissions", "按计划执行"]
         assert app.focused is field and not field.disabled

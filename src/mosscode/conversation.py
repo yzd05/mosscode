@@ -129,6 +129,8 @@ class Conversation:
         agents: AgentCatalog | None = None,
         agent_auto_background: float = AUTO_BACKGROUND,
         agent_max_background: int = MAX_BACKGROUND,
+        command_max_background: int = 8,
+        command_time_limit: float | None = None,
         worktree_links=(),
         worktree_stale_hours: float = 24.0,
         teams: bool = False,
@@ -210,6 +212,25 @@ class Conversation:
         if hooks is not None:
             hooks.agent_runner = self.subagents.hook_agent
         self._notices.extend(self._offer_agents())
+        # Background commands share the task list; command_max_background 0 runs every command in the foreground.
+        self.commands = None
+        tool = registry.get("execute_command") if registry is not None else None
+        if command_max_background > 0 and hasattr(tool, "allow_background"):
+            from .tools.background import BackgroundCommands
+
+            self.commands = BackgroundCommands(
+                self.tasks,
+                limit=command_max_background,
+                time_limit=command_time_limit,
+                session=lambda: self.session,
+                record=self._record,
+            )
+            registry.commands = self.commands
+            tool.allow_background(command_time_limit)
+            root = registry.permissions.root
+            for task_tool in (TaskOutput(root, self.subagents), TaskStop(root, self.subagents)):
+                if registry.get(task_tool.name) is None:
+                    registry.register(task_tool)
         # The lead's team tools from the start, in the interactive UI with tools and agents.
         self.teams = None
         self._team_context_due = False  # After /clear or /resume, once before the next message.

@@ -73,8 +73,8 @@ class TaskOutput(Tool):
     read_only = True
     timeout = WAIT_LIMIT + 10
     description = (
-        "查看后台任务（子 Agent）的状态与结果。wait 为等待完成的秒数（最多 300），0 表示立即返回；"
-        "任务完成时你也会自动收到 <task-notification>，一般不需要轮询。"
+        "查看后台任务（子 Agent 或命令）的状态与结果；命令任务给出退出码、输出文件路径和最后 50 行输出。"
+        "wait 为等待完成的秒数（最多 300），0 表示立即返回；任务完成时你也会自动收到 <task-notification>，一般不需要轮询。"
     )
     prompt_summary = "查看后台任务的状态与结果"
     params_model = TaskOutputParams
@@ -89,6 +89,10 @@ class TaskOutput(Tool):
             raise ToolFailure("unknown_task", f"没有任务 {params.task_id}。")
         if task.status == "running" and params.wait and task.job is not None:
             await asyncio.wait({task.job}, timeout=params.wait)
+        if task.command is not None:
+            from .background import report
+
+            return report(task), {"task": task.id, "status": task.status, "exit_code": task.command.exit_code}
         from ..agents.runtime import stats
         from ..agents.tasks import STATUS_LABELS
 
@@ -107,7 +111,10 @@ class TaskStop(Tool):
     name = "task_stop"
     permission_kind = "agent"
     plan_allowed = True
-    description = "停止一个运行中的后台任务（子 Agent）。停止后任务记为已取消，不再收到它的通知。"
+    description = (
+        "停止一个运行中的后台任务（子 Agent 或命令；命令连同它启动的进程一起结束）。"
+        "停止后任务记为已取消，不再收到它的通知。"
+    )
     prompt_summary = "停止后台任务"
     params_model = TaskStopParams
 

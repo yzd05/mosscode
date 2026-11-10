@@ -23,6 +23,8 @@ default_provider: claude
 # auto_memory: true
 # 后台提取使用的 Provider 名称，可以指定较便宜的模型；未设置时用当前 Provider。
 # memory_provider: deepseek
+# 同时运行的后台命令上限（execute_command 的 run_in_background，默认 8，最多 64）；0 关闭后台命令。
+# command_max_background: 8
 # Agent 团队的成员在哪里运行：auto（默认；在 tmux 中用 tmux 窗格，在 Windows Terminal 中用分屏窗格，否则进程内）、
 # in-process、windows-terminal、tmux。显式指定的窗格后端不可用时报错，不改用其他后端。
 # teammate_mode: auto

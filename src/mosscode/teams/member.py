@@ -240,6 +240,7 @@ class MemberRunner:
         self.access, self.name = access, name
         self.loop: AgentLoop | None = None  # Set once the tools that need this runner exist.
         self.owned = False  # The loop's provider is closed when the member stops.
+        self.commands, self.owner = None, ""  # Its background commands, stopped when it closes.
         self.agent_mode, self.session_mode = agent_mode, session_mode
         self.require_plan_approval = require_plan_approval
         self.approved = False
@@ -283,6 +284,8 @@ class MemberRunner:
         await self.close()
 
     async def close(self) -> None:
+        if self.commands is not None:
+            await self.commands.stop_owned(self.owner)
         if self.owned and self.loop is not None:
             self.owned = False
             await self.loop.provider.close()

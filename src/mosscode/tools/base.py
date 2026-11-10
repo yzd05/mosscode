@@ -170,6 +170,9 @@ class ToolRegistry:
         self.image_dir: Path | None = None
         # withheld(tool) -> True keeps a tool for sub-agents and members but neither offers nor runs it here.
         self.withheld = None
+        self.commands = None  # The session's BackgroundCommands; None runs every command in the foreground.
+        # Who its background commands end with: "" for the main conversation, else a sub-agent task id or member:<name>.
+        self.task_id = ""
         if any(tool.root != self.permissions.root for tool in self._tools.values()):
             raise ValueError("工具与权限策略必须使用同一个项目根目录。")
 
@@ -237,6 +240,7 @@ class ToolRegistry:
         view = ToolRegistry(permissions=permissions)
         view.session, view.hooks, view.agent, view.agent_type = self.session, self.hooks, agent, agent_type
         view.images = self.images
+        view.commands, view.task_id = self.commands, self.task_id
         view.forbidden = frozenset(forbidden)
         for name, tool in self._tools.items():
             if keep is not None and not keep(name):

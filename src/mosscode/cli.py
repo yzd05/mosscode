@@ -56,6 +56,7 @@ from .sandbox import first_start_hint
 from .session import Session, prune_all
 from .skills import ForkRequest, SkillCatalog
 from .tools import create_default_registry
+from .tools.background import HEADLESS_TIME_LIMIT
 from .tools.shell import ShellNotFound
 from .tui import ConfigTrustApp, MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
 from .usage import request_usage_text
@@ -617,6 +618,9 @@ def run(args: argparse.Namespace) -> None:
             agents=AgentCatalog.load(Path.cwd(), plugins=plugins.plugins, claude=claude),
             agent_auto_background=settings.agent_auto_background,
             agent_max_background=settings.agent_max_background,
+            command_max_background=settings.command_max_background,
+            # -p must end: background commands without their own timeout get a limit there.
+            command_time_limit=None if args.prompt is None else HEADLESS_TIME_LIMIT,
             worktree_links=settings.worktree_links,
             worktree_stale_hours=settings.worktree_stale_hours,
             teams=args.prompt is None,
