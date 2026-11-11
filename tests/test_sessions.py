@@ -765,3 +765,28 @@ async def test_tui_refuses_resume_while_running(tmp_path):
         app.action_cancel_task()
         await pilot.pause()
     await conv.close()
+
+
+async def test_cleared_results_are_restored_as_notes(tmp_path):
+    from mosscode.messages import ResultsCleared
+    from test_context import seeded, steps
+
+    history = steps(8)
+    conv = seeded(SequenceProvider(response("好")), history, session=Session.create(tmp_path / "live"))
+    committed = []
+    conv._agent.on_commit = committed.append
+    events = [e async for e in conv.reply("继续")]
+    assert any(isinstance(e, ResultsCleared) for e in events)
+    clears = [record for record in committed if record["type"] == "clear"]
+    assert len(clears) == 1 and sorted(clears[0]["results"]) == ["c0", "c1", "c2", "c3", "c4", "c5"]
+    lines = [message_record(m) for m in history] + [json.loads(json.dumps(clears[0])), message_record(user("继续"))]
+    restored = load_session(_raw_session(tmp_path, lines))
+    assert restored.skipped == 0 and restored.history[: len(history)] == list(conv.history[: len(history)])
+    assert (
+        "已清理" in restored.history[2].tool_results[0].output
+        and restored.history[2].tool_results[0].details["cleared"]
+    )
+    # A record that cannot be applied is skipped and the results stay whole.
+    broken = [message_record(m) for m in history] + [{"type": "clear", "results": {"c0": {"output": 3}}}]
+    whole = load_session(_raw_session(tmp_path / "other", broken))
+    assert whole.skipped == 1 and whole.history == history

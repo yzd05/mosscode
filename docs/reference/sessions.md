@@ -27,6 +27,7 @@
 | `session` | 第一行：`id`、`cwd`、`created`、`mosscode`（版本） |
 | `message` | 一条进入历史的消息，带写入时间 `time`。用户消息与第一次完整回复一起写；一批工具结果在执行结束后写一次；生成到一半的回复不写 |
 | `compact` | 压缩成功：历史变为 `boundary`（摘要消息）加上当前历史的最后 `keep` 条；`record` 是压缩记录文件的路径 |
+| `clear` | 自动压缩到期时只清理了较早的工具结果：`results` 是调用 ID 到清理后的 `output`、`details` 的映射，恢复时替换历史中对应的结果 |
 | `provider` | `/model` 切换：此前消息中只对原模型有效的数据（thinking 签名、加密推理）清除 |
 | `checkpoint` | 文件检查点：`message`（当时最新的用户消息 id）、`path`（工作区内为相对路径）、`blob`（快照文件名，`null` 表示文件当时不存在），过大的文件带 `too_large: true` |
 | `rewind` | `/rewind` 退回对话：历史变为前 `keep` 条，`message` 是退回的那条消息 |

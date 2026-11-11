@@ -51,6 +51,9 @@ class FileState:
     def clear(self) -> None:
         self._seen.clear()
 
+    def forget(self, path: str | Path) -> None:
+        self._seen.pop(self._key(path), None)
+
     def copy(self) -> "FileState":
         """A fork starts from what its parent has read."""
         state = FileState()

@@ -7,13 +7,13 @@ import math
 import re
 from collections.abc import Sequence
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
 from .context import ContextBudget, estimate_messages, estimate_text
 from .images import ImageRef
-from .messages import Completed, ContentBlock, Message, ProviderError
+from .messages import Completed, ContentBlock, Message, ProviderError, ToolResult
 from .session import Session
 
 KEEP_TOKENS = 10_000
@@ -28,6 +28,11 @@ BOUNDARY = "compact"
 QUOTE = "\n\n▸ "  # Prefix of each verbatim user quote block in a boundary message.
 CLIPPED = " …（较长，原文见记录文件）"
 NOTHING = "没有可压缩的内容：对话中只有最近一轮。"
+# Results the model can get again: files are read again, the rest is stored in the session directory.
+CLEARABLE = frozenset({"read_file", "grep", "glob", "execute_command", "web_fetch", "web_search", "task_output"})
+CLEAR_MINIMUM = 300  # Tokens: a smaller result saves too little once the note replaces it.
+CLEAR_TARGET = 0.5  # Of the auto threshold: clearing alone is enough when the context ends up under it.
+CLEAR_NOTE = 100  # Tokens a note is assumed to cost when sizing up what clearing would free.
 
 SYSTEM = "你是对话摘要器。禁止调用任何工具，只输出纯文本；任何工具调用都会被拒绝，本次任务会失败。"
 
@@ -93,6 +98,73 @@ def cut_point(history: Sequence[Message], threshold: int, *, manual: bool = Fals
         return cut
     start = _group_start(history, len(history) - 1)
     return 0 if _only_boundary(history[:start]) else start
+
+
+@dataclass(frozen=True)
+class Cleared:
+    history: list[Message]
+    results: dict[str, ToolResult]  # By call ID, as they read now.
+    tokens: int  # Freed, by estimate.
+    paths: tuple[str, ...]  # Files none of whose reads is left in the history.
+
+
+def _clearable(result: ToolResult) -> bool:
+    if result.details.get("cleared") or result.images:
+        return False
+    if result.name not in CLEARABLE and not result.name.startswith("mcp__"):
+        return False
+    return estimate_text(result.model_text()) > CLEAR_MINIMUM
+
+
+def clearable_tokens(history: Sequence[Message], cut: int) -> int:
+    """About how much clearing the results before cut would free; nothing is written."""
+    sizes = [estimate_text(r.model_text()) for m in history[:cut] for r in m.tool_results if _clearable(r)]
+    return sum(max(size - CLEAR_NOTE, 0) for size in sizes)
+
+
+def _is_read(result: ToolResult) -> bool:
+    return result.name == "read_file" and not result.is_error and "path" in result.details
+
+
+def _cleared(result: ToolResult, session: Session | None) -> ToolResult | None:
+    """The note that replaces a result, or None when its content could not be kept anywhere."""
+    lead = f"（较早的工具结果已清理以节省上下文，原有约 {estimate_text(result.output)} Token。"
+    if _is_read(result):
+        note = f"{lead}需要其中的内容时重新读取这个文件，不要凭记忆补写。）"
+        return replace(result, output=note, details={**result.details, "cleared": True})
+    path = result.details.get("persisted")
+    if not path:
+        if session is None:
+            return None
+        try:
+            path = str(session.persist_result(result.call_id, result.output))
+        except OSError:
+            return None
+    note = f"{lead}完整内容保存在：\n{path}\n需要其中的内容时用 read_file 读取这个文件，不要凭记忆补写。）"
+    return replace(result, output=note, details={**result.details, "persisted": path, "cleared": True})
+
+
+def clear_results(history: Sequence[Message], cut: int, session: Session | None) -> Cleared:
+    """The history with the larger tool results before cut replaced by notes; no message is added or removed."""
+    changed: dict[str, ToolResult] = {}
+    cleared_paths: list[str] = []
+    freed = 0
+    updated = list(history)
+    for index, message in enumerate(history[:cut]):
+        results = list(message.tool_results)
+        for position, result in enumerate(results):
+            note = _cleared(result, session) if _clearable(result) else None
+            if note is None:
+                continue
+            results[position] = changed[result.call_id] = note
+            freed += estimate_text(result.model_text()) - estimate_text(note.model_text())
+            if _is_read(result):
+                cleared_paths.append(result.details["path"])
+        if results != list(message.tool_results):
+            updated[index] = replace(message, tool_results=tuple(results))
+    held = {r.details["path"] for m in updated for r in m.tool_results if _is_read(r) and not r.details.get("cleared")}
+    paths = tuple(dict.fromkeys(path for path in cleared_paths if path not in held))
+    return Cleared(updated, changed, freed, paths)
 
 
 def carried_quotes(message: Message) -> list[str]:

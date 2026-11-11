@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import anthropic
 import httpx
@@ -866,3 +867,194 @@ async def test_cancelled_compaction_leaves_the_history_unchanged():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert conv.history == before and not conv._busy
+
+
+# Due compaction clears older tool results first, when that alone frees enough
+
+from mosscode.compaction import CLEAR_MINIMUM, clear_results, clearable_tokens
+from mosscode.messages import ResultsCleared
+
+
+def step(index, name="execute_command", size=16_000, details=None):
+    """One exchange whose tool result is about size / 4 tokens."""
+    return [
+        text("user", f"第 {index} 步"),
+        Message("assistant", (ContentBlock("text", f"执行 {index}"),), tool_calls=(ToolCall(f"c{index}", name, "{}"),)),
+        Message(
+            "tool",
+            (),
+            tool_results=(ToolResult(f"c{index}", name, f"out{index} " + "x" * size, details=details or {}),),
+        ),
+        text("assistant", f"第 {index} 步完成"),
+    ]
+
+
+def steps(count, **options):
+    return [message for index in range(count) for message in step(index, **options)]
+
+
+def result_of(history, call_id):
+    return next(r for m in history for r in m.tool_results if r.call_id == call_id)
+
+
+def test_clearing_stores_what_cannot_be_read_again_and_leaves_the_rest(tmp_path):
+    session = Session.create(tmp_path)
+    stored = session.persist_result("old", "完整的旧输出")
+    history = [
+        *step(0),
+        *step(1, "read_file", details={"path": "/p/a.py", "lines": 10}),
+        *step(2, "ask_user"),
+        *step(3, "grep", size=400),  # 100 tokens: under the minimum.
+        *step(4, "mcp__db__query"),
+        *step(5, "execute_command", details={"persisted": str(stored), "budgeted": True}),
+        *step(6, "read_file", details={"path": "/p/b.py", "lines": 10}),
+        *step(7, "read_file", size=40, details={"path": "/p/b.py", "lines": 1}),
+        *step(8),
+    ]
+    original = list(history)
+    cut = 32  # Everything but the last step.
+    assert clearable_tokens(history, cut) > 5 * 3_800
+    done = clear_results(history, cut, session)
+    assert history == original and len(done.history) == len(history)
+    assert sorted(done.results) == ["c0", "c1", "c4", "c5", "c6"]
+    assert done.history[:2] == history[:2] and done.history[cut:] == history[cut:]
+    command = result_of(done.history, "c0")
+    saved = Path(command.details["persisted"])
+    assert saved.read_text(encoding="utf-8") == result_of(history, "c0").output
+    assert str(saved) in command.output and "不要凭记忆补写" in command.output and command.details["cleared"]
+    read = result_of(done.history, "c1")
+    assert "重新读取这个文件" in read.output and "persisted" not in read.details and read.details["path"] == "/p/a.py"
+    assert Path(result_of(done.history, "c4").details["persisted"]).name == "c4.txt"
+    assert str(stored) in result_of(done.history, "c5").output  # A stored preview keeps its file.
+    for kept in ("c2", "c3", "c7", "c8"):
+        assert result_of(done.history, kept) == result_of(history, kept)
+    # b.py still has a read the model can see; a.py has none.
+    assert done.paths == ("/p/a.py",)
+    assert 5 * 3_800 < done.tokens <= clearable_tokens(history, cut) + 5 * 100
+    for result in done.results.values():
+        assert estimate_text(result.model_text()) < CLEAR_MINIMUM
+    again = clear_results(done.history, cut, session)
+    assert not again.results and again.tokens == 0 and again.history == done.history
+
+
+def test_without_a_place_to_store_them_only_reads_are_cleared(tmp_path):
+    history = [*step(0), *step(1, "read_file", details={"path": "/p/a.py", "lines": 10}), *step(2)]
+    assert sorted(clear_results(history, 8, None).results) == ["c1"]
+    blocked = tmp_path / "file"
+    blocked.write_text("x", encoding="utf-8")
+    unwritable = Session(blocked / "session")
+    assert sorted(clear_results(history, 8, unwritable).results) == ["c1"]
+
+
+async def test_due_compaction_clears_results_and_sends_no_summary_request(tmp_path):
+    provider = SequenceProvider(response("好"), response("再好"))
+    history = steps(8)  # About 32K tokens, nearly all tool results: over 27K.
+    conv = seeded(provider, history, session=Session.create(tmp_path))
+    events = [e async for e in conv.reply("继续")]
+    cleared = [e for e in events if isinstance(e, ResultsCleared)]
+    assert len(cleared) == 1 and cleared[0].results == 6 and cleared[0].tokens > 20_000
+    assert not any(isinstance(e, (CompactStarted, CompactFinished, CompactFailed)) for e in events)
+    assert len(provider.requests) == 1 and provider.requests[0][3] is True
+    sent = provider.requests[0][0]
+    assert [m.role for m in sent[: len(history)]] == [m.role for m in history] and sent[-1].text == "继续"
+    assert [m.text for m in sent[: len(history)] if m.role != "tool"] == [m.text for m in history if m.role != "tool"]
+    assert "已清理" in result_of(sent, "c0").output and result_of(sent, "c7") == result_of(history, "c7")
+    assert conv.compactions == 0 and conv.context_estimate() < SMALL.auto_threshold // 2
+    # Nothing is due on the next turn, and a cleared result is never touched again.
+    events = [e async for e in conv.reply("再继续")]
+    assert not any(isinstance(e, (ResultsCleared, CompactStarted)) for e in events)
+    assert provider.requests[1][0][: len(sent)] == sent
+
+
+async def test_a_history_that_clearing_cannot_bring_down_is_summarized_untouched(tmp_path):
+    session = Session.create(tmp_path)
+    provider = SequenceProvider(summary_reply(), response("好"))
+    history = steps(2) + chat(6)  # 8K of results in 32K: clearing leaves about 24K, over half the threshold.
+    conv = seeded(provider, history, session=session)
+    events = [e async for e in conv.reply("继续")]
+    assert not any(isinstance(e, ResultsCleared) for e in events)
+    assert any(isinstance(e, CompactFinished) for e in events) and conv.compactions == 1
+    assert "out0 xxxx" in provider.requests[0][0][0].text  # The summary read the results as they were.
+    assert not (session.directory / "tool-results").exists()
+
+
+async def test_overflow_rescue_and_manual_compaction_always_summarize(tmp_path):
+    provider = SequenceProvider(OVERFLOW, summary_reply(), response("好"))
+    conv = seeded(provider, steps(5), session=Session.create(tmp_path / "a"))  # About 20K: under the threshold.
+    events = [e async for e in conv.reply("继续")]
+    assert not any(isinstance(e, ResultsCleared) for e in events) and conv.compactions == 1
+    conv = seeded(SequenceProvider(summary_reply()), steps(8), session=Session.create(tmp_path / "b"))
+    events = [e async for e in conv.compact()]
+    assert isinstance(events[0], CompactStarted) and isinstance(events[-1], CompactFinished)
+    conv = seeded(
+        SequenceProvider(response("好")), steps(8), session=Session.create(tmp_path / "c"), auto_compact=False
+    )
+    events = [e async for e in conv.reply("继续")]
+    assert not any(isinstance(e, ResultsCleared) for e in events) and list(conv.history[: len(steps(8))]) == steps(8)
+
+
+async def test_a_file_whose_read_was_cleared_needs_a_fresh_read_before_an_edit(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.txt").write_text("MARK\n" + "line of text\n" * 3_000, encoding="utf-8")
+    (project / "b.txt").write_text("old-b", encoding="utf-8")
+    reg = create_default_registry(project, permission_mode="bypassPermissions", load_permissions=False)
+    big = await reg.execute(ToolCall("ra", "read_file", '{"path": "a.txt"}'))
+    small = await reg.execute(ToolCall("rb", "read_file", '{"path": "b.txt"}'))
+    assert not big.is_error and estimate_text(big.output) > 9_000
+
+    def read(result, path):
+        return [
+            Message("assistant", (), tool_calls=(ToolCall(result.call_id, "read_file", json.dumps({"path": path})),)),
+            Message("tool", (), tool_results=(result,)),
+        ]
+
+    history = [text("user", "看两个文件"), *read(big, "a.txt"), *read(small, "b.txt"), *steps(6), *chat(2)]
+    # The real tool definitions count too: a threshold of 47,000 leaves room for them under the clearing target.
+    conv = Conversation(
+        SequenceProvider(response("好")),
+        budget=ContextBudget.for_provider(80_000, 4_096),
+        registry=reg,
+        session=Session.create(tmp_path / "s"),
+    )
+    conv._agent.history = history
+    events = [e async for e in conv.reply("继续")]
+    assert [e.results for e in events if isinstance(e, ResultsCleared)] == [6]
+
+    def edit(path, old):
+        return ToolCall("e" + path, "edit_file", json.dumps({"path": path, "old_text": old, "new_text": "new"}))
+
+    assert (await reg.execute(edit("a.txt", "MARK"))).code == "not_read"
+    assert (await reg.execute(edit("b.txt", "old-b"))).is_error is False
+    assert (await reg.execute(ToolCall("r2", "read_file", '{"path": "a.txt", "limit": 5}'))).is_error is False
+    assert (await reg.execute(edit("a.txt", "MARK"))).is_error is False
+
+
+async def test_tui_and_headless_output_report_cleared_results(tmp_path, capsys):
+    assert compact_notice(ResultsCleared(6, 23_500)) == "✓ 已清理较早的工具结果 · 6 个 · 约 23500 Token"
+    provider = SequenceProvider(response("好", usage=Usage(9_000, 100)))
+    app = MossCodeApp(seeded(provider, steps(8), session=Session.create(tmp_path / "a")), "Demo")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", PromptArea).value = "继续"
+        await pilot.press("enter")
+        await app._reply_task
+        await pilot.pause()
+        children = list(app.query_one("#chat").children)
+        note = next(w for w in children if "已清理较早的工具结果 · 6 个" in str(w.render()))
+        reply = [w for w in children if isinstance(w, ChatEntry)][-1]
+        assert children.index(note) < children.index(reply) and reply.body == "好"
+        assert not list(app.query(CompactRow))
+    capsys.readouterr()
+    conv = seeded(SequenceProvider(response("好")), steps(8), session=Session.create(tmp_path / "b"))
+    result = await cli._prompt(conv, "继续", output_format="stream-json")
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    compact = [e for e in lines if e["type"] == "compact"]
+    assert (
+        [e["subtype"] for e in compact] == ["cleared"] and compact[0]["results"] == 6 and compact[0]["tokens"] > 20_000
+    )
+    assert result["compactions"] == 0
+    conv = seeded(SequenceProvider(response("好")), steps(8), session=Session.create(tmp_path / "c"))
+    await cli._prompt(conv, "继续")
+    captured = capsys.readouterr()
+    assert "已清理较早的工具结果" in captured.err and "正在压缩上下文" not in captured.err and "好" in captured.out

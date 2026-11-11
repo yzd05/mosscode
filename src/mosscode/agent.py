@@ -10,7 +10,15 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from .compaction import NOTHING, CompactionError, compact_history, cut_point
+from .compaction import (
+    CLEAR_TARGET,
+    NOTHING,
+    CompactionError,
+    clear_results,
+    clearable_tokens,
+    compact_history,
+    cut_point,
+)
 from .context import ContextBudget, ContextMeter
 from .credentials import redact, redact_value
 from .images import ImageRef
@@ -28,6 +36,7 @@ from .messages import (
     ProviderError,
     ReplyRetry,
     ResponseBoundary,
+    ResultsCleared,
     RunStopped,
     StreamEvent,
     TasksNotified,
@@ -51,7 +60,7 @@ from .prompts import (
     mode_reminder,
     stable_prompt,
 )
-from .session import compact_record, message_record, rewind_record, todo_record
+from .session import clear_record, compact_record, message_record, rewind_record, todo_record
 from .skills import ActiveSkills
 from .todo import todo_reminder
 from .tools import shell_label
@@ -371,18 +380,53 @@ class AgentLoop:
         env_text += self.hook_context.render() if self.hook_context else ""
         return self.meter.estimate(list(self.history) + list(extra), env_text, self._fixed_text)
 
-    async def _compact(self, instructions: str = "", *, manual: bool = False, failure: str | None = None):
-        """One compaction attempt; events report the outcome, the history changes only on success."""
-        if not cut_point(self.history, self.budget.auto_threshold, manual=manual):
+    def _clear(self, cut: int, estimate: int) -> ResultsCleared | None:
+        """Older tool results become notes when that alone brings the context far enough down.
+
+        Done only when compaction is due anyway: the cached prefix is about to be rewritten either way,
+        and unlike a summary this costs no request and keeps every word of the conversation.
+        """
+        target = int(self.budget.auto_threshold * CLEAR_TARGET)
+        if estimate - clearable_tokens(self.history, cut) > target:
+            return None
+        done = clear_results(self.history, cut, self.session)
+        if not done.results or estimate - done.tokens > target:
+            return None  # Too few could be kept on disk; the history stays as it was.
+        self.history = done.history
+        self._commit(clear_record(done.results))
+        if self.registry is not None:
+            self.registry.forget_reads(done.paths)
+        self.meter.invalidate()
+        return ResultsCleared(len(done.results), done.tokens)
+
+    async def _compact(
+        self,
+        instructions: str = "",
+        *,
+        manual: bool = False,
+        failure: str | None = None,
+        estimate: int | None = None,
+    ):
+        """One compaction attempt; events report the outcome, the history changes only on success.
+
+        With the estimate that made it due, clearing older tool results is tried before summarizing.
+        """
+        cut = cut_point(self.history, self.budget.auto_threshold, manual=manual)
+        if not cut:
             # Nothing older than the kept tail: automatic attempts skip silently and never trip the breaker.
             if manual:
                 yield CompactFailed(NOTHING, self.compact_failures, self.auto_paused, "nothing", True)
             return
+        if estimate is not None:
+            cleared = self._clear(cut, estimate)
+            if cleared is not None:
+                yield cleared
+                return
         yield CompactStarted(manual)
         started = time.monotonic()
         if self.on_compact is not None:
             # Messages about to be summarized away; the memory extractor still gets to read them.
-            self.on_compact(self.history[: cut_point(self.history, self.budget.auto_threshold, manual=manual)])
+            self.on_compact(self.history[:cut])
         try:
             done = await compact_history(
                 self.provider, self.history, self.budget, session=self.session, instructions=instructions, manual=manual
@@ -511,8 +555,9 @@ class AgentLoop:
                     self._append(Message("user", (ContentBlock("text", "\n\n".join(texts)),), synthetic=NOTIFICATION))
                     yield TasksNotified(texts)
                 fresh = [] if committed else [user, *([attachments] if attachments else [])]
-                if self._may_compact() and self.estimate(fresh, env.text) >= self.budget.auto_threshold:
-                    async with aclosing(self._compact()) as events:
+                size = self.estimate(fresh, env.text) if self._may_compact() else 0
+                if self._may_compact() and size >= self.budget.auto_threshold:
+                    async with aclosing(self._compact(estimate=size)) as events:
                         async for event in events:
                             yield event
                 notes = await self._hook("pre_send", {"iteration": str(iteration)})

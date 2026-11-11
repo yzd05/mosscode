@@ -77,6 +77,7 @@ from .messages import (
     ProviderError,
     ReplyRetry,
     ResponseBoundary,
+    ResultsCleared,
     Retrying,
     RunStopped,
     ToolCall,
@@ -2726,7 +2727,7 @@ class MossCodeApp(TerminalApp[None]):
                     elif isinstance(event, CompactStarted):
                         # Before a reply that has not started yet, so the row reads in time order.
                         await self._show_compact(event.manual, None if continuation else reply)
-                    elif isinstance(event, (CompactFinished, CompactFailed)):
+                    elif isinstance(event, (CompactFinished, CompactFailed, ResultsCleared)):
                         await self._end_compact(
                             compact_notice(event), self._compact_style(event), None if continuation else reply
                         )

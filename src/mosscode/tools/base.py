@@ -3,6 +3,7 @@
 import asyncio
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
@@ -190,12 +191,18 @@ class ToolRegistry:
             return store_image(self.image_dir, image, alt)
         return image_ref(image, alt, self.session)
 
-    def forget_reads(self) -> None:
-        """After compaction the model no longer holds file contents: edits need a fresh read."""
+    def forget_reads(self, paths: Iterable[str] | None = None) -> None:
+        """The model no longer holds these files' contents (every file after compaction): edits need a fresh read."""
+        paths = None if paths is None else tuple(paths)
         for tool in self._tools.values():
             state = getattr(tool, "state", None)
-            if state is not None and hasattr(state, "clear"):
+            if state is None or not hasattr(state, "clear"):
+                continue
+            if paths is None:
                 state.clear()
+            else:
+                for path in paths:
+                    state.forget(path)
 
     def register(self, tool: Tool) -> None:
         if hasattr(self, "permissions") and tool.root != self.permissions.root:

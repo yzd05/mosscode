@@ -44,6 +44,7 @@ from .messages import (
     ProviderError,
     ReplyRetry,
     ResponseBoundary,
+    ResultsCleared,
     Retrying,
     RunStopped,
     ToolProgress,
@@ -147,6 +148,8 @@ def _compact_event(event) -> dict:
             "duration_ms": round(event.elapsed * 1000),
             "record": event.record,
         }
+    if isinstance(event, ResultsCleared):
+        return {"type": "compact", "subtype": "cleared", "results": event.results, "tokens": event.tokens}
     return {
         "type": "compact",
         "subtype": "failed",
@@ -338,7 +341,7 @@ async def _prompt(
                         )
                     elif isinstance(event, AutoContinue):
                         _emit({"type": "auto_continue", "attempt": event.attempt, "max_attempts": event.max_attempts})
-                    elif isinstance(event, (CompactStarted, CompactFinished, CompactFailed)):
+                    elif isinstance(event, (CompactStarted, CompactFinished, CompactFailed, ResultsCleared)):
                         _emit(_compact_event(event))
                     elif isinstance(event, Notice):
                         _emit({"type": "notice", "text": event.text})
@@ -437,7 +440,7 @@ async def _text_prompt(
                     print(request_usage_text(event.usage, event.iteration), file=sys.stderr, flush=True)
                 elif isinstance(event, CompactStarted):
                     print("正在压缩上下文…", file=sys.stderr, flush=True)
-                elif isinstance(event, (CompactFinished, CompactFailed)):
+                elif isinstance(event, (CompactFinished, CompactFailed, ResultsCleared)):
                     print(compact_notice(event), file=sys.stderr, flush=True)
                 elif isinstance(event, Notice):
                     print(event.text, file=sys.stderr, flush=True)

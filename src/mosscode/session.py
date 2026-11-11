@@ -18,7 +18,7 @@ from .checkpoints import Snapshot
 from .images import ImageRef, ProcessedImage, store_image
 from .messages import Message, ToolResult
 from .paths import SESSION_ID, mosscode_home, new_session_id, project_dir
-from .serialization import message_from_json, message_to_json
+from .serialization import jsonable, message_from_json, message_to_json
 from .todo import items_from_json
 
 MARKER = ".mosscode-session"
@@ -120,6 +120,12 @@ def message_record(message: Message) -> dict:
 def compact_record(boundary: Message, keep: int, record: str | None) -> dict:
     """The history became the boundary plus the last `keep` messages."""
     return {"type": "compact", "time": _now(), "boundary": message_to_json(boundary), "keep": keep, "record": record}
+
+
+def clear_record(results) -> dict:
+    """Older tool results became notes: call ID -> what the result reads now."""
+    changed = {id: {"output": r.output, "details": jsonable(r.details)} for id, r in results.items()}
+    return {"type": "clear", "time": _now(), "results": changed}
 
 
 def rewind_record(keep: int, message: str) -> dict:
@@ -436,6 +442,30 @@ class Restored:
     goal: str | None = None  # The condition of a goal set and not yet ended.
 
 
+def _apply_clear(history: Sequence[Message], results) -> list[Message]:
+    if not isinstance(results, dict):
+        raise ValueError("clear 记录不合法")
+    changed = {}
+    for id, value in results.items():
+        if not isinstance(value, dict) or not isinstance(value.get("output"), str):
+            raise ValueError("clear 记录不合法")
+        changed[id] = (value["output"], value["details"] if isinstance(value.get("details"), dict) else {})
+    updated = []
+    for message in history:
+        if any(r.call_id in changed for r in message.tool_results):
+            message = replace(
+                message,
+                tool_results=tuple(
+                    replace(r, output=changed[r.call_id][0], details=changed[r.call_id][1])
+                    if r.call_id in changed
+                    else r
+                    for r in message.tool_results
+                ),
+            )
+        updated.append(message)
+    return updated
+
+
 def _strip(history: Sequence[Message]) -> list[Message]:
     return [replace(m, protocol=None, native=()) for m in history]
 
@@ -517,6 +547,8 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     boundary = message_from_json(record.get("boundary"), images, lost)
                     history = [boundary] + (history[len(history) - min(keep, len(history)) :] if keep else [])
                     todos = [(0, todos[-1][1])] if todos else []
+                elif kind == "clear":
+                    history = _apply_clear(history, record.get("results"))
                 elif kind == "provider":
                     if not isinstance(record.get("name"), str) or not isinstance(record.get("protocol"), str):
                         raise ValueError("provider 记录不合法")

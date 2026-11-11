@@ -266,6 +266,14 @@ class CompactFailed:
     manual: bool = False
 
 
+@dataclass(frozen=True)
+class ResultsCleared:
+    """Automatic compaction was due and clearing older tool results freed enough: no summary was written."""
+
+    results: int
+    tokens: int  # Freed, by estimate.
+
+
 StreamEvent = (
     Delta
     | Completed
@@ -283,6 +291,7 @@ StreamEvent = (
     | CompactStarted
     | CompactFinished
     | CompactFailed
+    | ResultsCleared
 )
 
 
