@@ -16,7 +16,7 @@ from mosscode.context import ContextBudget, ContextMeter, estimate_message, esti
 from mosscode.messages import ContentBlock, Message, ToolCall, ToolResult, Usage
 from mosscode.providers import _safe_error
 from mosscode.session import MARKER, Session, prune_sessions
-from mosscode.tool_budget import MESSAGE_TOKENS, RESULT_TOKENS, bound_message
+from mosscode.tool_budget import MESSAGE_TOKENS, READ_FLOOR, RESULT_TOKENS, bound_message, share
 from mosscode.tools import create_default_registry
 from mosscode.tools.base import Params, Tool
 from mosscode.tools.execution import execute_batch
@@ -176,6 +176,88 @@ async def test_batch_over_the_combined_budget_stores_the_largest_first(tmp_path)
     assert sum(estimate_text(r.model_text()) for r in results) <= MESSAGE_TOKENS
     # Already decided: applying the budget again changes nothing.
     assert bound_message(history[-1], reg.session) == history[-1]
+
+
+def long_file(project, name, lines=3000):
+    """More than one read_file page: about 1,200 lines (14K tokens) fit in the first."""
+    (project / name).write_text("".join(f"line {n:05d} {'x' * 30}\n" for n in range(1, lines + 1)), encoding="utf-8")
+    return ToolCall(f"read-{name}", "read_file", json.dumps({"path": name}))
+
+
+async def batch(reg, calls):
+    history = []
+    async for _ in execute_batch(Message("assistant", (), tool_calls=tuple(calls)), reg, history):
+        pass
+    return history[-1]
+
+
+def tokens(results):
+    return sum(estimate_text(r.model_text()) for r in results)
+
+
+def test_a_fair_share_keeps_small_items_whole_and_cuts_the_large_ones_alike():
+    assert share([10, 20, 30], 100) == 30  # Everything fits.
+    assert share([10, 100, 100], 90) == 40  # 10 whole, the other two share the remaining 80.
+    assert share([50, 50], 60) == 30 and share([50], -5) == 0 and share([], 10) == 0
+
+
+async def test_reads_of_one_batch_over_the_budget_become_shorter_pages(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    reg = dump_registry(tmp_path)
+    (project / "small.txt").write_text("短文件\n", encoding="utf-8")
+    calls = [long_file(project, f"f{i}.txt") for i in range(10)]
+    calls.insert(3, ToolCall("read-small", "read_file", json.dumps({"path": "small.txt"})))
+    message = await batch(reg, calls)
+    results = message.tool_results
+    assert tokens(results) <= MESSAGE_TOKENS and not any(r.details.get("persisted") for r in results)
+    assert results[3].output.endswith("短文件") and not results[3].details["truncated"]  # Under its share: whole.
+    cut = [r for i, r in enumerate(results) if i != 3]
+    assert all(4_000 < estimate_text(r.output) <= 5_000 for r in cut)  # About a tenth of the budget each.
+    for result in cut:
+        details = result.details
+        last = details["next_offset"] - 1
+        body = result.output.split("\n")
+        assert details["truncated"] and details["lines"] == last == len(body) - 1
+        assert body[-2] == f"{last:>6}\tline {last:05d} {'x' * 30}"  # Cut at a line boundary.
+        assert "合计超出上下文预算" in body[-1] and f"请从 offset={last + 1} 继续读取" in body[-1]
+        assert "共 3000 行" in body[-1] and body[-1].count("继续读取") == 1  # The page's own note is replaced.
+    # The offset in the note continues exactly where the shortened page stopped.
+    offset = cut[0].details["next_offset"]
+    following = await reg.execute(ToolCall("next", "read_file", json.dumps({"path": "f0.txt", "offset": offset})))
+    assert following.output.startswith(f"{offset:>6}\tline {offset:05d} ")
+    # Already decided: applying the budget again changes nothing.
+    assert bound_message(message, reg.session) == message
+
+
+async def test_reads_are_shortened_before_other_results_are_stored(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    reg = dump_registry(tmp_path)
+    # Four results of 11K tokens and two reads of about 14K: the reads share what is left, nothing is stored.
+    calls = [dump(f"c{i}", 44_000) for i in range(4)] + [long_file(project, f"f{i}.txt") for i in range(2)]
+    results = (await batch(reg, calls)).tool_results
+    assert tokens(results) <= MESSAGE_TOKENS and not any(r.details.get("persisted") for r in results)
+    assert all(r.details["truncated"] and 2_000 < estimate_text(r.output) <= 3_000 for r in results[4:])
+    # The other results alone are over the budget: the read keeps its floor and the largest of them is stored.
+    calls = [dump(f"d{i}", size) for i, size in enumerate([44_000, 42_000, 48_000, 46_000, 40_000])]
+    results = (await batch(reg, [*calls, long_file(project, "g.txt")])).tool_results
+    assert [bool(r.details.get("persisted")) for r in results] == [False, False, True, False, False, False]
+    assert 1_500 < estimate_text(results[5].output) <= READ_FLOOR
+
+
+async def test_every_read_keeps_a_floor_and_small_batches_stay_whole(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    reg = dump_registry(tmp_path)
+    results = (await batch(reg, [long_file(project, f"f{i}.txt") for i in range(30)])).tool_results
+    assert all(1_500 < estimate_text(r.output) <= READ_FLOOR for r in results)  # 30 × 2,000: over, by design.
+    whole = (await batch(reg, [long_file(project, f"w{i}.txt") for i in range(3)])).tool_results
+    assert all("合计超出" not in r.output and "budgeted" not in r.details for r in whole)
+    # Failed reads and files that fit their share are left as they are.
+    missing = ToolCall("missing", "read_file", json.dumps({"path": "nowhere.txt"}))
+    results = (await batch(reg, [missing, *[long_file(project, f"m{i}.txt") for i in range(5)]])).tool_results
+    assert results[0].is_error and "budgeted" not in results[0].details and tokens(results) <= MESSAGE_TOKENS
 
 
 async def test_read_file_is_exempt_and_session_files_are_readable_without_approval(tmp_path):
