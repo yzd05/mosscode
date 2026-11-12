@@ -38,6 +38,7 @@ from .messages import (
     CompactFinished,
     CompactStarted,
     Completed,
+    ContextCollapsed,
     Delta,
     FilesAttached,
     Message,
@@ -150,6 +151,16 @@ def _compact_event(event) -> dict:
         }
     if isinstance(event, ResultsCleared):
         return {"type": "compact", "subtype": "cleared", "results": event.results, "tokens": event.tokens}
+    if isinstance(event, ContextCollapsed):
+        return {
+            "type": "compact",
+            "subtype": "collapsed",
+            "messages": event.messages,
+            "before": event.before,
+            "after": event.after,
+            "duration_ms": round(event.elapsed * 1000),
+            "record": event.record,
+        }
     return {
         "type": "compact",
         "subtype": "failed",
@@ -341,7 +352,9 @@ async def _prompt(
                         )
                     elif isinstance(event, AutoContinue):
                         _emit({"type": "auto_continue", "attempt": event.attempt, "max_attempts": event.max_attempts})
-                    elif isinstance(event, (CompactStarted, CompactFinished, CompactFailed, ResultsCleared)):
+                    elif isinstance(
+                        event, (CompactStarted, CompactFinished, CompactFailed, ResultsCleared, ContextCollapsed)
+                    ):
                         _emit(_compact_event(event))
                     elif isinstance(event, Notice):
                         _emit({"type": "notice", "text": event.text})
@@ -440,7 +453,7 @@ async def _text_prompt(
                     print(request_usage_text(event.usage, event.iteration), file=sys.stderr, flush=True)
                 elif isinstance(event, CompactStarted):
                     print("正在压缩上下文…", file=sys.stderr, flush=True)
-                elif isinstance(event, (CompactFinished, CompactFailed, ResultsCleared)):
+                elif isinstance(event, (CompactFinished, CompactFailed, ResultsCleared, ContextCollapsed)):
                     print(compact_notice(event), file=sys.stderr, flush=True)
                 elif isinstance(event, Notice):
                     print(event.text, file=sys.stderr, flush=True)
@@ -635,6 +648,7 @@ def run(args: argparse.Namespace) -> None:
             budget=budget,
             session=Session.new(Path.cwd()),
             auto_compact=settings.auto_compact,
+            context_collapse=settings.context_collapse,
             notices=notices,
             persist=settings.persist_sessions,
             skills=skills,

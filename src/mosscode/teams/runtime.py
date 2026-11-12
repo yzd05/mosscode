@@ -291,6 +291,7 @@ async def build_runner(
     loop = AgentLoop(provider, system, registry, max_iterations=turns, unknown_limit=main.unknown_limit)
     loop.instructions, loop.git = conversation.project_instructions, git
     loop.budget, loop.auto_compact, loop.session = budget, main.auto_compact, main.session
+    loop.context_collapse = main.context_collapse
 
     def counted(usage) -> None:  # The session total includes in-process members.
         main.total_usage = add_usage(main.total_usage, usage, price_of(loop.provider))

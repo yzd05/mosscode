@@ -512,7 +512,7 @@ def seeded(provider, history, **options):
 
 async def test_threshold_reached_compacts_before_the_request():
     provider = SequenceProvider(summary_reply(), response("好"))
-    conv = seeded(provider, chat(8))  # About 32K tokens, estimated in full: over 27K.
+    conv = seeded(provider, chat(8), context_collapse=False)  # About 32K tokens, estimated in full: over 27K.
     events = [e async for e in conv.reply("继续")]
     started = [e for e in events if isinstance(e, CompactStarted)]
     finished = [e for e in events if isinstance(e, CompactFinished)]
@@ -559,7 +559,7 @@ async def test_three_failures_pause_automatic_compaction_until_a_manual_success(
         summary_reply(),
         response("5"),
     )
-    conv = seeded(provider, chat(8))
+    conv = seeded(provider, chat(8), context_collapse=False)
     seen = []
     for prompt in ("a", "b", "c"):
         before = len(conv.history)
@@ -646,7 +646,7 @@ def notes(app):
 
 async def test_tui_shows_automatic_compaction_before_the_reply_and_the_context_share():
     provider = SequenceProvider(summary_reply(), response("好", usage=Usage(20_000, 100)))
-    app = MossCodeApp(seeded(provider, chat(8)), "Demo")
+    app = MossCodeApp(seeded(provider, chat(8), context_collapse=False), "Demo")
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause()
         app.query_one("#prompt", PromptArea).value = "继续"
@@ -688,7 +688,7 @@ async def test_tui_shows_a_live_row_while_compacting_and_turns_it_into_the_resul
         yield summary_reply()
 
     provider = SequenceProvider(hold, response("好"))
-    app = MossCodeApp(seeded(provider, chat(8)), "Demo")
+    app = MossCodeApp(seeded(provider, chat(8), context_collapse=False), "Demo")
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause()
         app.query_one("#prompt", PromptArea).value = "继续"
@@ -746,12 +746,12 @@ def test_compact_notices_cover_success_failure_and_pause():
 
 
 async def test_headless_output_counts_compactions(capsys):
-    conv = seeded(SequenceProvider(summary_reply(), response("好")), chat(8))
+    conv = seeded(SequenceProvider(summary_reply(), response("好")), chat(8), context_collapse=False)
     result = await cli._prompt(conv, "继续", output_format="stream-json")
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [e["subtype"] for e in lines if e["type"] == "compact"] == ["started", "finished"]
     assert result["compactions"] == 1 and lines[-1]["compactions"] == 1
-    conv = seeded(SequenceProvider(summary_reply(), response("好")), chat(8))
+    conv = seeded(SequenceProvider(summary_reply(), response("好")), chat(8), context_collapse=False)
     await cli._prompt(conv, "继续")
     captured = capsys.readouterr()
     assert "正在压缩上下文" in captured.err and "已压缩上下文" in captured.err and "好" in captured.out
@@ -970,7 +970,7 @@ async def test_a_history_that_clearing_cannot_bring_down_is_summarized_untouched
     session = Session.create(tmp_path)
     provider = SequenceProvider(summary_reply(), response("好"))
     history = steps(2) + chat(6)  # 8K of results in 32K: clearing leaves about 24K, over half the threshold.
-    conv = seeded(provider, history, session=session)
+    conv = seeded(provider, history, session=session, context_collapse=False)
     events = [e async for e in conv.reply("继续")]
     assert not any(isinstance(e, ResultsCleared) for e in events)
     assert any(isinstance(e, CompactFinished) for e in events) and conv.compactions == 1

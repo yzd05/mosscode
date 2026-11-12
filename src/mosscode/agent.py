@@ -12,25 +12,32 @@ from typing import TYPE_CHECKING, Protocol
 
 from .compaction import (
     CLEAR_TARGET,
+    COLLAPSE_TARGET,
     NOTHING,
     CompactionError,
     clear_results,
     clearable_tokens,
+    collapse_end,
+    collapse_segment,
     compact_history,
     cut_point,
+    project,
+    released_reads,
 )
-from .context import ContextBudget, ContextMeter
+from .context import ContextBudget, ContextMeter, estimate_message, estimate_messages
 from .credentials import redact, redact_value
 from .images import ImageRef
 from .messages import (
     CONTINUE,
     NOTIFICATION,
     AutoContinue,
+    Collapse,
     CompactFailed,
     CompactFinished,
     CompactStarted,
     Completed,
     ContentBlock,
+    ContextCollapsed,
     IterationProgress,
     Message,
     ProviderError,
@@ -60,7 +67,7 @@ from .prompts import (
     mode_reminder,
     stable_prompt,
 )
-from .session import clear_record, compact_record, message_record, rewind_record, todo_record
+from .session import clear_record, collapse_record, compact_record, message_record, rewind_record, todo_record
 from .skills import ActiveSkills
 from .todo import todo_reminder
 from .tools import shell_label
@@ -228,6 +235,10 @@ class AgentLoop:
         self.meter = ContextMeter()
         self.compact_failures = 0
         self.compactions = 0
+        # Requests replace the oldest part of the history with these summaries; the history keeps every message.
+        self.collapses: list[Collapse] = []
+        self.context_collapse = True
+        self.collapse_failures = 0  # Consecutive; at BREAKER this conversation stops collapsing until /clear.
         self._reannounce = False
         # Set by the application (the session transcript): receives each record as history changes.
         self.on_commit = None
@@ -263,6 +274,8 @@ class AgentLoop:
         if self.busy:
             raise ProviderError("当前任务正在运行，不能回退。")
         self.history = self.history[:keep]
+        # A collapse reaching past the rewind point summarizes messages that are gone.
+        self.collapses = [collapse for collapse in self.collapses if collapse.end <= keep]
         self.meter.invalidate()
         self.compact_failures = 0
         if self.registry is not None:
@@ -274,12 +287,13 @@ class AgentLoop:
         """Sent once with the next request, never stored in the history."""
         self._gap = reminder
 
-    def restore(self, history: list[Message], gap: Supplement | None = None):
+    def restore(self, history: list[Message], gap: Supplement | None = None, collapses: Sequence[Collapse] = ()):
         """Resume a saved session: its messages only; usage, reads and the mode announcement start afresh."""
         if self.busy:
             raise ProviderError("当前任务正在运行，不能恢复会话。")
         self.clear()
         self.history = list(history)
+        self.collapses = [collapse for collapse in collapses if collapse.end <= len(self.history)]
         if self.registry is not None:
             self.registry.forget_reads()
         self._gap = gap
@@ -314,6 +328,7 @@ class AgentLoop:
         self._announced = "normal"
         self.meter.invalidate()
         self.compact_failures = 0
+        self.collapses, self.collapse_failures = [], 0
         self._gap = None
         self.active_skills.clear()
         self.hook_context, self.turn_notes = None, ()  # The next session_start regenerates it.
@@ -374,22 +389,33 @@ class AgentLoop:
         schemas = json.dumps([asdict(d) for d in definitions], ensure_ascii=False)
         return self._prompt(definitions) + schemas
 
+    def projected(self) -> list[Message]:
+        """The messages requests are built from: the history with its collapsed part replaced by summaries."""
+        return project(self.history, self.collapses)
+
+    @property
+    def _collapsed(self) -> int:
+        """Messages at the start of the history that requests replace with summaries."""
+        return self.collapses[-1].end if self.collapses else 0
+
     def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
         active = self._active()
         env_text += active.render() if active else ""
         env_text += self.hook_context.render() if self.hook_context else ""
-        return self.meter.estimate(list(self.history) + list(extra), env_text, self._fixed_text)
+        return self.meter.estimate(self.projected() + list(extra), env_text, self._fixed_text)
 
     def _clear(self, cut: int, estimate: int) -> ResultsCleared | None:
         """Older tool results become notes when that alone brings the context far enough down.
 
         Done only when compaction is due anyway: the cached prefix is about to be rewritten either way,
         and unlike a summary this costs no request and keeps every word of the conversation.
+        cut is an index into the history; collapsed messages are not sent, so they are left as they are.
         """
         target = int(self.budget.auto_threshold * CLEAR_TARGET)
-        if estimate - clearable_tokens(self.history, cut) > target:
+        start = self._collapsed
+        if estimate - clearable_tokens(self.history, cut, start) > target:
             return None
-        done = clear_results(self.history, cut, self.session)
+        done = clear_results(self.history, cut, self.session, start)
         if not done.results or estimate - done.tokens > target:
             return None  # Too few could be kept on disk; the history stays as it was.
         self.history = done.history
@@ -398,6 +424,39 @@ class AgentLoop:
             self.registry.forget_reads(done.paths)
         self.meter.invalidate()
         return ResultsCleared(len(done.results), done.tokens)
+
+    def _may_collapse(self) -> bool:
+        return self.context_collapse and self.collapse_failures < BREAKER
+
+    async def _collapse(self, cut: int, estimate: int, started: float) -> ContextCollapsed | None:
+        """Fold the oldest turns into a summary that only requests see; None leaves it to a full summary.
+
+        cut is an index into the projection. A failure is not a compaction failure: the full summary that follows
+        in the same attempt has its own breaker.
+        """
+        end = collapse_end(
+            self.history, self.collapses, cut, estimate, int(self.budget.auto_threshold * COLLAPSE_TARGET)
+        )
+        if end is None:
+            return None
+        start = self._collapsed
+        try:
+            done = await collapse_segment(
+                self.provider, self.history, self.collapses, end, self.budget, session=self.session
+            )
+        except CompactionError:
+            self.collapse_failures += 1
+            return None
+        self.collapses.append(done)
+        self._commit(collapse_record(done))
+        if self.registry is not None:
+            self.registry.forget_reads(released_reads(self.history, start, end))
+        # The mode rules may be in the collapsed part; the next request repeats them (as after a summary).
+        self._announced, self._reannounce = "normal", True
+        self.meter.invalidate()
+        self.collapse_failures = 0
+        after = estimate - estimate_messages(self.history[start:end]) + estimate_message(done.summary)
+        return ContextCollapsed(end - start, estimate, after, time.monotonic() - started, done.record)
 
     async def _compact(
         self,
@@ -409,27 +468,36 @@ class AgentLoop:
     ):
         """One compaction attempt; events report the outcome, the history changes only on success.
 
-        With the estimate that made it due, clearing older tool results is tried before summarizing.
+        With the estimate that made it due, clearing older tool results is tried before summarizing, then
+        collapsing the oldest turns. Everything works on the projection; the summary replaces the history.
         """
-        cut = cut_point(self.history, self.budget.auto_threshold, manual=manual)
+        projected = self.projected()
+        cut = cut_point(projected, self.budget.auto_threshold, manual=manual)
         if not cut:
             # Nothing older than the kept tail: automatic attempts skip silently and never trip the breaker.
             if manual:
                 yield CompactFailed(NOTHING, self.compact_failures, self.auto_paused, "nothing", True)
             return
+        # The same message in the history: a cut never falls among the collapse summaries.
+        history_cut = cut - len(self.collapses) + self._collapsed
         if estimate is not None:
-            cleared = self._clear(cut, estimate)
+            cleared = self._clear(history_cut, estimate)
             if cleared is not None:
                 yield cleared
                 return
         yield CompactStarted(manual)
         started = time.monotonic()
+        if estimate is not None and self._may_collapse():
+            collapsed = await self._collapse(cut, estimate, started)
+            if collapsed is not None:
+                yield collapsed
+                return
         if self.on_compact is not None:
             # Messages about to be summarized away; the memory extractor still gets to read them.
-            self.on_compact(self.history[:cut])
+            self.on_compact(self.history[:history_cut])
         try:
             done = await compact_history(
-                self.provider, self.history, self.budget, session=self.session, instructions=instructions, manual=manual
+                self.provider, projected, self.budget, session=self.session, instructions=instructions, manual=manual
             )
         except CompactionError as exc:
             if failure is not None:  # Resuming: its own message, and the breaker is untouched.
@@ -439,7 +507,7 @@ class AgentLoop:
                 self.compact_failures += 1
             yield CompactFailed(str(exc), self.compact_failures, self.auto_paused, exc.code, manual)
             return
-        self.history = done.history
+        self.history, self.collapses = done.history, []
         self._commit(compact_record(done.history[0], len(done.history) - 1, str(done.record) if done.record else None))
         if self.registry is not None:
             self.registry.forget_reads()
@@ -563,7 +631,7 @@ class AgentLoop:
                 notes = await self._hook("pre_send", {"iteration": str(iteration)})
                 rescued, dropped, recovery = False, 0, None
                 while True:
-                    request = deepcopy(self.history) + fresh
+                    request = deepcopy(self.projected()) + fresh
                     collector = ResponseCollector()
                     # One-time reminders are consumed by _model; a dropped reply sends them again.
                     once = (self._announced, self._reannounce, self._gap)
@@ -613,7 +681,7 @@ class AgentLoop:
                     committed = True
                 self._append(deepcopy(final.message))
                 self._usage(final.usage)
-                self.meter.record(final.usage, len(self.history))
+                self.meter.record(final.usage, len(self.history) - self._collapsed + len(self.collapses))
                 truncated = final.stop_reason == "max_tokens"
                 if not calls:
                     yield UsageUpdate(iteration, final.usage, self.total_usage)

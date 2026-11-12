@@ -311,6 +311,7 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
         budget=config.budget(),
         session=Session.new(project),
         auto_compact=settings.auto_compact,
+        context_collapse=settings.context_collapse,
         persist=False,
         provider_configs=settings.providers,
         provider_factory=create_provider,

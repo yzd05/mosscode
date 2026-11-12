@@ -128,6 +128,7 @@ class Conversation:
         budget: ContextBudget | None = None,
         session=None,
         auto_compact: bool = True,
+        context_collapse: bool = True,
         notices: tuple[str, ...] = (),
         persist: bool = False,
         provider_info: tuple[str, str, str] | None = None,
@@ -180,6 +181,7 @@ class Conversation:
         if budget is not None:
             self._agent.budget = budget
         self._agent.auto_compact = auto_compact
+        self._agent.context_collapse = context_collapse
         # (name, protocol, model) of the current provider: written to the transcript on a switch.
         self.provider_info = provider_info
         self.thinking: str | None = None  # The /thinking level for this process; None follows the configuration.
@@ -874,7 +876,7 @@ class Conversation:
         self._use_checkpoints(session)
         if self.checkpoints is not None:
             self.checkpoints.load(restored.snapshots, restored.marks)
-        self._agent.restore(restored.history, gap_reminder(restored.last_time))
+        self._agent.restore(restored.history, gap_reminder(restored.last_time), restored.collapses)
         if self.registry is not None:
             self.registry.todos.restore(restored.todos)
         self.goal, self.last_goal, self._goal_turn = None, None, None
@@ -1229,8 +1231,11 @@ class Conversation:
         return next((config for config in self.provider_configs if config.name == name), None)
 
     def _fork_history(self, context: str) -> list[Message]:
-        """None, the last 3 turns (from a real user message, calls kept with their results), or all."""
-        history = deepcopy(self._agent.history)
+        """None, the last 3 turns (from a real user message, calls kept with their results), or all.
+
+        Collapsed turns arrive as their summaries, as the main conversation sends them.
+        """
+        history = deepcopy(self._agent.projected())
         if context == "full":
             return history
         if context == "recent":
@@ -1300,6 +1305,7 @@ class Conversation:
         )
         child.system, child.instructions, child.git = main.system, main.instructions, main.git  # No catalog.
         child.budget, child.auto_compact, child.session = budget, main.auto_compact, self.session
+        child.context_collapse = main.context_collapse
         child.history = self._fork_history(skill.fork_context)
         self.subagents.attach(task, child)  # Usage to the task and this conversation; the task keeps a transcript.
         main.busy = True

@@ -274,6 +274,29 @@ class ResultsCleared:
     tokens: int  # Freed, by estimate.
 
 
+@dataclass(frozen=True)
+class ContextCollapsed:
+    """Automatic compaction was due and the oldest part of the conversation was folded into a summary.
+
+    Only the requests change: the history keeps every message, so /rewind and the transcript still have them.
+    """
+
+    messages: int
+    before: int  # Context estimate, in tokens.
+    after: int
+    elapsed: float
+    record: str | None = None
+
+
+@dataclass(frozen=True)
+class Collapse:
+    """In requests, the history from the end of the previous collapse up to `end` is replaced by `summary`."""
+
+    end: int  # An index into the history: the first message sent as it is.
+    summary: Message
+    record: str | None = None
+
+
 StreamEvent = (
     Delta
     | Completed
@@ -292,6 +315,7 @@ StreamEvent = (
     | CompactFinished
     | CompactFailed
     | ResultsCleared
+    | ContextCollapsed
 )
 
 

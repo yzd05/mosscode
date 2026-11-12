@@ -9,7 +9,7 @@
   sessions/
     <会话 ID>.jsonl     对话记录
     <会话 ID>.lock      使用中的锁
-    <会话 ID>/          会话目录：tool-results/、images/、checkpoints/、compact-<n>.md、hooks.log、subagents/
+    <会话 ID>/          会话目录：tool-results/、images/、checkpoints/、compact-<n>.md、collapse-<n>.md、hooks.log、subagents/
 ```
 
 - **项目键**由启动目录的绝对路径生成：路径末尾的可读部分加上 8 位哈希，例如 Windows 上 `C:\Users\me\projects\app` 得到 `c--users-me-projects-app-1a2b3c4d`。同一目录总是得到同一个键。
@@ -27,6 +27,7 @@
 | `session` | 第一行：`id`、`cwd`、`created`、`mosscode`（版本） |
 | `message` | 一条进入历史的消息，带写入时间 `time`。用户消息与第一次完整回复一起写；一批工具结果在执行结束后写一次；生成到一半的回复不写 |
 | `compact` | 压缩成功：历史变为 `boundary`（摘要消息）加上当前历史的最后 `keep` 条；`record` 是压缩记录文件的路径 |
+| `collapse` | 自动压缩到期时折叠了最早的一段对话（见[上下文管理](context.md#再折叠最早的一段对话)）：发给模型的内容中，历史从上一段折叠的末尾到第 `end` 条之前换成 `summary`；`record` 是这一段原文的记录文件。历史本身不变。`rewind` 退回到 `end` 之前时这段折叠撤销，`compact` 之后全部失效；旧版本跳过这条记录，恢复为未折叠的历史 |
 | `clear` | 自动压缩到期时只清理了较早的工具结果：`results` 是调用 ID 到清理后的 `output`、`details` 的映射，恢复时替换历史中对应的结果 |
 | `provider` | `/model` 切换：此前消息中只对原模型有效的数据（thinking 签名、加密推理）清除 |
 | `checkpoint` | 文件检查点：`message`（当时最新的用户消息 id）、`path`（工作区内为相对路径）、`blob`（快照文件名，`null` 表示文件当时不存在），过大的文件带 `too_large: true` |
@@ -82,7 +83,7 @@
 - **不跟踪**：`execute_command` 等命令改的文件、工作树中的子 Agent 和团队成员、MCP 工具和外部程序的改动。一个文件只要被编辑工具改过，恢复时就会写回快照，不管之后是谁改的。
 - **存储**：快照按内容 SHA-256 的前 32 位十六进制命名，存在会话目录的 `checkpoints/` 中，相同内容只存一份；超过 10 MB 的文件不保存，记为“过大”。保存失败（磁盘满、权限）时写入照常进行，本会话第一次失败时提示一次。检查点随会话存档保留 30 天，一起清理。
 
-`/rewind`（别名 `/checkpoint`）列出当前上下文中的用户消息，最新的在最上面；之后有文件改动的附上“之后改动 N 个文件”。压缩掉的消息和 `/clear` 之前的会话不列出。选中消息后选择操作：
+`/rewind`（别名 `/checkpoint`）列出当前上下文中的用户消息，最新的在最上面；之后有文件改动的附上“之后改动 N 个文件”。压缩掉的消息和 `/clear` 之前的会话不列出；折叠的消息仍在历史中，照常列出，退回到其中一条时，这段折叠和之后的折叠一并撤销。选中消息后选择操作：
 
 | 操作 | 效果 |
 | --- | --- |

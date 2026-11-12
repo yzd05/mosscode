@@ -159,6 +159,7 @@ class Settings:
     source: Path | None = None
     shell: str = "auto"
     auto_compact: bool = True
+    context_collapse: bool = True
     persist_sessions: bool = True
     memory: bool = True
     auto_memory: bool = True
@@ -598,6 +599,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         "max_iterations",
         "shell",
         "auto_compact",
+        "context_collapse",
         "persist_sessions",
         "memory",
         "auto_memory",
@@ -633,7 +635,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     if not isinstance(shell, str) or not shell.strip():
         raise ConfigError("shell 需为 auto、bash、powershell 或 shell 可执行文件路径。")
     switches = {}
-    for key in ("auto_compact", "persist_sessions", "memory", "auto_memory", "todo_tool"):
+    for key in ("auto_compact", "context_collapse", "persist_sessions", "memory", "auto_memory", "todo_tool"):
         switches[key] = raw.get(key, True)
         if type(switches[key]) is not bool:
             raise ConfigError(f"{key} 必须是布尔值。")
