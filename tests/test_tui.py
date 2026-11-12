@@ -204,7 +204,10 @@ async def test_model_picker_is_keyboard_only_and_escape_returns_to_input():
         assert app.query_one("#model-panel").display
         assert app.screen is original_screen and app.query_one("#banner") is banner
         assert app.query_one("#model-panel").region.y >= app.query_one("#input-row").region.bottom
-        assert app.query_one("#models", OptionList).option_count == 2
+        models = app.query_one("#models", OptionList)
+        assert models.option_count == 2
+        rows = shown_rows(app, models)
+        assert [row.startswith("❯ ") for row in rows[:2]] == [index == models.highlighted for index in range(2)]
         await pilot.click("#models", offset=(3, 1))
         assert app.query_one("#model-panel").display and app.provider_name == "test"
         await pilot.press("escape")
@@ -270,14 +273,11 @@ async def test_exit_command_closes_provider_without_request():
 
 
 def terminal_background(segment) -> bool:
-    """Default background, or the deliberate exceptions: the user-message bar, and the mascot's pixels
-    (the lower half of a ▀ cell is its background)."""
-    from mosscode.appearance import MASCOT_COLORS, USER_MESSAGE_BACKGROUND
+    """Default background, or the one deliberate exception: the user-message bar."""
+    from mosscode.appearance import USER_MESSAGE_BACKGROUND
 
     bgcolor = segment.style.bgcolor if segment.style else None
-    if bgcolor is None or bgcolor.is_default or bgcolor.name.lower() == USER_MESSAGE_BACKGROUND:
-        return True
-    return set(segment.text) == {"▀"} and bgcolor.name.lower() in MASCOT_COLORS.values()
+    return bgcolor is None or bgcolor.is_default or bgcolor.name.lower() == USER_MESSAGE_BACKGROUND
 
 
 def assert_terminal_background(app):
@@ -428,52 +428,63 @@ async def test_hints_and_input_remain_visible_with_long_chat_in_narrow_terminal(
         assert app.query_one("#status").region.bottom <= app.size.height
 
 
-async def test_normal_brightness_and_native_background_with_semantic_accents(monkeypatch):
-    from mosscode.appearance import COMMAND_HIGHLIGHT_COLOR, MASCOT_COLORS, PARAMETER_COLOR, TOOL_SUCCESS_COLOR
+async def test_text_is_never_dim_and_only_uses_the_palette(monkeypatch):
+    from mosscode.appearance import (
+        BRAND_COLOR,
+        COMMAND_HIGHLIGHT_COLOR,
+        EIGHTHS,
+        MUTED_COLOR,
+        OPERATION_COLOR,
+        PARAMETER_COLOR,
+        TOOL_SUCCESS_COLOR,
+    )
+
+    def colored(segment, color):
+        return bool(segment.style and segment.style.color and segment.style.color.name == color)
+
+    def plain(segment):
+        return not segment.style or not segment.style.color or segment.style.color.is_default
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     app = MossCodeApp(Conversation(FakeProvider()), "test")
     async with app.run_test(size=(100, 60)) as pilot:
         entry = ChatEntry("MossCode")
         await app.query_one("#chat").mount(entry)
-        await entry.finish(
-            Message(
-                "assistant",
-                (ContentBlock("text", "# Title\n\nA `code` sample.\n\n```python\n# comment\nreturn 42\n```"),),
-            )
-        )
+        reply = "# Title\n\nA `code` sample.\n\n```python\n# comment\nreturn 42\n```\n\n```\nunlabelled 7\n```"
+        await entry.finish(Message("assistant", (ContentBlock("text", reply),)))
         app.query_one("#prompt", PromptArea).value = "/"
         await pilot.pause()
         segments = [segment for strip in app.screen._compositor.render_strips() for segment in strip]
-        assert any(
-            segment.style and segment.style.color and segment.style.color.name == MASCOT_COLORS["w"]
-            for segment in segments
-        )
+        logo = [segment for segment in segments if segment.text and set(segment.text) <= set(EIGHTHS.strip())]
+        assert logo and not any(plain(segment) for segment in logo)
         text_segments = [segment for segment in segments if any(char.isalnum() for char in segment.text)]
         assert text_segments
+        palette = {
+            COMMAND_HIGHLIGHT_COLOR,
+            TOOL_SUCCESS_COLOR,
+            PARAMETER_COLOR,
+            OPERATION_COLOR,
+            BRAND_COLOR,
+            MUTED_COLOR,
+        }
         assert all(
-            segment.style
-            and (
-                not segment.style.color
-                or segment.style.color.is_default
-                or segment.style.color.name in {COMMAND_HIGHLIGHT_COLOR, TOOL_SUCCESS_COLOR, PARAMETER_COLOR}
-            )
-            and not segment.style.dim
+            segment.style and (plain(segment) or segment.style.color.name in palette) and not segment.style.dim
             for segment in text_segments
         )
         code = [segment for segment in segments if segment.text == "code"]
-        assert code and all(segment.style.color.name == PARAMETER_COLOR for segment in code)
-        ordinary = [
-            segment
-            for segment in segments
-            if "Title" in segment.text or "comment" in segment.text or "return 42" in segment.text
-        ]
-        assert ordinary and all(not s.style.color or s.style.color.is_default for s in ordinary)
+        assert code and all(colored(segment, PARAMETER_COLOR) for segment in code)
+        # A block that names its language is colored by token; the heading and an unlabelled block
+        # keep the terminal's own color.
+        for text, color in (("# comment", MUTED_COLOR), ("return", BRAND_COLOR), ("42", OPERATION_COLOR)):
+            found = [segment for segment in segments if segment.text.strip() == text]
+            assert found and all(colored(segment, color) for segment in found), text
+        ordinary = [segment for segment in segments if "Title" in segment.text or "unlabelled 7" in segment.text]
+        assert len(ordinary) == 2 and all(plain(segment) for segment in ordinary)
         assert_terminal_background(app)
 
 
 async def test_escape_dismissal_does_not_hide_retyped_slash_and_selected_row_is_blue(monkeypatch):
-    from mosscode.appearance import COMMAND_HIGHLIGHT_COLOR
+    from mosscode.appearance import COMMAND_HIGHLIGHT_COLOR, MUTED_COLOR
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     provider = FakeProvider()
@@ -493,17 +504,20 @@ async def test_escape_dismissal_does_not_hide_retyped_slash_and_selected_row_is_
             assert field.value == "/" and hints.display and hints.option_count == len(BUILTIN.visible())
 
         def assert_row_color(command, selected):
-            row = next(strip for strip in app.screen._compositor.render_strips() if command in strip.text)
+            # Only the list's own rows: the banner's tip names /help too.
+            strips = app.screen._compositor.render_strips()[hints.region.y : hints.region.bottom]
+            row = next(strip for strip in strips if command in strip.text)
             text_segments = [segment for segment in row if any(char.isalnum() for char in segment.text)]
-            assert text_segments
-            assert all(
-                segment.style
-                and segment.style.color
-                and (
-                    segment.style.color.name == COMMAND_HIGHLIGHT_COLOR if selected else segment.style.color.is_default
-                )
-                for segment in text_segments
-            )
+            assert len(text_segments) >= 2  # The command and its description.
+            assert all(segment.style and segment.style.color for segment in text_segments)
+            colors = [segment.style.color for segment in text_segments]
+            if selected:
+                # The whole row, description included, is blue behind the pointer.
+                assert all(color.name == COMMAND_HIGHLIGHT_COLOR for color in colors)
+                assert row.text.lstrip().startswith("❯ " + command)
+            else:
+                assert colors[0].is_default and all(color.name == MUTED_COLOR for color in colors[1:])
+                assert row.text.lstrip().startswith(command)
 
         assert_row_color("/help", True)
         assert_row_color("/clear", False)
@@ -569,7 +583,7 @@ async def test_thinking_timer_collapses_before_streaming_and_markdown_waits_for_
         await asyncio.wait_for(provider.text_ready.wait(), timeout=2)
         await pilot.pause()
         assert not entry.query_one(".thinking").display
-        assert "思考用时 2.5s" in str(entry.query_one(".thinking-label", Static).render())
+        assert "✻ 思考 2.5s" == str(entry.query_one(".thinking-label", Static).render())
         assert entry.query_one(".raw").display
         assert "**分块" == str(entry.query_one(".raw", Static).render())
         assert not entry.query_one(".answer").display
@@ -665,3 +679,128 @@ async def test_history_uses_remaining_terminal_rows_and_can_jump_to_first_and_la
         visible = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         assert "问题 11" in visible
         assert app.query_one("#status").region.bottom <= app.size.height
+
+
+def shown_rows(app, widget) -> list[str]:
+    strips = app.screen._compositor.render_strips()[widget.region.y : widget.region.bottom]
+    return [strip.text.strip() for strip in strips]
+
+
+def test_activity_line_turns_with_time_and_colors_the_stage():
+    from mosscode.appearance import BRAND_COLOR, MUTED_COLOR, OPERATION_COLOR
+    from mosscode.tui import SPINNER, activity_line
+
+    note = "输出中 · 1/200 轮 · 0.5s · Esc 取消"
+    line = activity_line(note, 10.0)
+    assert line.plain == SPINNER[0] + " " + note
+    assert [(line.plain[span.start : span.end], str(span.style)) for span in line.spans] == [
+        (SPINNER[0] + " ", BRAND_COLOR),
+        ("输出中", OPERATION_COLOR),
+        (" · 1/200 轮 · 0.5s · Esc 取消", MUTED_COLOR),
+    ]
+    # Five frames a second, and the cycle starts over.
+    assert [activity_line(note, 10.0 + at).plain[0] for at in (0.25, 0.5, 2.0)] == [SPINNER[1], SPINNER[2], SPINNER[0]]
+    assert activity_line("连接中…", 0.0).plain == SPINNER[0] + " 连接中…"
+
+
+def test_choice_prompt_sets_the_explanation_apart_in_grey():
+    from mosscode.appearance import MUTED_COLOR
+    from mosscode.tui import choice_prompt
+
+    text = choice_prompt("本会话允许 · 这类操作不再询问 · 退出后失效")
+    assert text.plain == "本会话允许  这类操作不再询问 · 退出后失效"
+    assert [(text.plain[span.start : span.end], str(span.style)) for span in text.spans] == [
+        ("  这类操作不再询问 · 退出后失效", MUTED_COLOR)
+    ]
+    assert choice_prompt("拒绝").plain == "拒绝" and not choice_prompt("拒绝").spans
+
+
+async def test_activity_row_shows_the_running_stage_and_is_blank_when_idle(monkeypatch):
+    from mosscode.appearance import BRAND_COLOR, MUTED_COLOR, OPERATION_COLOR
+    from mosscode.tui import SPINNER
+
+    clock = [100.0]
+    monkeypatch.setattr("mosscode.tui.monotonic", lambda: clock[0])
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    provider = FakeProvider()
+    app = MossCodeApp(Conversation(provider), "test")
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        activity, row = app.query_one("#activity", Static), app.query_one("#input-row")
+
+        def directly_above_the_prompt():
+            # One row whether or not it says anything, so the prompt does not jump when a task starts or ends.
+            return activity.region.height == 1 and activity.region.bottom == row.region.y
+
+        assert str(activity.render()) == "" and directly_above_the_prompt()
+        provider.hold = True
+        await send(app, pilot, "hello")
+        await asyncio.wait_for(provider.started.wait(), timeout=2)
+        app._tick()
+        await pilot.pause()
+        first = str(activity.render())
+        assert first[0] in SPINNER and first[1:].startswith(" 输出中 · ") and first.endswith("Esc 取消")
+        assert directly_above_the_prompt()
+        # The stage is no longer one of the status bar's items.
+        assert str(app.query_one("#status", Static).render()) == "未启用工具"
+        colors = {
+            segment.text.strip(): segment.style.color.name
+            for segment in app.screen._compositor.render_strips()[activity.region.y]
+            if segment.text.strip()
+        }
+        assert colors[first[0]] == BRAND_COLOR and colors["输出中"] == OPERATION_COLOR
+        assert colors[first[5:].strip()] == MUTED_COLOR
+
+        clock[0] += 0.2
+        app._tick()
+        later = str(activity.render())
+        assert later[0] in SPINNER and later[0] != first[0]
+
+        await pilot.press("escape")
+        await asyncio.wait_for(app._reply_task, timeout=5)
+        await pilot.pause()
+        assert str(activity.render()) == "" and directly_above_the_prompt()
+
+
+async def test_choice_list_points_at_the_highlighted_row_and_ignores_clicks():
+    from textual.app import App
+    from textual.widgets.option_list import Option
+
+    from mosscode.choice_list import KeyboardOptions
+    from mosscode.member_ui import MemberList
+
+    class Lists(App):
+        def compose(self):
+            yield KeyboardOptions(
+                Option("first\nits second line"), Option("unavailable", disabled=True), Option("last")
+            )
+
+    app = Lists()
+    async with app.run_test(size=(40, 12)) as pilot:
+        options = app.query_one(KeyboardOptions)
+        options.focus()
+        await pilot.pause()
+
+        def pointed():
+            # Without the border Textual draws around a bare list.
+            return [row.strip("▊▎ ") for row in shown_rows(app, options) if "❯" in row]
+
+        # The pointer marks the first line of the highlighted option; every other line keeps the same indent.
+        assert pointed() == ["❯ first"]
+        columns = {
+            strip.text.index(word)
+            for strip in app.screen._compositor.render_strips()
+            for word in ("first", "its second line", "unavailable", "last")
+            if word in strip.text
+        }
+        assert len(columns) == 1
+        await pilot.click(KeyboardOptions, offset=(4, 3))
+        assert options.highlighted == 0
+        await pilot.press("down")
+        await pilot.pause()
+        assert options.highlighted == 2
+        assert pointed() == ["❯ last"]
+        options.highlighted = 1
+        await pilot.pause()
+        assert pointed() == []
+    assert issubclass(MemberList, KeyboardOptions)

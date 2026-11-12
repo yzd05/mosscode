@@ -9,7 +9,7 @@ from pathlib import Path
 
 from rich.text import Text
 
-from ..appearance import ERROR_COLOR, OPERATION_COLOR, PARAMETER_COLOR
+from ..appearance import ERROR_COLOR, MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR
 from ..messages import CONTINUE, Completed, Message, ProviderError, RunStopped, ToolCall, ToolProgress, ToolResult
 from ..permissions import safe_display
 from ..serialization import message_from_json
@@ -36,7 +36,7 @@ def call_line(call: ToolCall) -> Text:
 
 def result_line(result: ToolResult) -> Text:
     first = (result.output or "").strip().splitlines()[:1]
-    style = ERROR_COLOR if result.is_error else "dim"
+    style = ERROR_COLOR if result.is_error else MUTED_COLOR
     return Text("  └ " + safe_display(first[0] if first else "完成", 200), style=style)
 
 
@@ -61,14 +61,14 @@ def message_lines(message: Message) -> list[Text]:
         return [result_line(result) for result in message.tool_results]
     if message.role == "user":
         if message.synthetic == "compact":
-            return [Text(COMPACTED, style="dim")]
+            return [Text(COMPACTED, style=MUTED_COLOR)]
         if message.synthetic == CONTINUE:
-            return [Text("↻ 回复达到输出上限，自动续写", style="dim")]
+            return [Text("↻ 回复达到输出上限，自动续写", style=MUTED_COLOR)]
         text = message.text.strip()
         if text.startswith("<incoming-messages>"):
             return _incoming(text)
         first = text.splitlines()[0] if text else ""
-        return [Text("❯ " + safe_display(first, 200), style="dim")] if first else []
+        return [Text("❯ " + safe_display(first, 200), style=MUTED_COLOR)] if first else []
     return [Text(message.text.strip())] if message.text.strip() else []
 
 
@@ -115,7 +115,7 @@ class Feed:
                 return []
             return self.message(message)
         if kind == "compact":
-            return self.flush() + [Text(COMPACTED, style="dim")]
+            return self.flush() + [Text(COMPACTED, style=MUTED_COLOR)]
         return []
 
     def event(self, event) -> list[Text]:

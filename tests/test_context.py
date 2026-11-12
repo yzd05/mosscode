@@ -697,7 +697,7 @@ async def test_tui_shows_a_live_row_while_compacting_and_turns_it_into_the_resul
         await pilot.pause()
         row = app.query_one(CompactRow)
         assert "上下文接近上限，正在压缩" in str(row.render()) and row.transcript is None
-        await until(lambda: "压缩上下文中" in str(app.query_one("#status", Static).render()))  # The next status tick.
+        await until(lambda: "压缩上下文中" in str(app.query_one("#activity", Static).render()))  # The next tick.
         gate.set()
         await app._reply_task
         await pilot.pause()

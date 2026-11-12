@@ -338,8 +338,8 @@ async def test_the_interface_continues_until_met_and_shows_the_goal(tmp_path):
         await pilot.press("enter")
         await until(lambda: len(judge.requests) == 2)
         await pilot.pause()
-        status = str(app.query_one("#status", Static).render())
-        assert "◎ 目标" in status and "判断目标是否达成" in status
+        assert "◎ 目标" in str(app.query_one("#status", Static).render())
+        assert "判断目标是否达成" in str(app.query_one("#activity", Static).render())
         released.set()
         await until(lambda: conv.goal is None and not app._task_running)
         await pilot.pause()

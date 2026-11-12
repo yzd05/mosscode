@@ -34,7 +34,7 @@ MODE_LABELS = {"default": "默认", "acceptEdits": "接受编辑", "plan": "计�
 MODE_BADGES = {
     "default": "默认权限",
     "acceptEdits": "⏵⏵ 接受编辑",
-    "plan": "⏸ 计划模式",
+    "plan": "‖ 计划模式",
     "bypassPermissions": "⏵⏵ 跳过审批",
 }
 ALIASES = {

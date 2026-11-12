@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Input, OptionList, RichLog, Static
 
-from ..appearance import OPERATION_COLOR, PARAMETER_COLOR
+from ..appearance import MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR
 from ..messages import RunStopped
 from ..permissions import ApprovalRequest, safe_display
 from .view import Feed
@@ -125,7 +125,7 @@ class MemberApp(App):
         request = self._requests.pop(0)
         self.process.conversation.registry.permissions.respond(request.id, choice)
         self.process.answered_here()
-        self._log(Text(f"  已回答：{choice}", style="dim"))
+        self._log(Text(f"  已回答：{choice}", style=MUTED_COLOR))
         self._state("运行中 · Esc 中断这一轮")
         self._show()
 
@@ -139,7 +139,7 @@ class MemberApp(App):
         shown = self._requests[0] is request
         self._requests.remove(request)
         if choice is not None:
-            self._log(Text(f"  已在 Lead 的窗口中回答：{choice_label(request, choice)}", style="dim"))
+            self._log(Text(f"  已在 Lead 的窗口中回答：{choice_label(request, choice)}", style=MUTED_COLOR))
         if shown:
             self._state("运行中 · Esc 中断这一轮")
             self._show()

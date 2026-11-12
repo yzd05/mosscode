@@ -103,7 +103,9 @@ async def test_multiple_iterations_streaming_final_markdown_and_usage(tmp_path):
         assert reply.query_one(".raw").display and not reply.query_one(".answer").display
         assert "**已完" in str(reply.query_one(".raw", Static).render())
         status = str(app.query_one("#status", Static).render())
-        assert "跳过审批" in status and "3/200 轮" in status and "Token" not in status
+        assert "跳过审批" in status and "轮" not in status and "Token" not in status
+        # What is running is on the line above the prompt, not in the status bar.
+        assert "输出中 · 3/200 轮" in str(app.query_one("#activity", Static).render())
         release.set()
         await app._reply_task
         await pilot.pause()
@@ -225,9 +227,9 @@ async def test_retry_status_and_max_tokens_notice_after_the_continuations(tmp_pa
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "写长文")
         await asyncio.wait_for(arrived.wait(), 3)
-        await pilot.pause(0.5)  # Several 0.2 s status ticks must not hide the retry notice.
-        status = str(app.query_one("#status", Static).render())
-        assert "服务过载" in status and "2 秒后重试（1/4）" in status
+        await pilot.pause(0.5)  # Several 0.2 s ticks must not hide the retry notice.
+        activity = str(app.query_one("#activity", Static).render())
+        assert "服务过载" in activity and "2 秒后重试（1/4）" in activity
         release.set()
         await app._reply_task
         await pilot.pause()

@@ -27,10 +27,13 @@ from textual.widgets.markdown import MarkdownFence
 
 from .agents.tasks import Announcer
 from .appearance import (
+    BRAND_COLOR,
     COMMAND_HIGHLIGHT_COLOR,
     ERROR_COLOR,
+    MUTED_COLOR,
     OPERATION_COLOR,
     PARAMETER_COLOR,
+    RULE_COLOR,
     TERMINAL_CSS,
     TOOL_SUCCESS_COLOR,
     USER_MESSAGE_BACKGROUND,
@@ -49,6 +52,7 @@ from .builtin_commands import (
     open_sessions,
 )
 from .catalog import tokens_label
+from .choice_list import KeyboardOptions
 from .clipboard import ClipboardError, is_image_file, pasted_image_paths, read_clipboard_async
 from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, Settings
@@ -89,7 +93,7 @@ from .messages import (
 )
 from .permissions import CHOICES, EDIT_TOOLS, MODE_BADGES, Answer, ApprovalRequest, QuestionRequest, safe_display
 from .sandbox import badge as sandbox_badge
-from .scrollback import TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
+from .scrollback import TranscriptMarkdown, commit_transcript, highlighted_code, message_row, redraw_transcript
 from .teams import TeamError
 from .teams.runtime import MemberRow
 from .teams.view import TranscriptTail
@@ -183,6 +187,15 @@ def choice_label(request: ApprovalRequest, choice: str) -> str:
     return CHOICE_LABELS[choice]
 
 
+def choice_prompt(label: str) -> Text:
+    """An approval option as shown: its name at full strength, what it does in the supporting grey."""
+    name, _, explanation = label.partition(" · ")
+    text = Text(name)
+    if explanation:
+        text.append("  " + explanation, style=MUTED_COLOR)
+    return text
+
+
 def preview_text(preview: str) -> Text:
     """Approval preview; diffs are colored line by line."""
     text = Text()
@@ -196,8 +209,23 @@ def preview_text(preview: str) -> Text:
         elif diff and line.startswith("-") and not line.startswith("---"):
             style = ERROR_COLOR
         elif diff and line.startswith(("@@", "---", "+++", "…")):
-            style = "dim"
+            style = MUTED_COLOR
         text.append(("\n" if index else "") + line, style=style)
+    return text
+
+
+# The status badge and the prompt's rules share a color per mode; the default mode has none.
+MODE_COLORS = {"acceptEdits": TOOL_SUCCESS_COLOR, "plan": OPERATION_COLOR, "bypassPermissions": ERROR_COLOR}
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def activity_line(note: str, now: float) -> Text:
+    """The running stage above the prompt: a spinner that turns five times a second, the stage, its details."""
+    stage, separator, rest = note.partition(" · ")
+    text = Text(no_wrap=True, overflow="ellipsis")
+    text.append(SPINNER[int(now * 5) % len(SPINNER)] + " ", style=BRAND_COLOR)
+    text.append(stage, style=OPERATION_COLOR)
+    text.append(separator + rest, style=MUTED_COLOR)
     return text
 
 
@@ -209,7 +237,7 @@ NEW_FILE_ROWS = 8
 
 def diff_rows(diff: str, limit: int = DIFF_ROWS) -> Text:
     """Unified diff as numbered, colored rows; hunks are separated by ⋯."""
-    rows: list[tuple[str, str | None]] = []
+    rows: list[tuple[str, str, str | None]] = []  # Line number, the marked line, its color.
     old = new = 0
     notes = []
     for line in diff.splitlines():
@@ -223,23 +251,24 @@ def diff_rows(diff: str, limit: int = DIFF_ROWS) -> Text:
             except (IndexError, ValueError):
                 continue
             if rows:
-                rows.append(("     ⋯", None))
+                rows.append(("     ⋯", "", None))
         elif line.startswith("-"):
-            rows.append((f"{old:>5} - {line[1:]}", ERROR_COLOR))
+            rows.append((f"{old:>5}", f" - {line[1:]}", ERROR_COLOR))
             old += 1
         elif line.startswith("+"):
-            rows.append((f"{new:>5} + {line[1:]}", TOOL_SUCCESS_COLOR))
+            rows.append((f"{new:>5}", f" + {line[1:]}", TOOL_SUCCESS_COLOR))
             new += 1
         elif line.startswith(" "):
-            rows.append((f"{new:>5}   {line[1:]}", None))
+            rows.append((f"{new:>5}", f"   {line[1:]}", None))
             old, new = old + 1, new + 1
         elif line.strip():
             notes.append(line)  # e.g. the generator's own truncation note
     text = Text()
-    for row, style in rows[:limit]:
-        text.append("\n    " + row[:160], style=style)
+    for number, row, style in rows[:limit]:
+        text.append("\n    " + number, style=MUTED_COLOR)
+        text.append(row[: 160 - len(number)], style=style)
     if len(rows) > limit:
-        text.append(f"\n    … 还有 {len(rows) - limit} 行 diff 未显示")
+        text.append(f"\n    … 还有 {len(rows) - limit} 行 diff 未显示", style=MUTED_COLOR)
     for note in notes:
         text.append("\n    " + note)
     return text
@@ -541,13 +570,6 @@ class ShellRow(Static):
         self.update(self.transcript)
 
 
-class KeyboardOptions(OptionList):
-    async def _on_click(self, event: events.Click) -> None:
-        # Choices require Enter. Mouse clicks may focus the list but cannot execute an action.
-        event.prevent_default()
-        event.stop()
-
-
 class SessionInfo(Static):
     class Resized(UIMessage):
         pass
@@ -565,14 +587,15 @@ class ModelPanel(Vertical):
         yield Static("↑ / ↓ 选择 · Enter 确认 · Esc 收起", id="model-help")
 
 
-class PlainCodeFence(MarkdownFence):
+class DialogueCode(MarkdownFence):
     @classmethod
     def highlight(cls, code: str, language: str, ansi: bool = False, dark: bool = False) -> Content:
-        return Content(code)
+        # The same colors as the scrollback, whatever Textual's theme would pick.
+        return Content.from_rich_text(highlighted_code(code, language or ""))
 
 
 class DialogueMarkdown(Markdown):
-    BLOCKS = {**Markdown.BLOCKS, "fence": PlainCodeFence, "code_block": PlainCodeFence}
+    BLOCKS = {**Markdown.BLOCKS, "fence": DialogueCode, "code_block": DialogueCode}
 
 
 class ProviderSelectApp(TerminalApp[ProviderConfig]):
@@ -719,7 +742,7 @@ class ChatEntry(Vertical):
         if self.thinking_started is not None:
             self.thinking_elapsed += monotonic() - self.thinking_started
             self.thinking_started = None
-            self.query_one(".thinking-label", Static).update(f"思考用时 {self.thinking_elapsed:.1f}s")
+            self.query_one(".thinking-label", Static).update(f"✻ 思考 {self.thinking_elapsed:.1f}s")
         self.query_one(".thinking", Static).display = False
 
     def append(self, event: Delta) -> None:
@@ -801,14 +824,16 @@ class ChatEntry(Vertical):
             return None
         parts = []
         if self.thinking_elapsed:
-            parts.append(Text(f"思考用时 {self.thinking_elapsed:.1f}s"))
+            parts.append(Text(f"✻ 思考 {self.thinking_elapsed:.1f}s", style=MUTED_COLOR))
+            if self.interruption_note or self.body or not self.tool_request:
+                parts.append(Text(""))  # As on screen: a blank line before the reply, none after a label left alone.
         if self.interruption_note:
             parts.append(message_row("●", Text((self.body + "\n\n" if self.body else "") + self.interruption_note)))
         elif self.body or not self.tool_request:
             # A response that only calls tools has no text to show, as on screen before it was committed.
             parts.append(message_row("●", TranscriptMarkdown(self.body or "（服务返回了空正文）")))
         if self.completed_elapsed is not None:
-            parts.append(Text(f"\n✻ 完成 · {self.completed_elapsed:.1f}s"))
+            parts.append(Text(f"\n✻ 完成 · {self.completed_elapsed:.1f}s", style=MUTED_COLOR))
         return Group(*parts)
 
 
@@ -901,8 +926,9 @@ def todo_panel(items) -> Text:
     """The checklist above the prompt: unfinished items in order, or one line once all are done."""
     done = todos_completed(items)
     if done == len(items):
-        return Text(f"✓ 清单已完成 {done} 项", style="dim")
-    text = Text(f"清单 · 已完成 {done}/{len(items)}", style="dim")
+        return Text(f"✓ 清单已完成 {done} 项", style=MUTED_COLOR)
+    text = Text()
+    text.append(f"清单 · 已完成 {done}/{len(items)}", style=MUTED_COLOR)
     unfinished = [item for item in items if item.status != "completed"]
     for item in unfinished[:TODO_PANEL_ROWS]:
         if item.status == "in_progress":
@@ -910,7 +936,7 @@ def todo_panel(items) -> Text:
         else:
             text.append("\n□ " + safe_display(item.content, 200))
     if len(unfinished) > TODO_PANEL_ROWS:
-        text.append(f"\n… 另有 {len(unfinished) - TODO_PANEL_ROWS} 项未完成 · /todo 查看全部", style="dim")
+        text.append(f"\n… 另有 {len(unfinished) - TODO_PANEL_ROWS} 项未完成 · /todo 查看全部", style=MUTED_COLOR)
     return text
 
 
@@ -943,7 +969,7 @@ DOUBLE_ESCAPE = 0.5  # Seconds between two Esc presses on an empty prompt that o
 
 
 def image_lines(notes) -> Text:
-    return Text("\n".join(f"  └ {note}" for note in notes), style="dim")
+    return Text("\n".join(f"  └ {note}" for note in notes), style=MUTED_COLOR)
 
 
 def user_row(text: str, notes=()):
@@ -1096,9 +1122,10 @@ class ToolEntry(Static):
             lines = content.splitlines()
             text = Text()
             for number, line in enumerate(lines[:NEW_FILE_ROWS], 1):
-                text.append(f"\n    {number:>5} + {line[:160]}", style=TOOL_SUCCESS_COLOR)
+                text.append(f"\n    {number:>5}", style=MUTED_COLOR)
+                text.append(f" + {line[:160]}", style=TOOL_SUCCESS_COLOR)
             if len(lines) > NEW_FILE_ROWS:
-                text.append(f"\n    … 还有 {len(lines) - NEW_FILE_ROWS} 行未显示")
+                text.append(f"\n    … 还有 {len(lines) - NEW_FILE_ROWS} 行未显示", style=MUTED_COLOR)
             return text
         return None
 
@@ -1111,12 +1138,14 @@ class ToolEntry(Static):
         state = "stopped" if stopped else "error" if result.is_error else "success"
         if self.operation == "memory" and not result.is_error:
             text = memory_line(result.details)
-            text.append(f" · {self.elapsed:.1f}s", style=PARAMETER_COLOR)
+            text.append(f" {self.elapsed:.1f}s", style=MUTED_COLOR)
             self.transcript = text
             self.update(text)
             return
         text = self._heading(state)
-        text.append(f" · {self.elapsed:.1f}s\n  └ ")
+        text.append(f" {self.elapsed:.1f}s\n  └ ", style=MUTED_COLOR)
+        # What a successful call returned is a note on the process; a failure's detail is what to read.
+        summary = MUTED_COLOR if state == "success" else None
         if self.operation in {"agent", "execute_command"} and result.details.get("background"):
             text.append(f"后台 · 任务 {result.details.get('task', '')}", style=PARAMETER_COLOR)
             if result.details.get("log"):
@@ -1126,20 +1155,21 @@ class ToolEntry(Static):
             return
         if self.operation == "ask_user" and not result.is_error and result.details.get("answers") is not None:
             shown = answer_lines(result.details) or shown
+            summary = None  # The user's own answers.
         if self.operation == "agent" and len(lines) > 3 and lines[-1].startswith("（子 Agent"):
             shown = [*lines[:2], lines[-1]]
         if result.is_error:
             label = "已取消" if result.code == "cancelled" else "未执行" if stopped else "失败"
             text.append(label + " · ", style=f"bold {OPERATION_COLOR if stopped else ERROR_COLOR}")
-        text.append(shown[0][:160])
+        text.append(shown[0][:160], style=summary)
         changes = self._changes(result)
         if changes is not None:
             text.append_text(changes)
         else:
             for line in shown[1:]:
-                text.append("\n    " + line[:160])
+                text.append("\n    " + line[:160], style=summary)
             if len(lines) > 3 or any(len(line) > 160 for line in lines[:3]) or result.details.get("truncated"):
-                text.append("\n    （仅显示结果摘要）")
+                text.append("\n    （仅显示结果摘要）", style=MUTED_COLOR)
         stored = persisted_note(result)
         if stored:
             text.append("\n    " + stored, style=PARAMETER_COLOR)
@@ -1170,34 +1200,46 @@ class MossCodeApp(TerminalApp[None]):
     .message-marker { width: 2; height: 1; text-style: bold; }
     .user-message, .response-content { width: 1fr; height: auto; }
     .raw, .thinking, .answer { height: auto; padding: 0; margin: 0; background: $background; }
-    .thinking-label, .thinking { height: auto; padding: 0 0 0 2; margin-bottom: 1; }
-    .turn-summary { height: auto; margin-top: 1; }
-    .answer MarkdownHeader { content-align: left middle; margin: 1 0; }
-    .answer > MarkdownBlock:last-of-type { margin-bottom: 0; }
+    .thinking { height: auto; padding: 0 0 0 2; margin-bottom: 1; }
+    .thinking-label { height: auto; margin-bottom: 1; color: MUTED_COLOR !important; }
+    .turn-summary { height: auto; margin-top: 1; color: MUTED_COLOR !important; }
+    .answer MarkdownHeader { content-align: left middle; margin: 1 0; text-style: bold; }
+    .answer MarkdownH1 { text-style: bold underline; }
+    .answer > MarkdownHeader:first-child { margin: 0 0 1 0; }
+    .answer MarkdownFence { margin: 0 0 1 0; }
+    .answer MarkdownFence > Label { padding: 0 2; }
+    .answer MarkdownHorizontalRule { border-bottom: solid RULE_COLOR; padding-top: 0; }
+    .answer > MarkdownBlock:last-child { margin-bottom: 0; }
     .answer MarkdownBlock > .code_inline { color: PARAMETER_COLOR !important; text-style: bold; }
     #status { height: auto; margin-top: 0; color: $text-muted; }
     #queue { height: auto; margin-top: 1; padding: 0 1; }
     #todo-panel { height: auto; max-height: 6; margin-top: 1; padding: 0 1; }
-    #attachments { height: auto; margin-top: 1; padding: 0 1; color: $text-muted; }
+    #attachments { height: auto; margin-top: 1; padding: 0 1; color: MUTED_COLOR !important; }
     .image-notes { height: auto; }
-    #input-row { height: auto; margin-top: 1; padding: 0 1; border-top: solid $foreground 35%; border-bottom: solid $foreground 35%; }
-    #input-prefix { width: 2; height: 1; color: $primary; }
-    #input-prefix.shell { color: OPERATION_COLOR; text-style: bold; }
+    #activity { height: 1; padding: 0 1; }
+    #input-row { height: auto; padding: 0 1; border-top: solid RULE_COLOR; border-bottom: solid RULE_COLOR; }
+    #input-row.mode-plan { border-top: solid OPERATION_COLOR; border-bottom: solid OPERATION_COLOR; }
+    #input-row.mode-acceptEdits { border-top: solid TOOL_SUCCESS_COLOR; border-bottom: solid TOOL_SUCCESS_COLOR; }
+    #input-row.mode-bypassPermissions { border-top: solid ERROR_COLOR; border-bottom: solid ERROR_COLOR; }
+    #input-prefix { width: 2; height: 1; color: BRAND_COLOR !important; text-style: bold; }
+    #input-prefix.shell { color: OPERATION_COLOR !important; }
     #prompt { width: 1fr; height: auto; max-height: 8; border: none; padding: 0; background: $background; }
+    #prompt > .text-area--placeholder { color: MUTED_COLOR !important; }
     #prompt:focus { border: none; background-tint: transparent; }
     #command-hints { height: auto; max-height: 7; border: none; padding: 0 1; }
     #command-hints > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
-    #command-help { height: 1; color: $text-muted; padding: 0 1; }
-    #model-panel { width: 1fr; height: auto; padding: 0 1; border-top: solid $foreground; border-bottom: solid $foreground; }
+    #command-help { height: 1; color: MUTED_COLOR !important; padding: 0 1; }
+    #model-panel { width: 1fr; height: auto; padding: 0 1; border-top: solid RULE_COLOR; border-bottom: solid RULE_COLOR; }
     #model-title, #model-help { height: 1; }
+    #model-help, #approval-help, #question-help, #member-help { color: MUTED_COLOR !important; }
     #models { height: auto; max-height: 8; border: none; padding: 0; }
     #models > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
-    #approval-panel { height: auto; max-height: 15; padding: 0 1; border-top: solid $foreground; }
+    #approval-panel { height: auto; max-height: 16; padding: 0 1; border-top: solid OPERATION_COLOR; }
     #approval-detail { height: auto; max-height: 20; }
-    #approval-options { height: 4; border: none; padding: 0; }
+    #approval-options { height: 4; margin-top: 1; border: none; padding: 0; }
     #approval-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
     #approval-help { height: auto; }
-    #question-panel { height: auto; padding: 0 1; border-top: solid $foreground; }
+    #question-panel { height: auto; padding: 0 1; border-top: solid OPERATION_COLOR; }
     #question-detail, #question-help { height: auto; }
     #question-options { height: auto; border: none; padding: 0; }
     #question-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
@@ -1208,7 +1250,7 @@ class MossCodeApp(TerminalApp[None]):
     #member-compact { height: auto; }
     #member-list { height: auto; max-height: 8; border: none; padding: 0; }
     #member-list > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
-    #member-help { height: 1; color: $text-muted; }
+    #member-help { height: 1; }
     #member-view { height: auto; padding: 0 1; }
     #member-head { height: 1; }
     #member-log { height: 1fr; scrollbar-size: 1 0; background: $background; }
@@ -1220,6 +1262,11 @@ class MossCodeApp(TerminalApp[None]):
         .replace("USER_MESSAGE_BACKGROUND", USER_MESSAGE_BACKGROUND)
         .replace("USER_MESSAGE_COLOR", USER_MESSAGE_COLOR)
         .replace("OPERATION_COLOR", OPERATION_COLOR)
+        .replace("TOOL_SUCCESS_COLOR", TOOL_SUCCESS_COLOR)
+        .replace("ERROR_COLOR", ERROR_COLOR)
+        .replace("BRAND_COLOR", BRAND_COLOR)
+        .replace("MUTED_COLOR", MUTED_COLOR)
+        .replace("RULE_COLOR", RULE_COLOR)
     )
     BINDINGS = [
         Binding("escape", "cancel", "取消生成", priority=True, show=False),
@@ -1272,6 +1319,8 @@ class MossCodeApp(TerminalApp[None]):
         self._iteration_limit = 25
         self._usage = conversation.total_usage
         self._status_note = ""
+        self._stage_note = ""  # What the running task is doing, shown on the line above the prompt.
+        self._activity_shown: tuple[str, int] | None = None
         self._mcp_notices: list[str] = []  # MCP servers that settled while a task was running.
         self._retry_notice = ""  # Held until the next event so the ticker does not hide it.
         self._hint_until = 0.0  # Short notes shown over the running status until this time.
@@ -1330,6 +1379,9 @@ class MossCodeApp(TerminalApp[None]):
         attachments = Static("", id="attachments", markup=False)
         attachments.display = False
         yield attachments
+        # One row above the prompt: blank while idle, the running stage during a task, so the layout
+        # does not shift when a task starts or ends.
+        yield Static("", id="activity", markup=False)
         with Horizontal(id="input-row"):
             yield Static("❯", id="input-prefix")
             prompt = PromptArea(placeholder="输入消息，或 / 查看命令；Shift+Enter 换行", id="prompt")
@@ -1342,7 +1394,7 @@ class MossCodeApp(TerminalApp[None]):
         with Vertical(id="approval-panel") as approval:
             approval.display = False
             yield Static("", id="approval-detail", markup=False)
-            yield KeyboardOptions(*(CHOICE_LABELS[choice] for choice in CHOICES), id="approval-options")
+            yield KeyboardOptions(*(choice_prompt(CHOICE_LABELS[choice]) for choice in CHOICES), id="approval-options")
             yield Static("↑ / ↓ 选择 · Enter 确认 · Esc 拒绝本次 · Ctrl+C 取消任务", id="approval-help", markup=False)
         with Vertical(id="question-panel") as question:
             question.display = False
@@ -1569,7 +1621,8 @@ class MossCodeApp(TerminalApp[None]):
         prompt_rows = min(8, max(1, self.query_one("#prompt", PromptArea).wrapped_document.height))
         reserved = self.screen.styles.gutter.height + max(1, self.query_one("#status").outer_size.height)
         if input_row.display:  # Hidden while a member view is open.
-            reserved += max(2 + prompt_rows, input_row.region.height) + input_row.styles.margin.height
+            # Its two rules, the prompt, and the activity row above it.
+            reserved += max(2 + prompt_rows, input_row.region.height) + input_row.styles.margin.height + 1
         members = self.query_one("#member-panel", MemberPanel)
         if members.display:
             reserved += members.lines
@@ -1586,8 +1639,8 @@ class MossCodeApp(TerminalApp[None]):
         if self.query_one("#approval-panel").display:
             # Keep the choices and status reachable in a short terminal; only
             # the preview shrinks. Completed history already lives in scrollback.
-            # Border, one row per choice and up to two rows of help.
-            fixed = 3 + (len(self._approval_request.choices) if self._approval_request else 4)
+            # Border, the blank row above the choices, one row per choice and up to two rows of help.
+            fixed = 4 + (len(self._approval_request.choices) if self._approval_request else 4)
             limit = max(fixed, self.size.height - reserved - 1)
             self.query_one("#approval-panel").styles.max_height = limit
             self.query_one("#approval-detail").styles.max_height = min(20, max(1, limit - fixed))
@@ -1654,33 +1707,57 @@ class MossCodeApp(TerminalApp[None]):
                     await chat.remove_children(ready)
                     self._fit_chat()
 
+    def _stage(self, note: str) -> None:
+        """What the running task is doing, on the line above the prompt. A short hint keeps its place in
+        the status bar until it expires; with no task running the note is an ordinary status note."""
+        if not self._generating:
+            self._status(note)
+            return
+        self._stage_note = note
+        self._status(self._status_note if monotonic() < self._hint_until else "")
+
+    def _paint_activity(self) -> None:
+        activity = self.query("#activity")
+        if not activity:
+            return
+        if not self._generating:
+            self._stage_note = ""
+        now = monotonic()
+        shown = (self._stage_note, int(now * 5) if self._stage_note else 0)
+        if shown != self._activity_shown:
+            self._activity_shown = shown
+            activity.first(Static).update(activity_line(self._stage_note, now) if self._stage_note else Text(""))
+
     def _status(self, note: str) -> None:
         self._status_note = note
+        self._paint_activity()
+        muted = MUTED_COLOR
         text = Text()
         registry = self.conversation.registry
+        mode = registry.permissions.mode if registry is not None else None
+        for row in self.query("#input-row"):
+            for name in MODE_COLORS:
+                row.set_class(name == mode, f"mode-{name}")
         if registry is None:
             text.append("未启用工具", style="bold")
         else:
-            mode = registry.permissions.mode
-            color = {"acceptEdits": TOOL_SUCCESS_COLOR, "plan": OPERATION_COLOR, "bypassPermissions": ERROR_COLOR}.get(
-                mode
-            )
+            color = MODE_COLORS.get(mode)
             text.append(MODE_BADGES[mode], style=f"bold {color}" if color else "bold")
             if getattr(self.conversation, "coordinator", False):
                 text.append(" " + COORDINATOR_BADGE, style=f"bold {OPERATION_COLOR}")
             if badge := sandbox_badge():
-                text.append(" · ")
+                text.append(" · ", style=muted)
                 # Partial confines writes only: amber, like an operation still awaiting approval.
                 colors = {"沙箱": TOOL_SUCCESS_COLOR, "沙箱·部分": OPERATION_COLOR}
                 text.append(badge, style=colors.get(badge, ERROR_COLOR))
             if not self._generating and self.size.width >= 80:
-                text.append(" (Shift+Tab 切换)")
+                text.append(" (Shift+Tab 切换)", style=muted)
         if self.provider_name != self._banner_provider:
             # The banner names the model; after /model it is stale, so the status bar names the new one.
-            text.append(" · " + self.provider_name)
+            text.append(" · " + self.provider_name, style=muted)
         if (thinking := getattr(self.conversation, "thinking", None)) is not None:
             unsupported = self.conversation.thinking_problem() is not None
-            text.append(f" · 思考 {thinking}" + ("（不支持）" if unsupported else ""))
+            text.append(f" · 思考 {thinking}" + ("（不支持）" if unsupported else ""), style=muted)
         if (goal := getattr(self.conversation, "goal", None)) is not None:
             if goal.paused:
                 text.append(" · ◎ 目标已暂停", style=OPERATION_COLOR)
@@ -1695,10 +1772,10 @@ class MossCodeApp(TerminalApp[None]):
                 if self._generating or stage.startswith(("已取消", "已停止"))
                 else None
             )
-            text.append(" · ")
+            text.append(" · ", style=muted)
             text.append(stage, style=stage_color)
             if separator:
-                text.append(separator + rest)
+                text.append(separator + rest, style=muted)
         manager = self.conversation.mcp_manager
         if manager is not None and manager.pending:
             total = len(manager.connections)
@@ -1718,7 +1795,7 @@ class MossCodeApp(TerminalApp[None]):
         teams = getattr(self.conversation, "teams", None)
         if teams is not None and teams.current is not None:
             running, idle = teams.counts()
-            text.append(f" · 团队 {teams.current.name} 运行 {running} / 空闲 {idle}")
+            text.append(f" · 团队 {teams.current.name} 运行 {running} / 空闲 {idle}", style=muted)
             asking = sum(self._asking().values())  # Pane members' too.
             if asking:
                 text.append(f" · 成员审批 {asking}", style=OPERATION_COLOR)
@@ -1727,13 +1804,19 @@ class MossCodeApp(TerminalApp[None]):
                 and self.query_one("#member-panel").display
                 and not self.query_one("#member-panel", MemberPanel).expanded
             ):
-                text.append(" · Ctrl+T 成员")
+                text.append(" · Ctrl+T 成员", style=muted)
+        usage = Text()
         if self._usage.requests:
             if self._context_share is not None:
                 used, window, percent, near = self._context_share
-                text.append(f" · 上下文 约 {used} / {window}（{percent}%）", style=OPERATION_COLOR if near else None)
+                usage.append(f"上下文 约 {used} / {window}（{percent}%）", style=OPERATION_COLOR if near else muted)
             if (rate := cache_hit_rate(self._usage)) is not None:
-                text.append(f" · 缓存命中 {rate}%")
+                usage.append((" · " if usage else "") + f"缓存命中 {rate}%", style=muted)
+        if usage:
+            # The numbers sit at the right edge when the line has room, and follow the rest when it does not.
+            gap = self.size.width - self.screen.styles.gutter.width - text.cell_len - usage.cell_len
+            text.append(" " * gap if gap >= 2 else " · ", style=muted)
+            text.append_text(usage)
         status = self.query("#status")
         if not status:  # Timers and MCP callbacks can fire while the screen is torn down.
             return
@@ -1755,6 +1838,7 @@ class MossCodeApp(TerminalApp[None]):
         )
 
     def _tick(self) -> None:
+        self._paint_activity()  # Keeps the spinner turning in stages that have nothing else to refresh.
         if self._approval_request is not None and not self._waiting(self._approval_request):
             # Withdrawn without an answer, e.g. a sandboxed command ended while asking to connect.
             self._hide_approval()
@@ -1763,45 +1847,40 @@ class MossCodeApp(TerminalApp[None]):
         if self._generating and self._shell_row is not None:
             self._shell_row.tick()
             if self._approval_request is not None:  # A sandboxed command asking to connect.
-                self._status("等待授权 · Esc 拒绝本次 · Ctrl+C 取消任务")
+                self._stage("等待授权 · Esc 拒绝本次 · Ctrl+C 取消任务")
                 return
-            if monotonic() < self._hint_until:
-                return
-            self._status(f"执行命令中 · {monotonic() - self._shell_row.started:.1f}s · Esc 取消")
+            self._stage(f"执行命令中 · {monotonic() - self._shell_row.started:.1f}s · Esc 取消")
             return
         if self._generating and self._goal_checking:
-            if monotonic() >= self._hint_until:
-                self._status(f"判断目标是否达成 · {monotonic() - self.started:.1f}s · Esc 暂停目标")
+            self._stage(f"判断目标是否达成 · {monotonic() - self.started:.1f}s · Esc 暂停目标")
             return
         if self._generating and self._compacting is not None:
             if self._compact_row is not None:
                 self._compact_row.tick()
-            self._status(f"压缩上下文中 · {monotonic() - self._compacting:.1f}s · Esc 取消")
+            self._stage(f"压缩上下文中 · {monotonic() - self._compacting:.1f}s · Esc 取消")
             return
         if self._generating and self._active_reply is not None:
             if self._approval_request is not None:
-                self._status("等待授权 · Esc 拒绝本次 · Ctrl+C 取消任务")
+                self._stage("等待授权 · Esc 拒绝本次 · Ctrl+C 取消任务")
                 return
             if self._question is not None:
-                self._status(
+                self._stage(
                     "等待回答 · 输入回答后 Enter 提交 · Esc 返回选项"
                     if self._question_typing
                     else "等待回答 · Esc 不回答 · Ctrl+C 取消任务"
                 )
                 return
             if self._retry_notice:
-                self._status(self._retry_notice)
+                self._stage(self._retry_notice)
                 return
             self._active_reply.refresh_timer()
             for row in self._agent_rows.values():
                 if row.subagent is not None:
                     row.progress(row.subagent)
-            if monotonic() < self._hint_until:
-                return
             label = {"waiting": "连接中", "thinking": "思考中", "streaming": "输出中", "tools": "执行工具中"}.get(
                 self._active_reply.phase, "处理中"
             )
-            self._status(
+            self._stage(
                 f"{label} · {self._iteration}/{self._iteration_limit} 轮 · {monotonic() - self.started:.1f}s · Esc 取消"
             )
 
@@ -1832,7 +1911,7 @@ class MossCodeApp(TerminalApp[None]):
         panel = self.query_one("#attachments", Static)
         panel.display = bool(notes)
         if notes:
-            panel.update("\n".join(notes) + "\n删除占位符即取消该图片")
+            panel.update(Text("\n".join(notes) + "\n删除占位符即取消该图片", style=MUTED_COLOR))
 
     def _hint(self, text: str) -> None:
         self._hint_until = monotonic() + 2
@@ -1896,7 +1975,7 @@ class MossCodeApp(TerminalApp[None]):
                 text.append(("\n" if index else "") + "↳ 排队：" + first[:80] + more, style=OPERATION_COLOR)
             if len(queued) > 4:
                 text.append(f"\n↳ 另有 {len(queued) - 4} 条", style=OPERATION_COLOR)
-            text.append("\n  将在本轮工具执行后发送给模型 · ↑ 取回编辑 · Esc 取消任务时放回输入框")
+            text.append("\n  将在本轮工具执行后发送给模型 · ↑ 取回编辑 · Esc 取消任务时放回输入框", style=MUTED_COLOR)
             queue.update(text)
         self._status(self._status_note)
 
@@ -1923,7 +2002,7 @@ class MossCodeApp(TerminalApp[None]):
             row = Table.grid(padding=(0, 2), expand=True)
             row.add_column(width=width, no_wrap=True, overflow="ellipsis")
             row.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-            row.add_row(Text(hint.label or hint.value), Text(hint.description))
+            row.add_row(Text(hint.label or hint.value), Text(hint.description, style=MUTED_COLOR))
             hints.add_option(row)
         hints.display = bool(self._hint_choices)
         help_line.display = hints.display
@@ -2123,7 +2202,7 @@ class MossCodeApp(TerminalApp[None]):
         self.started = monotonic()
         self._iteration = 0
         self._generating = True
-        self._status("连接中…")
+        self._stage("连接中…")
         await self._commit_ready_transcript()
         self._reply_task = asyncio.create_task(self._respond(prompt, reply, command, fork, notify, images, synthetic))
 
@@ -2248,7 +2327,7 @@ class MossCodeApp(TerminalApp[None]):
     def _start_resume(self, session_id: str, *, startup: bool = False) -> None:
         self.started = monotonic()
         self._generating = True
-        self._status("恢复会话中…")
+        self._stage("恢复会话中…")
         self._reply_task = asyncio.create_task(self._run_resume(session_id, startup))
 
     async def _show_resumed(self, event: Resumed) -> None:
@@ -2491,7 +2570,7 @@ class MossCodeApp(TerminalApp[None]):
             text.append(safe_display(operation.target), style=PARAMETER_COLOR)
         if operation.cwd is not None:
             text.append("\n工作目录：" + operation.cwd)
-        text.append("\n" + request.reason)
+        text.append("\n" + request.reason, style=MUTED_COLOR)
         if operation.tool == "exit_plan_mode":
             text.append("\n完整计划显示在上方对话中。")
         elif operation.preview:
@@ -2501,7 +2580,7 @@ class MossCodeApp(TerminalApp[None]):
         self.query_one("#approval-panel").display = True
         options = self.query_one("#approval-options", OptionList)
         options.clear_options()
-        options.add_options([choice_label(request, choice) for choice in request.choices])
+        options.add_options([choice_prompt(choice_label(request, choice)) for choice in request.choices])
         options.styles.height = len(request.choices)
         options.highlighted = 0
         members = self.query_one("#member-panel", MemberPanel)
@@ -2541,7 +2620,7 @@ class MossCodeApp(TerminalApp[None]):
                 mark = f"{index + 1}. "
             text = Text(mark + safe_display(label, 30))
             if description:
-                text.append(" — " + safe_display(description, 200))
+                text.append(" — " + safe_display(description, 200), style=MUTED_COLOR)
             labels.append(text)
         labels.append(Text(("    " if question.multi_select else f"{len(question.options) + 1}. ") + OTHER_ANSWER))
         return labels
@@ -2570,7 +2649,7 @@ class MossCodeApp(TerminalApp[None]):
         self.query_one("#question-panel").display = True
         options.focus()
         self._show_members()
-        self._status("等待回答 · Esc 不回答")
+        self._stage("等待回答 · Esc 不回答")
         self.call_later(self._fit_chat)
 
     def _toggle_question(self) -> None:
@@ -2591,7 +2670,7 @@ class MossCodeApp(TerminalApp[None]):
             self._question_draft, field.value = field.value, ""
             self.query_one("#question-help", Static).update("在输入框中输入你的回答 · Enter 提交 · Esc 返回选项")
             field.focus()
-            self._status("等待回答 · 输入回答后 Enter 提交 · Esc 返回选项")
+            self._stage("等待回答 · 输入回答后 Enter 提交 · Esc 返回选项")
             return
         picked = sorted(self._question_checked) if question.multi_select and self._question_checked else [index]
         self._next_question(Answer(tuple(question.options[i][0] for i in picked)))
@@ -2742,7 +2821,7 @@ class MossCodeApp(TerminalApp[None]):
                             self._status("已停止 · 可以继续提问")
                     elif isinstance(event, Retrying):
                         self._retry_notice = f"{event.reason} · {event.delay:.0f} 秒后重试（{event.attempt}/{event.max_attempts}）· Esc 取消"
-                        self._status(self._retry_notice)
+                        self._stage(self._retry_notice)
                     elif isinstance(event, ReplyRetry):
                         if not continuation:  # Deltas of the dropped reply already went into this entry.
                             reply.discard()
@@ -2772,7 +2851,7 @@ class MossCodeApp(TerminalApp[None]):
                         continuation = True
                     elif isinstance(event, ToolProgress):
                         if event.phase == "parsing":
-                            self._status("解析工具参数… · Esc 取消")
+                            self._stage("解析工具参数… · Esc 取消")
                         else:
                             if event.phase == "running":
                                 reply.phase = "tools"
@@ -3092,7 +3171,7 @@ class MossCodeApp(TerminalApp[None]):
         view = self.query_one("#member-view", MemberView)
         view.reset(name, teams.current.name, TranscriptTail(path))
         self.query_one("#chat").display = False
-        self.query_one("#input-row").display = False  # Read-only.
+        self.query_one("#input-row").display = self.query_one("#activity").display = False  # Read-only.
         self.query_one("#command-hints").display = self.query_one("#command-help").display = False
         view.display = True
         view.member_log.focus()
@@ -3108,7 +3187,7 @@ class MossCodeApp(TerminalApp[None]):
         name = view.name_shown
         view.display, view.tail = False, None
         self.query_one("#chat").display = True
-        self.query_one("#input-row").display = True
+        self.query_one("#input-row").display = self.query_one("#activity").display = True
         panel = self.query_one("#member-panel", MemberPanel)
         self._show_members()
         if to_panel and self._member_rows:
@@ -3161,9 +3240,9 @@ class MossCodeApp(TerminalApp[None]):
                 if len(messages) > VIEW_MESSAGES:
                     skipped = len(messages) - VIEW_MESSAGES
                     records = records[messages[skipped] :]
-                    lines.append(Text(f"（更早的 {skipped} 条消息未显示）", style="dim"))
+                    lines.append(Text(f"（更早的 {skipped} 条消息未显示）", style=MUTED_COLOR))
                 if not records and not await asyncio.to_thread(tail.path.exists):
-                    lines.append(Text(f"成员 {name} 还没有对话记录", style="dim"))
+                    lines.append(Text(f"成员 {name} 还没有对话记录", style=MUTED_COLOR))
             for record in records:
                 lines += view.feed.record(record)
             view.write(lines, follow=True if initial else None)

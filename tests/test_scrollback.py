@@ -1,13 +1,22 @@
 import asyncio
 import re
 
+from rich.text import Text
 from textual import events
 from textual.drivers.headless_driver import HeadlessDriver
 from textual.geometry import Offset, Size
 
+from mosscode.appearance import (
+    BRAND_COLOR,
+    ERROR_COLOR,
+    MUTED_COLOR,
+    OPERATION_COLOR,
+    RULE_COLOR,
+    TOOL_SUCCESS_COLOR,
+)
 from mosscode.conversation import Conversation
 from mosscode.messages import Delta, ToolProgress, ToolResult
-from mosscode.scrollback import TranscriptMarkdown, render_transcript
+from mosscode.scrollback import TranscriptMarkdown, highlighted_code, render_transcript
 from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_agent import SequenceProvider, call, response
 
@@ -146,7 +155,7 @@ def test_committed_markdown_keeps_terminal_background_and_normal_brightness():
         ],
         70,
     )
-    assert "print(1)" in data
+    assert "print(1)" in plain([data])
     assert "38;2;111;168;255" in data
     for sgr in re.findall(r"\x1b\[([\d;]*)m", data):
         codes, index = [int(code or 0) for code in sgr.split(";")], 0
@@ -154,6 +163,72 @@ def test_committed_markdown_keeps_terminal_background_and_normal_brightness():
             assert codes[index] != 2 and codes[index] != 48
             assert not 40 <= codes[index] <= 47 and not 100 <= codes[index] <= 107
             index += (5 if codes[index + 1] == 2 else 3) if codes[index] == 38 else 1
+
+
+def foreground(color: str) -> str:
+    return "\x1b[38;2;" + ";".join(str(int(color[at : at + 2], 16)) for at in (1, 3, 5)) + "m"
+
+
+def test_committed_markdown_is_laid_out_like_the_live_reply():
+    text = "# Heading\n\nbody\n\n---\n\n|A|B|\n|-|-|\n|1|2|\n\nafter\n\n---\n\n- item\n\n## Second\n\nend"
+    data = render_transcript([TranscriptMarkdown(text)], 40)
+    # Headings start at the left, a rule is a thin grey line, and one blank line separates blocks:
+    # around the rule and the table too, where Rich's own elements leave two.
+    assert [line.rstrip() for line in plain([data]).split("\r\n")][:17] == [
+        "  Heading",
+        "",
+        "  body",
+        "",
+        "  " + "─" * 36,
+        "",
+        "  A  B",
+        "  ────",
+        "  1  2",
+        "",
+        "  after",
+        "",
+        "  " + "─" * 36,
+        "",
+        "   • item",
+        "",
+        "  Second",
+    ]
+    assert "\x1b[1;4mHeading\x1b[0m" in data and "\x1b[1mSecond\x1b[0m" in data
+    assert foreground(RULE_COLOR) + "─" * 36 in data
+
+
+def test_code_is_colored_only_when_the_fence_names_a_known_language():
+    code = "# note\nreturn 'a', 42"
+    colored = highlighted_code(code, "python")
+    styles = {colored.plain[span.start : span.end]: str(span.style) for span in colored.spans}
+    assert colored.plain == code
+    assert styles == {
+        "# note": MUTED_COLOR,
+        "return": BRAND_COLOR,
+        "'": TOOL_SUCCESS_COLOR,
+        "a": TOOL_SUCCESS_COLOR,
+        "42": OPERATION_COLOR,
+    }
+    # The info string may carry more than the language.
+    assert highlighted_code(code, "python title=demo.py").spans == colored.spans
+    for language in ("", "  ", "no-such-language"):
+        assert highlighted_code(code, language).plain == code and not highlighted_code(code, language).spans
+    changed = highlighted_code("+new\n-old\n same", "diff")
+    assert {changed.plain[span.start : span.end]: str(span.style) for span in changed.spans} == {
+        "+new": TOOL_SUCCESS_COLOR,
+        "-old": ERROR_COLOR,
+    }
+    # Text the lexer would not give back unchanged is shown exactly as an unlabelled block shows it.
+    windows = "a = 1\r\nb = 2"
+    assert highlighted_code(windows, "python") == highlighted_code(windows, "")
+
+
+def test_committed_code_blocks_use_the_same_colors_as_the_live_ones():
+    text = "```python\n# note\nreturn 42\n```\n\n```\nreturn 42\n```"
+    data = render_transcript([TranscriptMarkdown(text)], 40)
+    assert foreground(MUTED_COLOR) + "# note" in data
+    assert data.count(foreground(BRAND_COLOR) + "return") == 1 and data.count(foreground(OPERATION_COLOR) + "42") == 1
+    assert "    return 42" in data  # The block without a language, indented like the other and left plain.
 
 
 async def test_cancelled_partial_reply_is_kept_once_in_terminal_but_not_model_history():
@@ -255,8 +330,21 @@ async def test_a_response_that_only_calls_tools_leaves_no_empty_text_row(tmp_pat
     async with app.run_test(size=(80, 24)) as pilot:
         await send(app, pilot, "搜索 NEEDLE")
         text = plain(output)
-        assert "思考用时" in text and "FOUND-IT" in text
+        assert "✻ 思考 " in text and "FOUND-IT" in text
         assert "服务返回了空正文" not in text
+
+
+def test_thinking_label_is_followed_by_one_blank_line_with_or_without_a_reply():
+    def rows(entry, *after):
+        return [row.rstrip() for row in plain([render_transcript([entry.transcript(), *after], 40)]).split("\r\n")]
+
+    alone = ChatEntry("assistant")
+    alone.thinking_elapsed, alone.tool_request = 1.25, True
+    assert rows(alone, Text("NEXT"))[:3] == ["  ✻ 思考 1.2s", "", "  NEXT"]
+
+    answered = ChatEntry("assistant", "ANSWER")
+    answered.thinking_elapsed = 1.25
+    assert rows(answered, Text("NEXT"))[:5] == ["  ✻ 思考 1.2s", "", "  ● ANSWER", "", "  NEXT"]
 
 
 async def test_user_messages_sit_on_a_grey_bar_live_and_in_scrollback():

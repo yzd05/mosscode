@@ -419,7 +419,7 @@ async def test_plan_and_do_update_the_status_badge(tmp_path):
         await send(app, pilot, "/do 任务")
         assert str(app.query(".local-note")[-1].render()) == "当前不在计划模式。任务未发送。"
         await send(app, pilot, "/plan")
-        assert status().startswith("⏸ 计划模式")
+        assert status().startswith("‖ 计划模式")
         await send(app, pilot, "/do")
         assert status().startswith("⏵⏵ 接受编辑") and conv.registry.permissions.mode == "acceptEdits"
         assert "已退出计划模式，回到接受编辑（acceptEdits）" in str(app.query(".local-note")[-1].render())

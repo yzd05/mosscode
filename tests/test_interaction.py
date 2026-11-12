@@ -21,6 +21,7 @@ from mosscode.tui import (
     DIFF_ROWS,
     ERROR_COLOR,
     MODE_BADGES,
+    MUTED_COLOR,
     OPERATION_COLOR,
     TOOL_SUCCESS_COLOR,
     ChatEntry,
@@ -273,8 +274,10 @@ def test_diff_rows_number_color_separate_hunks_and_truncate():
     assert "    3 - line 3" in plain and "    3 + line three" in plain
     assert "   30 - line 30" in plain and "   30 + line thirty" in plain
     assert "⋯" in plain and "---" not in plain and "@@" not in plain
+    # The line number is secondary; the color marks only the changed line.
     styles = {text.plain[s.start : s.end].strip(): str(s.style) for s in text.spans}
-    assert styles["3 - line 3"] == ERROR_COLOR and styles["3 + line three"] == TOOL_SUCCESS_COLOR
+    assert styles["- line 3"] == ERROR_COLOR and styles["+ line three"] == TOOL_SUCCESS_COLOR
+    assert styles["3"] == styles["30"] == MUTED_COLOR and "line 2" not in styles
     big = diff_rows(unified_diff("".join(f"{i}\n" for i in range(30)), "".join(f"x{i}\n" for i in range(30)), "g"))
     rows = [line for line in big.plain.splitlines() if line.strip()]
     assert len(rows) == DIFF_ROWS + 1 and rows[-1].strip() == f"… 还有 {60 - DIFF_ROWS} 行 diff 未显示"
@@ -343,7 +346,15 @@ async def test_status_shows_context_against_the_window_and_the_cache_hit_rate(tm
         await send(app, pilot, "hello")
         await asyncio.wait_for(app._reply_task, 5)
         await pilot.pause()
-        assert status(app).endswith(" · 上下文 约 9K / 1M（1%） · 缓存命中 33%")
+        usage = "上下文 约 9K / 1M（1%） · 缓存命中 33%"
+        # Usage sits at the right edge of the row, apart from the items on the left.
+        shown = app.query_one("#status", Static).render()
+        assert status(app).startswith("默认权限 (Shift+Tab 切换)  ") and status(app).endswith("  " + usage)
+        assert shown.cell_length == app.query_one("#status").content_size.width
+        # Too narrow for a gap: it follows the other items as one more of them.
+        await pilot.resize_terminal(44, 30)
+        await pilot.pause()
+        assert status(app) == "默认权限 · " + usage
 
 
 async def test_status_names_the_model_once_the_banner_is_out_of_date():

@@ -40,6 +40,13 @@ async def test_keyboard_approval_below_input_and_once_scope(tmp_path):
         assert "hello.txt" in str(app.query_one("#approval-detail", Static).render())
         assert "Hello" in str(app.query_one("#approval-detail", Static).render())
         assert options.highlighted == 0
+        # Each choice is a name and, set apart from it, what it does; the pointer marks the highlighted one.
+        prompts = [options.get_option_at_index(index).prompt.plain for index in range(options.option_count)]
+        assert all("  " in prompt and " · " not in prompt.partition("  ")[0] for prompt in prompts[:-1])
+        strips = app.screen._compositor.render_strips()
+        rows = [strip.text.strip() for strip in strips[options.region.y : options.region.bottom]]
+        assert [row.startswith("❯ ") for row in rows[: len(prompts)]] == [True] + [False] * (len(prompts) - 1)
+        assert rows[0] == "❯ " + prompts[0]
         await pilot.click("#approval-options", offset=(1, 0))
         assert not app._reply_task.done() and not (tmp_path / "hello.txt").exists()
         await pilot.press("down")

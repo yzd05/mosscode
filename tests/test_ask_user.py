@@ -219,7 +219,7 @@ async def test_the_panel_takes_a_choice_and_ticked_options(tmp_path):
         options = app.query_one("#question-options", OptionList)
         prompts = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
         assert prompts == ["1. 深色（推荐） — 适合终端", "2. 浅色", "3. 其他（自己输入）"]
-        assert app.focused is options and "等待回答" in str(app.query_one("#status").render())
+        assert app.focused is options and "等待回答" in str(app.query_one("#activity").render())
         assert "等待用户回答" in str(app.query_one(ToolEntry).render())
         await pilot.press("down", "enter")
         await pilot.pause()

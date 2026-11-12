@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from rich.table import Table
 from rich.text import Text
-from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.widgets import OptionList, RichLog, Static
+from textual.widgets import RichLog, Static
 
-from .appearance import OPERATION_COLOR, TOOL_SUCCESS_COLOR
+from .appearance import MUTED_COLOR, OPERATION_COLOR, TOOL_SUCCESS_COLOR
+from .choice_list import KeyboardOptions
 from .teams.runtime import STATUS_NAMES, MemberRow
 from .teams.view import Feed
 
@@ -26,8 +26,8 @@ STOP_CONFIRM = 2.0  # Seconds between the two presses of x.
 ASKING = "待审批"
 SYMBOLS = {
     "running": ("●", TOOL_SUCCESS_COLOR),
-    "idle": ("○", "dim"),
-    "stopped": ("·", "dim"),
+    "idle": ("○", MUTED_COLOR),
+    "stopped": ("·", MUTED_COLOR),
     "asking": ("◆", OPERATION_COLOR),
 }
 PANEL_HELP = "↑ / ↓ 选择 · Enter 查看对话 · x 停止成员 · Esc 收起"
@@ -64,9 +64,9 @@ def _grid() -> Table:
 
 def _cells(row: MemberRow, asking: dict[str, int], now: float) -> tuple[Text, Text, Text, Text]:
     state = state_of(row, asking)
-    symbol, style = SYMBOLS.get(state, ("·", "dim"))
+    symbol, style = SYMBOLS.get(state, ("·", MUTED_COLOR))
     name = Text(symbol + " ", style=style)
-    name.append(row.name, style="bold" if state != "stopped" else "dim")
+    name.append(row.name, style="bold" if state != "stopped" else MUTED_COLOR)
     detail = " · ".join(part for part in (row.task, row.last_tool if row.status == "running" else "") if part)
     tail = []
     if row.status == "running" and row.since is not None:
@@ -75,9 +75,9 @@ def _cells(row: MemberRow, asking: dict[str, int], now: float) -> tuple[Text, Te
         tail.append("窗格")
     return (
         name,
-        Text(state_name(row, asking), style=style if state != "idle" else "dim"),
-        Text(detail, style="dim"),
-        Text(" · ".join(tail), style="dim"),
+        Text(state_name(row, asking), style=style if state != "idle" else MUTED_COLOR),
+        Text(detail, style=MUTED_COLOR),
+        Text(" · ".join(tail), style=MUTED_COLOR),
     )
 
 
@@ -92,19 +92,19 @@ def compact_rows(rows: list[MemberRow], asking: dict[str, int], now: float, limi
     live = [row for row in rows if row.status != "stopped"]
     stopped = len(rows) - len(live)
     entries: list[tuple[MemberRow | Text, int]] = [(row, 1) for row in live]
-    tail: list[tuple[Text, int]] = [(Text(f"已停止 {stopped}", style="dim"), stopped)] if stopped else []
+    tail: list[tuple[Text, int]] = [(Text(f"已停止 {stopped}", style=MUTED_COLOR), stopped)] if stopped else []
     if len(entries) + len(tail) > limit:
         idle = [row for row in live if row.status == "idle" and not asking.get(row.name)]
         if len(idle) > 1:
             entries = [(row, 1) for row in live if row not in idle]
             names = "、".join(row.name for row in idle)
             entries.append(
-                (Text(f"○ 空闲 {len(idle)}：{names}", style="dim", no_wrap=True, overflow="ellipsis"), len(idle))
+                (Text(f"○ 空闲 {len(idle)}：{names}", style=MUTED_COLOR, no_wrap=True, overflow="ellipsis"), len(idle))
             )
     entries += tail
     if len(entries) > limit:
         hidden = sum(count for _, count in entries[limit - 1 :])
-        entries = entries[: limit - 1] + [(Text(f"另有 {hidden} 个成员 · Ctrl+T 展开", style="dim"), hidden)]
+        entries = entries[: limit - 1] + [(Text(f"另有 {hidden} 个成员 · Ctrl+T 展开", style=MUTED_COLOR), hidden)]
     grid = _grid()
     for entry, _ in entries:
         if isinstance(entry, MemberRow):
@@ -114,14 +114,10 @@ def compact_rows(rows: list[MemberRow], asking: dict[str, int], now: float, limi
     return grid, len(entries)
 
 
-class MemberList(OptionList):
-    """Keys only; a click does not choose (as KeyboardOptions in tui.py)."""
+class MemberList(KeyboardOptions):
+    """The members to pick from; x stops the highlighted one."""
 
     BINDINGS = [Binding("x", "app.stop_member", "停止成员", show=False)]
-
-    async def _on_click(self, event: events.Click) -> None:
-        event.prevent_default()
-        event.stop()
 
 
 class MemberPanel(Vertical):
@@ -225,11 +221,13 @@ class MemberView(Vertical):
     def head(self, row: MemberRow | None, asking: dict[str, int]) -> None:
         text = Text(f"成员 {self.name_shown} · 团队 {self.team}", style="bold")
         if row is None:
-            text.append(" · 已不在团队中", style="dim")
+            text.append(" · 已不在团队中", style=MUTED_COLOR)
         else:
-            text.append(" · " + state_name(row, asking), style=OPERATION_COLOR if row.status != "stopped" else "dim")
+            text.append(
+                " · " + state_name(row, asking), style=OPERATION_COLOR if row.status != "stopped" else MUTED_COLOR
+            )
             if row.status == "running" and row.last_tool:
-                text.append(" · " + row.last_tool, style="dim")
+                text.append(" · " + row.last_tool, style=MUTED_COLOR)
         self.query_one("#member-head", Static).update(text)
 
     def reset(self, name: str, team: str, tail) -> None:
@@ -257,10 +255,10 @@ class MemberView(Vertical):
         running.display = bool(self.feed.waiting)
 
     def help(self) -> None:
-        text = Text(VIEW_HELP, style="dim")
+        text = Text(VIEW_HELP, style=MUTED_COLOR)
         if self.unseen:
             text = Text("有新内容 · End 回到底部", style=OPERATION_COLOR)
-            text.append(" · " + VIEW_HELP, style="dim")
+            text.append(" · " + VIEW_HELP, style=MUTED_COLOR)
         self.query_one("#member-view-help", Static).update(text)
 
     def seen(self) -> None:

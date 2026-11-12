@@ -12,7 +12,7 @@ from test_tui import terminal_background
 
 
 async def test_tool_rows_and_final_markdown_preserve_prompt_and_history(tmp_path, monkeypatch):
-    from mosscode.appearance import OPERATION_COLOR, PARAMETER_COLOR, TOOL_SUCCESS_COLOR
+    from mosscode.appearance import MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR, TOOL_SUCCESS_COLOR
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     provider = ToolProvider((write_call(), ToolCall("read", "read_file", '{"path":"result.txt"}')))
@@ -54,7 +54,8 @@ async def test_tool_rows_and_final_markdown_preserve_prompt_and_history(tmp_path
             spans = [s for s in segments if s.text == label]
             assert spans and all(s.style.color.name == color for s in spans)
         outputs = [s for s in segments if "已创建 result.txt" in s.text or "1\tone" in s.text]
-        assert outputs and all(not s.style.color or s.style.color.is_default for s in outputs)
+        # A result summary is secondary text: the fixed grey, never the dim attribute.
+        assert outputs and all(s.style.color.name == MUTED_COLOR and not s.style.dim for s in outputs)
 
 
 async def test_cancel_continuation_keeps_finished_tool_row(tmp_path):

@@ -267,6 +267,32 @@ async def test_preview_falls_back_and_truncates(tmp_path):
     assert "仅显示前 16 行" in request.operation.preview.splitlines()[-1]
 
 
+async def test_prompt_rules_take_the_color_of_the_permission_mode(tmp_path, monkeypatch):
+    from mosscode.appearance import ERROR_COLOR, OPERATION_COLOR, RULE_COLOR, TOOL_SUCCESS_COLOR
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    app, policy = make_app(tmp_path, SequenceProvider())
+    async with app.run_test(size=(100, 30)) as pilot:
+        row = app.query_one("#input-row")
+
+        def rules():
+            strips = app.screen._compositor.render_strips()
+            lines = (strips[row.region.y], strips[row.region.bottom - 1])
+            return {segment.style.color.name for line in lines for segment in line if "─" in segment.text}
+
+        await pilot.pause()
+        assert rules() == {RULE_COLOR}
+        # The mode is visible where the eyes are while typing, not only in the status bar.
+        for mode, color in (("acceptEdits", TOOL_SUCCESS_COLOR), ("plan", OPERATION_COLOR), ("default", RULE_COLOR)):
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert policy.mode == mode and rules() == {color}
+        policy.set_mode("bypassPermissions")
+        app._status("")
+        await pilot.pause()
+        assert rules() == {ERROR_COLOR}
+
+
 def test_diff_lines_are_colored():
     text = preview_text("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n context")
     styles = {span.style for span in text.spans}

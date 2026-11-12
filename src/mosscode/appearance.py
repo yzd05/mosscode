@@ -1,8 +1,9 @@
-"""Terminal colors and the mascot of the startup banner."""
+"""Terminal colors, the logo and the startup banner."""
 
 from importlib.metadata import version
 from pathlib import Path
 
+from rich.console import Group
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
@@ -14,26 +15,25 @@ PARAMETER_COLOR = "#6fa8ff"
 OPERATION_COLOR = "#e3b95f"
 ERROR_COLOR = "#e87983"
 COMMAND_HIGHLIGHT_COLOR = "#3673ff"
+# Green, blue, amber and red already mean success, parameter, in progress and failure, so the
+# color that only says "MossCode" (the prompt marker, the spinner) is the one hue left over.
+BRAND_COLOR = "#b48cff"
+# Supporting text (timings, summaries, key help) is a fixed grey rather than the dim attribute:
+# terminals render dim very differently, and this grey keeps about 6:1 contrast on a dark background.
+MUTED_COLOR = "#8b929c"
+RULE_COLOR = "#5c636e"
 # User messages sit on a grey bar, as in Claude Code: a mid grey with near-white
 # text stands out on both dark and light terminal backgrounds.
 USER_MESSAGE_BACKGROUND = "#4a4a4a"
 USER_MESSAGE_COLOR = "#f2f2f2"
 
-# The mascot, a little ghost, as pixels: two pixel rows make one line of half blocks, so each pixel is
-# about square. "." is the terminal's own background; the other letters are MASCOT_COLORS.
-MASCOT_PIXELS = (
-    "....wwwwww....",
-    "..wwwwwwwwww..",
-    ".wwwwwwwwwwww.",
-    ".wwkhwwwwkhww.",
-    ".wwkkwwwwkkww.",
-    ".wrrwwkkwwrrw.",
-    ".wwwwwwwwwwww.",
-    ".wwwwwwwwwwww.",
-    ".ww.www.www.w.",
-    ".w...w...w....",
-)
-MASCOT_COLORS = {"w": "#eef1ff", "k": "#26212e", "h": "#ffffff", "r": "#ff9fb2"}
+# The logo, a comet: per column, how many eighths of a line are filled from the bottom of its two
+# lines. Eighth blocks move the edge by a fraction of a line, which is what makes the curve smooth.
+LOGO_HEIGHTS = (1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 16)
+LOGO_COLORS = ("#3b3f55", "#7aa2ff", "#e0e7ff")
+LOGO_LINES = 2
+EIGHTHS = " ▁▂▃▄▅▆▇█"
+STARTUP_TIP = "/help 命令 · @ 引用文件 · ! 执行命令"
 
 
 # Transparent TCSS inherits the parent's painted background. ANSI default means
@@ -77,7 +77,7 @@ OptionList:focus > .option-list--option-highlighted {
 
 
 def moss_themes() -> tuple[Theme, ...]:
-    # Use the terminal's full-strength foreground; never dim supporting text.
+    # Theme colors stay the terminal's own foreground; supporting text gets MUTED_COLOR explicitly.
     variables = {
         name: TEXT_COLOR
         for name in (
@@ -110,39 +110,64 @@ def moss_themes() -> tuple[Theme, ...]:
     )
 
 
-def pixel_art(pixels: tuple[str, ...], colors: dict[str, str]) -> Text:
-    """Each pair of pixel rows as one line: ▀ in the upper color over the lower one as background."""
+def blend(stops: tuple[str, ...], position: float) -> str:
+    """The color at `position` (0 to 1) along evenly spaced `stops`."""
+    span = min(1.0, max(0.0, position)) * (len(stops) - 1)
+    index = min(len(stops) - 2, int(span))
+    low, high = (tuple(int(stop[at : at + 2], 16) for at in (1, 3, 5)) for stop in stops[index : index + 2])
+    return "#" + "".join(f"{round(a + (b - a) * (span - index)):02x}" for a, b in zip(low, high))
+
+
+def logo() -> Text:
     art = Text(no_wrap=True)
-    for index, (upper, lower) in enumerate(zip(pixels[::2], pixels[1::2])):
-        if index:
+    for line in range(LOGO_LINES):
+        if line:
             art.append("\n")
-        for top, bottom in zip(upper, lower):
-            top, bottom = colors.get(top), colors.get(bottom)
-            if top and top == bottom:
-                art.append("█", Style(color=top))
-            elif top:
-                art.append("▀", Style(color=top, bgcolor=bottom))
-            elif bottom:
-                art.append("▄", Style(color=bottom))
-            else:
-                art.append(" ")
+        floor = 8 * (LOGO_LINES - 1 - line)
+        for column, height in enumerate(LOGO_HEIGHTS):
+            fill = min(8, max(0, height - floor))
+            color = blend(LOGO_COLORS, column / (len(LOGO_HEIGHTS) - 1))
+            art.append(EIGHTHS[fill], Style(color=color) if fill else None)
     return art
 
 
-def startup_banner(
-    provider: str,
-) -> Table:
-    logo = pixel_art(MASCOT_PIXELS, MASCOT_COLORS)
-    info = Text(style="default", no_wrap=True, overflow="ellipsis")
-    info.append("MossCode", style=Style(bold=True))
-    info.append(f" v{version('mosscode')}\n")
-    info.append(provider)
-    info.append("\n" + str(Path.cwd()))
-    banner = Table.grid(padding=(0, 2), expand=True)
-    banner.add_column(width=len(MASCOT_PIXELS[0]), no_wrap=True)
-    banner.add_column(ratio=1, no_wrap=True, overflow="ellipsis", vertical="middle")
-    banner.add_row(logo, info)
-    return banner
+def current_branch(directory: Path) -> str:
+    """The checked-out branch, read from Git's files so that drawing the banner never waits for a process."""
+    for folder in (directory, *directory.parents):
+        marker = folder / ".git"
+        try:
+            if marker.is_file():
+                # A worktree or submodule has a file pointing at its real Git directory.
+                marker = folder / marker.read_text(encoding="utf-8").partition("gitdir:")[2].strip()
+            head = (marker / "HEAD").read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        return head.removeprefix("ref: refs/heads/") if head.startswith("ref: ") else head[:7]
+    return ""
+
+
+def short_path(path: Path) -> str:
+    try:
+        return str(Path("~") / path.relative_to(Path.home()))
+    except (ValueError, RuntimeError):
+        return str(path)
+
+
+def startup_banner(provider: str) -> Group:
+    muted = Style(color=MUTED_COLOR)
+    info = Text(no_wrap=True, overflow="ellipsis")
+    info.append("MossCode", Style(bold=True))
+    info.append(f" v{version('mosscode')}", muted)
+    info.append("\n" + provider)
+    top = Table.grid(padding=(0, 2), expand=True)
+    top.add_column(width=len(LOGO_HEIGHTS), no_wrap=True)
+    top.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+    top.add_row(logo(), info)
+    directory = Path.cwd()
+    where = Text(short_path(directory), muted, no_wrap=True, overflow="ellipsis")
+    if branch := current_branch(directory):
+        where.append("  " + branch)
+    return Group(top, Text(""), where, Text(STARTUP_TIP, muted, no_wrap=True, overflow="ellipsis"))
 
 
 def compact_notice(event) -> str:
