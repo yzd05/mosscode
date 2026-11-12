@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Input, OptionList, RichLog, Static
 
-from ..appearance import COMMAND_HIGHLIGHT_COLOR, MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR
+from ..appearance import COMMAND_HIGHLIGHT_COLOR, LIGHT_BACKGROUND, MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR
 from ..choice_list import KeyboardOptions
 from ..messages import RunStopped
 from ..permissions import ApprovalRequest, safe_display
@@ -66,6 +66,9 @@ class MemberApp(App):
         yield Input(placeholder=INPUT_HINT, id="input")
 
     async def on_mount(self) -> None:
+        # The window fills its pane with its own background, so it follows the terminal's like the accents do:
+        # the light accents are chosen to be read on white.
+        self.theme = "textual-light" if LIGHT_BACKGROUND else "textual-dark"
         self.title = self.heading
         self.process.on_event = self._event
         self.process.on_approval = self._approval

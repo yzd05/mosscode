@@ -653,6 +653,25 @@ async def test_member_window_answers_approvals_and_refuses_new_tasks():
     assert process.exit_code == 0
 
 
+@pytest.mark.parametrize("light", [True, False])
+async def test_member_window_takes_the_terminals_light_or_dark_background(monkeypatch, light):
+    from mosscode.teams import pane_app
+
+    # The accents for a light terminal are only readable on a light window behind them.
+    monkeypatch.setattr(pane_app, "LIGHT_BACKGROUND", light)
+    process = StubProcess()
+    app = pane_app.MemberApp(process)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.current_theme.dark is not light
+        log = app.query_one("#log")
+        background = app.screen._compositor.render_strips()[log.region.y + 3]
+        brightness = {s.style.bgcolor.get_truecolor().red for s in background if s.style.bgcolor}
+        assert brightness and all((value > 200) is light for value in brightness)
+        process.release.set()
+        await pilot.pause()
+
+
 async def test_interrupt_ends_the_turn_and_tells_the_lead(tmp_path):
     from test_agent import call, response
 
