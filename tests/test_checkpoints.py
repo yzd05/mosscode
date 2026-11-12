@@ -12,7 +12,7 @@ from mosscode.serialization import message_from_json, message_to_json
 from mosscode.session import Session, load_session
 from mosscode.tools import create_default_registry
 from test_agent import SequenceProvider, call, response
-from test_sessions import _supplements, drain, make, records
+from test_sessions import _reminders, drain, make, records
 
 
 def tracker(tmp_path, notices=None):
@@ -226,11 +226,13 @@ async def test_restoring_only_code_keeps_the_talk_reminds_once_and_needs_fresh_r
     ]
     await conv.ask("继续")
     await conv.ask("然后")
-    assert "/rewind 把这些文件恢复到了之前的状态：a.txt" in _supplements(provider.requests[-3])
-    assert "/rewind 把" not in _supplements(provider.requests[-1])
+    told = _reminders(provider.requests[-3])
+    assert len(told) == 1 and "/rewind 把这些文件恢复到了之前的状态：a.txt" in told[0]
+    assert provider.requests[-3][0][-1].text == told[0]
+    assert _reminders(provider.requests[-1]) == told  # Carried in the history, not told again.
     refused = provider.requests[-2][0][-1].tool_results[0]
     assert refused.is_error and "先用 read_file 读取" in refused.output
-    assert "/rewind 把" not in conv.session.transcript_path.read_text(encoding="utf-8")
+    assert conv.session.transcript_path.read_text(encoding="utf-8").count("/rewind 把") == 1
     await conv.close()
 
 

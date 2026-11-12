@@ -66,6 +66,7 @@ from .messages import (
     IMAGE_MARK,
     MENTIONS,
     NOTIFICATION,
+    REMINDER,
     SHELL,
     AutoContinue,
     CompactFailed,
@@ -1046,7 +1047,7 @@ def attached_line(entries) -> str:
 
 def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGES) -> list:
     """The latest messages in brief, for the scrollback after a resume."""
-    shown = [m for m in history if m.role != "tool"][-limit:]
+    shown = [m for m in history if m.role != "tool" and m.synthetic != REMINDER][-limit:]
     # ask_user's answers are shown with its call, so a resumed session still tells what the user chose.
     answers = {
         r.call_id: r.details

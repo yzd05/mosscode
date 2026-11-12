@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Literal
 
 from .context import estimate_text
-from .messages import CONTINUE, NOTIFICATION, Completed, ContentBlock, Message, ProviderError
+from .messages import CONTINUE, NOTIFICATION, REMINDER, Completed, ContentBlock, Message, ProviderError
 from .prompts import Supplement
 
 GOAL = "goal"  # Message.synthetic of the message that starts a continuation turn.
@@ -119,6 +119,8 @@ def conversation_tail(messages: Sequence[Message], limit: int = INPUT_TOKENS) ->
     shown = {id(r) for r in results[-RESULTS_SHOWN:]}
     kept, used = [], 0
     for message in reversed(messages):
+        if message.synthetic == REMINDER:
+            continue  # The agent's own notes (the checklist, the goal itself) are not evidence.
         block = _render(message, shown)
         cost = estimate_text(block) + 1
         if kept and used + cost > limit:

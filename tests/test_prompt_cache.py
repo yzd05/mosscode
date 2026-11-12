@@ -69,15 +69,17 @@ async def test_actual_sdk_cache_stats_and_separate_system_instructions(tmp_path,
                 blocks, ensure_ascii=False
             )
             assert len(payload["messages"]) == 1 and payload["messages"][0]["role"] == "user"
-            # History breakpoint on the last history block; the reminder follows it.
+            # The reminder is part of the history, so the history breakpoint sits on it.
             user = payload["messages"][0]["content"]
-            assert user[-2]["text"] == "用户任务" and user[-2]["cache_control"] == {"type": "ephemeral"}
-            assert user[-1]["text"].startswith("<system-reminder>") and "cache_control" not in user[-1]
+            assert len(user) == 2 and user[0]["text"] == "用户任务" and "cache_control" not in user[0]
+            assert user[1]["text"].startswith("<system-reminder>") and user[1]["cache_control"] == {"type": "ephemeral"}
         else:
             content = payload["input"] if protocol == "openai-responses" else payload["messages"]
             role = "developer" if protocol == "openai-responses" else "system"
-            assert content[-1]["role"] == role and "<system-reminder>" in content[-1]["content"]
-            assert [m["content"] for m in content if m.get("role") == "user"] == ["用户任务"]
+            # Nothing follows the conversation: the reminder is its last message, not an instruction after it.
+            assert [m["role"] for m in content[-2:]] == ["user", "user"]
+            assert content[-2]["content"] == "用户任务" and content[-1]["content"].startswith("<system-reminder>")
+            assert not any(m["role"] == role and "<system-reminder>" in m["content"] for m in content)
             assert "cache_control" not in json.dumps(payload)
             stable = payload["instructions"] if protocol == "openai-responses" else content[0]["content"]
             assert "<environment>" not in stable and "<system-reminder>" not in stable
@@ -86,6 +88,43 @@ async def test_actual_sdk_cache_stats_and_separate_system_instructions(tmp_path,
         rule = "修改或覆盖已有文件前必须先用 read_file 读取"
         assert rule not in stable and rule in json.dumps(payload["tools"], ensure_ascii=False)
         assert all(b.closed for b in bodies)
+    finally:
+        await provider.close()
+
+
+def _unmarked(value):
+    """A payload without Anthropic's cache breakpoints, which move to the newest block on purpose."""
+    if isinstance(value, dict):
+        return {key: _unmarked(item) for key, item in value.items() if key != "cache_control"}
+    if isinstance(value, list):
+        return [_unmarked(item) for item in value]
+    return value
+
+
+@pytest.mark.parametrize("protocol,cls,frames,path", CASES)
+async def test_each_request_starts_with_the_whole_previous_request_and_its_reply(tmp_path, protocol, cls, frames, path):
+    # Services that cache on their own (DeepSeek) reuse only a prefix an earlier request ended with.
+    provider, requests, _ = adapter(protocol, cls, lambda: SSEBody(frames()))
+    try:
+        registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+        conv = Conversation(provider, registry=registry)
+        conv.set_mode("plan")
+        registry.todos.replace([(None, "甲", "in_progress")])
+        conv._agent.remind(Supplement("system-reminder", "距上次对话已过去约 7 小时"))
+        await conv.ask("一")
+        registry.todos.replace([("1", "甲", "completed"), (None, "乙", "in_progress")])
+        await conv.ask("二")
+        await conv.ask("三")
+        key = "input" if protocol == "openai-responses" else "messages"
+        rest = [_unmarked({name: value for name, value in body.items() if name != key}) for _, body in requests]
+        assert rest == [rest[0]] * 3  # Instructions, tools and environment do not change.
+        sent = [_unmarked(body[key]) for _, body in requests]
+        for before, after in zip(sent, sent[1:]):
+            assert after[: len(before)] == before and after[len(before)]["role"] == "assistant"
+        told = [json.dumps(after[len(before) :], ensure_ascii=False) for before, after in zip([[]] + sent, sent)]
+        assert "<todo-list>" in told[0] and "计划模式" in told[0] and "距上次对话" in told[0]
+        assert "<todo-list>" in told[1] and "[>] 2. 乙" in told[1] and "计划模式" not in told[1]
+        assert "<" not in told[2]  # The list did not change: nothing to tell.
     finally:
         await provider.close()
 

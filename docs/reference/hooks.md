@@ -203,8 +203,8 @@ Hook 只能收紧：`bypassPermissions` 档位和只读命令的自动放行同�
 | 来源 | 位置 | 持续时间 |
 | --- | --- | --- |
 | `session_start` 的 prompt 和 feedback | 系统提示的可缓存前缀中（`<active-skills>` 之后），`<hook-context>` | 整个会话的每次请求；不进历史，压缩后仍在；`/clear` 和恢复会话时由新的 `session_start` 重新生成 |
-| `turn_start` 的 prompt 和 feedback | 请求末尾的 `<hook-notification>`（与模式提醒同一位置） | 本轮的每次请求 |
-| `pre_send` 的 prompt | 请求末尾的 `<hook-notification>` | 只在当次请求 |
+| `turn_start` 的 prompt 和 feedback | 本轮第一次请求的对话末尾，`<hook-notification>`（与模式提醒合为一条提醒消息） | 写入历史和会话存档，之后的请求原样带上 |
+| `pre_send` 的 prompt | 当次请求的对话末尾，与本轮 `turn_start` 的内容合为一条 `<hook-notification>` | 写入历史和会话存档；与上一次告知的内容相同时不再追加 |
 | `pre_tool_use`（未拒绝）、`post_tool_use` 的 prompt 和 feedback | 工具结果末尾的 `<hook-notification hook="id">…</hook-notification>` | 随结果进入历史和会话存档 |
 
 每段注入都标明来源 Hook 的 `id`。`hook-context`、每次请求的 `hook-notification`、每个工具结果附加的内容各自最多 8000 个字符，超出部分截断并注明。

@@ -204,6 +204,9 @@ NOTIFICATION = "task-notification"  # Message.synthetic of a background task not
 MENTIONS = "file-mentions"  # Message.synthetic of what a typed message's @ mentions hold, right after it.
 SHELL = "shell-command"  # Message.synthetic of a command the user ran with ! and its output.
 CONTINUE = "continue"  # Message.synthetic asking the model to go on after a reply was cut off.
+# Message.synthetic of what the agent tells the model besides the conversation (the checklist, the goal, a mode
+# change), added to the history right before the request that first carries it.
+REMINDER = "system-reminder"
 
 
 @dataclass(frozen=True)

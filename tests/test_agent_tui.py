@@ -4,7 +4,7 @@ from dataclasses import replace
 from textual.widgets import Static
 
 from mosscode.conversation import Conversation
-from mosscode.messages import Delta, Retrying, Usage
+from mosscode.messages import REMINDER, Delta, Retrying, Usage
 from mosscode.tools import create_default_registry
 from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_agent import SequenceProvider, call, response
@@ -49,7 +49,8 @@ async def test_plan_then_permissions_command_help_and_chinese_completion(tmp_pat
         assert (tmp_path / "a").read_text() == "done"
         assert "跳过审批" in str(app.query_one("#status", Static).render())
         assert "计划模式" not in str(app.query_one("#status", Static).render())
-        assert "按计划执行" in provider.requests[1][0][-1].text
+        typed, told = provider.requests[1][0][-2:]
+        assert "按计划执行" in typed.text and told.synthetic == REMINDER and "已退出计划模式" in told.text
         assert len(provider.requests[1][2]) == 10  # The default tools (todo_write too), task_output and task_stop.
         user_rows = [e.body for e in app.query(ChatEntry) if e.speaker == "You"]
         assert user_rows == ["/plan", "/plan 创建 a", "/permissions bypassPermissions", "按计划执行"]

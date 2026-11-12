@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 
 from mosscode.conversation import Conversation
-from mosscode.messages import ToolDefinition
+from mosscode.messages import REMINDER, ToolDefinition
 from mosscode.prompts import (
     DEFAULT_SYSTEM_PROMPT,
     LEGACY_SYSTEM_PROMPT,
@@ -41,7 +41,7 @@ def test_environment_is_limited_data_not_arbitrary_environment_variables(tmp_pat
 
 
 @pytest.mark.parametrize("mode", ["plan", "normal"])
-async def test_reminder_only_on_mode_change_stable_prefix_and_clean_history(tmp_path, mode):
+async def test_reminder_only_on_mode_change_stable_prefix_and_append_only_history(tmp_path, mode):
     (tmp_path / "a").write_text("content")
     steps = [response(calls=[call("read_file", str(i), path="a")]) for i in range(3)]
     provider = SequenceProvider(*steps, response("完成"), response("新任务"))
@@ -54,18 +54,22 @@ async def test_reminder_only_on_mode_change_stable_prefix_and_clean_history(tmp_
     prompts = [r[1] for r in provider.requests]
     expected = build_system_prompt(conv.registry.definitions(plan=mode == "plan"))
     assert all(p.stable == expected for p in prompts)
-    assert all(p.supplements[0] == prompts[0].supplements[0] for p in prompts)
-    reminders = [[s.text for s in p.supplements if s.kind == "system-reminder"] for p in prompts]
+    assert all(p == prompts[0] for p in prompts)
+    assert all(s.kind != "system-reminder" for p in prompts for s in p.supplements)
+    reminders = [[m.text for m in r[0] if m.synthetic == REMINDER] for r in provider.requests]
     if mode == "plan":
-        # Only the first request after entering plan mode announces it.
-        assert len(reminders[0]) == 1 and "exit_plan_mode" in reminders[0][0]
-        assert all(not r for r in reminders[1:])
+        # Only the first request after entering plan mode announces it; later ones carry it as history.
+        assert provider.requests[0][0][-1].synthetic == REMINDER
+        assert len(reminders[0]) == 1 and "exit_plan_mode" in reminders[0][0] and "<system-reminder>" in reminders[0][0]
+        assert all(r == reminders[0] for r in reminders[1:])
     else:
         assert all(not r for r in reminders)
+    assert all(provider.requests[i + 1][0][: len(r[0])] == r[0] for i, r in enumerate(provider.requests[:-1]))
     assert {m.role for m in conv.history} == {"user", "assistant", "tool"}
-    assert all("<environment>" not in m.text and "<system-reminder>" not in m.text for m in conv.history)
+    assert all("<environment>" not in m.text for m in conv.history)
+    assert [m.text for m in conv.history if "<system-reminder>" in m.text] == reminders[0]
     await conv.ask("任务二")
-    assert not [s for s in provider.requests[-1][1].supplements if s.kind == "system-reminder"]
+    assert [m.text for m in provider.requests[-1][0] if m.synthetic == REMINDER] == reminders[0]
     assert json.loads(provider.requests[-1][1].supplements[0].text)["permission_mode"]
 
 
@@ -80,8 +84,9 @@ async def test_leaving_plan_mode_announces_once(tmp_path):
     conv.set_mode("normal")
     await conv.ask("执行")
     await conv.ask("继续")
-    kinds = [[s.text for s in r[1].supplements if s.kind == "system-reminder"] for r in provider.requests]
-    assert "计划模式" in kinds[0][0] and "已退出计划模式" in kinds[1][0] and not kinds[2]
+    told = [[m.text for m in r[0] if m.synthetic == REMINDER] for r in provider.requests]
+    assert len(told[0]) == 1 and "计划模式" in told[0][0]
+    assert len(told[1]) == 2 and "已退出计划模式" in told[1][1] and told[2] == told[1]
 
 
 def test_mode_reminder_is_change_only():

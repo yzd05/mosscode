@@ -14,7 +14,7 @@ import yaml
 
 from mosscode.config import ConfigError, load_settings
 from mosscode.context import ContextBudget, ContextMeter, estimate_message, estimate_text
-from mosscode.messages import ContentBlock, Message, ToolCall, ToolResult, Usage
+from mosscode.messages import REMINDER, ContentBlock, Message, ToolCall, ToolResult, Usage
 from mosscode.providers import _safe_error
 from mosscode.session import MARKER, Session, prune_sessions
 from mosscode.tool_budget import MESSAGE_TOKENS, READ_FLOOR, RESULT_TOKENS, bound_message, share
@@ -613,8 +613,10 @@ async def test_compaction_forgets_reads_and_repeats_the_mode_reminder(tmp_path):
     [e async for e in conv.compact()]
     await conv.ask("二")
     await conv.ask("三")
-    reminders = [[s.kind for s in r[1].supplements].count("system-reminder") for r in provider.requests if r[3]]
-    assert reminders == [1, 1, 0]
+    # Told at the end of the first request and again once the summary replaced it, not after that.
+    told = [r[0][-1].synthetic == REMINDER and "计划模式" in r[0][-1].text for r in provider.requests if r[3]]
+    assert told == [True, True, False]
+    assert all(s.kind != "system-reminder" for r in provider.requests if r[3] for s in r[1].supplements)
     edit = ToolCall("e", "edit_file", json.dumps({"path": "a.txt", "old_text": "old", "new_text": "new"}))
     conv.set_mode("normal")
     assert (await reg.execute(edit)).code == "not_read"

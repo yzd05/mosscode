@@ -16,7 +16,7 @@ from typing import Any
 
 from .checkpoints import Snapshot
 from .images import ImageRef, ProcessedImage, store_image
-from .messages import Collapse, Message, ToolResult
+from .messages import REMINDER, Collapse, Message, ToolResult
 from .paths import SESSION_ID, mosscode_home, new_session_id, project_dir
 from .serialization import jsonable, message_from_json, message_to_json
 from .todo import items_from_json
@@ -614,8 +614,11 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
         collapses = []  # Their ends count messages of a history that was not well formed.
     history = repaired
     unanswered = []
-    while history and history[-1].role == "user" and history[-1].synthetic is None:
-        unanswered.insert(0, history.pop().shown)
+    # A reminder added for a request that never got its reply is told again with the next one.
+    while history and history[-1].role == "user" and history[-1].synthetic in (None, REMINDER):
+        message = history.pop()
+        if message.synthetic is None:
+            unanswered.insert(0, message.shown)
     collapses = [collapse for collapse in collapses if collapse.end <= len(history)]
     return Restored(
         path.stem,

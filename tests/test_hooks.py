@@ -16,7 +16,7 @@ from mosscode import cli
 from mosscode.hooks import HookEngine, HookEvent, parse_condition, tool_event
 from mosscode.hooks.conditions import HookConfigError
 from mosscode.hooks.config import REJECT_TYPE, TrustStore, hook_paths, parse_hook
-from mosscode.messages import ProviderError, ToolCall
+from mosscode.messages import REMINDER, ProviderError, ToolCall
 from mosscode.permissions import Operation, parse_rule
 from mosscode.prompts import PREFIX_KINDS, hook_context, hook_notification
 from mosscode.tools import create_default_registry
@@ -956,15 +956,18 @@ async def test_where_hook_text_goes(tmp_path):
     await drain(conversation.reply("甲"))
     await drain(conversation.reply("乙"))
     first, second, third = map(supplements, provider.requests[:3])
-    assert first["hook-context"] == second["hook-context"] == third["hook-context"]
+    assert first == second == third and "hook-notification" not in first
     assert "=== Hook ss" in first["hook-context"] and "SS new" in first["hook-context"]
-    assert "TS 甲" in first["hook-notification"] and "PS 1" in first["hook-notification"]
-    assert "TS 甲" in second["hook-notification"] and "PS 2" in second["hook-notification"]
-    assert "PS 1" not in second["hook-notification"]
-    assert "TS" not in third["hook-notification"] and "PS 1" in third["hook-notification"]
-    assert "PT a.txt" in provider.requests[1][0][-1].tool_results[0].output
+    # Turn and pre-send output is told as the last message of the request, once per change, and kept in the history.
+    told = [request[0][-1] for request in provider.requests[:3]]
+    assert all(m.synthetic == REMINDER and "<hook-notification>" in m.text for m in told)
+    assert "TS 甲" in told[0].text and "PS 1" in told[0].text
+    assert "TS 甲" in told[1].text and "PS 2" in told[1].text and "PS 1" not in told[1].text
+    assert "TS" not in told[2].text and "PS 1" in told[2].text
+    assert all(provider.requests[i + 1][0][: len(r[0])] == r[0] for i, r in enumerate(provider.requests[:2]))
+    assert "PT a.txt" in provider.requests[1][0][-2].tool_results[0].output
     saved = conversation.session.transcript_path.read_text(encoding="utf-8")
-    assert "PT a.txt" in saved and "TS 甲" not in saved and "SS new" not in saved
+    assert "PT a.txt" in saved and "TS 甲" in saved and "SS new" not in saved
     await drain(conversation.compact())
     await drain(conversation.reply("丙"))
     assert "SS new" in supplements(provider.requests[-1])["hook-context"]

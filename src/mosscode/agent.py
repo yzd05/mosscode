@@ -30,6 +30,7 @@ from .images import ImageRef
 from .messages import (
     CONTINUE,
     NOTIFICATION,
+    REMINDER,
     AutoContinue,
     Collapse,
     CompactFailed,
@@ -245,6 +246,8 @@ class AgentLoop:
         # Set by the memory extractor: messages a compaction is about to replace with a summary.
         self.on_compact = None
         self._gap: Supplement | None = None  # One-time reminder after resuming an old session or a /rewind.
+        # The text of each standing reminder (checklist, goal, hook output) as the history last carries it.
+        self._sent: dict[str, str | None] = {}
         # The main conversation's file checkpoints: each typed message starts a new turn of snapshots.
         self.checkpoints = None
         # The main conversation's HookEngine (a fork sub-agent has none).
@@ -278,13 +281,14 @@ class AgentLoop:
         self.collapses = [collapse for collapse in self.collapses if collapse.end <= keep]
         self.meter.invalidate()
         self.compact_failures = 0
+        self._sent = {}  # The reminders may be among the dropped messages.
         if self.registry is not None:
             self.registry.forget_reads()
             self.registry.todos.rewind(keep)
         self._commit(rewind_record(keep, message))
 
     def remind(self, reminder: Supplement) -> None:
-        """Sent once with the next request, never stored in the history."""
+        """Told once, with the next request."""
         self._gap = reminder
 
     def restore(self, history: list[Message], gap: Supplement | None = None, collapses: Sequence[Collapse] = ()):
@@ -329,7 +333,7 @@ class AgentLoop:
         self.meter.invalidate()
         self.compact_failures = 0
         self.collapses, self.collapse_failures = [], 0
-        self._gap = None
+        self._gap, self._sent = None, {}
         self.active_skills.clear()
         self.hook_context, self.turn_notes = None, ()  # The next session_start regenerates it.
         if self.registry is not None:
@@ -359,24 +363,32 @@ class AgentLoop:
     def _active(self) -> Supplement | None:
         return active_skills(self.active_skills.texts())
 
-    def _model(self, messages, iteration, env, notes=(), recovery: Supplement | None = None):
-        reminder = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
+    def _reminder(self, iteration: int, notes) -> tuple[Message | None, dict[str, str | None]]:
+        """What the model has not been told yet, as one message for the history, and the standing texts it leaves.
+
+        Kept in the history instead of being sent with each request, so every request starts with the whole of
+        the one before it and the reply to it: services that cache on their own (DeepSeek) reuse only a prefix
+        that an earlier request ended with. Standing reminders are repeated only when their text changes.
+        """
+        mode = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
         self._announced, self._reannounce = self.mode, False
+        gap, self._gap = self._gap, None
+        standing = {
+            "todo-list": todo_reminder(self.registry.todos if self.registry is not None else None),
+            "goal": self.goal_note,
+            "hook-notification": hook_notification((*self.turn_notes, *notes)),
+        }
+        changed = [item for kind, item in standing.items() if item is not None and self._sent.get(kind) != item.text]
+        texts = {kind: None if item is None else item.text for kind, item in standing.items()}
+        parts = [item.render() for item in (mode, gap, *changed) if item is not None]
+        if not parts:
+            return None, texts
+        return Message("user", (ContentBlock("text", "\n\n".join(parts)),), synthetic=REMINDER), texts
+
+    def _model(self, messages, env, recovery: Supplement | None = None):
         definitions = self._definitions()
-        todos = todo_reminder(self.registry.todos if self.registry is not None else None)
-        extra = tuple(
-            item
-            for item in (
-                reminder,
-                self._gap,
-                todos,
-                self.goal_note,
-                hook_notification((*self.turn_notes, *notes)),
-                recovery,
-            )
-            if item
-        )
-        self._gap = None  # Never part of the history or the transcript; sent with the first request only.
+        # Only the note about a dropped reply goes with the request alone: it is about that one attempt.
+        extra = (recovery,) if recovery is not None else ()
         prefix = tuple(item for item in (env, self._active(), self.hook_context) if item)
         prompt = PromptRequest(self._prompt(definitions), prefix + extra)
         if self.registry is None:
@@ -451,8 +463,8 @@ class AgentLoop:
         self._commit(collapse_record(done))
         if self.registry is not None:
             self.registry.forget_reads(released_reads(self.history, start, end))
-        # The mode rules may be in the collapsed part; the next request repeats them (as after a summary).
-        self._announced, self._reannounce = "normal", True
+        # The mode rules and reminders may be in the collapsed part; the next request repeats them.
+        self._announced, self._reannounce, self._sent = "normal", True, {}
         self.meter.invalidate()
         self.collapse_failures = 0
         after = estimate - estimate_messages(self.history[start:end]) + estimate_message(done.summary)
@@ -512,8 +524,8 @@ class AgentLoop:
         if self.registry is not None:
             self.registry.forget_reads()
             self.registry.todos.rebase()
-        # The mode rules may have been summarized away; the next request repeats them (as after /clear).
-        self._announced, self._reannounce = "normal", True
+        # The mode rules and reminders may have been summarized away; the next request repeats them.
+        self._announced, self._reannounce, self._sent = "normal", True, {}
         self.meter.invalidate()
         self.compact_failures = 0
         self.compactions += 1
@@ -629,14 +641,19 @@ class AgentLoop:
                         async for event in events:
                             yield event
                 notes = await self._hook("pre_send", {"iteration": str(iteration)})
+                reminder, standing = self._reminder(iteration, notes)
+                if committed:
+                    if reminder is not None:
+                        self._append(reminder)
+                    self._sent, reminder = standing, None
+                elif reminder is not None:
+                    fresh.append(reminder)  # Kept with the typed message, once a reply makes it part of the history.
                 rescued, dropped, recovery = False, 0, None
                 while True:
                     request = deepcopy(self.projected()) + fresh
                     collector = ResponseCollector()
-                    # One-time reminders are consumed by _model; a dropped reply sends them again.
-                    once = (self._announced, self._reannounce, self._gap)
                     try:
-                        model = self._model(request, iteration, env, notes, recovery)
+                        model = self._model(request, env, recovery)
                         async with aclosing(collector.collect(model)) as events:
                             async for event in events:
                                 yield event
@@ -659,7 +676,6 @@ class AgentLoop:
                         if kind == "refusal" or dropped >= REPLY_RETRIES:
                             raise ProviderError(unusable_notice(kind, final, dropped + 1), code="empty_reply")
                         dropped += 1
-                        self._announced, self._reannounce, self._gap = once
                         recovery = recovery_note(kind, request)
                         yield ReplyRetry(RETRY_REASONS[kind], dropped, REPLY_RETRIES)
                         continue
@@ -678,7 +694,9 @@ class AgentLoop:
                     self._append(deepcopy(user))
                     if attachments is not None:
                         self._append(deepcopy(attachments))
-                    committed = True
+                    if reminder is not None:
+                        self._append(deepcopy(reminder))
+                    self._sent, committed = standing, True
                 self._append(deepcopy(final.message))
                 self._usage(final.usage)
                 self.meter.record(final.usage, len(self.history) - self._collapsed + len(self.collapses))
