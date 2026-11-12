@@ -1,14 +1,14 @@
 import asyncio
 from dataclasses import replace
 
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 from mosscode.conversation import Conversation
 from mosscode.messages import Delta, Retrying, Usage
 from mosscode.tools import create_default_registry
 from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_agent import SequenceProvider, call, response
-from test_tui import send
+from test_tui import answer_rows, send
 from waiting import until
 
 
@@ -100,8 +100,7 @@ async def test_multiple_iterations_streaming_final_markdown_and_usage(tmp_path):
         await asyncio.wait_for(arrived.wait(), 3)
         await pilot.pause()
         reply = list(app.query(ChatEntry))[-1]
-        assert reply.query_one(".raw").display and not reply.query_one(".answer").display
-        assert "**已完" in str(reply.query_one(".raw", Static).render())
+        assert answer_rows(app, reply) == ["**已完"]
         status = str(app.query_one("#status", Static).render())
         assert "跳过审批" in status and "轮" not in status and "Token" not in status
         # What is running is on the line above the prompt, not in the status bar.
@@ -109,7 +108,7 @@ async def test_multiple_iterations_streaming_final_markdown_and_usage(tmp_path):
         release.set()
         await app._reply_task
         await pilot.pause()
-        assert reply.query_one(".answer", Markdown).display and not reply.query_one(".raw").display
+        assert answer_rows(app, reply) == ["已完成"]
         assert reply.body == "**已完成**"
         assert [e.body for e in app.query(ChatEntry) if e.speaker != "You"] == ["先创建", "再修改", "**已完成**"]
         assert len(app.query(ToolEntry)) == 2  # Same call ID in another round creates another row.
@@ -160,7 +159,7 @@ async def test_tool_only_next_iteration_does_not_erase_preceding_assistant_text(
         await pilot.pause()
         replies = [e for e in app.query(ChatEntry) if e.speaker != "You"]
         assert [e.body for e in replies] == ["先创建文件", "", "检查完成"]
-        assert replies[0].display and replies[0].query_one(".answer").display
+        assert replies[0].display and answer_rows(app, replies[0]) == ["先创建文件"]
         assert not replies[1].display and len(app.query(ToolEntry)) == 2
         await pilot.resize_terminal(44, 20)
         await pilot.pause()

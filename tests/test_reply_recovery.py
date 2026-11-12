@@ -246,6 +246,7 @@ async def test_headless_output_reports_the_retry(capsys):
 async def test_the_interface_drops_the_discarded_thinking_and_shows_the_retry():
     from mosscode.tui import ChatEntry, MossCodeApp
     from test_agent_tui import send
+    from test_tui import answer_rows
 
     arrived, release = asyncio.Event(), asyncio.Event()
 
@@ -267,6 +268,7 @@ async def test_the_interface_drops_the_discarded_thinking_and_shows_the_retry():
         assert "回复在思考阶段就达到了输出上限，重新请求（1/2）" in str(app.query_one("#status").render())
         replies = [e for e in app.query(ChatEntry) if e.speaker != "You"]
         assert len(replies) == 1 and replies[0].thinking == ""
+        assert answer_rows(app, replies[0]) == ["等待回复…"]
         release.set()
         await app._reply_task
         await pilot.pause()

@@ -23,6 +23,7 @@
 ### 变更
 
 - 界面外观：启动区换成两行高的彗星 logo，目录中的用户主目录缩写为 `~`，在 Git 仓库中显示当前分支，并多一行提示；耗时、结果摘要、说明和按键提示改用固定的灰色，正文不变；任务运行时输入框上方的一行显示转圈符号、当前阶段、轮次和耗时，状态栏不再显示运行阶段，上下文用量和缓存命中率靠右对齐；输入框的 `❯` 为紫色，上下的横线随权限档位变色；命令提示、审批、提问、模型和成员列表的选中项用 `❯` 标出；回复中的标题左对齐，标了语言的代码块按语言着色；“思考用时 N s”改为“✻ 思考 N s”，计划模式的标记由 `⏸` 改为 `‖`。
+- 回复边收边按 Markdown 显示：标题、列表、表格和代码块在输出过程中就排好版，写完的部分不再变化，完整收到时不再整段跳变；排版与写入滚动历史的相同。取消或出错时，已收到的部分保持 Markdown 显示，空一行后是说明（此前变回纯文本）。有序列表的序号带点（“1.”，此前是“1”）。输出过程中回复上方不再多出一个空行。
 - 模型运行的命令（`execute_command`、Skill 工具）看不到形似密钥的环境变量：名称含 TOKEN、SECRET、PASSWORD 等，或值形似私钥、JWT、服务令牌、带密码的 URL；`config.yaml` 新增 `command_env.keep` / `drop` 调整。这些命令的 `TEMP`、`TMP`、`TMPDIR` 改为每个 MossCode 进程私有的 `~/.mosscode/tmp/` 子目录，退出时删除；Windows 上不能读取剪贴板。Hook 和 `!` 命令不变。
 - 项目的 `.mosscode/config.yaml` 不能再放宽命令沙箱和命令的环境变量：`sandbox` 和 `command_env` 以用户配置 `~/.mosscode/config.yaml` 为准，项目配置只能收紧（`mode: on`、`network: none`、`allow_unsandboxed: never`、追加 `deny_read` 和 `command_env.drop`）；`allow_write`、`allow_read`、`backend`、`wxc_exec`、`command_env.keep` 和关闭沙箱的写法被忽略，并在启动区和 `moss doctor` 中列出。**不兼容**：原来写在项目配置里的这些设置需要移到用户配置。
 - 项目的 `.mosscode/config.yaml` 在你确认之后才会被使用：第一次使用和内容变化后，交互界面先列出每个 Provider 的服务地址主机名和它引用的凭据名称再询问，拒绝时改用用户配置；`-p` 中未确认的项目配置报错退出，加 `--trust-project-config` 本次信任；`moss doctor` 指出尚未确认的项目配置。**不兼容**：已有项目配置的项目，下一次启动会询问一次，脚本中的 `-p` 需要先确认或加这个选项。

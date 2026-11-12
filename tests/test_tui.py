@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from textual.widgets import Footer, Header, Markdown, OptionList, Static
+from textual.widgets import Footer, Header, OptionList, Static
 
 from mosscode.builtin_commands import BUILTIN
 from mosscode.config import ProviderConfig, Settings
@@ -89,7 +89,7 @@ async def test_tui_sends_multiturn_and_renders_markdown():
         await asyncio.wait_for(app._reply_task, timeout=5)
         assert len(conv.history) == 2
         assert not app.query_one("#prompt", PromptArea).disabled
-        assert app.query(ChatEntry)[1].query_one(".answer", Markdown).display
+        assert answer_rows(app, app.query(ChatEntry)[1]) == ["partial"]
         await send(app, pilot, "two")
         await asyncio.wait_for(app._reply_task, timeout=5)
         assert len(conv.history) == 4
@@ -150,7 +150,7 @@ async def test_cancel_after_response_completion_does_not_mark_committed_turn_can
         assert not app._reply_task.done()
         resume.set()
         await asyncio.wait_for(app._reply_task, timeout=5)
-        assert app.query(ChatEntry)[1].query_one(".answer", Markdown).display
+        assert answer_rows(app, app.query(ChatEntry)[1]) == ["partial"]
 
 
 async def test_chrome_has_no_clickable_toolbar_or_default_command_palette():
@@ -562,7 +562,13 @@ class ThinkingProvider(FakeProvider):
             self.stream_closed = True
 
 
-async def test_thinking_timer_collapses_before_streaming_and_markdown_waits_for_completion(monkeypatch):
+def answer_rows(app, entry) -> list[str]:
+    region = entry.query_one(".answer").region
+    strips = app.screen._compositor.render_strips()[region.y : region.bottom]
+    return [strip.crop(region.x, region.right).text.rstrip() for strip in strips]
+
+
+async def test_thinking_timer_collapses_before_streaming_and_reply_renders_while_it_streams(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr("mosscode.tui.monotonic", lambda: clock[0])
     provider = ThinkingProvider()
@@ -576,7 +582,6 @@ async def test_thinking_timer_collapses_before_streaming_and_markdown_waits_for_
         assert entry.query_one(".thinking").display
         assert "2.5s" in str(entry.query_one(".thinking-label", Static).render())
         assert not entry.query_one(".message-row").display
-        assert not entry.query_one(".answer").display
         assert app.conversation.history == ()
 
         provider.advance.set()
@@ -584,9 +589,7 @@ async def test_thinking_timer_collapses_before_streaming_and_markdown_waits_for_
         await pilot.pause()
         assert not entry.query_one(".thinking").display
         assert "✻ 思考 2.5s" == str(entry.query_one(".thinking-label", Static).render())
-        assert entry.query_one(".raw").display
-        assert "**分块" == str(entry.query_one(".raw", Static).render())
-        assert not entry.query_one(".answer").display
+        assert answer_rows(app, entry) == ["**分块"]  # Bold that has not been closed yet reads as typed.
         visible = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
         assert "服务返回的思考片段" not in visible
         assert "输出中" in visible and "❯ 你好" in visible
@@ -595,8 +598,10 @@ async def test_thinking_timer_collapses_before_streaming_and_markdown_waits_for_
         provider.advance.set()
         await asyncio.wait_for(app._reply_task, timeout=5)
         await pilot.pause()
-        assert entry.query_one(".answer", Markdown).display
-        assert not entry.query_one(".raw").display
+        assert answer_rows(app, entry) == ["分块回复"]
+        answer = entry.query_one(".answer")
+        row = app.screen._compositor.render_strips()[answer.region.y]
+        assert any(segment.text.strip() and segment.style.bold for segment in row)
         assert "✻ 完成 · 4.0s" == str(entry.query_one(".turn-summary", Static).render())
         assert app.conversation.history[1].content[0].kind == "thinking"
         assert provider.stream_closed
@@ -613,7 +618,7 @@ async def test_cancelling_thinking_collapses_text_without_committing_history():
         await asyncio.wait_for(app._reply_task, timeout=5)
         assert not entry.query_one(".thinking").display
         assert entry.query_one(".message-row").display
-        assert "已取消" in str(entry.query_one(".raw", Static).render())
+        assert "已取消" in "\n".join(answer_rows(app, entry))
         assert app.conversation.history == ()
         assert not app.query_one("#prompt", PromptArea).disabled
         assert provider.stream_closed

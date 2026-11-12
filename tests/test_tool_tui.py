@@ -8,7 +8,7 @@ from mosscode.messages import ToolCall
 from mosscode.tools import create_default_registry
 from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_tool_conversation import ToolProvider, write_call
-from test_tui import terminal_background
+from test_tui import answer_rows, terminal_background
 
 
 async def test_tool_rows_and_final_markdown_preserve_prompt_and_history(tmp_path, monkeypatch):
@@ -40,7 +40,7 @@ async def test_tool_rows_and_final_markdown_preserve_prompt_and_history(tmp_path
         assert str(rows[0].render()).startswith("✓ Write")
         entries = list(app.query(ChatEntry))
         assert entries[-1].body == "结果完成"
-        assert entries[-1].query_one(".answer").display
+        assert answer_rows(app, entries[-1]) == ["结果完成"]
         assert not entries[1].query_one(".message-row").display  # No empty assistant heading before tools.
         assert app.focused is field and not field.disabled
         assert "⏵⏵ 跳过审批" in str(app.query_one("#status", Static).render())
@@ -80,7 +80,7 @@ async def test_cancel_continuation_keeps_finished_tool_row(tmp_path):
         assert not app.conversation.history[2].tool_results[0].is_error
         interrupted = list(app.query(ChatEntry))[1]
         assert interrupted.display
-        assert "已取消" in str(interrupted.query_one(".raw", Static).render())
+        assert "已取消" in "\n".join(answer_rows(app, interrupted))
 
 
 async def test_final_failure_still_shows_error_after_hidden_tool_request(tmp_path):
@@ -99,8 +99,7 @@ async def test_final_failure_still_shows_error_after_hidden_tool_request(tmp_pat
         await app._reply_task
         await pilot.pause()
         reply = list(app.query(ChatEntry))[-1]
-        assert reply.display and "test final failure" in str(reply.query_one(".raw", Static).render())
-        assert not reply.query_one(".answer").display
+        assert reply.display and "test final failure" in "\n".join(answer_rows(app, reply))
         assert not app.conversation.history[2].tool_results[0].is_error
 
 

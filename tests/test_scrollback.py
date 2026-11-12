@@ -1,6 +1,9 @@
 import asyncio
 import re
+from io import StringIO
 
+import pytest
+from rich.console import Console
 from rich.text import Text
 from textual import events
 from textual.drivers.headless_driver import HeadlessDriver
@@ -16,9 +19,17 @@ from mosscode.appearance import (
 )
 from mosscode.conversation import Conversation
 from mosscode.messages import Delta, ToolProgress, ToolResult
-from mosscode.scrollback import TranscriptMarkdown, highlighted_code, render_transcript
+from mosscode.scrollback import (
+    MARKDOWN_THEME,
+    StreamingMarkdown,
+    TranscriptMarkdown,
+    highlighted_code,
+    message_row,
+    render_transcript,
+)
 from mosscode.tui import ChatEntry, MossCodeApp, PromptArea, ToolEntry
 from test_agent import SequenceProvider, call, response
+from test_tui import answer_rows
 
 
 class InlineRecordingDriver(HeadlessDriver):
@@ -372,3 +383,184 @@ async def test_live_user_entry_uses_the_bar_colors():
         await app.query_one("#chat").mount(entry)
         assert entry.query_one(".message-row").styles.background.hex == "#4A4A4A"
         assert entry.query_one(".user-message").styles.color.hex == "#F2F2F2"
+
+
+STREAMED_REPLY = """# 计划
+
+先看 `scrollback.py`，再改 **两处**：
+
+1. 读取配置
+2. 写入结果
+   - 嵌套的一项
+   - 另一项
+
+> 引用的一段话，
+> 跨两行。
+
+| 文件 | 改动 |
+| --- | --- |
+| tui.py | 流式渲染 |
+
+```python
+def main():
+    return 42
+```
+
+---
+
+最后一段，~~删掉的话~~ 和结尾。
+"""
+
+
+def drawn_rows(renderable, width, color=True):
+    console = Console(
+        file=StringIO(),
+        width=width,
+        force_terminal=color,
+        color_system="truecolor" if color else None,
+        theme=MARKDOWN_THEME,
+        legacy_windows=False,
+        highlight=False,
+    )
+    console.print(renderable)
+    rows = [row.rstrip() for row in console.file.getvalue().split("\n")]
+    while rows and not rows[-1]:
+        rows.pop()
+    return rows
+
+
+@pytest.mark.parametrize(("width", "step"), [(30, 1), (80, 7)])
+def test_a_reply_drawn_while_it_streams_matches_the_whole_text_drawn_at_once(width, step):
+    streamed = StreamingMarkdown()
+    for start in range(0, len(STREAMED_REPLY), step):
+        streamed.feed(STREAMED_REPLY[start : start + step])
+        whole = drawn_rows(TranscriptMarkdown(streamed.source), width)
+        assert drawn_rows(streamed, width) == whole, streamed.source[-40:]
+    streamed.finish(STREAMED_REPLY)
+    assert drawn_rows(streamed, width) == drawn_rows(TranscriptMarkdown(STREAMED_REPLY), width)
+
+
+def test_markup_still_open_reads_as_typed_and_an_open_code_block_is_already_code():
+    assert drawn_rows(StreamingMarkdown("先看 **两处"), 40, color=False) == ["先看 **两处"]
+    fence = drawn_rows(StreamingMarkdown("```python\nx = 1\n"), 40, color=False)
+    assert fence == ["  x = 1"]  # Indented as a code block, not printed as the fence that opens it.
+
+
+def test_ordered_list_numbers_keep_the_dot_they_were_written_with():
+    rows = drawn_rows(TranscriptMarkdown("1. 读取配置\n2. 写入一段很长很长很长很长很长的结果文本\n"), 24, color=False)
+    assert rows == ["", " 1. 读取配置", " 2. 写入一段很长很长很长", "    很长很长的结果文本"]
+    rows = drawn_rows(TranscriptMarkdown("".join(f"{i}. 项{i}\n" for i in range(1, 11))), 24, color=False)
+    assert rows[1] == "  1. 项1" and rows[-1] == " 10. 项10"
+
+
+async def send_and_wait(app, pilot, text, ready):
+    app.query_one("#prompt", PromptArea).value = text
+    await pilot.press("enter")
+    await asyncio.wait_for(ready.wait(), 5)
+    await pilot.pause()
+
+
+async def test_live_reply_rows_match_what_the_scrollback_will_print():
+    ready, pending = asyncio.Event(), asyncio.Event()
+    partial = STREAMED_REPLY[: STREAMED_REPLY.index("```\n\n---")]  # The code block is still open.
+
+    async def stream():
+        yield Delta("text", partial)
+        ready.set()
+        await pending.wait()
+
+    app = MossCodeApp(Conversation(SequenceProvider(stream)), "test")
+    async with app.run_test(size=(60, 60)) as pilot:
+        await send_and_wait(app, pilot, "问题", ready)
+        live = answer_rows(app, app.query(ChatEntry)[1])
+        printed = plain(render_transcript([message_row("●", TranscriptMarkdown(partial))], 60)).splitlines()
+        printed = [row[4:].rstrip() for row in printed]
+        while printed and not printed[-1]:
+            printed.pop()
+        assert live == printed
+        assert live[0] == "计划" and " 1. 读取配置" in live and live[-1].strip() == "return 42"
+        pending.set()
+
+
+async def test_cut_off_reply_keeps_its_markdown_then_a_blank_row_then_the_note():
+    ready, pending = asyncio.Event(), asyncio.Event()
+
+    async def stream():
+        yield Delta("text", "**粗体**的部分回复\n\n- 一项\n")
+        ready.set()
+        await pending.wait()
+
+    app = MossCodeApp(Conversation(SequenceProvider(stream)), "test")
+    async with app.run_test(size=(70, 24)) as pilot:
+        await send_and_wait(app, pilot, "问题", ready)
+        await pilot.press("escape")
+        await asyncio.wait_for(app._reply_task, 5)
+        await pilot.pause()
+        entry = app.query(ChatEntry)[1]
+        live = answer_rows(app, entry)
+        assert live[0] == "粗体的部分回复" and "• 一项" in live[2]
+        assert live[-2] == "" and live[-1].startswith("已取消")
+        printed = [row.rstrip() for row in plain(render_transcript([entry.transcript()], 70)).splitlines()]
+        start = printed.index("  ● 粗体的部分回复")
+        assert [row[4:] for row in printed[start : start + len(live)]] == live
+
+    output = []
+    ready.clear()
+    app = InlineRecordingApp(Conversation(SequenceProvider(stream)), output)
+    async with app.run_test(size=(70, 24)) as pilot:
+        await send_and_wait(app, pilot, "问题", ready)
+        await pilot.press("escape")
+        await asyncio.wait_for(app._reply_task, 5)
+        await pilot.pause()
+        text = plain(output)
+        assert "**" not in text and "  ● 粗体的部分回复" in text
+        assert re.search(r"• 一项\s*\n\s*\n {4}已取消", text)
+
+
+async def test_redraws_wait_while_drawing_the_open_block_is_slow(monkeypatch):
+    ticks = iter(range(10**6))
+    # Every render is timed at 0.05 s, as a long code block still being written would take.
+    monkeypatch.setattr("mosscode.scrollback.perf_counter", lambda: next(ticks) * 0.05)
+    ready, pending = asyncio.Event(), asyncio.Event()
+
+    async def stream():
+        yield Delta("text", "甲")
+        ready.set()
+        await pending.wait()
+
+    app = MossCodeApp(Conversation(SequenceProvider(stream)), "test")
+    async with app.run_test(size=(60, 20)) as pilot:
+        await send_and_wait(app, pilot, "问题", ready)
+        entry = app.query(ChatEntry)[1]
+        assert answer_rows(app, entry) == ["甲"] and entry._markdown.tail_seconds == pytest.approx(0.05)
+        entry.append(Delta("text", "乙"))
+        await pilot.pause()
+        assert answer_rows(app, entry) == ["甲乙"]  # Drawn at once: the last redraw is long past.
+        entry.append(Delta("text", "丙"))
+        await pilot.pause()
+        assert answer_rows(app, entry) == ["甲乙"] and entry._paint_timer is not None
+        await pilot.pause(0.3)
+        assert answer_rows(app, entry) == ["甲乙丙"] and entry._paint_timer is None
+        pending.set()
+
+
+async def test_streaming_reply_starts_right_below_the_scrollback_and_idle_keeps_one_gap():
+    output, ready, pending = [], asyncio.Event(), asyncio.Event()
+
+    async def stream():
+        yield Delta("text", "第一段\n\n第二")
+        ready.set()
+        await pending.wait()
+        yield response("第一段\n\n第二段")
+
+    app = InlineRecordingApp(Conversation(SequenceProvider(stream)), output)
+    async with app.run_test(size=(60, 20)) as pilot:
+        await send_and_wait(app, pilot, "问题", ready)
+        rows = [strip.text.rstrip() for strip in app.screen._compositor.render_strips()]
+        # The scrollback already ends with a blank row; another one here would push the reply down.
+        assert rows[:3] == ["  ● 第一段", "", "    第二"]
+        pending.set()
+        await app._reply_task
+        await pilot.pause()
+        rows = [strip.text.rstrip() for strip in app.screen._compositor.render_strips()]
+        assert rows[0] == "" and rows[2].lstrip().startswith("─")

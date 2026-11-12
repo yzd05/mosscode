@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic
+from time import monotonic, perf_counter
 from typing import TypeVar
 
 from rich.cells import cell_len
@@ -19,11 +19,9 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message as UIMessage
-from textual.widgets import Markdown, OptionList, Static, TextArea
-from textual.widgets.markdown import MarkdownFence
+from textual.widgets import OptionList, Static, TextArea
 
 from .agents.tasks import Announcer
 from .appearance import (
@@ -93,7 +91,7 @@ from .messages import (
 )
 from .permissions import CHOICES, EDIT_TOOLS, MODE_BADGES, Answer, ApprovalRequest, QuestionRequest, safe_display
 from .sandbox import badge as sandbox_badge
-from .scrollback import TranscriptMarkdown, commit_transcript, highlighted_code, message_row, redraw_transcript
+from .scrollback import StreamingMarkdown, TranscriptMarkdown, commit_transcript, message_row, redraw_transcript
 from .teams import TeamError
 from .teams.runtime import MemberRow
 from .teams.view import TranscriptTail
@@ -587,17 +585,6 @@ class ModelPanel(Vertical):
         yield Static("↑ / ↓ 选择 · Enter 确认 · Esc 收起", id="model-help")
 
 
-class DialogueCode(MarkdownFence):
-    @classmethod
-    def highlight(cls, code: str, language: str, ansi: bool = False, dark: bool = False) -> Content:
-        # The same colors as the scrollback, whatever Textual's theme would pick.
-        return Content.from_rich_text(highlighted_code(code, language or ""))
-
-
-class DialogueMarkdown(Markdown):
-    BLOCKS = {**Markdown.BLOCKS, "fence": DialogueCode, "code_block": DialogueCode}
-
-
 class ProviderSelectApp(TerminalApp[ProviderConfig]):
     TITLE = "MossCode"
     SUB_TITLE = "选择本次会话的提供商与模型"
@@ -709,6 +696,9 @@ class ChatEntry(Vertical):
         self.completed_elapsed: float | None = None
         self.interruption_note = ""
         self.tool_request = False
+        self._markdown: StreamingMarkdown | None = None
+        self._paint_at = 0.0  # perf_counter time before which the reply is not drawn again.
+        self._paint_timer = None
 
     def compose(self) -> ComposeResult:
         if self.speaker == "You":
@@ -724,11 +714,7 @@ class ChatEntry(Vertical):
             yield widget
         with Horizontal(classes="message-row"):
             yield Static("●", classes="message-marker")
-            with Vertical(classes="response-content"):
-                yield Static(self.body or "等待回复…", classes="raw", markup=False)
-                answer = DialogueMarkdown("", classes="answer")
-                answer.display = False
-                yield answer
+            yield Static(self.body or "等待回复…", classes="response-content answer", markup=False)
         summary = Static("", classes="turn-summary", markup=False)
         summary.display = False
         yield summary
@@ -763,16 +749,51 @@ class ChatEntry(Vertical):
             self._finish_thinking()
             self.phase = "streaming"
             self.body += event.text
+            if self._markdown is None:
+                self._markdown = StreamingMarkdown()
+            self._markdown.feed(event.text)
             self.query_one(".message-row").display = True
-            self.query_one(".raw", Static).update(self.body)
+            self._paint_reply()
+
+    def _paint_reply(self) -> None:
+        """Draw the reply as it stands, but not faster than drawing it costs: a long block still being written,
+        such as a code block of hundreds of lines, is rendered again for each redraw and would hold up the keys."""
+        if self._paint_timer is not None:
+            return  # A redraw is already due; it will show the latest text.
+        wait = self._paint_at - perf_counter()
+        if wait > 0:
+            self._paint_timer = self.set_timer(wait, self._paint_now)
+            return
+        self._paint_now()
+
+    def _paint_now(self) -> None:
+        self._paint_timer = None
+        if self._markdown is None or self.phase != "streaming":
+            return  # Finished, dropped or cut off meanwhile: that has already drawn the reply.
+        self.query_one(".answer", Static).update(self._markdown)
+        self._paint_at = perf_counter() + min(0.25, 3 * self._markdown.tail_seconds)
+
+    def _show_reply(self, renderable) -> None:
+        if self._paint_timer is not None:
+            self._paint_timer.stop()
+            self._paint_timer = None
+        self.query_one(".answer", Static).update(renderable)
+
+    def _reply_markdown(self) -> StreamingMarkdown:
+        """The reply text in full, drawn in one piece, as the scrollback will draw it."""
+        markdown = self._markdown or StreamingMarkdown()
+        markdown.finish(self.body or "（服务返回了空正文）")
+        self._markdown = markdown
+        return markdown
 
     def discard(self) -> None:
         """The streamed reply was dropped and the request is sent again: start over."""
         self.thinking, self.body, self.thinking_started, self.thinking_elapsed = "", "", None, 0.0
         self.phase = "waiting"
+        self._markdown = None
         for selector in (".thinking-label", ".thinking"):
             self.query_one(selector, Static).display = False
-        self.query_one(".raw", Static).update("等待回复…")
+        self._show_reply("等待回复…")
         self.query_one(".message-row").display = True
 
     async def finish(self, message: Message, *, cut: bool = False) -> None:
@@ -780,11 +801,8 @@ class ChatEntry(Vertical):
         self._finish_thinking()
         self.phase = "complete"
         self.body = message.text
-        markdown = self.query_one(".answer", Markdown)
-        await markdown.update(self.body or "（服务返回了空正文）")
-        markdown.display = True
+        self._show_reply(self._reply_markdown())
         self.query_one(".message-row").display = True
-        self.query_one(".raw", Static).display = False
         if cut:
             return
         summary = self.query_one(".turn-summary", Static)
@@ -801,10 +819,7 @@ class ChatEntry(Vertical):
         if not self.body and not self.thinking:
             self.display = False
         if self.body:
-            markdown = self.query_one(".answer", Markdown)
-            await markdown.update(self.body)
-            markdown.display = True
-            self.query_one(".raw", Static).display = False
+            self._show_reply(self._reply_markdown())
 
     def interrupted(self, note: str) -> None:
         self.interruption_note = note
@@ -812,10 +827,12 @@ class ChatEntry(Vertical):
         self._finish_thinking()
         self.phase = "interrupted"
         self.query_one(".message-row").display = True
-        raw = self.query_one(".raw", Static)
-        raw.update((self.body + "\n\n" if self.body else "") + note)
-        raw.display = True
-        self.query_one(".answer").display = False
+        self._show_reply(self._interrupted_reply(self._reply_markdown() if self.body else None))
+
+    def _interrupted_reply(self, markdown):
+        """What arrived, drawn as it was while it arrived, then a blank row and what stopped it."""
+        note = Text(self.interruption_note)
+        return Group(markdown, Text(""), note) if markdown is not None else note
 
     def transcript(self):
         if self.speaker == "You":
@@ -828,7 +845,8 @@ class ChatEntry(Vertical):
             if self.interruption_note or self.body or not self.tool_request:
                 parts.append(Text(""))  # As on screen: a blank line before the reply, none after a label left alone.
         if self.interruption_note:
-            parts.append(message_row("●", Text((self.body + "\n\n" if self.body else "") + self.interruption_note)))
+            body = TranscriptMarkdown(self.body) if self.body else None
+            parts.append(message_row("●", self._interrupted_reply(body)))
         elif self.body or not self.tool_request:
             # A response that only calls tools has no text to show, as on screen before it was committed.
             parts.append(message_row("●", TranscriptMarkdown(self.body or "（服务返回了空正文）")))
@@ -1188,10 +1206,12 @@ class MossCodeApp(TerminalApp[None]):
     CSS = (
         TERMINAL_CSS
         + """
-    Screen { background: $background; color: $foreground; padding: 1 2 0 2; overflow: hidden hidden; }
+    Screen { background: $background; color: $foreground; padding: 0 2; overflow: hidden hidden; }
     Screen:inline { height: auto; border: none; }
-    #banner { height: auto; margin-bottom: 1; }
-    #chat { height: auto; max-height: 100vh; scrollbar-size: 1 0; }
+    #banner { height: auto; margin: 1 0; }
+    /* Each block in the scrollback ends with a blank row, so live content starts right below it; the one row an
+       empty area keeps holds the gap above the prompt. */
+    #chat { height: auto; min-height: 1; max-height: 100vh; scrollbar-size: 1 0; }
     .entry { height: auto; padding: 0; margin-bottom: 1; background: $background; }
     .message-row { height: auto; }
     .user-entry .message-row, .user-entry .message-row > Static {
@@ -1199,18 +1219,10 @@ class MossCodeApp(TerminalApp[None]):
     }
     .message-marker { width: 2; height: 1; text-style: bold; }
     .user-message, .response-content { width: 1fr; height: auto; }
-    .raw, .thinking, .answer { height: auto; padding: 0; margin: 0; background: $background; }
+    .thinking, .answer { height: auto; padding: 0; margin: 0; background: $background; }
     .thinking { height: auto; padding: 0 0 0 2; margin-bottom: 1; }
     .thinking-label { height: auto; margin-bottom: 1; color: MUTED_COLOR !important; }
     .turn-summary { height: auto; margin-top: 1; color: MUTED_COLOR !important; }
-    .answer MarkdownHeader { content-align: left middle; margin: 1 0; text-style: bold; }
-    .answer MarkdownH1 { text-style: bold underline; }
-    .answer > MarkdownHeader:first-child { margin: 0 0 1 0; }
-    .answer MarkdownFence { margin: 0 0 1 0; }
-    .answer MarkdownFence > Label { padding: 0 2; }
-    .answer MarkdownHorizontalRule { border-bottom: solid RULE_COLOR; padding-top: 0; }
-    .answer > MarkdownBlock:last-child { margin-bottom: 0; }
-    .answer MarkdownBlock > .code_inline { color: PARAMETER_COLOR !important; text-style: bold; }
     #status { height: auto; margin-top: 0; color: $text-muted; }
     #queue { height: auto; margin-top: 1; padding: 0 1; }
     #todo-panel { height: auto; max-height: 6; margin-top: 1; padding: 0 1; }

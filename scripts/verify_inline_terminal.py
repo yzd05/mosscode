@@ -72,7 +72,8 @@ async def exercise(pilot):
     await asyncio.wait_for(provider.text_ready.wait(), 10)
     await pilot.pause()
     assert not reply.query_one(".thinking").display
-    assert reply.query_one(".raw").display and not reply.query_one(".answer").display
+    rows = [strip.text for strip in app.screen._compositor.render_strips()]
+    assert any("你好，我是 MossCode。" in row for row in rows)  # Drawn as Markdown while it still streams.
     provider.advance.set()
     await app._reply_task
     assert not app.query(ChatEntry)

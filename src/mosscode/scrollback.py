@@ -1,15 +1,18 @@
 """Render settled transcript above the live inline UI into terminal scrollback."""
 
 from io import StringIO
+from time import perf_counter
 
+from markdown_it import MarkdownIt
 from pygments.lexers import get_lexer_by_name
 from pygments.token import Comment, Generic, Keyword, Number, String
 from pygments.util import ClassNotFound
 from rich.console import Console
 from rich.control import Control
-from rich.markdown import CodeBlock, Heading, HorizontalRule, Markdown, TableElement
+from rich.markdown import CodeBlock, Heading, HorizontalRule, ListItem, Markdown, TableElement
 from rich.padding import Padding
 from rich.rule import Rule
+from rich.segment import Segment
 from rich.text import Text
 from rich.theme import Theme
 from textual.geometry import Offset
@@ -77,6 +80,22 @@ class TranscriptTable(TableElement):
             yield table
 
 
+class TranscriptListItem(ListItem):
+    def render_number(self, console, options, number, last_number):
+        # Rich writes "1 item"; the dot the text was written with reads as a list, not as a quantity.
+        number_width = len(str(last_number)) + 3
+        lines = console.render_lines(
+            self.elements, options.update(width=options.max_width - number_width), style=self.style
+        )
+        style = console.get_style("markdown.item.number", default="none")
+        numeral = Segment(f"{number}.".rjust(number_width - 1) + " ", style)
+        padding = Segment(" " * number_width, style)
+        for index, line in enumerate(lines):
+            yield padding if index else numeral
+            yield from line
+            yield Segment.line()
+
+
 class TranscriptMarkdown(Markdown):
     elements = {
         **Markdown.elements,
@@ -85,7 +104,124 @@ class TranscriptMarkdown(Markdown):
         "heading_open": LeftHeading,
         "hr": TranscriptRule,
         "table_open": TranscriptTable,
+        "list_item_open": TranscriptListItem,
     }
+
+
+# Rich's defaults have backgrounds and dim styles; replies use the same foreground-only look as the rest of the
+# interface, live and in the scrollback alike.
+MARKDOWN_STYLES = {
+    name: "none"
+    for name in (
+        "markdown.code_block",
+        "markdown.block_quote",
+        "markdown.list",
+        "markdown.item.number",
+        "markdown.hr",
+        "markdown.table.border",
+        "markdown.table.header",
+        "markdown.link",
+        "markdown.link_url",
+        "markdown.h1.border",
+        "markdown.h5",
+        "markdown.h6",
+        "markdown.h7",
+    )
+}
+MARKDOWN_STYLES.update({f"markdown.h{level}": "bold" for level in range(1, 5)})
+MARKDOWN_STYLES["markdown.h1"] = "bold underline"
+MARKDOWN_STYLES["markdown.code"] = f"bold {PARAMETER_COLOR}"
+MARKDOWN_THEME = Theme(MARKDOWN_STYLES)
+
+_PARSER = MarkdownIt().enable("strikethrough").enable("table")  # How rich.markdown.Markdown parses.
+# Rich separates blocks by the element that closed last. Inside a list, a quote or a table that is one of their own
+# children, so these blocks begin with a blank row of their own, even at the top of a reply.
+_OWN_GAP = frozenset({"bullet_list_open", "ordered_list_open", "blockquote_open", "table_open"})
+
+
+def _block_starts(source: str) -> list[tuple[int, bool]]:
+    """The line each top-level block begins on, and whether its rendering begins with its own blank row."""
+    starts: dict[int, bool] = {}
+    for token in _PARSER.parse(source):
+        if token.level == 0 and token.map:
+            starts.setdefault(token.map[0], token.type in _OWN_GAP)
+    return sorted(starts.items())
+
+
+class StreamingMarkdown:
+    """A reply drawn as TranscriptMarkdown draws it, row for row, while its text is still arriving.
+
+    Rendering the whole reply again for every piece of text slows down as the reply grows. Blocks that the text
+    has moved past cannot change any more, so their rows are kept for each width and only the last block, the
+    one still being written, is rendered again.
+    """
+
+    def __init__(self, source: str = "") -> None:
+        self.source = ""
+        self.complete = False
+        self.tail_seconds = 0.0  # What rendering the open block cost last time.
+        self._settled_lines = 0  # Source lines covered by the settled blocks.
+        self._settled: list[tuple[bool, str]] = []  # Each settled block: (begins with its own blank row, source).
+        self._tail_own_gap = False
+        self._rows: dict[int, list[list[list[Segment]]]] = {}  # The settled blocks' rows, by width.
+        self._last: tuple[int, str, list[list[Segment]]] | None = None  # The latest rendering of the rest.
+        self.feed(source)
+
+    def feed(self, text: str) -> None:
+        self.source += text
+        lines = self.source.splitlines(keepends=True)
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            # A line is only settled once it is complete: "2" is a paragraph until "2." makes it the next item of
+            # the list above it, so an unfinished line never settles the block before it.
+            lines.pop()
+        open_lines = lines[self._settled_lines :]
+        starts = _block_starts("".join(open_lines))
+        for (begin, own_gap), (end, _) in zip(starts, starts[1:]):
+            self._settled.append((own_gap, "".join(open_lines[begin:end])))
+        if len(starts) > 1:
+            self._settled_lines += starts[-1][0]
+        # The unfinished line counts here: it can turn the paragraph above it into a table.
+        tail = _block_starts(self.tail)
+        self._tail_own_gap = bool(tail) and tail[0][1]
+
+    def finish(self, source: str) -> None:
+        """The full text: drawn in one piece, since a link reference defined at the end can change a line above it."""
+        self.source = source
+        self.complete = True
+        self._last = None
+
+    @property
+    def tail(self) -> str:
+        return "".join(self.source.splitlines(keepends=True)[self._settled_lines :])
+
+    def _render(self, console, options, source: str) -> list[list[Segment]]:
+        if self._last is not None and self._last[:2] == (options.max_width, source):
+            return self._last[2]  # Textual renders once to measure the height and again to paint.
+        started = perf_counter()
+        rows = console.render_lines(TranscriptMarkdown(source), options, pad=False)
+        self.tail_seconds = perf_counter() - started
+        self._last = (options.max_width, source, rows)
+        return rows
+
+    def __rich_console__(self, console, options):
+        options = options.update(height=None)
+        with console.use_theme(MARKDOWN_THEME):
+            if self.complete:
+                blocks = [(False, self._render(console, options, self.source))]
+            else:
+                rows = self._rows.setdefault(options.max_width, [])
+                for _, source in self._settled[len(rows) :]:
+                    rows.append(console.render_lines(TranscriptMarkdown(source), options, pad=False))
+                blocks = [(own_gap, block) for (own_gap, _), block in zip(self._settled, rows)]
+                if self.tail.strip():
+                    blocks.append((self._tail_own_gap, self._render(console, options, self.tail)))
+        new_line = Segment.line()
+        for index, (own_gap, block) in enumerate(blocks):
+            if index and not own_gap:
+                yield new_line  # One blank row between two blocks, as Rich puts it.
+            for row in block:
+                yield from row
+                yield new_line
 
 
 def message_row(marker, body):
@@ -100,29 +236,6 @@ def message_row(marker, body):
 
 
 def render_transcript(renderables, width: int) -> str:
-    # Rich defaults have backgrounds/dim styles; use the same foreground-only
-    # appearance as the live UI, including blue filenames.
-    styles = {
-        name: "none"
-        for name in (
-            "markdown.code_block",
-            "markdown.block_quote",
-            "markdown.list",
-            "markdown.item.number",
-            "markdown.hr",
-            "markdown.table.border",
-            "markdown.table.header",
-            "markdown.link",
-            "markdown.link_url",
-            "markdown.h1.border",
-            "markdown.h5",
-            "markdown.h6",
-            "markdown.h7",
-        )
-    }
-    styles.update({f"markdown.h{level}": "bold" for level in range(1, 5)})
-    styles["markdown.h1"] = "bold underline"
-    styles["markdown.code"] = f"bold {PARAMETER_COLOR}"
     stream = StringIO()
     console = Console(
         file=stream,
@@ -132,7 +245,7 @@ def render_transcript(renderables, width: int) -> str:
         no_color=False,
         legacy_windows=False,
         highlight=False,
-        theme=Theme(styles),
+        theme=MARKDOWN_THEME,
     )
     for renderable in renderables:
         console.print(Padding(renderable, (0, 2)))
