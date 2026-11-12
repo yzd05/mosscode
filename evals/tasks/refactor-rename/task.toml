@@ -1,0 +1,4 @@
+category = "refactor"
+prompt = """
+把 shop/models.py 里的 calc 改名为 line_total，并更新所有使用它的地方（包括测试）；不要留下旧名字或别名。
+"""

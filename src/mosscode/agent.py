@@ -163,7 +163,7 @@ def unusable_notice(kind: str, final: Completed, attempts: int) -> str:
     return notice + "可以重新发送；反复出现时检查模型或服务的状态。"
 
 
-def add_usage(total: UsageTotals, usage: Usage, price: "ModelInfo | None" = None) -> UsageTotals:
+def add_usage(total: UsageTotals, usage: Usage, price: "ModelInfo | None" = None, *, side: bool = False) -> UsageTotals:
     cost = request_cost(usage, price)
     return UsageTotals(
         input_tokens=total.input_tokens + (usage.input_tokens or 0),
@@ -177,6 +177,9 @@ def add_usage(total: UsageTotals, usage: Usage, price: "ModelInfo | None" = None
         missing_cache_write=total.missing_cache_write + (usage.cache_write_tokens is None),
         cost_usd=total.cost_usd + (cost or 0.0),
         missing_cost=total.missing_cost + (cost is None),
+        side_requests=total.side_requests + side,
+        side_input_tokens=total.side_input_tokens + side * (usage.input_tokens or 0),
+        side_cached_input_tokens=total.side_cached_input_tokens + side * (usage.cached_input_tokens or 0),
     )
 
 
@@ -454,7 +457,13 @@ class AgentLoop:
         start = self._collapsed
         try:
             done = await collapse_segment(
-                self.provider, self.history, self.collapses, end, self.budget, session=self.session
+                self.provider,
+                self.history,
+                self.collapses,
+                end,
+                self.budget,
+                session=self.session,
+                on_usage=self.side_usage,
             )
         except CompactionError:
             self.collapse_failures += 1
@@ -509,7 +518,13 @@ class AgentLoop:
             self.on_compact(self.history[:history_cut])
         try:
             done = await compact_history(
-                self.provider, projected, self.budget, session=self.session, instructions=instructions, manual=manual
+                self.provider,
+                projected,
+                self.budget,
+                session=self.session,
+                instructions=instructions,
+                manual=manual,
+                on_usage=self.side_usage,
             )
         except CompactionError as exc:
             if failure is not None:  # Resuming: its own message, and the breaker is untouched.
@@ -573,8 +588,12 @@ class AgentLoop:
     def _may_compact(self) -> bool:
         return self.auto_compact and not self.auto_paused
 
-    def _usage(self, usage):
-        self.total_usage = add_usage(self.total_usage, usage, price_of(self.provider))
+    def side_usage(self, usage):
+        """A one-off request made for the conversation (a summary, a goal check, note extraction)."""
+        self._usage(usage, side=True)
+
+    def _usage(self, usage, side: bool = False):
+        self.total_usage = add_usage(self.total_usage, usage, price_of(self.provider), side=side)
         if self.on_usage is not None:
             self.on_usage(usage)
 

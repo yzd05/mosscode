@@ -651,6 +651,8 @@ async def test_extraction_usage_counts_but_not_the_context(tmp_path):
     await settle(conv)
     assert conv.total_usage.input_tokens == before_usage.input_tokens + 500
     assert conv.total_usage.requests == before_usage.requests + 1
+    # A one-off request: it costs, but it is not the conversation's cache.
+    assert conv.total_usage.side_requests == 1 and conv.total_usage.side_input_tokens == 500
     assert conv.context_estimate() == before_context
     await conv.close()
 

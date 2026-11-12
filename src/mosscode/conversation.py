@@ -145,6 +145,7 @@ class Conversation:
         agent_max_background: int = MAX_BACKGROUND,
         command_max_background: int = 8,
         command_time_limit: float | None = None,
+        command_auto_background: float = 0.0,
         worktree_links=(),
         worktree_stale_hours: float = 24.0,
         teams: bool = False,
@@ -219,7 +220,7 @@ class Conversation:
                     lambda: self.memory_provider or self.provider,
                     on_result=lambda r: self._emit(MemoryUpdated(r.names)),
                     on_notice=lambda text: self._emit(Notice(text)),
-                    on_usage=self._agent._usage,
+                    on_usage=self._agent.side_usage,
                 )
                 self._agent.on_compact = self._handover
         self._notices.extend(self._offer_skills())
@@ -246,9 +247,10 @@ class Conversation:
                 time_limit=command_time_limit,
                 session=lambda: self.session,
                 record=self._record,
+                auto_background=command_auto_background,
             )
             registry.commands = self.commands
-            tool.allow_background(command_time_limit)
+            tool.allow_background(command_time_limit, command_auto_background)
             root = registry.permissions.root
             for task_tool in (TaskOutput(root, self.subagents), TaskStop(root, self.subagents)):
                 if registry.get(task_tool.name) is None:
@@ -1195,7 +1197,7 @@ class Conversation:
             return GoalStep("deferred")
         provider = self.goal_provider or self.memory_provider or self.provider
         try:
-            verdict = await evaluate(provider, goal.condition, self._agent.history, self._agent._usage)
+            verdict = await evaluate(provider, goal.condition, self._agent.history, self._agent.side_usage)
         except Exception as exc:  # A failed or unreadable evaluation counts as not met.
             if self.goal is not goal:
                 return GoalStep("none")

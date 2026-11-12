@@ -25,6 +25,8 @@ default_provider: claude
 # memory_provider: deepseek
 # 同时运行的后台命令上限（execute_command 的 run_in_background，默认 8，最多 64）；0 关闭后台命令。
 # command_max_background: 8
+# 前台命令运行超过这么多秒就自动转入后台，模型不必干等（默认 5，最多 600）；0 表示一直在前台等它结束。
+# command_auto_background: 5
 # Agent 团队的成员在哪里运行：auto（默认；在 tmux 中用 tmux 窗格，在 Windows Terminal 中用分屏窗格，否则进程内）、
 # in-process、windows-terminal、tmux。显式指定的窗格后端不可用时报错，不改用其他后端。
 # teammate_mode: auto
@@ -113,3 +115,14 @@ providers:
     # context_window: 1000000
     # 大窗口时每次请求都可能接近百万 Token；需要控制成本和延迟时可以提前压缩：
     # compact_threshold: 200000
+
+  # 厂商预设：preset 代替 protocol、base_url、默认 model 和密钥变量名（deepseek、kimi、glm、qwen、openrouter、
+  # anthropic、openai），写出的字段优先。详见 docs/reference/providers.md 的“厂商预设”。
+  # - name: kimi
+  #   preset: kimi
+  #   model: kimi-k3.1-pro
+
+  # 跟随 Claude Code（~/.claude/settings.json）或 Codex（~/.codex/config.toml）的服务地址、密钥和模型，
+  # CC Switch、Magpie 切换后在 /model 中重新读取；不能再写 base_url、headers 和凭据字段。
+  # - name: cc
+  #   follow: claude-code

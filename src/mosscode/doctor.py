@@ -112,6 +112,10 @@ def check_path(path: str | None = None, scripts: Path | None = None) -> list[Ite
 
 def _credential(provider) -> tuple[str, str, str]:
     """Level, what is configured, and how to fix it."""
+    if getattr(provider, "follow", None):
+        from .follow import SOURCES
+
+        return OK, f"跟随 {SOURCES[provider.follow]} 的设置（已读取）", ""
     if provider.api_key_env:
         if os.environ.get(provider.api_key_env):
             return OK, f"环境变量 {provider.api_key_env} 已设置", ""

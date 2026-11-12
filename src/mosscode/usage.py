@@ -77,10 +77,16 @@ def cost_text(total: UsageTotals) -> str:
 
 
 def cache_hit_rate(total: UsageTotals) -> int | None:
-    """Percent of the session's input read from the prompt cache; None unless every request reported both counts."""
-    if not total.requests or total.missing_input or total.missing_cached or not total.input_tokens:
+    """Percent of the conversation's input read from the prompt cache; None unless every request reported both.
+
+    One-off requests (summaries, goal checks, note extraction) are left out: they cannot reuse the conversation's
+    cache, and counting them would hide how well the conversation itself is cached.
+    """
+    requests = total.requests - total.side_requests
+    tokens = total.input_tokens - total.side_input_tokens
+    if not requests or total.missing_input or total.missing_cached or tokens <= 0:
         return None
-    return round(100 * total.cached_input_tokens / total.input_tokens)
+    return round(100 * (total.cached_input_tokens - total.side_cached_input_tokens) / tokens)
 
 
 def approx_tokens(count: int) -> str:

@@ -215,3 +215,4 @@ max_turns: 40
 | `agent_auto_background` | `120` | 前台子 Agent 运行多少秒后自动转入后台，0–3600，0 表示不自动转入 |
 | `agent_max_background` | `4` | 同时运行的后台子 Agent 上限 |
 | `command_max_background` | `8` | 同时运行的后台命令上限，0–64，0 表示关闭后台命令，见 [后台命令](tools.md#后台命令) |
+| `command_auto_background` | `5` | 主对话的前台命令运行超过这么多秒就自动转入后台，0–600，0 表示不自动转，见 [后台命令](tools.md#后台命令) |

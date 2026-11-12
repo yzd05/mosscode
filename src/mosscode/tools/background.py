@@ -128,9 +128,18 @@ def report(task: Task) -> str:
     )
 
 
-def started(task: Task, *, moved: bool = False) -> str:
+def started(task: Task, *, moved: bool = False, auto: float | None = None) -> str:
+    """auto: the seconds after which a foreground command moved by itself; None when the user moved it."""
     info = task.command
     limit = f"时间限制 {info.time_limit:.0f} 秒；" if info.time_limit else ""
+    if moved and auto is not None:
+        # The result is usually what the model waits for: task_output's wait gets it in this turn, while
+        # ending the turn would cost a request for a reply nobody reads.
+        return (
+            f"命令运行超过 {auto:g} 秒，已自动转入后台：任务 {task.id}，命令继续运行，输出（包括已收到的部分）写入 "
+            f"{info.log.path}（用 read_file 读取）。{limit}有不依赖它结果的工作就先做，命令结束时你会收到 "
+            "<task-notification>；需要它的结果才能继续时，用 task_output 的 wait 等它结束，不要用 sleep。"
+        )
     if moved:
         # Without saying who moved it, models guess a reason ("a time limit") and then wait on it anyway.
         return (
@@ -162,12 +171,14 @@ class BackgroundCommands:
         time_limit: float | None = None,
         session: Callable[[], object] = lambda: None,
         record: Callable[[dict], None] | None = None,
+        auto_background: float = 0.0,
     ):
         self.tasks = tasks
         self.limit = limit
         self.time_limit = time_limit  # None: no limit (the interactive UI).
         self.session = session
         self.record = record
+        self.auto_background = auto_background  # Seconds; 0: foreground commands stay until they end.
         self._foreground: set[asyncio.Event] = set()
 
     def running(self) -> list[Task]:

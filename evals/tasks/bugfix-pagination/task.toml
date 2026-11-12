@@ -1,0 +1,4 @@
+category = "bugfix"
+prompt = """
+pagination.py 的分页结果不对：第 1 页拿到的是第二页的内容，总页数也少算了。按 docstring 的约定修复。
+"""

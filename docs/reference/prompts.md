@@ -53,6 +53,8 @@
 
 用量事件来自服务实际返回的统计，跨模型请求累计输入/输出 Token，不代表模型窗口容量。全部缺失显示 `—`，部分缺失显示已知下限 `≥`，不估算或伪造零。Chat 兼容服务需要支持并配置 `stream_usage: true` 才能返回流式用量；默认不强制启用，保留兼容端点差异。
 
-Usage 读取 Responses 的 `input_tokens_details`、Chat 的 `prompt_tokens_details`，兼容 DeepSeek 的 `prompt_cache_hit_tokens/prompt_cache_miss_tokens`，并处理 Anthropic 的 `cache_read_input_tokens/cache_creation_input_tokens`。Anthropic 总输入包含普通输入、缓存写入和缓存读取；其他协议已提供总输入，不重复加缓存。流式累计字段覆盖前值。底栏显示会话累计的缓存命中率（缓存读取 ÷ 总输入）；有请求没有报告总输入或缓存读取时不显示，因为比例无法算准。
+Usage 读取 Responses 的 `input_tokens_details`、Chat 的 `prompt_tokens_details`，兼容 DeepSeek 的 `prompt_cache_hit_tokens/prompt_cache_miss_tokens`，并处理 Anthropic 的 `cache_read_input_tokens/cache_creation_input_tokens`。Anthropic 总输入包含普通输入、缓存写入和缓存读取；其他协议已提供总输入，不重复加缓存。流式累计字段覆盖前值。底栏显示对话请求（主对话、子 Agent、团队成员）累计的缓存命中率（缓存读取 ÷ 输入）；有请求没有报告总输入或缓存读取时不显示，因为比例无法算准。压缩和折叠的摘要请求、`/goal` 的判断和后台记忆整理各用自己的提示，不能复用对话的缓存，它们计入用量和费用，但不计入命中率；`/status` 的用量一行写出对话缓存命中率，以及这类请求的次数、输入和缓存命中。
+
+用真实服务观测多轮会话的缓存：`python scripts/probe_session_cache.py`（配置查找顺序与 `moss` 相同，可加 `--config`、`--provider`）在临时目录中跑一段四轮的编码任务（任务清单、读取、编辑，命令一律拒绝），逐行输出每次请求的输入和缓存命中 Token 和最后的命中率，不输出提示、密钥或回复正文。
 
 `--prompt --show-usage` 将每次模型请求的详细统计写到 stderr，stdout 仍是正文和工具结果。默认测试和界面预览不调用真实 API。缓存命中并不保证任务质量或节省总成本，真实服务验证与定性比较仍需实际运行；目前不做自动评估。

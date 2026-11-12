@@ -1,0 +1,4 @@
+category = "feature"
+prompt = """
+在 text.py 里加一个 slugify(title)：转成小写；字母和数字（包括中文、带重音的字母等非 ASCII 字符）保留，其余字符（包括下划线）连续出现时换成一个连字符；去掉首尾的连字符。例如 'Hello, World!' 变成 'hello-world'。
+"""

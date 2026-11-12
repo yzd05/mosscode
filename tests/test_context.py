@@ -504,6 +504,29 @@ NO_SUMMARY = Completed(Message("assistant", (ContentBlock("text", "忘了写摘�
 OVERFLOW = ProviderError("请求超出模型的上下文窗口（HTTP 400）。", code="context_overflow")
 
 
+async def test_summary_requests_count_in_usage_but_not_in_the_hit_rate():
+    from dataclasses import replace
+
+    from mosscode.builtin_commands import _usage_line
+    from mosscode.usage import cache_hit_rate
+
+    provider = SequenceProvider(
+        response("一", usage=Usage(1_000, 10, 900, 0)),
+        replace(summary_reply(), usage=Usage(3_000, 200, 0, 0)),
+        response("二", usage=Usage(1_200, 10, 1_000, 0)),
+    )
+    conv = seeded(provider, chat(8), auto_compact=False)
+    await conv.ask("一")
+    [e async for e in conv.compact()]
+    await conv.ask("二")
+    usage = conv.total_usage
+    assert usage.requests == 3 and usage.input_tokens == 5_200 and usage.output_tokens == 220
+    assert (usage.side_requests, usage.side_input_tokens) == (1, 3_000)
+    assert cache_hit_rate(usage) == 86  # 1,900 of the conversation's 2,200, the summary left out.
+    line = _usage_line(conv)
+    assert "对话缓存命中率 86%" in line and "其中摘要、目标判断和记忆整理 1 次，输入 3,000" in line
+
+
 def seeded(provider, history, **options):
     conv = Conversation(provider, budget=SMALL, **options)
     conv._agent.history = list(history)

@@ -31,6 +31,8 @@ python -m pytest -q
 
 没有安装 ripgrep 时，搜索测试走内置实现；CI 中两种情况都会测试。
 
+改动提示、工具或 Agent Loop 后，想知道对真实模型完成任务的影响，可以运行评估：`python scripts/run_evals.py` 在一组固定的编码任务上运行 MossCode，用隐藏测试判定，报告通过率、Token、缓存命中率和耗时，见 [评估任务](evals/README.md)。评估会请求真实服务并产生费用。
+
 ## 在容器中开发
 
 在 Windows 或 macOS 上想在 Linux 中跑测试，或者不想让开发中的 MossCode 直接接触主机，可以用容器。虚拟环境要建在挂载目录之外，否则会覆盖主机上的 `.venv`：

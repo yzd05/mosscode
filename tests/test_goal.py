@@ -120,6 +120,7 @@ async def test_not_met_continues_with_the_reason_and_met_ends_the_goal(tmp_path)
     assert step.action == "met" and "a.txt 已写入并读回" in step.note
     assert conv.goal is None and conv.last_goal == ("写好 a.txt 并验证", "achieved", "a.txt 已写入并读回")
     assert conv._agent.goal_note is None  # No reminder once the goal has ended.
+    assert conv.total_usage.side_requests == 2  # The two checks count as one-off requests.
     saved = [(r["event"], r["condition"]) for r in records(conv.session.transcript_path) if r["type"] == "goal"]
     assert saved == [("set", "写好 a.txt 并验证"), ("achieved", "写好 a.txt 并验证")]
     await conv.close()

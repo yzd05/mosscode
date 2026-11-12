@@ -169,6 +169,11 @@ class UsageTotals:
     missing_cache_write: int = 0
     cost_usd: float = 0.0  # Estimated from the model catalog's base prices.
     missing_cost: int = 0  # Requests without a price: model not in the catalog, or counts not reported.
+    # Of the above, the one-off requests (note extraction, goal checks, summaries): each has a prompt of its own,
+    # so it cannot reuse what the conversation's requests cached.
+    side_requests: int = 0
+    side_input_tokens: int = 0
+    side_cached_input_tokens: int = 0
 
 
 @dataclass(frozen=True)

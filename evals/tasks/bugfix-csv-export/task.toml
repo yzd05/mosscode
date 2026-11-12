@@ -1,0 +1,4 @@
+category = "bugfix"
+prompt = """
+report.py 导出的 CSV 遇到含逗号、引号或换行的字段就错位了。修复 to_csv，普通字段的输出保持不变。
+"""

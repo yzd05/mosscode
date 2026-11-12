@@ -14,6 +14,7 @@ from .agents.runtime import GLOBAL_BAN, WORKSPACE_TOOLS, effective_mode, stats
 from .agents.tasks import ORIGIN_LABELS, STATUS_LABELS
 from .appearance import KEY_HELP, MUTED_COLOR
 from .commands import Command, CommandContext, CommandRegistry, Parsed, argument_problem
+from .follow import SOURCES as FOLLOWED
 from .goal import GOAL, MAX_CONDITION, continue_prompt, elapsed_text
 from .hooks.config import SOURCE_LABELS as HOOK_SOURCES
 from .memory import SCOPE_LABELS
@@ -22,7 +23,7 @@ from .permissions import MODE_BADGES, MODE_LABELS, MODES
 from .reasoning import DEFAULT, LEVEL_LABELS, LEVELS, Unsupported, thinking_options
 from .skills import ForkRequest, source_label
 from .todo import render as render_todos
-from .usage import approx_tokens, cost_text
+from .usage import approx_tokens, cache_hit_rate, cost_text
 
 USAGE_WIDTH = 22
 
@@ -399,6 +400,10 @@ async def _model(ctx: CommandContext, argument: str) -> None:
             await ctx.ui.switch_model(argument)
         return
     current = ctx.ui.provider_name
+    following = next((item for item in providers if item.name == current and item.follow), None)
+    if len(providers) < 2 and following is not None:
+        await ctx.ui.switch_model(current)  # Nothing to pick: read the followed tool's settings again.
+        return
     if len(providers) < 2:
         await ctx.ui.note(
             f"当前模型：{current}"
@@ -407,7 +412,10 @@ async def _model(ctx: CommandContext, argument: str) -> None:
         )
         return
     rows = [
-        choice_row(f"{item.name}{'  ✓' if item.name == current else ''}", f"{item.protocol} / {item.model}")
+        choice_row(
+            f"{item.name}{'  ✓' if item.name == current else ''}",
+            f"{item.protocol} / {item.model}" + (f" · 跟随 {FOLLOWED[item.follow]}" if item.follow else ""),
+        )
         for item in providers
     ]
 
@@ -612,10 +620,18 @@ def _usage_line(conversation) -> str:
     usage = conversation.total_usage
     if not usage.requests:
         return "尚未发送请求"
-    return (
+    line = (
         f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）· 输出 {usage.output_tokens:,}"
         f" · 请求 {usage.requests} 次 · 费用 {cost_text(usage)}"
     )
+    if (rate := cache_hit_rate(usage)) is not None:
+        line += f" · 对话缓存命中率 {rate}%"
+    if usage.side_requests:
+        line += (
+            f"；其中摘要、目标判断和记忆整理 {usage.side_requests} 次，输入 {usage.side_input_tokens:,}"
+            f"（缓存命中 {usage.side_cached_input_tokens:,}），不计入命中率"
+        )
+    return line
 
 
 def _mcp_line(conversation) -> str:

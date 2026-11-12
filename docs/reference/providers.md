@@ -22,6 +22,47 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
     api_key_env: MY_GATEWAY_API_KEY
 ```
 
+### 厂商预设
+
+`preset` 代替协议、服务地址、默认模型和密钥变量名，一项配置只需两三行：
+
+```yaml
+  - name: deepseek
+    preset: deepseek
+  - name: kimi
+    preset: kimi
+    model: kimi-k3.1        # 换模型时只写 model
+    api_key_keyring: kimi   # 不用环境变量时写明凭据
+```
+
+| preset | 协议 | 服务地址 | 默认模型 | 密钥变量 |
+|--------|------|----------|----------|----------|
+| `deepseek` | openai-chat-completions | `https://api.deepseek.com` | `deepseek-flash` | `DEEPSEEK_API_KEY` |
+| `kimi` | openai-chat-completions | `https://api.moonshot.cn/v1` | `kimi-k3.1-pro` | `MOONSHOT_API_KEY` |
+| `glm` | openai-chat-completions | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.3` | `ZHIPUAI_API_KEY` |
+| `qwen` | openai-chat-completions | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | `DASHSCOPE_API_KEY` |
+| `openrouter` | openai-chat-completions | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-5.5` | `OPENROUTER_API_KEY` |
+| `anthropic` | anthropic-messages | 官方地址 | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY` |
+| `openai` | openai-responses | 官方地址 | `gpt-5.6` | `OPENAI_API_KEY` |
+
+配置中写出的字段优先，预设只填配置没写的部分；写了 `api_key`、`api_key_env` 或 `api_key_keyring` 时不再使用预设的变量名。默认模型都在[模型目录](#模型目录)中，上下文窗口和价格随之而来。
+
+### 跟随 Claude Code 或 Codex
+
+已经用 CC Switch、Magpie 等工具管理 Claude Code 或 Codex 的服务时，不必再填一遍地址和密钥，让 MossCode 读取它们的设置：
+
+```yaml
+  - name: cc
+    follow: claude-code   # 或 codex
+```
+
+- `follow: claude-code` 读取 `~/.claude/settings.json` 的 `env`（设置了 `CLAUDE_CONFIG_DIR` 时读取那个目录）：`ANTHROPIC_BASE_URL` 为服务地址，`ANTHROPIC_AUTH_TOKEN`（bearer 认证）或 `ANTHROPIC_API_KEY` 为密钥，`ANTHROPIC_CUSTOM_HEADERS` 为额外请求头，模型取 `ANTHROPIC_MODEL` 或设置中的 `model`；`opus`、`sonnet`、`haiku` 这样的别名按 `ANTHROPIC_DEFAULT_*_MODEL` 换成实际模型名，模型名后的 `[1m]` 表示上下文窗口为 1M。设置中没有的变量从启动 MossCode 的环境中取，和 Claude Code 一致。协议为 anthropic-messages。
+- `follow: codex` 读取 `~/.codex/config.toml`（设置了 `CODEX_HOME` 时读取那个目录）：`model`、`model_provider` 和 `[model_providers.<id>]` 中的 `base_url`、`wire_api`（`responses` 或 `chat`）、`http_headers`，以及当前 `profile` 的覆盖；密钥取 `env_key` 指定的环境变量，没有时取 `auth.json` 中的 `OPENAI_API_KEY`。
+
+设置在启动时读取，在 `/model` 中选中这一项时重新读取：在 CC Switch 中切换了服务，回到 MossCode 执行 `/model`（只有这一项时直接重新读取）即可，对话历史保留。密钥只在内存中使用，不写入 MossCode 的配置，和其他密钥一样从输出中隐藏。
+
+跟随的一项可以填写 `model`（覆盖跟随的模型）、`context_window`、`max_output_tokens`、`thinking` 等调整项，但不能填写 `protocol`、`base_url`、`headers`、`auth_type` 和凭据字段：这些只来自被跟随的设置，项目配置因此无法把你的密钥发往别处。用账号登录的 Claude Code、用 ChatGPT 账号登录的 Codex、`apiKeyHelper` 生成的密钥以及 Codex 内置的 `ollama` 等服务没有可共用的密钥或地址，启动时说明原因。
+
 ## 密钥保护
 
 无论密钥放在哪里，MossCode 都不让它经由工具进入对话：
@@ -39,7 +80,7 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
 
 启动时优先使用 `--provider 配置名称`，其次使用显式设置的 `default_provider`，两者都会直接进入对话。都未设置时，只有一项配置直接进入；多项配置按 `name` 列出，用 ↑ / ↓ 移动、Enter 确认。需要每次启动手动选择时，删除或注释 `default_provider`。Esc、Ctrl+C 或 Ctrl+Q 可退出选择，确认前不创建模型客户端、不发起请求。进入对话后，启动区显示选中的 `name`，实际 API 请求仍使用该配置的 `model`。
 
-无界面 `--prompt` 模式不打开列表，优先使用显式 Provider、默认配置；两者都没有时使用列表第一项。对话中可用 `/model` 切换到其他已配置的提供商，对话历史保留（见“终端界面与本地命令”）。
+无界面 `--prompt` 模式不打开列表，优先使用显式 Provider、默认配置；两者都没有时使用列表第一项。对话中可用 `/model` 切换到其他已配置的提供商，对话历史保留（见“终端界面与本地命令”）；选中[跟随](#跟随-claude-code-或-codex)的一项时重新读取它跟随的设置。
 
 ## 协议与兼容服务
 

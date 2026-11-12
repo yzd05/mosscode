@@ -1,0 +1,4 @@
+category = "feature"
+prompt = """
+实现 lru.py 里的 LRUCache，遵守类 docstring 的约定。
+"""

@@ -1,0 +1,4 @@
+category = "bugfix"
+prompt = """
+merge_config 合并嵌套配置时把整个子字典覆盖掉了，还会改动传入的 base。按 docstring 的约定修复。
+"""

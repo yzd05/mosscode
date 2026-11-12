@@ -89,6 +89,8 @@ class TaskOutput(Tool):
             raise ToolFailure("unknown_task", f"没有任务 {params.task_id}。")
         if task.status == "running" and params.wait and task.job is not None:
             await asyncio.wait({task.job}, timeout=params.wait)
+        if task.status != "running":
+            self._withdraw(task.id)
         if task.command is not None:
             from .background import report
 
@@ -101,6 +103,16 @@ class TaskOutput(Tool):
             last = f"最近一次工具调用：{task.last_tool}。" if task.last_tool else "尚未调用工具。"
             return f"{head}\n{last}", {"task": task.id, "status": task.status}
         return f"{head}\n\n{task.result or ''}", {"task": task.id, "status": task.status}
+
+    def _withdraw(self, task_id: str) -> None:
+        """The main conversation has the result now: its notification, still waiting, would only repeat it."""
+        from .base import CURRENT_REGISTRY
+
+        if getattr(CURRENT_REGISTRY.get(), "task_id", ""):  # A sub-agent asking leaves the main's alone.
+            return
+        main = self.runner.main
+        head = f"<task-notification>\n任务：{task_id}\n"
+        main.notifications = [text for text in main.notifications if not text.startswith(head)]
 
 
 class TaskStopParams(Params):

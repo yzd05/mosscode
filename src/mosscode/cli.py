@@ -660,6 +660,7 @@ def run(args: argparse.Namespace) -> None:
             agent_auto_background=settings.agent_auto_background,
             agent_max_background=settings.agent_max_background,
             command_max_background=settings.command_max_background,
+            command_auto_background=settings.command_auto_background,
             # -p must end: background commands without their own timeout get a limit there.
             command_time_limit=None if args.prompt is None else HEADLESS_TIME_LIMIT,
             worktree_links=settings.worktree_links,

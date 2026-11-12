@@ -46,7 +46,7 @@ moss doctor     # 检查安装、PATH、配置和依赖工具，不发送请求
 
 ## 配置
 
-第一次运行 `moss` 时，会在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；之后随时可以运行 `moss setup`。凭据默认保存在系统凭据管理器中，配置只写名称。
+第一次运行 `moss` 时进入配置引导，写入 `~/.mosscode/config.yaml` 后直接进入界面；之后随时可以运行 `moss setup`。已经用 CC Switch 或 Magpie 配好 Claude Code、Codex 时，选“跟随”即可，不用再填地址和密钥，在那边切换服务后 `/model` 重新读取；DeepSeek、Kimi、GLM、通义千问等厂商有预设，只需选模型和凭据。凭据默认保存在系统凭据管理器中，配置只写名称。
 
 手动编辑时，一个最小的 Provider 是这样的，全部字段见 [config.example.yaml](config.example.yaml)：
 

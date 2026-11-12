@@ -1,0 +1,4 @@
+category = "bugfix"
+prompt = """
+新建的两个 Cart 会互相看到对方加的商品，传给 Cart 的列表也会被改掉。找出原因并修复。
+"""

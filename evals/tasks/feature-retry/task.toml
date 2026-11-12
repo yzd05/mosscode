@@ -1,0 +1,4 @@
+category = "feature"
+prompt = """
+在 retry.py 里实现装饰器 retry(attempts, exceptions=(Exception,))：被装饰的函数抛出 exceptions 中的异常时重试，总共最多调用 attempts 次，全部失败时把最后一次的异常原样抛出；其他异常不重试，直接抛出。attempts 小于 1 时 retry(...) 本身抛 ValueError。被装饰的函数保留原来的名字和 docstring。
+"""

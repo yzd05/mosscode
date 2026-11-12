@@ -301,12 +301,14 @@ def boundary(summary: str, quotes: Sequence[str], omitted: int, record: Path | N
     return Message("user", tuple(blocks), synthetic=kind)
 
 
-async def _ask(provider, prompt: str) -> Completed:
+async def _ask(provider, prompt: str, on_usage=None) -> Completed:
     async with aclosing(
         provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (), allow_tools=False)
     ) as events:
         async for event in events:
             if isinstance(event, Completed):
+                if on_usage is not None:
+                    on_usage(event.usage)
                 return event
     raise ProviderError("摘要回复在完成信号前中断。")
 
@@ -320,7 +322,7 @@ def _keep_record(session: Session | None, text: str, name: str) -> Path | None:
         return None
 
 
-async def _summarize(provider, removed: Sequence[Message], limit: int, instructions: str = "") -> str:
+async def _summarize(provider, removed: Sequence[Message], limit: int, instructions: str = "", on_usage=None) -> str:
     """The summary of removed, shrinking the request while it does not fit."""
     shrink, dropped = False, 0
     for step in range(SHRINK_STEPS + 1):
@@ -328,7 +330,7 @@ async def _summarize(provider, removed: Sequence[Message], limit: int, instructi
         response = None
         if estimate_text(SYSTEM) + estimate_text(prompt) <= limit:
             try:
-                response = await _ask(provider, prompt)
+                response = await _ask(provider, prompt, on_usage)
             except ProviderError as exc:
                 if exc.code != "context_overflow":
                     raise CompactionError(f"摘要请求失败：{exc}") from None
@@ -355,12 +357,13 @@ async def compact_history(
     session: Session | None = None,
     instructions: str = "",
     manual: bool = False,
+    on_usage=None,
 ) -> Compacted:
     cut = cut_point(history, budget.auto_threshold, manual=manual)
     if cut == 0:
         raise CompactionError(NOTHING, "nothing")
     removed, tail = list(history[:cut]), list(history[cut:])
-    summary = await _summarize(provider, removed, budget.manual_limit, instructions)
+    summary = await _summarize(provider, removed, budget.manual_limit, instructions, on_usage)
     quotes, omitted = fit_quotes(collect_quotes(removed))
     record = _keep_record(session, record_text(removed), "compact")
     return Compacted([boundary(summary, quotes, omitted, record)] + tail, cut, estimate_text(summary), record)
@@ -418,11 +421,12 @@ async def collapse_segment(
     budget: ContextBudget,
     *,
     session: Session | None = None,
+    on_usage=None,
 ) -> Collapse:
     """A summary of the history from the end of the last collapse up to end; the history itself is not changed."""
     start = collapses[-1].end if collapses else 0
     removed = list(history[start:end])
-    summary = await _summarize(provider, removed, budget.manual_limit)
+    summary = await _summarize(provider, removed, budget.manual_limit, on_usage=on_usage)
     quotes, omitted = fit_quotes(collect_quotes(removed))
     record = _keep_record(session, record_text(removed, "折叠"), "collapse")
     message = boundary(summary, quotes, omitted, record, COLLAPSE)

@@ -20,7 +20,7 @@ README 只列出最常用的内容。这里是安装细节、全部常用配置�
 
 ### 模型
 
-第一次运行 `moss` 时如果找不到配置，会在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），配置只写名称；也可以只写环境变量名，或直接把密钥以明文写进这个文件。
+第一次运行 `moss` 时如果找不到配置，会先让你选择模型服务：已有 Claude Code 或 Codex 的设置（例如 CC Switch、Magpie 写入的）时可以直接跟随，不用再填地址和密钥；DeepSeek、Kimi 等厂商预设只问模型和凭据；其他服务在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），配置只写名称；也可以只写环境变量名，或直接把密钥以明文写进这个文件。
 
 追加 Provider 或调整其他选项时手动编辑，字段说明见 [config.example.yaml](../config.example.yaml)：
 

@@ -429,3 +429,107 @@ async def test_tui_ctrl_b_moves_a_foreground_command(tmp_path):
         assert conv.tasks.get("t1").status == "running" and conv.history[-1].text == "已转入后台"
         await conv.tasks.stop("t1")
     await conv.close()
+
+
+# Moving by itself ------------------------------------------------------------------------
+
+
+async def test_a_long_foreground_command_moves_to_the_background_by_itself(tmp_path):
+    registry, tasks, commands = setup(tmp_path)
+    commands.auto_background = 0.5
+    result = await asyncio.wait_for(registry.execute(run(command=python_command(SLEEPER), timeout=60)), 20)
+    assert not result.is_error and result.details["moved"] and result.details["auto"]
+    assert "命令运行超过 0.5 秒，已自动转入后台：任务 t1" in result.output
+    assert "task_output 的 wait" in result.output and "Ctrl+B" not in result.output
+    task = tasks.get("t1")
+    # The model's timeout still bounds it, counted from the start rather than the move.
+    assert task.status == "running" and 50 < task.command.time_limit < 60
+    await until(lambda: "ready" in task.command.log.path.read_text(encoding="utf-8"))
+    assert commands.foreground_count() == 0
+    await tasks.stop("t1")
+
+
+async def test_a_quick_command_stays_in_the_foreground(tmp_path):
+    registry, tasks, commands = setup(tmp_path)
+    commands.auto_background = 5
+    result = await registry.execute(run(command=python_command("print('ok')")))
+    assert not result.is_error and result.output.strip() == "ok" and "task" not in result.details
+    assert not tasks.tasks
+
+
+async def test_task_output_takes_the_result_and_its_notification_is_not_sent_again(tmp_path):
+    from mosscode.cli import _turns
+
+    command = python_command("import time; time.sleep(1.5); print('done')")
+
+    def script(messages, system, tools):
+        last = messages[-1]
+        if last.role == "user" and last.synthetic == NOTIFICATION:
+            return response("重复的通知")
+        if last.role == "user":
+            return response(calls=[call("execute_command", "c1", command=command, timeout=60)])
+        result = last.tool_results[0]
+        if result.name == "execute_command":
+            assert result.details["auto"]
+            return response(calls=[call("task_output", "o1", task_id=result.details["task"], wait=20)])
+        assert "done" in result.output and "退出码 0" in result.output
+        return response("测试通过")
+
+    provider = ScriptProvider(script)
+    conv = conversation(tmp_path, provider, command_auto_background=0.3)
+    async for _ in _turns(conv, "运行测试", command=None, fork=None):
+        pass
+    assert len(provider.requests) == 3 and conv.history[-1].text == "测试通过"
+    assert not conv.notifications and conv.tasks.get("t1").status == "completed"
+    tool = conv.registry.get("execute_command")
+    assert "前台命令运行超过 0.3 秒会自动转入后台" in tool.description
+    await conv.close()
+
+
+async def test_a_sub_agent_asking_leaves_the_main_notification(tmp_path):
+    # It ends after the turn, so its notification waits.
+    conv = conversation(tmp_path, background_script(python_command("import time; time.sleep(1); print('x')")))
+    async for _ in conv.reply("开始"):
+        pass
+    await settle(conv)
+    assert conv.notifications
+    conv.registry.task_id = "t9"  # As a sub-agent's registry is.
+    await conv.registry.execute(call("task_output", "o1", task_id="t1"))
+    del conv.registry.task_id
+    assert conv.notifications  # Still the main conversation's to read.
+    await conv.registry.execute(call("task_output", "o2", task_id="t1"))
+    assert not conv.notifications
+    await conv.close()
+
+
+def test_no_moving_by_itself_in_a_conversation_by_default(tmp_path):
+    conv = conversation(tmp_path, background_script("x"))
+    assert conv.commands.auto_background == 0
+    assert "自动转入后台" not in conv.registry.get("execute_command").description
+
+
+@pytest.mark.parametrize("value", [-1, 601, "5", True])
+def test_config_rejects_bad_auto_background(tmp_path, value):
+    import yaml
+
+    from mosscode.config import ConfigError, load_settings
+    from test_config import write_config
+
+    path = write_config(tmp_path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    path.write_text(yaml.safe_dump({**data, "command_auto_background": value}), encoding="utf-8")
+    with pytest.raises(ConfigError, match="command_auto_background"):
+        load_settings(path)
+
+
+def test_config_auto_background_default_and_zero(tmp_path):
+    import yaml
+
+    from mosscode.config import load_settings
+    from test_config import write_config
+
+    path = write_config(tmp_path)
+    assert load_settings(path).command_auto_background == 5
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    path.write_text(yaml.safe_dump({**data, "command_auto_background": 0}), encoding="utf-8")
+    assert load_settings(path).command_auto_background == 0
