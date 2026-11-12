@@ -34,7 +34,7 @@ USER_MESSAGE_COLOR = "#f2f2f2"
 
 # The logo, a comet: per column, how many eighths of a line are filled from the bottom of its two
 # lines. Eighth blocks move the edge by a fraction of a line, which is what makes the curve smooth.
-LOGO_HEIGHTS = (1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 16)
+LOGO_HEIGHTS = (1, 1, 2, 2, 3, 4, 5, 6, 7, 9, 11, 13, 16)
 # The tail fades toward the background and the head is the strongest color, so the head is near white on a dark
 # background and deep blue on a light one.
 LOGO_COLORS = ("#d5dbf0", "#5b7cfa", "#1d2b7a") if LIGHT_BACKGROUND else ("#3b3f55", "#7aa2ff", "#e0e7ff")

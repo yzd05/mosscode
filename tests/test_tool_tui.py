@@ -83,6 +83,43 @@ async def test_cancel_continuation_keeps_finished_tool_row(tmp_path):
         assert "已取消" in "\n".join(answer_rows(app, interrupted))
 
 
+async def test_activity_line_keeps_the_outcome_of_the_latest_tool_calls(tmp_path, monkeypatch):
+    from mosscode.appearance import ERROR_COLOR, MUTED_COLOR, TOOL_SUCCESS_COLOR
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    calls = (write_call(), ToolCall("missing", "read_file", '{"path":"missing.txt"}'))
+    provider = ToolProvider(calls, hold=True)
+    app = MossCodeApp(
+        Conversation(
+            provider,
+            registry=create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False),
+        ),
+        "Demo",
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", PromptArea).value = "写入再读一个不存在的文件"
+        await pilot.press("enter")
+        await asyncio.wait_for(provider.continuing.wait(), 3)
+        app._tick()
+        await pilot.pause()
+        assert [str(row.render())[0] for row in app.query(ToolEntry)] == ["✓", "×"]
+        activity = app.query_one("#activity", Static)
+        shown = app.screen._compositor.render_strips()[activity.region.y]
+        assert shown.text.rstrip().endswith("最近 ✓ ×")
+        colors = {segment.text.strip(): segment.style.color.name for segment in shown if segment.text.strip()}
+        assert colors["最近"] == MUTED_COLOR and colors["✓"] == TOOL_SUCCESS_COLOR and colors["×"] == ERROR_COLOR
+
+        await pilot.press("escape")
+        await app._reply_task
+        await pilot.pause()
+        assert activity.region.height == 0  # Idle, the line and its marks take no row.
+        assert [row.state for row in app._recent_tools] == ["success", "error"]
+        # They follow the conversation on screen: gone with it on /clear.
+        await app.clear_screen()
+        assert not app._recent_tools
+
+
 async def test_final_failure_still_shows_error_after_hidden_tool_request(tmp_path):
     provider = ToolProvider((write_call(),), fail=True)
     app = MossCodeApp(

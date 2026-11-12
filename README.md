@@ -1,202 +1,92 @@
-# MossCode
+<p align="center">
+  <img src="docs/logo.svg" alt="MossCode" width="160" />
+</p>
 
-终端里的 coding agent，设计上参考 Claude Code 与 pi：单一 Agent Loop，六个本地工具（读、写、改、命令、glob、grep）加 MCP 外部工具，四档权限与只读计划模式，支持 Anthropic Messages、OpenAI Responses 和 Chat Completions 三种协议；在此之上有 Skill、Hook、子 Agent、git 工作树隔离和 Agent 团队。
+<h1 align="center">MossCode</h1>
+
+<p align="center">
+  <a href="https://pypi.org/project/mosscode/"><img src="https://img.shields.io/pypi/v/mosscode?style=for-the-badge&label=PyPI&color=5b7cfa&labelColor=3b3f55" alt="PyPI" /></a>
+  <img src="https://img.shields.io/badge/Python-3.12%2B-7aa2ff?style=for-the-badge&logo=python&logoColor=white&labelColor=3b3f55" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/Windows%20%C2%B7%20Linux%20%C2%B7%20macOS-a9c1ff?style=for-the-badge&labelColor=3b3f55" alt="Windows · Linux · macOS" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e0e7ff?style=for-the-badge&labelColor=3b3f55" alt="MIT" /></a>
+</p>
+
+<p align="center">
+  终端里的 coding agent。学习 Claude Code 的设计，权限可控，适合长任务。
+</p>
+
+---
+
+中文 | [English](README.en.md) | [使用指南](docs/usage.md) | [参考文档](docs/reference/cli.md) | [对照 Claude Code](docs/claude-code-patterns.md) | [路线图](ROADMAP.md) | [更新日志](CHANGELOG.md) | [参与贡献](CONTRIBUTING.md)
+
+MossCode 是在终端里工作的编码助手，用 Python 写成。设计上参考 Claude Code 与 pi：一个 Agent Loop 加本地工具和 MCP 工具，四档权限与只读的计划模式，支持 Anthropic Messages、OpenAI Responses 和 Chat Completions 三种协议。
+
+### 核心能力
+
+- **Agent Loop**：一轮中多步调用工具，相邻的只读调用并发；空回复和思考截断后自动重发，正文截断后自动续写。
+- **三种协议**：流式输出、提示缓存、思考强度、图片输入；随程序发布的模型目录提供上下文窗口和费用估算。
+- **工具**：读、写、改、命令、glob、grep，网页读取与搜索，`todo_write` 任务清单，`ask_user` 向你提问；先读后改，长命令可以转入后台。
+- **权限与沙箱**：四个权限档位与分层规则，命令按风险分级；Linux、macOS、Windows 都有命令沙箱，联网经域名代理；密钥不进入命令环境。
+- **长任务**：`/goal` 设定完成条件后自动续跑；大结果存盘，压缩前先清理旧工具结果，摘要压缩带熔断。
+- **会话与记忆**：实时存档，`-c`、`/resume` 恢复，`/rewind` 把文件和对话退回到之前任一条消息；记忆笔记跨会话保留。
+- **多 Agent**：定义式与 Fork 子 Agent、后台运行、git 工作树隔离；Agent 团队在 Windows Terminal 或 tmux 的分屏中并行工作。
+- **扩展**：MCP、Skill、Hook 和插件，插件兼容 Claude Code 的格式。
+- **界面**：内联显示，保留终端原生的滚动历史和文字选择；流式 Markdown；审批和提问面板出现在输入框的位置；自动适配浅色和深色终端。
 
 ## 安装
 
 需要 Python 3.12 或更高版本。推荐用 [uv](https://docs.astral.sh/uv/) 安装成独立的命令：
 
-```powershell
+```bash
 uv tool install mosscode
-moss --version
+moss doctor     # 检查安装、PATH、配置和依赖工具，不发送请求
 ```
 
-安装后得到 `moss` 和 `mosscode` 两个相同的命令，在任意目录都能运行。uv 若提示 `~/.local/bin`（Windows 上是 `%USERPROFILE%\.local\bin`）不在 PATH 中，运行 `uv tool update-shell`，然后打开新的终端。`moss doctor` 检查安装、PATH、配置和依赖工具，不发送请求。
-
-升级：`uv tool upgrade mosscode`；卸载：`uv tool uninstall mosscode`。也可以用 pipx：`pipx install mosscode`。
-
-支持 Windows、Linux 和 macOS：日常开发在 Windows（Windows Terminal）上进行，三个系统都由 CI 运行全部测试。搜索优先使用 PATH 中的 ripgrep（`rg`），没有时自动退回内置实现；Windows 上建议安装 Git for Windows，命令工具会优先使用 Git Bash。Agent 团队的分屏窗格需要 Windows Terminal 或 tmux，否则成员在进程内运行。
-
-也可以在 Docker 容器中运行，让命令只能接触挂载进去的项目目录：Dockerfile 和启动命令见 [在容器中运行](docs/reference/container.md)。还可以打开命令沙箱，由系统限制模型的命令能写、能读和能连接什么（Linux 用 bubblewrap，macOS 用 Seatbelt，Windows 用 MXC 或只限制写入的受限令牌），见 [命令沙箱](docs/reference/sandbox.md)。
-
-从源码安装、开发与测试见 [参与贡献](CONTRIBUTING.md)。
+安装后得到 `moss` 和 `mosscode` 两个相同的命令。PATH 提示、升级与卸载、各平台的说明、容器和命令沙箱见 [安装细节](docs/usage.md#安装细节)；从源码安装见 [参与贡献](CONTRIBUTING.md)。
 
 ## 配置
 
-### 模型
+第一次运行 `moss` 时，会在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；之后随时可以运行 `moss setup`。凭据默认保存在系统凭据管理器中，配置只写名称。
 
-第一次运行 `moss` 时如果找不到配置，会在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），配置只写名称；也可以只写环境变量名，或直接把密钥以明文写进这个文件。
-
-追加 Provider 或调整其他选项时手动编辑，字段说明见 [config.example.yaml](config.example.yaml)：
-
-```powershell
-New-Item -ItemType Directory -Force $HOME\.mosscode | Out-Null
-Copy-Item config.example.yaml $HOME\.mosscode\config.yaml
-```
-
-`~/.mosscode/config.yaml` 是用户级配置，在任意目录都生效；只给某个项目用的配置放在该项目的 `.mosscode/config.yaml`。未指定 `--config` 时依次查找 `./.mosscode/config.yaml`、`~/.mosscode/config.yaml`，第一个存在的生效；工作目录下的 `config.yaml` 不会被读取。项目级配置不能放宽命令沙箱和命令的环境变量（`sandbox`、`command_env`），这两项以用户级配置为准，见 [命令沙箱](docs/reference/sandbox.md#项目配置只能收紧)；项目级配置第一次使用和内容变化后需要你确认，见 [项目配置需要确认](docs/reference/cli.md#项目配置需要确认)。
+手动编辑时，一个最小的 Provider 是这样的，全部字段见 [config.example.yaml](config.example.yaml)：
 
 ```yaml
 providers:
   - name: claude
     protocol: anthropic-messages      # 或 openai-responses、openai-chat-completions
     model: replace-with-service-model
-    api_key_env: ANTHROPIC_API_KEY    # 环境变量名；或 api_key_keyring（moss key set 保存的名称）、api_key 直接填写
-    # max_output_tokens: 32000        # 单次回复的输出上限；默认取模型目录的值（最多 32000）
-    # context_window: 200000          # 通常不必填写，模型目录中没有该模型时再填
-    # catalog_model: claude-sonnet-4-5  # 模型名是目录中没有的别名时，指定目录中的条目
-    # base_url: https://your-gateway.example/v1
+    api_key_env: ANTHROPIC_API_KEY    # 环境变量名；或 api_key_keyring（moss key set 保存的名称）
 ```
 
-凭据推荐用 `moss key set 名称` 存进系统凭据管理器，或放在环境变量中（`$env:ANTHROPIC_API_KEY = '你的凭据'`），不要提交到仓库，也不用发送到聊天；模型执行的命令拿不到这些变量，工具结果中出现的密钥也会被隐藏（见[密钥保护](docs/reference/providers.md#密钥保护)）。上下文窗口、输出上限、是否接受图片和价格来自随程序发布的[模型目录](docs/reference/providers.md#模型目录)（数据来自 LiteLLM），`moss models` 查看匹配结果，`moss models update` 下载最新数据。兼容服务、多 Provider、重试和协议选项见 [模型提供商](docs/reference/providers.md)。
-
-常用的顶层选项：
-
-| 选项 | 默认 | 说明 |
-| --- | --- | --- |
-| `default_provider` | 无 | 启动时直接使用的 Provider；未设置且有多项时启动时选择 |
-| `max_iterations` | 200 | 单个任务最多的模型请求次数 |
-| `shell` | `auto` | Windows 优先 Git Bash，找不到时用 PowerShell；可设 `bash`、`powershell` 或 bash.exe 路径 |
-| `system_prompt` | 默认提示 | 填写后完整替换默认系统提示 |
-| `auto_compact` | `true` | 接近上下文窗口时自动压缩较早的对话，见 [上下文管理](docs/reference/context.md) |
-| `persist_sessions` | `true` | 把会话实时存档，用于恢复，见 [会话存档与恢复](docs/reference/sessions.md) |
-| `memory` | `true` | 记忆笔记：索引注入系统提示、`memory` 工具和后台提取，见 [记忆笔记](docs/reference/memory.md) |
-| `auto_memory` | `true` | 任务完成后在后台提取值得记住的内容；`false` 时只保留 `memory` 工具 |
-| `memory_provider` | 当前 Provider | 后台提取使用的 Provider 名称，可以指定较便宜的模型 |
-| `worktree_links` | `[]` | 链接进每个 git 工作树的路径（相对仓库根），如 `node_modules`、`.venv`，见 [Git 工作树](docs/reference/worktree.md#初始化) |
-| `worktree_stale_hours` | `24` | 子 Agent 留下的无改动工作树多少小时后自动清理；`0` 关闭 |
-| `teammate_mode` | `auto` | 团队成员在哪里运行：`auto`、`in-process`、`windows-terminal`、`tmux`，见 [Agent 团队](docs/reference/teams.md#后端) |
-| `team_max_members` | `4` | 每个团队的成员上限，1–8 |
-| `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE=1`，见 [Agent 团队](docs/reference/teams.md#协调者模式) |
-| `todo_tool` | `true` | 提供 `todo_write`，模型在多步任务中维护任务清单，显示在输入框上方，见 [任务清单](docs/reference/tools.md#任务清单) |
-| `goal_max_turns` | `30` | `/goal` 自动续跑多少轮后暂停，1–1000；继续后再给同样多的轮数，见 [目标](docs/reference/commands.md#目标) |
-| `goal_provider` | `memory_provider` 或当前 Provider | 判断 `/goal` 是否达成使用的 Provider 名称，可以指定较便宜的模型 |
-| `claude_directories` | `false` | 另外读取 Claude Code 的 `.claude/skills/`、`.claude/agents/`（用户级和项目级），见 [Skill](docs/reference/skills.md#存放位置) |
-| `sandbox` | `mode: off` | 命令沙箱：`mode: on` 时模型的命令在系统隔离中运行（Linux、macOS、Windows），见 [命令沙箱](docs/reference/sandbox.md) |
-| `web_search` | 无 | 搜索服务，如 `{provider: tavily, api_key_env: TAVILY_API_KEY}`；未配置时不提供搜索，见 [工具与 Agent Loop](docs/reference/tools.md#web_search) |
-
-### 权限、MCP、项目指令、Skill、Hook、子 Agent、插件与工作树
-
-| 文件 | 用途 | 说明 |
-| --- | --- | --- |
-| `~/.mosscode/permissions.yaml`、`.mosscode/permissions.yaml`、`.mosscode/permissions.local.yaml` | 权限规则（用户、项目、本机） | [工具权限](docs/reference/permissions.md)，示例 [permissions.example.yaml](permissions.example.yaml) |
-| `~/.mosscode/mcp.yaml`、`.mosscode/mcp.yaml` | MCP Server | [MCP 外部工具](docs/reference/mcp.md)，示例 [mcp.example.yaml](mcp.example.yaml) |
-| `AGENTS.md`（或 `CLAUDE.md`）、`.mosscode/AGENTS.md`、`~/.mosscode/AGENTS.md` | 项目指令，追加到系统提示；单独一行的 `@路径` 引用其他文件 | [系统提示与缓存](docs/reference/prompts.md#项目指令agentsmd) |
-| `~/.mosscode/skills/<名称>/`、`.mosscode/skills/<名称>/`，以及共享的 `.agents/skills/` | Skill：`SKILL.md` 规程和可选的 `tool.json` 脚本工具；项目级覆盖用户级和内置 | [Skill](docs/reference/skills.md) |
-| `~/.mosscode/hooks.yaml`、`.mosscode/hooks.yaml`、`.mosscode/hooks.local.yaml` | Hook：在会话、轮次、请求和工具调用前后执行命令、注入提示、发送 HTTP 请求或拦截工具调用；项目级文件需确认后启用 | [Hook](docs/reference/hooks.md) |
-| `~/.mosscode/agents/<名称>.md`、`.mosscode/agents/<名称>.md` | 子 Agent 定义：frontmatter 写名称、描述、工具范围、模型、轮数和权限档位，正文是系统提示词；项目级覆盖用户级和内置的 explore、plan、general | [子 Agent](docs/reference/subagents.md) |
-| `~/.mosscode/plugins.yaml`、`.mosscode/plugins.yaml` | 插件：一组 Skill、命令、子 Agent、MCP 和 Hook，兼容 Claude Code 的插件；用 `moss plugin install` 安装，加 `--project` 声明到项目中与团队共享，项目插件需确认后启用 | [插件](docs/reference/plugins.md) |
-| `.worktreeinclude`（仓库根） | 用 `.gitignore` 语法列出创建工作树时要复制过去的被忽略文件，如 `.env` | [Git 工作树](docs/reference/worktree.md#初始化) |
+项目级配置、常用选项，以及权限、MCP、Skill、Hook、子 Agent 和插件的配置文件见 [使用指南](docs/usage.md#配置)。
 
 ## 使用
 
-```powershell
-moss                          # 在当前目录启动交互界面
-moss "解释这个项目的入口"       # 启动后立即发送这条消息
-moss --provider claude        # 指定 Provider
-moss --list-providers
-moss -c                       # 恢复本项目最近的会话
-moss --resume                 # 启动后从列表中选择会话
+### 快速开始
+
+```bash
+moss                         # 在当前目录启动交互界面
+moss "解释这个项目的入口"      # 启动后立即发送这条消息
+moss -c                      # 恢复本项目最近的会话
+moss -p "列出 src 下的模块"    # 无界面模式：运行一个任务后退出
 ```
 
-完整的选项、子命令和退出码见 [命令行](docs/reference/cli.md)。
+用自然语言描述任务，模型自行选择工具；需要写文件或运行命令时，按权限档位请你确认。
 
-用自然语言描述任务，例如“读取 README.md，说明项目入口”，模型自行选择工具。界面以内联方式显示在终端中，完成的内容进入终端原生滚动历史。
+### 常用入口
 
-| 按键 | 作用 |
-| --- | --- |
-| Enter | 发送；运行中发送则排队，在下一轮请求前并入对话 |
-| Shift+Enter、Ctrl+J、行尾 `\` | 换行 |
-| Alt+V（macOS、Linux 也可用 Ctrl+V），或把图片文件拖进终端 | 附加图片，输入框中显示为 `[图片 #1]` |
-| `@` | 列出项目文件和目录，模糊匹配；发送时附上 `@路径` 引用的文件内容（`@文件#L10-20` 只附这几行），见 [引用文件](docs/reference/interface.md#引用文件) |
-| `!命令`、`!!命令` | 不经过模型直接执行命令；`!` 的输出加入对话，下一条消息时模型能看到，`!!` 只执行，见 [执行命令](docs/reference/interface.md#执行命令) |
-| ↑ / ↓ | 浏览输入历史；命令提示打开时选择提示 |
-| Tab | 补全命令和参数 |
-| Shift+Tab | 切换权限档位 default → acceptEdits → plan |
-| Esc / Ctrl+C | 取消生成；有排队消息时第一次 Esc 只把排队消息取回输入框，任务继续；审批时 Esc 拒绝当前调用 |
-| Esc Esc | 空闲且输入框为空时打开 `/rewind` |
-| Ctrl+Q | 退出 |
+- `/help`：命令与快捷键。
+- `/model`、`/thinking`：切换模型和思考强度。
+- `/plan 任务`：只读调查并提交计划，批准后执行；Shift+Tab 切换权限档位。
+- `/goal 条件`：设定完成条件，每轮结束自动判断，未达成就继续。
+- `/compact`、`/clear`：压缩上下文；开始新会话。
+- `/resume`、`/rewind`：恢复会话；把文件和对话退回到之前某条消息。
+- `/status`：模型、权限档位、上下文、用量和估算费用。
+- `/mcp`、`/skills`、`/hooks`、`/agents`、`/plugins`：查看扩展。
+- `/tasks`、`/team`：后台任务与 Agent 团队。
+- `@文件` 附上文件内容，`!命令` 不经过模型直接执行，Esc 取消正在运行的任务。
 
-| 命令 | 行为 |
-|------|------|
-| `/help [命令]` | 显示命令与快捷键；带命令名时显示该命令的用法和别名 |
-| `/clear` | 开始新会话：清空屏幕与终端滚动历史、模型上下文和 Token 统计；权限档位、会话授权和 MCP 连接保留，AGENTS.md 重新加载 |
-| `/compact [说明]` | 压缩上下文：较早的对话换成摘要，近期消息和用户原话保留；说明用于指定摘要侧重点 |
-| `/resume` | 列出本项目最近的会话，↑ / ↓ 选择、Enter 恢复、Esc 收起 |
-| `/resume ID` | 直接恢复指定会话 |
-| `/rewind` | 选一条之前的消息，把文件、对话或两者退回到它发出之前 |
-| `/session` | 显示当前会话的 ID、存档路径、标题和消息数 |
-| `/memory` | 列出已加载的项目指令文件，以及用户级和项目级的记忆笔记及目录 |
-| `/memory 名称` | 显示该笔记的路径和全文 |
-| `/model` | 在输入框下方列出配置的提供商（当前项带 ✓），↑ / ↓ 选择、Enter 切换、Esc 收起 |
-| `/model 名称` | 直接切换到指定提供商；对话历史保留 |
-| `/thinking [档位]` | 设置本会话的思考强度（off、low、medium、high，`default` 回到配置）；不带参数时打开选择列表 |
-| `/plan` | 只读调查与规划，模型提交计划经批准后执行 |
-| `/plan 任务` | 切入计划模式并立即调查、生成计划 |
-| `/do [任务]` | 退出计划模式，回到进入前的档位；带任务时随后发给模型 |
-| `/permissions`（别名 `/permission`） | 查看权限档位说明 |
-| `/permissions 档位` | 切换到 default、acceptEdits、plan 或 bypassPermissions |
-| `/sandbox [on\|off]` | 查看命令沙箱的边界和最近的拦截；`off` 确认后在本会话关闭，`on` 重新打开 |
-| `/mcp` | 列出 MCP Server 的状态（连接中、已连接及工具数、失败原因）与配置问题 |
-| `/mcp 名称` | 列出该 Server 的工具，只读工具标注 `[只读]` |
-| `/status` | 显示模型、权限档位、上下文、本会话用量和估算费用、会话、MCP、记忆、网络工具、Hook 和子 Agent 的状态 |
-| `/skills`（别名 `/skill`） | 列出全部 Skill 及其来源、模式和描述；`/skills 名称` 查看详情，`/skills reload` 重新扫描 |
-| `/hooks`（别名 `/hook`） | 列出 Hook 及其来源、条件、状态和最近的执行记录；`/hooks id` 查看详情，`/hooks reload` 重新加载 |
-| `/agents`（别名 `/agent`） | 列出子 Agent 定义及其来源和描述；`/agents 名称` 查看实际可用的工具和有效权限档位，`/agents reload` 重新扫描 |
-| `/plugins`（别名 `/plugin`） | 列出已安装的插件；`/plugins 名称` 查看组件和问题。安装和管理用命令行的 `moss plugin` |
-| `/tasks`（别名 `/task`） | 列出本会话的子 Agent 任务及其状态、用时和 Token；`/tasks id` 查看详情，`/tasks stop id` 停止 |
-| `/worktree`（别名 `/worktrees`） | 列出 MossCode 管理的 git 工作树及其状态；`/worktree create 名称` 创建，`/worktree remove 名称 [--discard]` 删除，`/worktree clean` 清理过期的临时工作树 |
-| `/team`（别名 `/teams`） | 列出本项目的 Agent 团队；`/team 名称` 查看成员和任务，`/team stop 成员` 停止成员，`/team delete 名称` 删除团队 |
-| `/<Skill 名> [参数]` | 运行 Skill，如内置的 `/commit`、`/init`（生成或补充 `AGENTS.md`）、`/review`（在独立上下文中审查未提交的改动）、`/test` |
-| `/exit`（别名 `/quit`） | 退出并清理资源 |
-
-内置命令都是本地命令，不请求模型；Skill 命令把 Skill 的规程发给模型，补全菜单中带 `[skill]` 标记。命令名不区分大小写。`/etc/hosts 怎么改` 这类不像命令的文字照常发给模型；要发送恰好像命令的文字，在开头再加一个 `/`，如 `//api 怎么设计`。解析、补全和添加命令的方法见 [命令](docs/reference/commands.md)。
-
-界面、输入排队、状态栏与配色的细节见 [终端界面](docs/reference/interface.md)。
-
-### 会话与记忆
-
-会话实时存档到 `~/.mosscode/projects/<项目键>/sessions/`，退出或崩溃后用 `-c`、`--resume [ID]` 或 `/resume` 接着对话，中断时未完成的工具调用会被标记出来。`write_file` 和 `edit_file` 改文件前自动保存检查点，`/rewind` 可以把文件和对话退回到之前某条消息发出前的状态。存档保留 30 天。见 [会话存档与恢复](docs/reference/sessions.md)。
-
-对模型说“记住……”时，它用 `memory` 工具写一条笔记；任务完成后，后台还会提取你纠正过的做法和偏好（只依据对话，不依据工具输出）。笔记是 `~/.mosscode/memory/`（用户级）和 `~/.mosscode/projects/<项目键>/memory/`（项目级）中的 Markdown 文件，下次启动时索引进入系统提示。见 [记忆笔记](docs/reference/memory.md)。
-
-### 权限档位
-
-没有匹配规则时按下表判断；规则中的 deny 在任何档位都生效。
-
-| 档位 | 只读工具与只读命令 | 文件写入/编辑 | 其他命令 |
-| --- | --- | --- | --- |
-| `default` | 允许 | 询问 | 询问 |
-| `acceptEdits` | 允许 | 允许 | 询问 |
-| `plan` | 允许 | 不可用 | 不可用 |
-| `bypassPermissions` | 允许 | 允许 | 允许 |
-
-审批时可选本次允许、本会话允许或永久允许（保存到 `.mosscode/permissions.local.yaml`）。删除根目录、格式化磁盘等灾难级命令一律拒绝；`git reset --hard`、`git push --force`、`rm -rf` 等高风险命令每次都要确认。路径检查是应用层限制，不是系统沙箱。完整说明见 [工具权限](docs/reference/permissions.md)。
-
-**计划模式**：`/plan 任务` 或 Shift+Tab 进入。模型只能读取和运行只读命令，调查后用 `exit_plan_mode` 提交计划；批准后在同一任务内继续执行。见 [工具与 Agent Loop](docs/reference/tools.md#计划模式)。
-
-**Agent 团队**：较大的、能拆成几块并行改动的任务，模型可以作为 Lead 建团队：共享任务写明依赖，至多 4 个成员各在自己的 git 工作树中工作，通过消息汇报；全部完成后经你确认逐个合并。在 Windows Terminal 中运行时成员出现在分屏窗格里，否则在进程内运行。团队跨重启保留。见 [Agent 团队](docs/reference/teams.md)。
-
-### 网络工具
-
-模型可以用 `web_fetch` 读取网页（HTML 转为 Markdown，长页面分段读取），配置了搜索服务（`config.yaml` 中的 `web_search`，目前支持 Tavily）时还可以用 `web_search` 搜索。两者都会把网址或查询词发到外部，因此每个新的域名、每次搜索都要确认，可选本会话或永久允许；也可以在权限规则中写 `WebFetch(domain:docs.python.org)`、`WebSearch`。本机和内网地址一律拒绝，访问本地服务用命令。代理读取 `HTTPS_PROXY` 环境变量。见 [网络工具](docs/reference/tools.md#网络工具)。
-
-### 安全说明
-
-- 路径检查是应用层限制，不是系统沙箱：确认过的命令以你的系统权限运行，确认前请看清命令内容。需要隔离时在 Docker 或 Dev Container 中运行，见 [在容器中运行](docs/reference/container.md)；容器隔离文件和进程，不隔离网络。
-- 网页内容和搜索结果是不可信的数据，模型被要求不执行其中的指令；读取陌生网站时仍应留意它的回答。
-- 项目中的 Hook、MCP 配置和插件声明会启动程序：项目级 Hook 和项目插件需要你确认后才启用，`.mcp.json` 默认不读取；打开不熟悉的仓库前先查看 `.mosscode/` 下的文件。
-
-### 无界面模式
-
-```powershell
-moss -p "列出 src 下的模块"
-moss -p "解释项目入口" --show-usage
-moss -p "列出 src 下的模块" --output-format json
-Get-Content error.log | moss -p "解释这个错误"
-```
-
-`-p`（`--prompt`）运行一个任务后退出；管道输入附在任务之后，只有管道输入时它就是任务。不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。未经确认的项目级 Hook 在 `-p` 中不启用（stderr 有提示），`--trust-project-hooks` 只在本次信任，`--no-hooks` 不加载任何 Hook；未确认的项目插件同样不加载，`--trust-project-plugins` 只在本次信任。模型启动的后台子 Agent 在 `-p` 中照常运行：回复结束后等待它们完成，每个结果开启新的一轮，全部结束后才退出；stderr 提示任务的开始与结束。格式说明见 [模型提供商](docs/reference/providers.md#无界面模式与输出格式)。
+全部按键和命令、权限档位、网络工具与无界面模式见 [使用指南](docs/usage.md#按键与命令)。
 
 ## 架构
 
@@ -220,6 +110,9 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 
 一次任务：Agent Loop 用“稳定系统提示 + 历史 + 本次环境补充”请求模型，把流式事件交给界面；回复中的工具调用经校验和授权后执行（相邻只读调用最多 4 个并发），纯文本结果写回历史，再请求模型，直到回复不再调用工具或遇到停止条件（取消、轮数上限、连续未知工具等）。TUI 与 `-p` 共用 `Conversation`；在 Python 中可连续调用 `Conversation.ask()` 保持多轮历史，结束后 `await conversation.close()`。
 
+<details>
+<summary>各模块的职责</summary>
+
 | 模块 | 职责 |
 | --- | --- |
 | `agent.py` | Agent Loop：请求、工具执行、排队消息、停止条件、计划模式、压缩时机 |
@@ -242,14 +135,24 @@ cli.py ──► tui.py（Textual 界面）或 -p（无界面）
 | `credentials.py`、`key_command.py` | 系统凭据管理器（`moss key`），子进程环境与输出中的密钥隐藏 |
 | `plugins.py`、`plugin_command.py` | 插件的记录、读取与变量替换，交给 Skill、子 Agent、MCP、Hook 的加载函数；`moss plugin` 的安装、marketplace、更新与删除 |
 
+</details>
+
 ### 文档
 
-| 主题 | 文档 |
-| --- | --- |
-| 当前行为的完整说明 | [命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[命令沙箱](docs/reference/sandbox.md)、[在容器中运行](docs/reference/container.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[插件](docs/reference/plugins.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md) |
-| 版本变化 | [更新日志](CHANGELOG.md) |
-| 开发与贡献 | [参与贡献](CONTRIBUTING.md)、[开发说明](AGENTS.md)、[安全策略](SECURITY.md) |
+- [使用指南](docs/usage.md)：安装细节、配置项、按键、命令、权限档位、无界面模式
+- 参考文档，每项行为的完整说明：[命令行](docs/reference/cli.md)、[界面](docs/reference/interface.md)、[命令](docs/reference/commands.md)、[工具与 Agent Loop](docs/reference/tools.md)、[权限](docs/reference/permissions.md)、[命令沙箱](docs/reference/sandbox.md)、[在容器中运行](docs/reference/container.md)、[MCP](docs/reference/mcp.md)、[模型提供商](docs/reference/providers.md)、[系统提示与缓存](docs/reference/prompts.md)、[上下文管理](docs/reference/context.md)、[会话存档与恢复](docs/reference/sessions.md)、[记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[子 Agent](docs/reference/subagents.md)、[插件](docs/reference/plugins.md)、[Git 工作树](docs/reference/worktree.md)、[Agent 团队](docs/reference/teams.md)
+- [对照 Claude Code](docs/claude-code-patterns.md)：逐项对照 Claude Code 的设计和 MossCode 的取舍
+- [路线图](ROADMAP.md)：已完成和接下来要做的
+- [更新日志](CHANGELOG.md)：每个版本的变化
+- [参与贡献](CONTRIBUTING.md)、[开发说明](AGENTS.md)、[安全策略](SECURITY.md)
 
-目前不支持网络限制、资源配额和审计日志。
+### 开发
+
+```bash
+uv venv --python 3.12
+uv pip install -e ".[dev]"
+python -m pytest -q
+ruff check && ruff format --check
+```
 
 MossCode 以 [MIT 许可证](LICENSE) 发布。

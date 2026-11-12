@@ -47,7 +47,7 @@ def test_blend_walks_the_stops_and_stays_inside_them():
 
 def test_logo_is_a_two_line_comet_drawn_with_foreground_colors_only():
     art = logo()
-    assert art.plain == "         ▂▅██\n▁▁▂▂▃▄▅▆█████"
+    assert art.plain == "         ▁▃▅█\n▁▁▂▂▃▄▅▆▇████"
     # Every drawn cell is a block filled from the bottom, so no cell needs a background or reverse video.
     assert len(art.spans) == sum(not char.isspace() for char in art.plain)
     assert all(span.style.color and span.style.bgcolor is None and not span.style.reverse for span in art.spans)
@@ -109,8 +109,8 @@ def test_banner_shows_logo_name_model_directory_branch_and_tip(tmp_path, monkeyp
     output = render(startup_banner("Demo Model"))
     where = str(Path("~", "work"))
     assert plain_lines(output) == [
-        "         ▂▅██  MossCode v" + version("mosscode"),
-        "▁▁▂▂▃▄▅▆█████  Demo Model",
+        "         ▁▃▅█  MossCode v" + version("mosscode"),
+        "▁▁▂▂▃▄▅▆▇████  Demo Model",
         "",
         where + "  topic",
         STARTUP_TIP,
@@ -132,5 +132,5 @@ def test_banner_outside_a_repository_has_no_branch_and_a_narrow_one_is_cut_not_w
     assert plain_lines(render(startup_banner("Demo")))[3] == short_path(deep)
     narrow = plain_lines(render(startup_banner("A model with a rather long display name"), width=30))
     assert len(narrow) == 5 and all(len(line) <= 30 for line in narrow)
-    assert narrow[1].startswith("▁▁▂▂▃▄▅▆█████  A model") and narrow[1].endswith("…")
+    assert narrow[1].startswith("▁▁▂▂▃▄▅▆▇████  A model") and narrow[1].endswith("…")
     assert narrow[3].endswith("…")

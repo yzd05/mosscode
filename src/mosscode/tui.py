@@ -3,7 +3,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -225,6 +225,47 @@ def activity_line(note: str, now: float) -> Text:
     text.append(stage, style=OPERATION_COLOR)
     text.append(separator + rest, style=MUTED_COLOR)
     return text
+
+
+# A tool row's mark: the same mark stands for the call in the activity line's recent results.
+TOOL_MARKS = {
+    "running": ("●", OPERATION_COLOR),
+    "success": ("✓", TOOL_SUCCESS_COLOR),
+    "error": ("×", ERROR_COLOR),
+    "stopped": ("!", OPERATION_COLOR),
+}
+RECENT_TOOLS = 5  # Tool calls whose outcome stays on the activity line.
+STAGE_ROOM = 16  # Narrower than this beside the recent results, the stage keeps the line to itself.
+
+
+def tool_state(result: ToolResult) -> str:
+    """How a call ended: stopped before or while running, failed, or succeeded."""
+    if result.code in {"cancelled", "not_executed", "plan_blocked"}:
+        return "stopped"
+    return "error" if result.is_error else "success"
+
+
+def recent_tools_line(states: Iterable[str]) -> Text:
+    """The outcome marks of the latest tool calls, oldest first, colored like their rows."""
+    text = Text(no_wrap=True)
+    for index, state in enumerate(states):
+        if not index:
+            text.append("最近 ", style=MUTED_COLOR)
+        marker, color = TOOL_MARKS[state]
+        text.append(("" if not index else " ") + marker, style=color)
+    return text
+
+
+def activity_row(note: str, now: float, states: Iterable[str], width: int) -> Text:
+    """The stage on the left and, at the right end, the recent tool outcomes; the stage gives way when narrow."""
+    line = activity_line(note, now)
+    recent = recent_tools_line(states)
+    if not recent or width < recent.cell_len + 2 + STAGE_ROOM:
+        return line
+    line.truncate(width - recent.cell_len - 2, overflow="ellipsis")
+    line.append(" " * (width - line.cell_len - recent.cell_len))
+    line.append_text(recent)
+    return line
 
 
 # Shift+Tab order; bypassPermissions is entered only explicitly and leaves to default.
@@ -1074,6 +1115,7 @@ class ToolEntry(Static):
     def __init__(self, event: ToolProgress, shell: str | None = None):
         super().__init__(classes="tool-entry", markup=False)
         self.started = monotonic()
+        self.state = "running"
         self.elapsed: float | None = None
         self.subagent = None  # The task of an agent row, once it starts.
         call = event.call
@@ -1086,12 +1128,7 @@ class ToolEntry(Static):
         self.update(self.transcript)
 
     def _heading(self, state: str) -> Text:
-        marker, color = {
-            "running": ("●", OPERATION_COLOR),
-            "success": ("✓", TOOL_SUCCESS_COLOR),
-            "error": ("×", ERROR_COLOR),
-            "stopped": ("!", OPERATION_COLOR),
-        }[state]
+        marker, color = TOOL_MARKS[state]
         if state in {"error", "stopped"}:
             action_color = color
         else:
@@ -1152,8 +1189,7 @@ class ToolEntry(Static):
         shown = lines[:3]
         if elapsed is not None or self.elapsed is None:
             self.elapsed = elapsed if elapsed is not None else monotonic() - self.started
-        stopped = result.code in {"cancelled", "not_executed", "plan_blocked"}
-        state = "stopped" if stopped else "error" if result.is_error else "success"
+        state = self.state = tool_state(result)
         if self.operation == "memory" and not result.is_error:
             text = memory_line(result.details)
             text.append(f" {self.elapsed:.1f}s", style=MUTED_COLOR)
@@ -1177,8 +1213,8 @@ class ToolEntry(Static):
         if self.operation == "agent" and len(lines) > 3 and lines[-1].startswith("（子 Agent"):
             shown = [*lines[:2], lines[-1]]
         if result.is_error:
-            label = "已取消" if result.code == "cancelled" else "未执行" if stopped else "失败"
-            text.append(label + " · ", style=f"bold {OPERATION_COLOR if stopped else ERROR_COLOR}")
+            label = "已取消" if result.code == "cancelled" else "未执行" if state == "stopped" else "失败"
+            text.append(label + " · ", style=f"bold {OPERATION_COLOR if state == 'stopped' else ERROR_COLOR}")
         text.append(shown[0][:160], style=summary)
         changes = self._changes(result)
         if changes is not None:
@@ -1343,7 +1379,9 @@ class MossCodeApp(TerminalApp[None]):
         self._usage = conversation.total_usage
         self._status_note = ""
         self._stage_note = ""  # What the running task is doing, shown on the line above the prompt.
-        self._activity_shown: tuple[str, int] | None = None
+        self._activity_shown: tuple | None = None
+        # The rows of the latest main-conversation tool calls, oldest first; each knows how its call ended.
+        self._recent_tools: dict[ToolEntry, None] = {}
         self._mcp_notices: list[str] = []  # MCP servers that settled while a task was running.
         self._retry_notice = ""  # Held until the next event so the ticker does not hide it.
         self._hint_until = 0.0  # Short notes shown over the running status until this time.
@@ -1756,10 +1794,19 @@ class MossCodeApp(TerminalApp[None]):
             activity.set_class(not self._generating, "idle")
             self.call_later(self._fit_chat)  # One row more or less above the prompt.
         now = monotonic()
-        shown = (self._stage_note, int(now * 5) if self._stage_note else 0)
+        line = activity.first(Static)
+        width = line.content_size.width
+        states = tuple(row.state for row in self._recent_tools)
+        shown = (self._stage_note, int(now * 5) if self._stage_note else 0, states, width)
         if shown != self._activity_shown:
             self._activity_shown = shown
-            activity.first(Static).update(activity_line(self._stage_note, now) if self._stage_note else Text(""))
+            line.update(activity_row(self._stage_note, now, states, width) if self._stage_note else Text(""))
+
+    def _record_tool(self, row: ToolEntry) -> None:
+        """Keep a finished call's row for the activity line; a call reported twice keeps its place."""
+        self._recent_tools[row] = None
+        while len(self._recent_tools) > RECENT_TOOLS:
+            del self._recent_tools[next(iter(self._recent_tools))]
 
     def _status(self, note: str) -> None:
         self._status_note = note
@@ -2349,6 +2396,7 @@ class MossCodeApp(TerminalApp[None]):
 
     async def _clear_screen(self) -> None:
         """Like Claude Code's /clear: wipe the screen and scrollback, then start again from the banner."""
+        self._recent_tools.clear()  # They belonged to the history that is gone from the screen.
         if not self.is_inline:
             return
         async with self._scrollback_lock:
@@ -2855,6 +2903,7 @@ class MossCodeApp(TerminalApp[None]):
                         for result in event.results:
                             if result.call_id in tool_rows:
                                 tool_rows[result.call_id].complete(result)
+                                self._record_tool(tool_rows[result.call_id])
                         if event.reason in {"max_iterations", "unknown_tools", "max_tokens"}:
                             await self._local_note("└ " + event.notice)
                             self._status("已停止 · 可以继续提问")
@@ -2907,6 +2956,7 @@ class MossCodeApp(TerminalApp[None]):
                                 await chat.mount(row)
                             if event.result is not None:
                                 row.complete(event.result, event.elapsed)
+                                self._record_tool(row)
                                 if event.call.name == "todo_write":
                                     self._refresh_todos()
                                 reply.phase = (

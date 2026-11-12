@@ -6,7 +6,20 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = [ROOT / "README.md", *sorted((ROOT / "docs/reference").glob("*.md"))]
+DOCS = [
+    *(
+        ROOT / name
+        for name in (
+            "README.md",
+            "README.en.md",
+            "ROADMAP.md",
+            "docs/claude-code-patterns.md",
+            "docs/usage.md",
+            "docs/usage.en.md",
+        )
+    ),
+    *sorted((ROOT / "docs/reference").glob("*.md")),
+]
 
 
 def anchors(path: Path) -> set[str]:

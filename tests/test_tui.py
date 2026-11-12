@@ -720,6 +720,45 @@ def test_activity_line_turns_with_time_and_colors_the_stage():
     assert activity_line("连接中…", 0.0).plain == SPINNER[0] + " 连接中…"
 
 
+def test_recent_tool_outcomes_sit_at_the_right_end_and_give_way_when_narrow():
+    from mosscode.appearance import ERROR_COLOR, MUTED_COLOR, OPERATION_COLOR, TOOL_SUCCESS_COLOR
+    from mosscode.tui import SPINNER, activity_line, activity_row
+
+    note = "执行工具中 · 3/200 轮 · 4.2s · Esc 取消"
+    states = ("success", "error", "stopped", "success")
+    line = activity_row(note, 0.0, states, 60)
+    assert line.cell_len == 60
+    assert line.plain.startswith(SPINNER[0] + " " + note) and line.plain.endswith("  最近 ✓ × ! ✓")
+    marks = [(line.plain[span.start : span.end], str(span.style)) for span in line.spans][-5:]
+    assert marks == [
+        ("最近 ", MUTED_COLOR),
+        ("✓", TOOL_SUCCESS_COLOR),
+        (" ×", ERROR_COLOR),
+        (" !", OPERATION_COLOR),
+        (" ✓", TOOL_SUCCESS_COLOR),
+    ]
+    # Short of room, the stage is cut with an ellipsis and the marks stay whole.
+    narrow = activity_row(note, 0.0, states, 34)
+    assert narrow.cell_len == 34 and narrow.plain.endswith("…  最近 ✓ × ! ✓")
+    # Too narrow for both, or nothing finished yet: the stage alone, as before.
+    assert activity_row(note, 0.0, states, 25).plain == activity_line(note, 0.0).plain
+    assert activity_row(note, 0.0, (), 60).plain == activity_line(note, 0.0).plain
+
+
+def test_only_the_latest_tool_calls_are_kept_and_a_repeated_report_keeps_its_place():
+    class Row:
+        def __init__(self, state):
+            self.state = state
+
+    app = MossCodeApp(Conversation(FakeProvider()), "test")
+    rows = [Row(state) for state in ("error", "success", "success", "stopped", "success", "error", "success")]
+    for row in rows:
+        app._record_tool(row)
+    app._record_tool(rows[3])  # Completed once more when the run stops: still the fourth call.
+    assert list(app._recent_tools) == rows[2:]
+    assert [row.state for row in app._recent_tools] == ["success", "stopped", "success", "error", "success"]
+
+
 def test_choice_prompt_sets_the_explanation_apart_in_grey():
     from mosscode.appearance import MUTED_COLOR
     from mosscode.tui import choice_prompt
