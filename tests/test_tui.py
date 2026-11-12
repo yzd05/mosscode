@@ -208,6 +208,14 @@ async def test_model_picker_is_keyboard_only_and_escape_returns_to_input():
         assert models.option_count == 2
         rows = shown_rows(app, models)
         assert [row.startswith("❯ ") for row in rows[:2]] == [index == models.highlighted for index in range(2)]
+        from mosscode.appearance import COMMAND_HIGHLIGHT_COLOR, MUTED_COLOR
+
+        strips = app.screen._compositor.render_strips()[models.region.y : models.region.y + 2]
+        colors = [{s.style.color.name for s in strip if s.text.strip() and "/" in s.text} for strip in strips]
+        # The details next to a name are supporting grey, and take the highlight with the name on the chosen row.
+        assert colors[models.highlighted] == {COMMAND_HIGHLIGHT_COLOR} and colors[1 - models.highlighted] == {
+            MUTED_COLOR
+        }
         await pilot.click("#models", offset=(3, 1))
         assert app.query_one("#model-panel").display and app.provider_name == "test"
         await pilot.press("escape")
@@ -720,7 +728,7 @@ def test_choice_prompt_sets_the_explanation_apart_in_grey():
     assert choice_prompt("拒绝").plain == "拒绝" and not choice_prompt("拒绝").spans
 
 
-async def test_activity_row_shows_the_running_stage_and_is_blank_when_idle(monkeypatch):
+async def test_activity_row_shows_the_running_stage_and_takes_no_row_when_idle(monkeypatch):
     from mosscode.appearance import BRAND_COLOR, MUTED_COLOR, OPERATION_COLOR
     from mosscode.tui import SPINNER
 
@@ -734,10 +742,13 @@ async def test_activity_row_shows_the_running_stage_and_is_blank_when_idle(monke
         activity, row = app.query_one("#activity", Static), app.query_one("#input-row")
 
         def directly_above_the_prompt():
-            # One row whether or not it says anything, so the prompt does not jump when a task starts or ends.
             return activity.region.height == 1 and activity.region.bottom == row.region.y
 
-        assert str(activity.render()) == "" and directly_above_the_prompt()
+        def gone():
+            # Idle, the blank row that ends the scrollback is the gap above the prompt; a second one would double it.
+            return str(activity.render()) == "" and activity.region.height == 0
+
+        assert gone()
         provider.hold = True
         await send(app, pilot, "hello")
         await asyncio.wait_for(provider.started.wait(), timeout=2)
@@ -764,7 +775,7 @@ async def test_activity_row_shows_the_running_stage_and_is_blank_when_idle(monke
         await pilot.press("escape")
         await asyncio.wait_for(app._reply_task, timeout=5)
         await pilot.pause()
-        assert str(activity.render()) == "" and directly_above_the_prompt()
+        assert gone()
 
 
 async def test_choice_list_points_at_the_highlighted_row_and_ignores_clicks():
@@ -809,3 +820,20 @@ async def test_choice_list_points_at_the_highlighted_row_and_ignores_clicks():
         await pilot.pause()
         assert pointed() == []
     assert issubclass(MemberList, KeyboardOptions)
+
+
+async def test_a_long_choice_list_scrolls_with_a_thin_grey_bar():
+    from mosscode.appearance import RULE_COLOR
+
+    app = MossCodeApp(Conversation(FakeProvider()), "test")
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("/")
+        await pilot.pause()
+        hints = app.query_one("#command-hints", OptionList)
+        assert hints.show_vertical_scrollbar and hints.scrollbar_size_vertical == 1
+        bar = hints.region.right - 2  # The column left of the list's right padding.
+        strips = app.screen._compositor.render_strips()[hints.region.y : hints.region.bottom]
+        thumb = [segment for strip in strips for segment in strip.crop(bar, bar + 1) if segment.style.reverse]
+        # The thumb is drawn reversed in the rules' grey, not as the theme's near-black block.
+        assert thumb and all(segment.style.color.name == RULE_COLOR for segment in thumb)
+        assert all(segment.style.bgcolor.is_default for segment in thumb)

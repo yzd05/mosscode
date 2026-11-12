@@ -248,13 +248,17 @@ async def test_other_takes_the_typed_answer_and_esc_leaves_the_rest(tmp_path):
         await start(app, pilot)
         field = app.query_one("#prompt", PromptArea)
         field.value = "草稿"
+        row = app.query_one("#input-row")
+        assert not row.display  # The question stands in the prompt's place while it is chosen from.
         await pilot.press("down", "down", "enter")
         await pilot.pause()
+        # "其他" is typed in the prompt, which comes back above the question.
+        assert row.display and row.region.bottom <= app.query_one("#question-panel").region.y
         assert app.focused is field and field.value == ""
         assert "Esc 返回选项" in str(app.query_one("#question-help").render())
         await pilot.press("escape")  # Back to the options, the draft back in the prompt.
         await pilot.pause()
-        assert field.value == "草稿" and app.query_one("#question-panel").display
+        assert field.value == "草稿" and app.query_one("#question-panel").display and not row.display
         await pilot.press("enter")  # "其他" is still highlighted.
         await pilot.pause()
         field.value = "先解释两种的区别"

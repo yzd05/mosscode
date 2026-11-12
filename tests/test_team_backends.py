@@ -620,6 +620,15 @@ async def test_member_window_answers_approvals_and_refuses_new_tasks():
         assert app.title == "成员 alice · 团队 t"
         assert str(app.query_one("#title", Static).render()) == "成员 alice · 团队 t"
         assert app.query_one("#approval").display
+        from mosscode.appearance import COMMAND_HIGHLIGHT_COLOR, MUTED_COLOR
+
+        options = app.query_one("#approval-options")
+        strips = app.screen._compositor.render_strips()[options.region.y : options.region.y + 2]
+        # Marked as in the lead's window: ❯ on the chosen option, the name over its grey explanation.
+        assert strips[0].text.lstrip().startswith("❯ 1. 本次允许") and strips[1].text.lstrip().startswith("2. ")
+        chosen = {s.style.color.name for s in strips[0] if s.text.strip() and s.style.color}
+        assert COMMAND_HIGHLIGHT_COLOR in chosen
+        assert any(s.style.color and s.style.color.name == MUTED_COLOR for s in strips[1] if s.text.strip())
         app.query_one("#input").focus()
         await pilot.press("1", "enter")  # The first request, its first choice.
         assert process.answered == [("r1", "once")]

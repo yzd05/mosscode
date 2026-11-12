@@ -8,6 +8,7 @@ from rich.text import Text
 from textual import events
 from textual.drivers.headless_driver import HeadlessDriver
 from textual.geometry import Offset, Size
+from textual.widgets import Static
 
 from mosscode.appearance import (
     BRAND_COLOR,
@@ -544,7 +545,7 @@ async def test_redraws_wait_while_drawing_the_open_block_is_slow(monkeypatch):
         pending.set()
 
 
-async def test_streaming_reply_starts_right_below_the_scrollback_and_idle_keeps_one_gap():
+async def test_every_gap_above_the_prompt_is_one_row():
     output, ready, pending = [], asyncio.Event(), asyncio.Event()
 
     async def stream():
@@ -553,14 +554,32 @@ async def test_streaming_reply_starts_right_below_the_scrollback_and_idle_keeps_
         await pending.wait()
         yield response("第一段\n\n第二段")
 
+    def shown():
+        return [strip.text.rstrip() for strip in app.screen._compositor.render_strips()]
+
     app = InlineRecordingApp(Conversation(SequenceProvider(stream)), output)
     async with app.run_test(size=(60, 20)) as pilot:
+        for _ in range(100):  # The startup area moves to the scrollback right after the first frame.
+            if not app.query("#banner"):
+                break
+            await pilot.pause(0.02)
+        await pilot.pause()
+        # The startup area, one row, the prompt.
+        committed = plain(output).replace("\r", "").rstrip(" ")
+        assert committed.endswith("\n\n") and not committed.endswith("\n\n\n")
+        assert "/help" in committed.rstrip().splitlines()[-1] and shown()[0].lstrip().startswith("─")
         await send_and_wait(app, pilot, "问题", ready)
-        rows = [strip.text.rstrip() for strip in app.screen._compositor.render_strips()]
+        rows = shown()
         # The scrollback already ends with a blank row; another one here would push the reply down.
-        assert rows[:3] == ["  ● 第一段", "", "    第二"]
+        assert rows[:5] == ["  ● 第一段", "", "    第二", "", rows[4]] and "输出中" in rows[4]
         pending.set()
         await app._reply_task
         await pilot.pause()
-        rows = [strip.text.rstrip() for strip in app.screen._compositor.render_strips()]
-        assert rows[0] == "" and rows[2].lstrip().startswith("─")
+        # Idle, the blank row that ends the scrollback is the only one above the prompt: the stage row is gone.
+        assert shown()[0].lstrip().startswith("─") and not app.query_one("#activity").region.height
+        for name in ("#todo-panel", "#queue"):
+            panel = app.query_one(name, Static)
+            panel.update(name)
+            panel.display = True
+        await pilot.pause()
+        assert shown()[:5] == ["   #todo-panel", "", "   #queue", "", shown()[4]] and shown()[4].lstrip()[0] == "─"

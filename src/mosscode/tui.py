@@ -1209,9 +1209,9 @@ class MossCodeApp(TerminalApp[None]):
     Screen { background: $background; color: $foreground; padding: 0 2; overflow: hidden hidden; }
     Screen:inline { height: auto; border: none; }
     #banner { height: auto; margin: 1 0; }
-    /* Each block in the scrollback ends with a blank row, so live content starts right below it; the one row an
-       empty area keeps holds the gap above the prompt. */
-    #chat { height: auto; min-height: 1; max-height: 100vh; scrollbar-size: 1 0; }
+    /* Each block in the scrollback ends with a blank row: that row is the gap above whatever is live, so nothing
+       live adds one of its own at the top. */
+    #chat { height: auto; max-height: 100vh; scrollbar-size: 1 0; }
     .entry { height: auto; padding: 0; margin-bottom: 1; background: $background; }
     .message-row { height: auto; }
     .user-entry .message-row, .user-entry .message-row > Static {
@@ -1224,11 +1224,12 @@ class MossCodeApp(TerminalApp[None]):
     .thinking-label { height: auto; margin-bottom: 1; color: MUTED_COLOR !important; }
     .turn-summary { height: auto; margin-top: 1; color: MUTED_COLOR !important; }
     #status { height: auto; margin-top: 0; color: $text-muted; }
-    #queue { height: auto; margin-top: 1; padding: 0 1; }
-    #todo-panel { height: auto; max-height: 6; margin-top: 1; padding: 0 1; }
-    #attachments { height: auto; margin-top: 1; padding: 0 1; color: MUTED_COLOR !important; }
+    #queue { height: auto; margin-bottom: 1; padding: 0 1; }
+    #todo-panel { height: auto; max-height: 6; margin-bottom: 1; padding: 0 1; }
+    #attachments { height: auto; margin-bottom: 1; padding: 0 1; color: MUTED_COLOR !important; }
     .image-notes { height: auto; }
     #activity { height: 1; padding: 0 1; }
+    #activity.idle { height: 0; }
     #input-row { height: auto; padding: 0 1; border-top: solid RULE_COLOR; border-bottom: solid RULE_COLOR; }
     #input-row.mode-plan { border-top: solid OPERATION_COLOR; border-bottom: solid OPERATION_COLOR; }
     #input-row.mode-acceptEdits { border-top: solid TOOL_SUCCESS_COLOR; border-bottom: solid TOOL_SUCCESS_COLOR; }
@@ -1246,12 +1247,16 @@ class MossCodeApp(TerminalApp[None]):
     #model-help, #approval-help, #question-help, #member-help { color: MUTED_COLOR !important; }
     #models { height: auto; max-height: 8; border: none; padding: 0; }
     #models > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
-    #approval-panel { height: auto; max-height: 16; padding: 0 1; border-top: solid OPERATION_COLOR; }
+    /* A card waiting for an answer takes the prompt's place, between two rules as the prompt is. */
+    #approval-panel {
+        height: auto; max-height: 16; padding: 0 1;
+        border-top: solid OPERATION_COLOR; border-bottom: solid OPERATION_COLOR;
+    }
     #approval-detail { height: auto; max-height: 20; }
     #approval-options { height: 4; margin-top: 1; border: none; padding: 0; }
     #approval-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
     #approval-help { height: auto; }
-    #question-panel { height: auto; padding: 0 1; border-top: solid OPERATION_COLOR; }
+    #question-panel { height: auto; padding: 0 1; border-top: solid OPERATION_COLOR; border-bottom: solid OPERATION_COLOR; }
     #question-detail, #question-help { height: auto; }
     #question-options { height: auto; border: none; padding: 0; }
     #question-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
@@ -1268,7 +1273,12 @@ class MossCodeApp(TerminalApp[None]):
     #member-log { height: 1fr; scrollbar-size: 1 0; background: $background; }
     #member-running { height: auto; max-height: 6; }
     #member-view-help { height: 1; }
-    OptionList { background: $background; }
+    /* A long list scrolls with a thin bar in the rules' grey; the theme's would be a block of near-black that
+       stands out against the terminal's own background. */
+    OptionList {
+        background: $background; scrollbar-size-vertical: 1;
+        scrollbar-color: RULE_COLOR; scrollbar-color-hover: MUTED_COLOR; scrollbar-color-active: MUTED_COLOR;
+    }
     """.replace("COMMAND_HIGHLIGHT_COLOR", COMMAND_HIGHLIGHT_COLOR)
         .replace("PARAMETER_COLOR", PARAMETER_COLOR)
         .replace("USER_MESSAGE_BACKGROUND", USER_MESSAGE_BACKGROUND)
@@ -1348,6 +1358,7 @@ class MossCodeApp(TerminalApp[None]):
         self._width: int | None = None
         self._redraw_timer = None
         self._approval_request: ApprovalRequest | None = None
+        self._approval_text = Text()  # What the card on screen says above its choices.
         self._approval_queue: list[ApprovalRequest] = []  # Shown one at a time, in arrival order.
         self._question: QuestionRequest | None = None  # ask_user's questions on screen.
         self._question_waiting: QuestionRequest | None = None  # Arrived while a member's approval card was up.
@@ -1391,9 +1402,9 @@ class MossCodeApp(TerminalApp[None]):
         attachments = Static("", id="attachments", markup=False)
         attachments.display = False
         yield attachments
-        # One row above the prompt: blank while idle, the running stage during a task, so the layout
-        # does not shift when a task starts or ends.
-        yield Static("", id="activity", markup=False)
+        # The running stage, on the row above the prompt; it takes no row while idle, where the blank row that
+        # ends the scrollback already sits above the prompt.
+        yield Static("", id="activity", classes="idle", markup=False)
         with Horizontal(id="input-row"):
             yield Static("❯", id="input-prefix")
             prompt = PromptArea(placeholder="输入消息，或 / 查看命令；Shift+Enter 换行", id="prompt")
@@ -1632,9 +1643,12 @@ class MossCodeApp(TerminalApp[None]):
         # The prompt grows with its text; its region may still hold the previous height.
         prompt_rows = min(8, max(1, self.query_one("#prompt", PromptArea).wrapped_document.height))
         reserved = self.screen.styles.gutter.height + max(1, self.query_one("#status").outer_size.height)
-        if input_row.display:  # Hidden while a member view is open.
-            # Its two rules, the prompt, and the activity row above it.
-            reserved += max(2 + prompt_rows, input_row.region.height) + input_row.styles.margin.height + 1
+        if input_row.display:  # Hidden while a member view is open or a card stands in its place.
+            # Its two rules and the prompt.
+            reserved += max(2 + prompt_rows, input_row.region.height) + input_row.styles.margin.height
+        activity = self.query_one("#activity")
+        if activity.display and not activity.has_class("idle"):  # The running stage, above prompt or card.
+            reserved += 1
         members = self.query_one("#member-panel", MemberPanel)
         if members.display:
             reserved += members.lines
@@ -1651,18 +1665,21 @@ class MossCodeApp(TerminalApp[None]):
         if self.query_one("#approval-panel").display:
             # Keep the choices and status reachable in a short terminal; only
             # the preview shrinks. Completed history already lives in scrollback.
-            # Border, the blank row above the choices, one row per choice and up to two rows of help.
-            fixed = 4 + (len(self._approval_request.choices) if self._approval_request else 4)
+            # Two rules, the blank row above the choices, one row per choice and up to two rows of help.
+            fixed = 5 + (len(self._approval_request.choices) if self._approval_request else 4)
             limit = max(fixed, self.size.height - reserved - 1)
             self.query_one("#approval-panel").styles.max_height = limit
             self.query_one("#approval-detail").styles.max_height = min(20, max(1, limit - fixed))
-            # Its current size may predate the new preview; reserve what it may grow to.
-            reserved += limit
+            # Its current size may predate the new preview, so its rows are counted from the text. Only what it
+            # needs is reserved: the tool row it asks about stays in sight above it.
+            width = max(10, self.size.width - self.screen.styles.gutter.width - 2)
+            preview = len(self._approval_text.wrap(self.console, width))
+            reserved += min(limit, fixed + min(20, preview))
         if self.query_one("#question-panel").display and self._question is not None:
             question = self._question.questions[self._question_step]
             width = max(10, self.size.width - 2)
-            # Border, heading, the wrapped question, one row per option and "其他", help.
-            reserved += 3 + -(-cell_len(question.question) // width) + len(question.options) + 1
+            # Two rules, heading, the wrapped question, one row per option and "其他", help.
+            reserved += 4 + -(-cell_len(question.question) // width) + len(question.options) + 1
         hints = self.query_one("#command-hints")
         hint_limit = min(8, max(1, self.size.height - reserved - 2))
         if hints.styles.max_height is None or hints.styles.max_height.value != hint_limit:
@@ -1734,6 +1751,9 @@ class MossCodeApp(TerminalApp[None]):
             return
         if not self._generating:
             self._stage_note = ""
+        if activity.first().has_class("idle") == self._generating:
+            activity.set_class(not self._generating, "idle")
+            self.call_later(self._fit_chat)  # One row more or less above the prompt.
         now = monotonic()
         shown = (self._stage_note, int(now * 5) if self._stage_note else 0)
         if shown != self._activity_shown:
@@ -2588,8 +2608,10 @@ class MossCodeApp(TerminalApp[None]):
         elif operation.preview:
             text.append("\n")
             text.append_text(preview_text(operation.preview))
+        self._approval_text = text
         self.query_one("#approval-detail", Static).update(text)
         self.query_one("#approval-panel").display = True
+        self._place_prompt()
         options = self.query_one("#approval-options", OptionList)
         options.clear_options()
         options.add_options([choice_prompt(choice_label(request, choice)) for choice in request.choices])
@@ -2659,6 +2681,7 @@ class MossCodeApp(TerminalApp[None]):
             else "↑ / ↓ 选择 · Enter 确认 · Esc 不回答 · Ctrl+C 取消任务"
         )
         self.query_one("#question-panel").display = True
+        self._place_prompt()
         options.focus()
         self._show_members()
         self._stage("等待回答 · Esc 不回答")
@@ -2678,6 +2701,7 @@ class MossCodeApp(TerminalApp[None]):
         question = self._question.questions[self._question_step]
         if index >= len(question.options):  # "其他": the prompt takes the answer.
             self._question_typing = True
+            self._place_prompt()
             field = self.query_one("#prompt", PromptArea)
             self._question_draft, field.value = field.value, ""
             self.query_one("#question-help", Static).update("在输入框中输入你的回答 · Enter 提交 · Esc 返回选项")
@@ -2720,6 +2744,7 @@ class MossCodeApp(TerminalApp[None]):
         if self._closing:
             return
         self.query_one("#question-panel").display = False
+        self._place_prompt()
         if self._approval_queue:
             self._hide_approval()  # A member's card that waited comes up.
         else:
@@ -2742,6 +2767,7 @@ class MossCodeApp(TerminalApp[None]):
             self._show_approval(waiting[0])
             return
         self.query_one("#approval-panel").display = False
+        self._place_prompt()
         question, self._question_waiting = self._question_waiting, None
         if question is not None and self._waiting(question) and not self._closing:
             self._show_question(question)
@@ -3099,6 +3125,19 @@ class MossCodeApp(TerminalApp[None]):
         if view.display or panel.expanded or any(row.status == "running" for row in self._member_rows):
             self._schedule_members()
 
+    def _place_prompt(self) -> None:
+        """A card waiting for an answer stands where the prompt was, so the eye stays on one spot; the prompt
+        comes back when an answer is to be typed in it ("其他"). It keeps its draft while hidden."""
+        if not self.query("#input-row"):
+            return
+        card = self.query_one("#approval-panel").display or (
+            self.query_one("#question-panel").display and not self._question_typing
+        )
+        shown = not card and not self.query_one("#member-view").display
+        self.query_one("#input-row").display = shown
+        if not shown:  # What was being typed is out of sight, and so are its suggestions.
+            self.query_one("#command-hints").display = self.query_one("#command-help").display = False
+
     def _focus_home(self) -> None:
         """Where the keys go back to: the member view, the expanded panel, or the prompt."""
         if self.query_one("#member-view").display:
@@ -3183,9 +3222,10 @@ class MossCodeApp(TerminalApp[None]):
         view = self.query_one("#member-view", MemberView)
         view.reset(name, teams.current.name, TranscriptTail(path))
         self.query_one("#chat").display = False
-        self.query_one("#input-row").display = self.query_one("#activity").display = False  # Read-only.
+        self.query_one("#activity").display = False
         self.query_one("#command-hints").display = self.query_one("#command-help").display = False
         view.display = True
+        self._place_prompt()  # Read-only.
         view.member_log.focus()
         self._show_members()
         self._fit_chat()
@@ -3198,8 +3238,8 @@ class MossCodeApp(TerminalApp[None]):
             return
         name = view.name_shown
         view.display, view.tail = False, None
-        self.query_one("#chat").display = True
-        self.query_one("#input-row").display = self.query_one("#activity").display = True
+        self.query_one("#chat").display = self.query_one("#activity").display = True
+        self._place_prompt()
         panel = self.query_one("#member-panel", MemberPanel)
         self._show_members()
         if to_panel and self._member_rows:

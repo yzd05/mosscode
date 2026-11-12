@@ -12,7 +12,7 @@ from rich.text import Text
 from .agents import claude_model
 from .agents.runtime import GLOBAL_BAN, WORKSPACE_TOOLS, effective_mode, stats
 from .agents.tasks import ORIGIN_LABELS, STATUS_LABELS
-from .appearance import KEY_HELP
+from .appearance import KEY_HELP, MUTED_COLOR
 from .commands import Command, CommandContext, CommandRegistry, Parsed, argument_problem
 from .goal import GOAL, MAX_CONDITION, continue_prompt, elapsed_text
 from .hooks.config import SOURCE_LABELS as HOOK_SOURCES
@@ -133,6 +133,14 @@ async def _help(ctx: CommandContext, argument: str) -> None:
 TASK_OPTIONS = ("取消这些任务并继续", "返回")
 
 
+def choice_row(name: str, detail: str = "") -> Text:
+    """A row of a list to choose from: what is chosen at full strength, its details in the supporting grey."""
+    text = Text(name, no_wrap=True, overflow="ellipsis")
+    if detail:
+        text.append("  " + detail, style=MUTED_COLOR)
+    return text
+
+
 async def confirm_tasks(ui, conversation, proceed) -> None:
     """Running background tasks are cancelled only once the user says so; Esc means 返回."""
     tasks = getattr(conversation, "tasks", None)
@@ -199,11 +207,7 @@ async def open_sessions(ctx: CommandContext) -> None:
     for item in sessions:
         mark = "  （当前）" if item.id == current else "  （使用中）" if item.locked else ""
         rows.append(
-            Text(
-                f"{item.modified:%m-%d %H:%M}  {item.title}  · {item.messages} 条 · {item.id[-4:]}{mark}",
-                no_wrap=True,
-                overflow="ellipsis",
-            )
+            choice_row(f"{item.modified:%m-%d %H:%M}  {item.title}", f"· {item.messages} 条 · {item.id[-4:]}{mark}")
         )
 
     async def pick(index: int) -> None:
@@ -255,11 +259,7 @@ async def _rewind(ctx: CommandContext, argument: str) -> None:
         await ctx.ui.note("当前上下文中没有可以回退的消息。")
         return
     rows = [
-        Text(
-            _first_line(point.message.shown) + (f"  · 之后改动 {point.files} 个文件" if point.files else ""),
-            no_wrap=True,
-            overflow="ellipsis",
-        )
+        choice_row(_first_line(point.message.shown), f"· 之后改动 {point.files} 个文件" if point.files else "")
         for point in points
     ]
 
@@ -407,11 +407,7 @@ async def _model(ctx: CommandContext, argument: str) -> None:
         )
         return
     rows = [
-        Text(
-            f"{item.name}{'  ✓' if item.name == current else ''}  {item.protocol} / {item.model}",
-            no_wrap=True,
-            overflow="ellipsis",
-        )
+        choice_row(f"{item.name}{'  ✓' if item.name == current else ''}", f"{item.protocol} / {item.model}")
         for item in providers
     ]
 
@@ -477,11 +473,9 @@ async def _thinking(ctx: CommandContext, argument: str) -> None:
     current = ctx.conversation.thinking or DEFAULT
     config = ctx.conversation.provider_config
     rows = [
-        Text(
-            f"{value}{'  ✓' if value == current else ''}  {LEVEL_LABELS[value]} · "
-            + thinking_detail(config, None if value == DEFAULT else value),
-            no_wrap=True,
-            overflow="ellipsis",
+        choice_row(
+            f"{value}{'  ✓' if value == current else ''}  {LEVEL_LABELS[value]}",
+            thinking_detail(config, None if value == DEFAULT else value),
         )
         for value in THINKING_CHOICES
     ]

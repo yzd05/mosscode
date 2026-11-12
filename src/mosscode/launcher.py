@@ -211,6 +211,11 @@ def main(argv: list[str] | None = None) -> None:
         elif not is_terminal(sys.stdin):
             print("MossCode: 交互界面需要终端；无界面执行请用 -p。", file=sys.stderr)
             raise SystemExit(2)
+    if args.prompt is None and not args.list_providers:
+        from .terminal_theme import settle
+
+        # The interface colors are fixed when it is imported, so the background has to be known first.
+        settle()
     from .cli import run
 
     run(args)

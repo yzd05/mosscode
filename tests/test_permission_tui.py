@@ -24,7 +24,7 @@ async def wait_approval(app, pilot):
     await pilot.pause()
 
 
-async def test_keyboard_approval_below_input_and_once_scope(tmp_path):
+async def test_keyboard_approval_takes_the_prompts_place_and_once_scope(tmp_path):
     provider = SequenceProvider(
         response(calls=[call("write_file", path="hello.txt", content="Hello")]), response("已创建")
     )
@@ -35,7 +35,16 @@ async def test_keyboard_approval_below_input_and_once_scope(tmp_path):
         options = app.query_one("#approval-options", OptionList)
         panel = app.query_one("#approval-panel")
         assert app.focused is options and not (tmp_path / "hello.txt").exists()
-        assert panel.region.y >= app.query_one("#input-row").region.bottom
+        # The card stands where the prompt was: right below the running stage, between two rules.
+        field = app.query_one("#prompt", PromptArea)
+        field.value = "草稿"
+        assert not app.query_one("#input-row").display
+        assert panel.region.y == app.query_one("#activity").region.bottom
+        shown = [strip.text.strip() for strip in app.screen._compositor.render_strips()]
+        assert shown[panel.region.y].startswith("──") and shown[panel.region.bottom - 1].startswith("──")
+        assert panel.region.bottom == app.query_one("#status").region.y
+        # The card takes only the rows it needs: the call it asks about stays in sight above it.
+        assert any(row.startswith("● Write(hello.txt)") for row in shown[: panel.region.y])
         assert panel.region.height < app.size.height
         assert "hello.txt" in str(app.query_one("#approval-detail", Static).render())
         assert "Hello" in str(app.query_one("#approval-detail", Static).render())
@@ -55,7 +64,9 @@ async def test_keyboard_approval_below_input_and_once_scope(tmp_path):
         await asyncio.wait_for(app._reply_task, 3)
         assert (tmp_path / "hello.txt").read_text() == "Hello"
         assert not policy.session and not policy.local_file.exists()
-        assert not panel.display and app.focused is app.query_one("#prompt", PromptArea)
+        # The prompt is back with what was in it.
+        assert not panel.display and app.query_one("#input-row").display
+        assert app.focused is field and field.value == "草稿"
         assert not policy.pending
 
 
@@ -131,7 +142,7 @@ async def test_narrow_approval_keeps_choices_and_status_visible(tmp_path):
         await pilot.pause()
         assert app.query_one("#approval-options").region.bottom <= app.size.height
         assert app.query_one("#status").region.bottom <= app.size.height
-        assert app.query_one("#approval-panel").region.y >= app.query_one("#input-row").region.bottom
+        assert not app.query_one("#input-row").display
         await pilot.press("enter")
         await asyncio.wait_for(app._reply_task, 3)
         assert (tmp_path / "hello.txt").exists() and not policy.pending

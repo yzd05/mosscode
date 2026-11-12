@@ -17,7 +17,7 @@
 
 ## 审批
 
-Ask 在输入区下方申请授权。↑ / ↓ 选择、Enter 确认；Esc 拒绝当前调用并让模型调整，Ctrl+C 取消整个任务。点击选项不会执行授权。审批面板保留已有对话，背景沿用终端，选项使用蓝色高亮。写入和编辑的审批面板显示 unified diff 预览（新增行绿色、删除行红色，超过 16 行截断）；新建文件显示前 16 行内容，原文无法匹配时回退为原文/替换文本。空闲时按 Shift+Tab 依次切换 default → acceptEdits → plan → default（bypassPermissions 时回到 default），运行中不切换。旧档位 strict、permissive 已移除：配置文件或 `--permission-mode` 使用它们会报错并提示改用 default 或 bypassPermissions。
+Ask 在输入框的位置申请授权：审批面板出现时输入框暂时隐藏，其中没发送的文字在回答后原样恢复。↑ / ↓ 选择、Enter 确认；Esc 拒绝当前调用并让模型调整，Ctrl+C 取消整个任务。点击选项不会执行授权。审批面板保留已有对话，背景沿用终端，选项使用蓝色高亮。写入和编辑的审批面板显示 unified diff 预览（新增行绿色、删除行红色，超过 16 行截断）；新建文件显示前 16 行内容，原文无法匹配时回退为原文/替换文本。空闲时按 Shift+Tab 依次切换 default → acceptEdits → plan → default（bypassPermissions 时回到 default），运行中不切换。旧档位 strict、permissive 已移除：配置文件或 `--permission-mode` 使用它们会报错并提示改用 default 或 bypassPermissions。
 
 普通授权有三个允许选项：本次允许，只执行当前调用；本会话允许，当前工具对同一目标可继续执行，退出失效；永久允许，保存到当前项目的 `.mosscode/permissions.local.yaml`，重启有效。文件授权只匹配具体文件与工具；命令授权精确匹配命令，并绑定项目相对工作目录。不会自动保存为 `Write(**)` 或 `Bash(*)`。另有两个按操作出现的选项：写入/编辑审批提供“本会话自动接受编辑”，切换为 acceptEdits 档位，之后的编辑不再询问，命令仍需确认；命令能推导出前缀时提供“永久允许以 X 开头的命令”，保存为 `Bash(X:*)` 前缀规则。前缀取开头最多三个普通单词（如 `pytest`、`npm run test`、`python -m pytest`），遇到选项、路径或特殊字符即停止；脚本解释器（`python x.py`、`node app.js`）、包装命令（`sudo`、`env`、`bash -c`、`xargs`）、单独的 `git`/`npm` 和高风险命令不提供前缀选项。
 

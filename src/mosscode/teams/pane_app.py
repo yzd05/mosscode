@@ -13,7 +13,8 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Input, OptionList, RichLog, Static
 
-from ..appearance import MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR
+from ..appearance import COMMAND_HIGHLIGHT_COLOR, MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR
+from ..choice_list import KeyboardOptions
 from ..messages import RunStopped
 from ..permissions import ApprovalRequest, safe_display
 from .view import Feed
@@ -27,10 +28,11 @@ class MemberApp(App):
     #log { height: 1fr; padding: 0 1; }
     #running { height: auto; max-height: 6; display: none; padding: 0 1; }
     #approval { height: auto; display: none; border-top: solid $warning; padding: 0 1; }
-    #approval-options { height: auto; max-height: 6; }
+    #approval-options { height: auto; max-height: 6; border: none; padding: 0; background: $background; }
+    #approval-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR; text-style: bold; }
     #state { height: 1; padding: 0 1; color: $text-muted; }
     #input { height: 3; }
-    """
+    """.replace("COMMAND_HIGHLIGHT_COLOR", COMMAND_HIGHLIGHT_COLOR)
     BINDINGS = [Binding("escape", "interrupt", "中断 / 拒绝"), Binding("ctrl+c", "quit", "退出", priority=True)]
 
     def __init__(self, process):
@@ -47,7 +49,8 @@ class MemberApp(App):
         yield Static("", id="running", markup=False)
         with Vertical(id="approval"):
             yield Static(id="approval-detail")
-            yield OptionList(id="approval-options")
+            # As in the lead's window: ❯ marks the choice, and only Enter or its number answers.
+            yield KeyboardOptions(id="approval-options")
         yield Static("启动中…", id="state")
         yield Input(placeholder=INPUT_HINT, id="input")
 
@@ -95,7 +98,7 @@ class MemberApp(App):
             self._show()
 
     def _show(self) -> None:
-        from ..tui import choice_label
+        from ..tui import choice_label, choice_prompt
 
         panel = self.query_one("#approval")
         if not self._requests:
@@ -112,7 +115,10 @@ class MemberApp(App):
         options = self.query_one("#approval-options", OptionList)
         options.clear_options()
         options.add_options(
-            [f"{index}. {choice_label(request, choice)}" for index, choice in enumerate(request.choices, 1)]
+            [
+                Text(f"{index}. ").append_text(choice_prompt(choice_label(request, choice)))
+                for index, choice in enumerate(request.choices, 1)
+            ]
         )
         options.highlighted = 0
         panel.display = True

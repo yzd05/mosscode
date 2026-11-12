@@ -9,19 +9,24 @@ from rich.table import Table
 from rich.text import Text
 from textual.theme import Theme
 
+from .terminal_theme import is_light
+
 TEXT_COLOR = "ansi_default"
-TOOL_SUCCESS_COLOR = "#8bd5a6"
-PARAMETER_COLOR = "#6fa8ff"
-OPERATION_COLOR = "#e3b95f"
-ERROR_COLOR = "#e87983"
-COMMAND_HIGHLIGHT_COLOR = "#3673ff"
+LIGHT_BACKGROUND = is_light()
+# Each accent has a light and a deep shade: the light ones fade into a white background and the deep ones into a
+# black one. Both sets keep at least 4.5:1 contrast on the background they are for.
+TOOL_SUCCESS_COLOR = "#1a7f37" if LIGHT_BACKGROUND else "#8bd5a6"
+PARAMETER_COLOR = "#0969da" if LIGHT_BACKGROUND else "#6fa8ff"
+OPERATION_COLOR = "#9a6700" if LIGHT_BACKGROUND else "#e3b95f"
+ERROR_COLOR = "#cf222e" if LIGHT_BACKGROUND else "#e87983"
+COMMAND_HIGHLIGHT_COLOR = "#1f4fd8" if LIGHT_BACKGROUND else "#3673ff"
 # Green, blue, amber and red already mean success, parameter, in progress and failure, so the
 # color that only says "MossCode" (the prompt marker, the spinner) is the one hue left over.
-BRAND_COLOR = "#b48cff"
+BRAND_COLOR = "#8250df" if LIGHT_BACKGROUND else "#b48cff"
 # Supporting text (timings, summaries, key help) is a fixed grey rather than the dim attribute:
-# terminals render dim very differently, and this grey keeps about 6:1 contrast on a dark background.
-MUTED_COLOR = "#8b929c"
-RULE_COLOR = "#5c636e"
+# terminals render dim very differently, and this grey keeps 4.5:1 or more on its background.
+MUTED_COLOR = "#6e7781" if LIGHT_BACKGROUND else "#8b929c"
+RULE_COLOR = "#9ea5ae" if LIGHT_BACKGROUND else "#5c636e"
 # User messages sit on a grey bar, as in Claude Code: a mid grey with near-white
 # text stands out on both dark and light terminal backgrounds.
 USER_MESSAGE_BACKGROUND = "#4a4a4a"
@@ -30,7 +35,9 @@ USER_MESSAGE_COLOR = "#f2f2f2"
 # The logo, a comet: per column, how many eighths of a line are filled from the bottom of its two
 # lines. Eighth blocks move the edge by a fraction of a line, which is what makes the curve smooth.
 LOGO_HEIGHTS = (1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 13, 16, 16)
-LOGO_COLORS = ("#3b3f55", "#7aa2ff", "#e0e7ff")
+# The tail fades toward the background and the head is the strongest color, so the head is near white on a dark
+# background and deep blue on a light one.
+LOGO_COLORS = ("#d5dbf0", "#5b7cfa", "#1d2b7a") if LIGHT_BACKGROUND else ("#3b3f55", "#7aa2ff", "#e0e7ff")
 LOGO_LINES = 2
 EIGHTHS = " ▁▂▃▄▅▆▇█"
 STARTUP_TIP = "/help 命令 · @ 引用文件 · ! 执行命令"
@@ -76,6 +83,10 @@ OptionList:focus > .option-list--option-highlighted {
 """
 
 
+# What Textual composes against; the terminal's own background is what shows.
+BACKGROUND = "#ffffff" if LIGHT_BACKGROUND else "#0c0c0c"
+
+
 def moss_themes() -> tuple[Theme, ...]:
     # Theme colors stay the terminal's own foreground; supporting text gets MUTED_COLOR explicitly.
     variables = {
@@ -98,13 +109,13 @@ def moss_themes() -> tuple[Theme, ...]:
             secondary=TEXT_COLOR,
             accent=TEXT_COLOR,
             foreground=TEXT_COLOR,
-            background="#0c0c0c",
-            surface="#0c0c0c",
-            panel="#0c0c0c",
+            background=BACKGROUND,
+            surface=BACKGROUND,
+            panel=BACKGROUND,
             success=TEXT_COLOR,
             warning=TEXT_COLOR,
             error=TEXT_COLOR,
-            dark=True,
+            dark=not LIGHT_BACKGROUND,
             variables=variables,
         ),
     )
