@@ -70,11 +70,11 @@ providers:
     # catalog_model: claude-sonnet-4-5
     # 请求开始输出前遇到限流、过载、5xx 或断连时自动重试的次数（默认 4，0 表示关闭）。
     # max_retries: 4
-    # 默认官方 SDK 地址启用稳定提示缓存边界；兼容服务支持时可明确打开。
-    # prompt_cache: true
+    # Anthropic 只缓存请求中标记的前缀，默认对任何地址（包括 CC Switch 等中转）都加缓存标记；
+    # 服务因这个标记拒绝请求时自动去掉重发，之后不再加。设 false 一直不加：
+    # prompt_cache: false
     # 中转若兼容 Messages，也使用同一个适配器：
     # base_url: https://your-gateway.example
-    # 不支持缓存标记的中转可设 prompt_cache: false（不关闭服务自动缓存）。
     # auth_type: bearer  # 中转若要求 Authorization: Bearer
     # thinking: {type: adaptive, effort: high}
     # 老模型/服务手动预算：thinking: {type: enabled, budget_tokens: 2048}

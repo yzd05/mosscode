@@ -130,12 +130,12 @@ async def test_each_request_starts_with_the_whole_previous_request_and_its_reply
 
 
 @pytest.mark.parametrize(
-    "explicit,official,marked", [(None, True, True), (None, False, False), (True, False, True), (False, True, False)]
+    "explicit,official,marked", [(None, True, True), (None, False, True), (True, False, True), (False, True, False)]
 )
 async def test_anthropic_explicit_cache_capability_switch(explicit, official, marked):
     protocol, cls, frames, _ = CASES[0]
     provider, requests, _ = adapter(protocol, cls, lambda: SSEBody(frames()))
-    # A missing config URL does not imply official: SDK environment/profile routes may differ.
+    # Relays such as CC Switch forward the breakpoints to Anthropic, so any address is marked unless turned off.
     provider.config = replace(provider.config, prompt_cache=explicit, base_url=None)
     if official:
         provider.client.base_url = "https://api.anthropic.com"
@@ -182,3 +182,96 @@ async def test_cache_totals_are_known_lower_bound_after_missing_request():
     assert (total.input_tokens, total.cached_input_tokens, total.cache_write_tokens) == (22, 8, 2)
     assert (total.missing_cached, total.missing_cache_write, total.requests) == (1, 1, 3)
     assert cache_hit_rate(total) is None
+
+
+# Default breakpoints on any address -------------------------------------------------------
+
+
+def _gateway(reject):
+    """An Anthropic-compatible service; reject(body) gives the HTTP error of a request it refuses, or None."""
+    import anthropic
+    import httpx2
+
+    from mosscode.config import ProviderConfig
+    from mosscode.providers import AnthropicProvider
+    from test_providers import anthropic_frames
+
+    requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if error := reject(body):
+            return httpx2.Response(error[0], json={"error": {"type": "invalid_request_error", "message": error[1]}})
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=SSEBody(anthropic_frames()))
+
+    http = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    sdk = anthropic.AsyncAnthropic(api_key="k", base_url="http://127.0.0.1:15721", http_client=http, max_retries=0)
+    return AnthropicProvider(ProviderConfig("relay", "anthropic-messages", "claude-sonnet-5-5"), sdk), requests
+
+
+def _marked(body) -> bool:
+    return "cache_control" in json.dumps(body)
+
+
+async def _ask(provider):
+    prompt = PromptRequest("stable", (Supplement("environment", "env"),))
+    return [e async for e in provider.stream([Message("user", (ContentBlock("text", "问题"),))], prompt)]
+
+
+async def test_a_relay_address_gets_cache_breakpoints_by_default():
+    provider, requests = _gateway(lambda body: None)
+    try:
+        await _ask(provider)
+        assert requests[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
+        assert requests[0]["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    finally:
+        await provider.close()
+
+
+async def test_a_service_refusing_the_breakpoints_gets_the_request_without_them_from_then_on():
+    provider, requests = _gateway(
+        lambda body: (400, "Extra inputs are not permitted: cache_control") if _marked(body) else None
+    )
+    try:
+        assert any(isinstance(e, Completed) for e in await _ask(provider))
+        assert [_marked(body) for body in requests] == [True, False]
+        await _ask(provider)
+        assert [_marked(body) for body in requests] == [True, False, False]  # Not tried again.
+    finally:
+        await provider.close()
+
+
+@pytest.mark.parametrize(
+    "error,sent",
+    [
+        ((400, "model not found"), [True]),
+        ((400, "prompt is too long: 300000 tokens"), [True]),
+        ((401, "cache_control"), [True]),
+        ((400, "cache_control: still broken"), [True, False]),  # Fails without them too: not their fault.
+    ],
+)
+async def test_other_refusals_are_reported_and_breakpoints_stay(error, sent):
+    from mosscode.messages import ProviderError
+
+    provider, requests = _gateway(lambda body: error)
+    try:
+        with pytest.raises(ProviderError):
+            await _ask(provider)
+        assert [_marked(body) for body in requests] == sent
+        assert not provider._unmarked
+    finally:
+        await provider.close()
+
+
+async def test_prompt_cache_true_never_drops_the_breakpoints():
+    from mosscode.messages import ProviderError
+
+    provider, requests = _gateway(lambda body: (400, "cache_control") if _marked(body) else None)
+    provider.config = replace(provider.config, prompt_cache=True)
+    try:
+        with pytest.raises(ProviderError):
+            await _ask(provider)
+        assert [_marked(body) for body in requests] == [True]
+    finally:
+        await provider.close()

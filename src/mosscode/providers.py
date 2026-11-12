@@ -259,6 +259,13 @@ def _context_overflow(exc) -> bool:
     return any(pattern in text for pattern in OVERFLOW_PATTERNS)
 
 
+def _names_cache(exc) -> bool:
+    """A service refusing the cache field names it (cache_control); the text is only matched, never shown."""
+    body = getattr(exc, "body", None)
+    text = (str(exc) + " " + (json.dumps(body, ensure_ascii=False, default=str) if body is not None else "")).lower()
+    return "cache" in text
+
+
 def _safe_error(exc) -> ProviderError:
     if isinstance(exc, ProviderError):
         return exc
@@ -385,6 +392,9 @@ class SDKProvider:
 
 
 class AnthropicProvider(SDKProvider):
+    # Set once a compatible service rejected the cache breakpoints while prompt_cache was left unset.
+    _unmarked = False
+
     async def _stream(
         self,
         messages: Sequence[Message],
@@ -402,10 +412,12 @@ class AnthropicProvider(SDKProvider):
             "stream": True,
         }
         blocks = [{"type": "text", "text": prompt.stable}] if prompt.stable else []
-        official = str(getattr(self.client, "base_url", "")).rstrip("/") == "https://api.anthropic.com"
-        cache = config.prompt_cache if config.prompt_cache is not None else official
+        # Anthropic caches only up to a breakpoint the request names; relays (CC Switch and the like) pass it on.
+        cache = config.prompt_cache if config.prompt_cache is not None else not self._unmarked
+        marked: list[dict[str, Any]] = []
         if blocks and cache:
             blocks[-1]["cache_control"] = {"type": "ephemeral"}
+            marked.append(blocks[-1])
         # Environment and active skills are stable within a run and belong to the cached prefix;
         # reminders are request-only and follow the last history breakpoint.
         blocks.extend(
@@ -417,6 +429,7 @@ class AnthropicProvider(SDKProvider):
         turns = options["messages"]
         if turns and cache:
             turns[-1]["content"][-1]["cache_control"] = {"type": "ephemeral"}
+            marked.append(turns[-1]["content"][-1])
         if turns and turns[-1]["role"] == "user":
             turns[-1]["content"].extend(reminders)
         else:
@@ -438,7 +451,7 @@ class AnthropicProvider(SDKProvider):
         arguments: dict[int, str] = {}
         reason = None
         usage_fields = {}
-        stream = await self.client.messages.create(**options)
+        stream = await self._create(options, marked if config.prompt_cache is None else [])
         async with stream:
             async for event in stream:
                 if event.type == "message_start":
@@ -502,6 +515,22 @@ class AnthropicProvider(SDKProvider):
                 reason,
                 parse_usage(usage_fields, config.protocol),
             )
+
+    async def _create(self, options: dict[str, Any], marked: list[dict[str, Any]]) -> Any:
+        """The stream; a request the service refuses only for its default cache breakpoints goes again without."""
+        try:
+            return await self.client.messages.create(**options)
+        except Exception as exc:
+            refused = isinstance(exc, _errors("APIStatusError")) and exc.status_code in {400, 422}
+            # Other refusals (a wrong model name, too long a prompt) would fail again: one request, as before.
+            if not marked or not refused or not _names_cache(exc):
+                raise
+        for block in marked:
+            del block["cache_control"]
+        stream = await self.client.messages.create(**options)
+        # Only an unmarked request that the service then accepts shows the breakpoints were the problem.
+        self._unmarked = True
+        return stream
 
 
 def _incomplete_reason(response) -> str | None:
