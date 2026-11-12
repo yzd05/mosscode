@@ -119,6 +119,11 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="本次运行信任项目的 .mosscode/config.yaml（不写入确认记录），用于无界面模式",
     )
+    parser.add_argument(
+        "--trust-project-mcp",
+        action="store_true",
+        help="本次运行信任项目的 .mosscode/mcp.yaml 和导入的 .mcp.json（不写入确认记录），用于无界面模式",
+    )
     # A team member in a pane of its own; started by the lead, not by hand.
     parser.add_argument("--team-dir", help=argparse.SUPPRESS)
     parser.add_argument("--team-member", help=argparse.SUPPRESS)

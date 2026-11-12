@@ -30,7 +30,7 @@ from .credentials import plaintext_notice, protect
 from .hooks import HookEngine
 from .launcher import is_terminal, parse_arguments
 from .mcp_client import MCPManager
-from .mcp_config import MCPConfigError, load_mcp_settings
+from .mcp_config import MCPConfigError, load_mcp_settings, project_mcp
 from .memory import MemoryStore
 from .messages import (
     AutoContinue,
@@ -62,7 +62,7 @@ from .skills import ForkRequest, SkillCatalog
 from .tools import create_default_registry
 from .tools.background import HEADLESS_TIME_LIMIT
 from .tools.shell import ShellNotFound
-from .tui import ConfigTrustApp, MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
+from .tui import ConfigTrustApp, MCPTrustApp, MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
 from .usage import request_usage_text
 
 
@@ -504,6 +504,29 @@ def load_plugins(args, root: Path) -> Installed:
     return Installed(combined.plugins, (*combined.notices, *notices))
 
 
+def confirm_project_mcp(args, root: Path) -> tuple[bool, tuple[str, ...]]:
+    """Whether the servers the project's files declare may start: a cloned repository could otherwise run any
+    command as soon as moss opens in it. The interface asks once per content, -p needs --trust-project-mcp or an
+    earlier confirmation."""
+    project = project_mcp(root)
+    if not project.servers or args.trust_project_mcp or project.trusted():
+        return True, ()
+    names = list(project.servers)
+    if args.prompt is not None:
+        return False, (
+            f"项目 MCP 服务器 {'、'.join(names)} 未经确认，未启动；请在交互界面中启动一次并确认，"
+            "或使用 --trust-project-mcp。",
+        )
+    print(project.text())
+    if not MCPTrustApp(names).run(inline=True, mouse=False):
+        return False, ("本次未启动项目 MCP 服务器；下次启动时会再次询问。",)
+    try:
+        project.trust()
+    except OSError as exc:
+        return True, (f"无法写入项目 MCP 服务器的确认记录（{exc.strerror or exc}），只在本次启动。",)
+    return True, ()
+
+
 def claude_notice(root: Path) -> str | None:
     """Definitions written for Claude Code in the project that stay unread while claude_directories is off."""
     agents = sum(1 for path in (root / ".claude" / "agents").glob("*.md") if path.is_file())
@@ -619,12 +642,13 @@ def run(args: argparse.Namespace) -> None:
             todo=settings.todo_tool,
             ask=args.prompt is None,  # -p has nobody to answer.
         )
-        mcp_settings = load_mcp_settings(Path.cwd(), plugins=plugins.plugins)
+        project_servers, mcp_notices = confirm_project_mcp(args, Path.cwd())
+        mcp_settings = load_mcp_settings(Path.cwd(), plugins=plugins.plugins, project=project_servers)
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
         prune_all()
         budget = config.budget()
         hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None, plugins=plugins.plugins)
-        notices = config_notices + plugins.notices + skills.problems + skipped + hook_notices
+        notices = config_notices + plugins.notices + skills.problems + skipped + hook_notices + mcp_notices
         if args.prompt is None and not claude and (found := claude_notice(Path.cwd())):
             notices += (found,)
         coordinator, coordinator_notice = decide_coordinator(

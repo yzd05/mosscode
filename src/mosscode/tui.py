@@ -726,6 +726,22 @@ class ConfigTrustApp(PluginTrustApp):
         yield KeyboardOptions(*(Text(option) for option in self.OPTIONS), id="selection")
 
 
+class MCPTrustApp(PluginTrustApp):
+    """Asked before a session starts the MCP servers a project's files declare; what each runs is printed above.
+    True trusts them; Esc and 本次不启动 return False or None."""
+
+    SUB_TITLE = "确认项目 MCP 服务器"
+    OPTIONS = ("信任并启动", "本次不启动")
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            f"信任并启动项目 MCP 服务器 {'、'.join(self.names)}？↑ / ↓ 选择，Enter 确认；Esc 本次不启动。",
+            id="selection-help",
+            markup=False,
+        )
+        yield KeyboardOptions(*(Text(option) for option in self.OPTIONS), id="selection")
+
+
 class ChatEntry(Vertical):
     def __init__(self, speaker: str, text: str = "", notes: list[str] | tuple[str, ...] = ()) -> None:
         super().__init__(classes="entry user-entry" if speaker == "You" else "entry assistant-entry")

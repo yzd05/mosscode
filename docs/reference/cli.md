@@ -40,6 +40,7 @@ moss setup | doctor | models
 | `--trust-project-hooks` | 本次运行信任项目级 Hook 文件，不写入确认记录 |
 | `--trust-project-plugins` | 本次运行信任项目声明的插件，不写入确认记录；用于 `-p` |
 | `--trust-project-config` | 本次运行信任项目的 `.mosscode/config.yaml`，不写入确认记录；用于 `-p`，见 [项目配置需要确认](#项目配置需要确认) |
+| `--trust-project-mcp` | 本次运行信任项目的 `.mosscode/mcp.yaml` 和导入的 `.mcp.json`，不写入确认记录；用于 `-p`，见 [项目的 MCP 服务器需要确认](mcp.md#项目的-mcp-服务器需要确认) |
 
 `--team-dir`、`--team-member` 是团队成员在分屏窗格中启动时用的内部参数，不在帮助中显示。
 

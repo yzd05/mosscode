@@ -1,5 +1,6 @@
 """Two-layer MCP configuration plus opt-in .mcp.json; credentials stay out of repr and diagnostics."""
 
+import hashlib
 import json
 import os
 import re
@@ -20,6 +21,7 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_STARTUP_TIMEOUT = 10.0
 SERVER_NAME = r"[A-Za-z0-9_-]{1,64}"
 OPTIONS = {"timeout", "startup_timeout", "trust_read_only_hint"}
+MCP_TRUST = "mcp-trust.json"
 
 
 @dataclass(frozen=True)
@@ -258,24 +260,25 @@ def plugin_servers(plugin: Plugin, root: Path) -> tuple[list[ServerConfig], list
 
 
 def load_mcp_settings(
-    root: Path, *, user_path: Path | None = None, plugins: tuple[Plugin, ...] | None = None
+    root: Path, *, user_path: Path | None = None, plugins: tuple[Plugin, ...] | None = None, project: bool = True
 ) -> MCPSettings:
     """Lowest first: plugins (plugins.yaml order), user mcp.yaml, .mcp.json when imported, project mcp.yaml.
-    plugins: None reads the installed ones."""
+    plugins: None reads the installed ones. project=False leaves out everything the project's files supply (its
+    mcp.yaml and .mcp.json, even when the user's file imports the latter) because the user has not trusted it."""
     user_file, project_file = config_paths(root, user_path)
     user, user_import = _read(user_file)
-    project, project_import = _read(project_file)
+    own, project_import = _read(project_file) if project else ({}, False)
     merged, notices = {}, []
     for plugin in resolve(plugins, root=root):
         servers, issues = _plugin_servers(plugin, root)
         merged.update(servers)
         notices += issues
     merged.update(user)
-    if user_import or project_import:
+    if project and (user_import or project_import):
         imported, issues = _read_mcp_json(mcp_json_path(root))
         merged.update(imported)
         notices += issues
-    merged.update(project)  # Replace the complete server, never merge transport fields.
+    merged.update(own)  # Replace the complete server, never merge transport fields.
     servers = []
     for name, raw in merged.items():
         try:
@@ -283,3 +286,81 @@ def load_mcp_settings(
         except MCPConfigError as exc:
             notices.append(f"MCP {name} 不可用：{exc}")
     return MCPSettings(tuple(servers), tuple(notices))
+
+
+@dataclass(frozen=True)
+class ProjectMCP:
+    """The servers the project's own files would start: its mcp.yaml and, when imported, its .mcp.json. A stdio
+    server runs its command with the user's rights as soon as a session starts, so these start only once the user
+    has trusted this exact content; any edit to either file asks again."""
+
+    root: Path
+    files: tuple[Path, ...] = ()  # The files that contribute, for the confirmation text.
+    servers: dict = field(default_factory=dict, repr=False)  # Raw entries by name, before ${VAR} substitution.
+    digest: str = ""
+
+    def _store(self, home: Path | None):
+        from .hooks.config import TrustStore
+
+        return TrustStore(self.root, home, MCP_TRUST)
+
+    def trusted(self, home: Path | None = None) -> bool:
+        return bool(self.servers) and self._store(home).trusted("mcp", self.digest)
+
+    def trust(self, home: Path | None = None) -> None:
+        self._store(home).trust("mcp", self.digest)
+
+    def text(self) -> str:
+        """What the startup panel asks about: each server and what it would run or reach."""
+        lines = [
+            f"项目的 MCP 配置 {'、'.join(map(str, self.files))} 尚未确认（第一次使用，或内容有变化）。",
+            "这些 MCP 服务器以你的权限运行，stdio 服务器会在会话开始时执行下面的命令；请先确认内容：",
+        ]
+        for name, entry in self.servers.items():
+            lines.append(f"  {name}：{_target(entry)}")
+        return "\n".join(lines)
+
+
+def _target(entry) -> str:
+    """A server's command line or address as written, ${VAR} left unexpanded; never a URL's credentials."""
+    if not isinstance(entry, dict):
+        return "（格式无效）"
+    kind = entry.get("type", "stdio")
+    if kind == "stdio":
+        args = entry.get("args", [])
+        words = [str(entry.get("command", "")), *(map(str, args) if isinstance(args, list) else [])]
+        env = entry.get("env")
+        names = f"（环境变量：{'、'.join(map(str, env))}）" if isinstance(env, dict) and env else ""
+        return " ".join(words) + names
+    parts = urlsplit(str(entry.get("url", "")))
+    host = parts.hostname or ""
+    try:
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        port = ""
+    return f"{kind} {parts.scheme}://{host}{port}{parts.path}"
+
+
+def project_mcp(root: Path, *, user_path: Path | None = None) -> ProjectMCP:
+    """The project-supplied part of load_mcp_settings, with a digest of the bytes it came from."""
+    user_file, project_file = config_paths(root, user_path)
+    _, user_import = _read(user_file)
+    own, project_import = _read(project_file)
+    servers, files = {}, []
+    if user_import or project_import:
+        imported, _ = _read_mcp_json(mcp_json_path(root))
+        servers.update(imported)
+        files.append(mcp_json_path(root))
+    servers.update(own)
+    if project_file.exists():
+        files.append(project_file)
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(f"{path.name}\0".encode())
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            pass
+        digest.update(b"\0")
+    present = tuple(path for path in files if path.exists())
+    return ProjectMCP(root, present, servers, digest.hexdigest() if servers else "")

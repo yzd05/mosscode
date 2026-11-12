@@ -294,14 +294,20 @@ def check_project(cwd: Path | None = None, config: str | None = None, home: Path
             read_policy(path)
         except PermissionConfigError as exc:
             items.append(Item(ERROR, str(exc), "修改后重新启动"))
-    from .mcp_config import MCPConfigError, load_mcp_settings
+    from .mcp_config import MCPConfigError, load_mcp_settings, project_mcp
 
+    user_mcp = None if home is None else home / ".mosscode" / "mcp.yaml"
     try:
-        mcp = load_mcp_settings(cwd, user_path=None if home is None else home / ".mosscode" / "mcp.yaml", plugins=())
+        mcp = load_mcp_settings(cwd, user_path=user_mcp, plugins=())
+        project = project_mcp(cwd, user_path=user_mcp)
     except MCPConfigError as exc:
         items.append(Item(ERROR, f"MCP 配置：{exc}", "修改 .mosscode/mcp.yaml"))
     else:
         items.extend(Item(WARN, notice) for notice in mcp.notices)
+        if project.servers and not project.trusted(home):
+            names = "、".join(project.servers)
+            fix = "启动 moss 并在确认面板中选“信任并启动”，或加 --trust-project-mcp"
+            items.append(Item(WARN, f"项目 MCP 服务器 {names} 尚未确认，确认前不会启动", fix))
     from .hooks.config import hook_paths, read_file
 
     for source, path, _ in hook_paths(cwd, home):
