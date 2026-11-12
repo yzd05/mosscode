@@ -26,7 +26,7 @@
 隔离的子 Agent：
 
 - **根目录**是工作树中与项目对应的目录。MossCode 在仓库的子目录 `pkg` 中启动时，根目录为 `<工作树>/pkg`。相对路径、工具行和 Hook 的 `path` 都相对这个根目录；
-- **工具**只有以工作树为根的内置工作区工具：`read_file`、`write_file`、`edit_file`、`execute_command`、`glob`、`grep`，以及网络工具 `web_fetch` 和已配置时的 `web_search`（再按定义的 `tools` / `disallowed_tools` 过滤）。MCP 工具和 Skill 的脚本工具作用于主目录，所以不提供；定义中列出了它们时，`/agents <名称>` 显示“隔离时不可用”；
+- **工具**只有以工作树为根的内置工作区工具：`read_file`、`write_file`、`edit_file`、`execute_command`、`glob`、`grep`，网络工具 `web_fetch` 和已配置时的 `web_search`，以及它自己的任务清单 `todo_write`（再按定义的 `tools` / `disallowed_tools` 过滤）。MCP 工具和 Skill 的脚本工具作用于主目录，所以不提供；定义中列出了它们时，`/agents <名称>` 显示“隔离时不可用”；
 - **文件读取记录**从零开始；
 - **系统提示**中环境信息的工作目录与 git 状态取工作树；项目指令沿用主项目已加载的内容；
 - 记忆、会话目录、子 Agent 对话记录、Hook 配置、用量统计都属于主会话，进程的工作目录不变。

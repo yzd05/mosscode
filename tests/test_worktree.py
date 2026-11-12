@@ -769,6 +769,10 @@ async def test_tasks_detail_and_headless(tmp_path):
     assert "工作树" in ui.notes[-1] and "已删除" in ui.notes[-1] and "mosscode/agent-" in ui.notes[-1]
     await run(context(conv, ui=ui), "/agents writer")
     assert "隔离" in ui.notes[-1] and "worktree" in ui.notes[-1]
+    # Everything the isolated sub-agent is given counts as available, its own todo list included.
+    assert conv.registry.get("todo_write") is not None
+    assert "todo_write" in ui.notes[-1].split("可用工具")[1].splitlines()[0]
+    assert "隔离时不可用" not in ui.notes[-1]
     await conv.close()
     with pytest.raises(SystemExit) as caught:
         cli._headless_input("/worktree", BUILTIN)

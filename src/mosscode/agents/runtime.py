@@ -59,6 +59,7 @@ WORKSPACE_TOOLS = frozenset(
         "exit_plan_mode",
         "web_fetch",
         "web_search",
+        "todo_write",  # Its list lives on the sub-agent's own registry, not in the main directory.
     }
 )
 AUTO_BACKGROUND = 120.0
