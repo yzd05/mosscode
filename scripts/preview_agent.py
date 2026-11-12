@@ -20,13 +20,16 @@ class AgentPreviewProvider:
         self.iteration += 1
         calls, text = (), ""
         if self.iteration == 1:
-            assert {t.name for t in tools} == {"read_file", "glob", "grep", "execute_command", "exit_plan_mode"}
+            # Plan mode offers the readers and the way out, never the writers; the rest of the set grows over time.
+            names = {t.name for t in tools}
+            assert {"read_file", "glob", "grep", "execute_command", "exit_plan_mode"} <= names
+            assert not names & {"write_file", "edit_file"}
             text = "先查看入口文件。"
             calls = (ToolCall("plan-read", "read_file", '{"path":"demo.py"}'),)
         elif self.iteration == 2:
             text = "实施计划：\n\n1. 将问候语改为 `Hello, Agent!`。\n2. 读取文件并搜索新字符串，核对修改结果。"
         elif self.iteration == 3:
-            assert len(tools) == 6
+            assert {"write_file", "edit_file"} <= {t.name for t in tools}
             text = "按计划修改，并重新读取。"
             calls = (
                 ToolCall(

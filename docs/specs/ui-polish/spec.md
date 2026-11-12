@@ -353,6 +353,7 @@ logo 改成抽象图形，不再是吉祥物。**用户选定的是 22 号“彗
 | 计划模式 | [wt-plan.png](previews/wt-plan.png) |
 | `/model` 列表 | [wt-model.png](previews/wt-model.png) |
 | 窄窗口（46 列，状态栏折成两行） | [wt-narrow.png](previews/wt-narrow.png) |
+| 运行中把窗口从 104 列缩到约 46 列，再放回 104 列 | [缩窄后](previews/wt-resize-narrow.png)、[放宽后](previews/wt-resize-wide.png) |
 
 核对结果：
 
@@ -360,5 +361,5 @@ logo 改成抽象图形，不再是吉祥物。**用户选定的是 22 号“彗
 - 对启动、运行中、对话、命令候选、审批、提问、计划模式、`/model` 八个场景，检查了真实驱动写到终端的全部颜色指令：没有 dim，除用户消息的灰色底条外没有背景色。
 - 与改动前在同一窗口大小下对比，对话区每一行的位置没有变化；启动区到输入框之间的三行空白、工具行与实时回复之间的两行空白是改动前就有的，这次没有动。
 - 实拍中发现并修掉一处：只有思考、没有正文的一步，在滚动历史里“✻ 思考 1.2s”后面空了两行，现在是一行。
-- 拖动窗口改变宽度没有在真实终端里操作，只由无界面测试覆盖（状态栏在 44 列时改为顺排）。
-- `scripts/verify_inline_terminal.py` 在计划模式一步失败，与这次改动无关：`scripts/preview_agent.py` 写死的计划模式工具集合已经过时（现在多了 `todo_write`、`web_fetch`、`task_output`、`task_stop`），用改动前的源码运行同样失败。它没有走到“没有 dim 指令”的检查，上面第二条是用同样的规则另行检查的。
+- 改变窗口宽度：界面运行时把窗口的宽度改小再改回（直接改窗口的尺寸，效果与拖动右边框相同）。缩窄后滚动历史按新宽度重排，状态栏改为顺排并折成两行；放宽后横线重新铺满，上下文占用回到右侧。
+- `scripts/verify_inline_terminal.py` 在 Windows Terminal 中完整通过，包括它自己的“没有 dim 指令”检查。它起初在计划模式一步失败，与这次改动无关：`scripts/preview_agent.py` 写死的计划模式工具集合已经过时（现在多了 `todo_write`、`web_fetch`、`task_output`、`task_stop`），用改动前的源码运行同样失败。夹具改为只检查不变的部分：计划模式有读取工具和 `exit_plan_mode`、没有写入工具，执行阶段有写入工具。
