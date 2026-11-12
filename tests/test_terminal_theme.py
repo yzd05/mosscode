@@ -124,3 +124,13 @@ def test_every_accent_and_the_grey_stay_readable_on_their_background(theme):
     # The comet's head is the strongest color and its tail fades into the background.
     assert contrast(colors["LOGO_HEAD"], background) > contrast(colors["LOGO_TAIL"], background)
     assert colors["USER_MESSAGE_BACKGROUND"] == "#4a4a4a"  # The grey bar under user messages is the same on both.
+
+
+def test_a_slow_link_gets_longer_to_answer(monkeypatch):
+    # The wait ends with the second reply; its limit only matters when a reply is slow, and a reply arriving after
+    # the interface has started would be read as typed keys.
+    for name in ("SSH_CONNECTION", "SSH_TTY"):
+        monkeypatch.delenv(name, raising=False)
+    assert terminal_theme.wait_limit() == 1.0
+    monkeypatch.setenv("SSH_CONNECTION", "10.0.0.2 52000 10.0.0.1 22")
+    assert terminal_theme.wait_limit() == 2.0

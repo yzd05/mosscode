@@ -19,7 +19,7 @@ from ..messages import RunStopped
 from ..permissions import ApprovalRequest, safe_display
 from .view import Feed
 
-INPUT_HINT = "成员只接受 Lead 的指令，不接受新任务；需要调整它时告诉 Lead。审批出现时在这里输入序号回答。"
+INPUT_HINT = "成员只接受 Lead 的指令，不接受新任务；需要调整它时告诉 Lead。"
 
 
 class MemberApp(App):
@@ -27,12 +27,23 @@ class MemberApp(App):
     #title { height: 1; background: $primary-background; color: $text; text-style: bold; padding: 0 1; }
     #log { height: 1fr; padding: 0 1; }
     #running { height: auto; max-height: 6; display: none; padding: 0 1; }
-    #approval { height: auto; display: none; border-top: solid $warning; padding: 0 1; }
-    #approval-options { height: auto; max-height: 6; border: none; padding: 0; background: $background; }
-    #approval-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR; text-style: bold; }
+    /* As in the lead's window, a waiting card takes the input's place, between two amber rules. */
+    #approval {
+        height: auto; display: none; padding: 0 1;
+        border-top: solid OPERATION_COLOR; border-bottom: solid OPERATION_COLOR;
+    }
+    #approval-options {
+        height: auto; max-height: 6; border: none; padding: 0; background: $background;
+        background-tint: $foreground 0%;
+    }
+    /* Marked by ❯ and its color alone: the theme's block or focus tint behind it would hide the blue text. */
+    #approval-options > .option-list--option-highlighted,
+    #approval-options:focus > .option-list--option-highlighted {
+        color: COMMAND_HIGHLIGHT_COLOR; background: $background; text-style: bold;
+    }
     #state { height: 1; padding: 0 1; color: $text-muted; }
     #input { height: 3; }
-    """.replace("COMMAND_HIGHLIGHT_COLOR", COMMAND_HIGHLIGHT_COLOR)
+    """.replace("COMMAND_HIGHLIGHT_COLOR", COMMAND_HIGHLIGHT_COLOR).replace("OPERATION_COLOR", OPERATION_COLOR)
     BINDINGS = [Binding("escape", "interrupt", "中断 / 拒绝"), Binding("ctrl+c", "quit", "退出", priority=True)]
 
     def __init__(self, process):
@@ -47,11 +58,11 @@ class MemberApp(App):
         yield Static(self.heading, id="title")
         yield RichLog(id="log", wrap=True, markup=False)
         yield Static("", id="running", markup=False)
+        yield Static("启动中…", id="state")
         with Vertical(id="approval"):
             yield Static(id="approval-detail")
             # As in the lead's window: ❯ marks the choice, and only Enter or its number answers.
             yield KeyboardOptions(id="approval-options")
-        yield Static("启动中…", id="state")
         yield Input(placeholder=INPUT_HINT, id="input")
 
     async def on_mount(self) -> None:
@@ -101,16 +112,18 @@ class MemberApp(App):
         from ..tui import choice_label, choice_prompt
 
         panel = self.query_one("#approval")
+        field = self.query_one("#input", Input)
         if not self._requests:
-            panel.display = False
-            self.query_one("#input", Input).focus()
+            panel.display, field.display = False, True
+            field.focus()
             return
         request = self._requests[0]
-        text = Text(f"需要授权 · {request.operation.tool}\n", style=f"bold {OPERATION_COLOR}")
+        text = Text()
+        text.append(f"需要授权 · {request.operation.tool}\n", style=f"bold {OPERATION_COLOR}")
         text.append(safe_display(request.operation.target), style=PARAMETER_COLOR)
         if request.operation.cwd is not None:
             text.append("\n工作目录：" + request.operation.cwd)
-        text.append("\n" + request.reason)
+        text.append("\n" + request.reason, style=MUTED_COLOR)
         self.query_one("#approval-detail", Static).update(text)
         options = self.query_one("#approval-options", OptionList)
         options.clear_options()
@@ -121,9 +134,9 @@ class MemberApp(App):
             ]
         )
         options.highlighted = 0
-        panel.display = True
+        panel.display, field.display = True, False
         options.focus()
-        self._state("等待授权 · 回车确认，Esc 拒绝本次")
+        self._state("等待授权 · ↑ / ↓ 选择 · Enter 或序号确认 · Esc 拒绝本次")
 
     def _answer(self, choice: str) -> None:
         if not self._requests:
@@ -154,12 +167,18 @@ class MemberApp(App):
         if event.option_list.id == "approval-options" and self._requests:
             self._answer(self._requests[0].choices[event.option_index])
 
+    def on_key(self, event) -> None:
+        """A choice's number answers the card on screen, as Enter on it does."""
+        if not self._requests or not (event.character or "").isdigit():
+            return
+        number = int(event.character)
+        if 1 <= number <= len(self._requests[0].choices):
+            event.stop()
+            self._answer(self._requests[0].choices[number - 1])
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         value = event.value.strip()
         event.input.value = ""
-        if self._requests and value.isdigit() and 1 <= int(value) <= len(self._requests[0].choices):
-            self._answer(self._requests[0].choices[int(value) - 1])
-            return
         if value:
             self._log(Text(INPUT_HINT, style=OPERATION_COLOR))
 

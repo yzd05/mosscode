@@ -629,12 +629,20 @@ async def test_member_window_answers_approvals_and_refuses_new_tasks():
         chosen = {s.style.color.name for s in strips[0] if s.text.strip() and s.style.color}
         assert COMMAND_HIGHLIGHT_COLOR in chosen
         assert any(s.style.color and s.style.color.name == MUTED_COLOR for s in strips[1] if s.text.strip())
-        app.query_one("#input").focus()
-        await pilot.press("1", "enter")  # The first request, its first choice.
-        assert process.answered == [("r1", "once")]
+        # Nothing behind the chosen option: the list's own background, so the blue text stays readable.
+        assert {s.style.bgcolor for s in strips[0]} == {s.style.bgcolor for s in strips[1]}
+        detail = app.query_one("#approval-detail")
+        reason = app.screen._compositor.render_strips()[detail.region.bottom - 1]
+        # The heading is amber; the reason below it is supporting grey, as in the lead's window.
+        assert {s.style.color.name for s in reason if s.text.strip()} == {MUTED_COLOR}
+        # The card stands where the input was, below the state line, and its number answers it.
+        field, panel = app.query_one("#input"), app.query_one("#approval")
+        assert not field.display and panel.region.y == app.query_one("#state").region.bottom
+        await pilot.press("1")  # The first request, its first choice.
+        assert process.answered == [("r1", "once")] and panel.display and not field.display
         await pilot.press("escape")  # Esc refuses the next one.
-        assert process.answered[-1] == ("r2", "deny") and not app.query_one("#approval").display
-        app.query_one("#input").focus()
+        assert process.answered[-1] == ("r2", "deny") and not panel.display
+        assert field.display and app.focused is field
         await pilot.press("h", "i", "enter")  # Not a new task.
         lines = "".join(str(line.text) for line in app.query_one("#log", RichLog).lines).replace(
             " ", ""

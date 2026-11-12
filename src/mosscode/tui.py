@@ -1241,7 +1241,8 @@ class MossCodeApp(TerminalApp[None]):
     #prompt:focus { border: none; background-tint: transparent; }
     #command-hints { height: auto; max-height: 7; border: none; padding: 0 1; }
     #command-hints > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
-    #command-help { height: 1; color: MUTED_COLOR !important; padding: 0 1; }
+    /* Grey like the status line below it; a blank row keeps the two apart. */
+    #command-help { height: 1; margin-bottom: 1; color: MUTED_COLOR !important; padding: 0 1; }
     #model-panel { width: 1fr; height: auto; padding: 0 1; border-top: solid RULE_COLOR; border-bottom: solid RULE_COLOR; }
     #model-title, #model-help { height: 1; }
     #model-help, #approval-help, #question-help, #member-help { color: MUTED_COLOR !important; }
@@ -1681,14 +1682,14 @@ class MossCodeApp(TerminalApp[None]):
             # Two rules, heading, the wrapped question, one row per option and "其他", help.
             reserved += 4 + -(-cell_len(question.question) // width) + len(question.options) + 1
         hints = self.query_one("#command-hints")
-        hint_limit = min(8, max(1, self.size.height - reserved - 2))
+        hint_limit = min(8, max(1, self.size.height - reserved - 3))
         if hints.styles.max_height is None or hints.styles.max_height.value != hint_limit:
             hints.styles.max_height = hint_limit
         # Reserve hints before layout: their old size may still be zero on show.
         hint_rows = min(len(self._hint_choices), hint_limit)
         hints.styles.height = max(1, hint_rows)
-        if hints.display:
-            reserved += hint_rows + 1
+        if hints.display:  # The list, its key help and the blank row below that.
+            reserved += hint_rows + 2
         chat = self.query_one("#chat")
         available = max(1, self.size.height - reserved)
         view = self.query_one("#member-view", MemberView)

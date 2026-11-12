@@ -104,8 +104,16 @@ def _ask_windows(timeout: float) -> str:
     return reply
 
 
-def ask_terminal(timeout: float = 0.3) -> str | None:
+def wait_limit() -> float:
+    """How long to wait for the replies. The second reply ends the wait as soon as it arrives, usually within
+    milliseconds, so this only bounds a slow link: a reply arriving after the interface has started would be read
+    as typed keys."""
+    return 2.0 if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY") else 1.0
+
+
+def ask_terminal(timeout: float | None = None) -> str | None:
     """The terminal's own answer, or None when it gives none in time."""
+    timeout = wait_limit() if timeout is None else timeout
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             return None

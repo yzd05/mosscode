@@ -426,6 +426,10 @@ async def test_hints_and_input_remain_visible_with_long_chat_in_narrow_terminal(
         assert field.region.bottom <= app.size.height
         assert app.query_one("#command-help").region.bottom <= app.size.height
         assert app.query_one("#status").region.bottom <= app.size.height
+        # The key help and the status line are both grey; a blank row keeps them apart.
+        help_bottom, status_top = app.query_one("#command-help").region.bottom, app.query_one("#status").region.y
+        assert status_top == help_bottom + 1
+        assert not app.screen._compositor.render_strips()[help_bottom].text.strip()
         await pilot.press("down", "tab")
         assert field.value == "/permissions acceptEdits"
         field.value = "/model"
