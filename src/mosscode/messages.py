@@ -185,10 +185,16 @@ class UsageUpdate:
 
 @dataclass(frozen=True)
 class RunStopped:
-    reason: Literal["completed", "max_iterations", "max_tokens", "unknown_tools", "cancelled", "error"]
+    reason: Literal[
+        "completed", "max_iterations", "max_tokens", "unknown_tools", "repeated_calls", "cancelled", "error"
+    ]
     notice: str
     iterations: int
     results: tuple[ToolResult, ...] = ()
+
+
+# A turn the agent ended itself before the model finished: its notice explains why and how to go on.
+STOPPED_EARLY = frozenset({"max_iterations", "max_tokens", "unknown_tools", "repeated_calls"})
 
 
 @dataclass(frozen=True)

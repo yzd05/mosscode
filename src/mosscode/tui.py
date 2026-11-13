@@ -69,6 +69,7 @@ from .messages import (
     NOTIFICATION,
     REMINDER,
     SHELL,
+    STOPPED_EARLY,
     AutoContinue,
     CompactFailed,
     CompactFinished,
@@ -2945,7 +2946,7 @@ class MossCodeApp(TerminalApp[None]):
                             if result.call_id in tool_rows:
                                 tool_rows[result.call_id].complete(result)
                                 self._record_tool(tool_rows[result.call_id])
-                        if event.reason in {"max_iterations", "unknown_tools", "max_tokens"}:
+                        if event.reason in STOPPED_EARLY:
                             await self._local_note("└ " + event.notice)
                             self._status("已停止 · 可以继续提问")
                     elif isinstance(event, Retrying):

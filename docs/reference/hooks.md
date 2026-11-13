@@ -66,7 +66,7 @@ hooks:
 | `session_start` | 启动加载上下文之后（界面中在项目 Hook 确认之后）、`/clear` 之后、恢复会话之后 | `source`：`new`、`clear`、`resume` | command、prompt、http、agent | 同步或 `async` |
 | `session_end` | `/clear` 之前、恢复另一个会话之前、退出时 | `reason`：`clear`、`resume`、`exit` | command、http、agent | 同步或 `async` |
 | `turn_start` | 用户提交消息或命令后，第一次请求模型之前；运行中排队的消息不算新一轮 | `prompt`：输入原文（命令为命令原文） | command、prompt、http、agent | 同步或 `async` |
-| `turn_end` | 一轮结束 | `reason`：`completed`、`max_tokens`、`unknown_tools`、`max_iterations`、`cancelled`、`error` | command、http、agent | 同步或 `async` |
+| `turn_end` | 一轮结束 | `reason`：`completed`、`max_tokens`、`unknown_tools`、`repeated_calls`、`max_iterations`、`cancelled`、`error` | command、http、agent | 同步或 `async` |
 | `pre_send` | 主对话每次请求模型之前 | `iteration`：本轮第几次请求（从 1 开始） | prompt；其他动作总在后台 | 见下 |
 | `post_receive` | 主对话每次收到完整回复之后 | `iteration`；`tool_calls`：本次回复调用的工具数 | command、http、agent，总在后台 | 见下 |
 | `pre_tool_use` | 参数校验、硬检查和拒绝规则都通过之后，审批之前 | `tool`、`path`、`command`、`args.<参数名>` | command、prompt、http、agent | 只能同步 |

@@ -32,6 +32,7 @@ from .memory_extract import MemoryExtractor
 from .mentions import attach
 from .messages import (
     NOTIFICATION,
+    STOPPED_EARLY,
     CompactFailed,
     CompactFinished,
     Completed,
@@ -1189,6 +1190,7 @@ class Conversation:
             "max_iterations": "本轮达到最大迭代轮数",
             "max_tokens": "回复达到输出上限被截断",
             "unknown_tools": "模型连续调用不存在的工具",
+            "repeated_calls": "模型连续多轮重复相同的工具调用",
         }
         if reason != "completed":
             return self.pause_goal(stops.get(reason, "本轮没有正常结束"))
@@ -1373,7 +1375,7 @@ class Conversation:
                     if event.stop_reason != "max_tokens":
                         return event.answer
                     answer = event.answer  # Cut off: continued automatically, or the turn stops next.
-                if isinstance(event, RunStopped) and event.reason in {"unknown_tools", "max_iterations", "max_tokens"}:
+                if isinstance(event, RunStopped) and event.reason in STOPPED_EARLY:
                     return answer or event.notice
         raise ProviderError("没有完整回复。")
 

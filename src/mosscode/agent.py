@@ -1,6 +1,7 @@
 """UI- and SDK-independent bounded ReAct runtime and event stream."""
 
 import asyncio
+import hashlib
 import json
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -48,6 +49,7 @@ from .messages import (
     RunStopped,
     StreamEvent,
     TasksNotified,
+    ToolCall,
     ToolDefinition,
     ToolProgress,
     ToolResult,
@@ -107,6 +109,10 @@ class ResponseCollector:
 
 
 DEFAULT_MAX_ITERATIONS = 200
+# Rounds in a row with the same tool calls and the same results: the model learns nothing new from another one,
+# so at REPEAT_NUDGE it is told so once, and at REPEAT_STOP the turn ends instead of running to max_iterations.
+REPEAT_NUDGE = 3
+REPEAT_STOP = 5
 
 # A reply with neither text nor tool calls is dropped and the request sent again, at most this often.
 REPLY_RETRIES = 2
@@ -135,6 +141,38 @@ def unusable(final: Completed) -> str | None:
     if final.stop_reason in REFUSALS:
         return "refusal"
     return "thinking_cut" if final.stop_reason == "max_tokens" else "empty"
+
+
+def round_key(calls: Sequence[ToolCall], results: Sequence[ToolResult]) -> str:
+    """Compare calls and results without volatile call ids or argument formatting.
+
+    Include results so polling that discovers new information can keep running.
+    """
+    by_id = {result.call_id: result for result in results}
+    parts = []
+    for call in calls:
+        try:
+            arguments = json.dumps(json.loads(call.arguments), sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            arguments = call.arguments
+        result = by_id.get(call.id)
+        outcome = (
+            [result.output, result.is_error, result.code, [(image.name, image.alt) for image in result.images]]
+            if result is not None
+            else None
+        )
+        parts.append([call.name, arguments, outcome])
+    return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
+
+
+def repeat_reminder(calls: Sequence[ToolCall]) -> Supplement:
+    names = "、".join(dict.fromkeys(call.name for call in calls))
+    return Supplement(
+        "system-reminder",
+        f"你已连续 {REPEAT_NUDGE} 轮用相同的参数调用 {names}，每次得到的结果都相同，这些调用尚未带来新信息。"
+        "换一种做法；如果缺少继续所需的信息、文件或权限，停下来向用户说明缺什么。"
+        f"连续 {REPEAT_STOP} 轮相同时本轮会被停止。",
+    )
 
 
 def recovery_note(kind: str, request: Sequence[Message]) -> Supplement:
@@ -249,6 +287,7 @@ class AgentLoop:
         # Set by the memory extractor: messages a compaction is about to replace with a summary.
         self.on_compact = None
         self._gap: Supplement | None = None  # One-time reminder after resuming an old session or a /rewind.
+        self._repeat: Supplement | None = None  # One-time reminder that the last rounds repeated themselves.
         # The text of each standing reminder (checklist, goal, hook output) as the history last carries it.
         self._sent: dict[str, str | None] = {}
         # The main conversation's file checkpoints: each typed message starts a new turn of snapshots.
@@ -336,7 +375,7 @@ class AgentLoop:
         self.meter.invalidate()
         self.compact_failures = 0
         self.collapses, self.collapse_failures = [], 0
-        self._gap, self._sent = None, {}
+        self._gap, self._repeat, self._sent = None, None, {}
         self.active_skills.clear()
         self.hook_context, self.turn_notes = None, ()  # The next session_start regenerates it.
         if self.registry is not None:
@@ -376,6 +415,7 @@ class AgentLoop:
         mode = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
         self._announced, self._reannounce = self.mode, False
         gap, self._gap = self._gap, None
+        repeat, self._repeat = self._repeat, None
         standing = {
             "todo-list": todo_reminder(self.registry.todos if self.registry is not None else None),
             "goal": self.goal_note,
@@ -383,7 +423,7 @@ class AgentLoop:
         }
         changed = [item for kind, item in standing.items() if item is not None and self._sent.get(kind) != item.text]
         texts = {kind: None if item is None else item.text for kind, item in standing.items()}
-        parts = [item.render() for item in (mode, gap, *changed) if item is not None]
+        parts = [item.render() for item in (mode, gap, repeat, *changed) if item is not None]
         if not parts:
             return None, texts
         return Message("user", (ContentBlock("text", "\n\n".join(parts)),), synthetic=REMINDER), texts
@@ -623,6 +663,7 @@ class AgentLoop:
             raise ProviderError("请输入非空消息。")
         self.busy = True
         iteration, unknown_run = 0, 0
+        last_round, repeats = "", 0
         user = _redacted(Message("user", user_content(prompt, images), command=command, synthetic=synthetic))
         attachments = None if attachments is None else _redacted(attachments)
         committed = False
@@ -644,6 +685,8 @@ class AgentLoop:
                     shell=shell_label(self.registry),
                 )
                 yield IterationProgress(iteration, self.max_iterations, self.mode)
+                if committed and (self.pending or self.notifications):
+                    last_round, repeats, self._repeat = "", 0, None
                 if committed and self.pending:
                     texts, self.pending = tuple(self.pending), []
                     images, self.pending_images = self.pending_images, {}
@@ -721,6 +764,7 @@ class AgentLoop:
                 self.meter.record(final.usage, len(self.history) - self._collapsed + len(self.collapses))
                 truncated = final.stop_reason == "max_tokens"
                 if not calls:
+                    last_round, repeats = "", 0
                     yield UsageUpdate(iteration, final.usage, self.total_usage)
                     yield replace(final, before=before) if before else final
                     if truncated and continued < CONTINUATIONS:
@@ -735,6 +779,7 @@ class AgentLoop:
                         yield RunStopped("completed", "", iteration)
                     return
                 if truncated:
+                    last_round, repeats = "", 0
                     # Arguments may be cut mid-JSON: never execute them, let the model retry smaller.
                     results = tuple(
                         ToolResult(
@@ -780,6 +825,24 @@ class AgentLoop:
                         outcomes(),
                     )
                     return
+                # New input may arrive during the batch; let the model see it before deciding it is stuck.
+                if self.pending or self.notifications:
+                    last_round, repeats, self._repeat = "", 0, None
+                    continue
+                done = self.history[position].tool_results if len(self.history) > position else ()
+                key = round_key(calls, done)
+                repeats, last_round = (repeats + 1 if key == last_round else 1), key
+                if repeats >= REPEAT_STOP:
+                    yield RunStopped(
+                        "repeated_calls",
+                        f"模型连续 {REPEAT_STOP} 轮发出相同的工具调用并得到相同的结果，已停止；"
+                        "可以补充信息或换个说法后继续。",
+                        iteration,
+                        outcomes(),
+                    )
+                    return
+                if repeats == REPEAT_NUDGE:
+                    self._repeat = repeat_reminder(calls)
             yield RunStopped(
                 "max_iterations",
                 f"已达最大迭代轮数 {self.max_iterations}，已停止；可以继续提问推进任务。",
@@ -797,4 +860,5 @@ class AgentLoop:
             yield RunStopped("error", notice, iteration, outcomes())
             raise ProviderError(notice) from None
         finally:
+            self._repeat = None
             self.busy = False

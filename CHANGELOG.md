@@ -6,6 +6,7 @@
 
 ### 新增
 
+- 重复调用检测：同一次任务连续 3 轮使用相同参数调用相同工具、得到相同结果时，提醒模型换一种做法；连续 5 轮仍然相同时停止，保留已执行的调用和结果。参数或结果变化、用户补充信息或收到后台通知后重新计数。界面和 `-p` 说明原因，json / stream-json 返回 `repeated_calls`，`/goal` 暂停续跑，子 Agent 返回未完成。见[重复调用检测](docs/reference/tools.md#重复调用检测)。
 - 命令：主对话的前台命令运行超过 5 秒自动转入后台（`command_auto_background`，0 关闭），模型可以先做别的事，需要结果时用 `task_output` 等它；模型给的 `timeout` 仍然有效。`task_output` 已经交出结果的任务不再重复发送通知。沙箱经代理联网的命令留在前台，以便询问新域名。
 - 配置：`follow: claude-code` 或 `follow: codex` 的 Provider 读取 Claude Code、Codex 的设置（CC Switch、Magpie 写入的服务地址、密钥和模型），不再重复填写；在那边切换服务后，`/model` 选中它即重新读取，对话历史保留。`preset: deepseek` 等厂商预设（DeepSeek、Kimi、GLM、通义千问、OpenRouter、Anthropic、OpenAI）代替协议、地址、默认模型和密钥变量名。`moss setup` 先列出可跟随的设置和预设，只有“其他服务”才逐项询问。见 [跟随 Claude Code 或 Codex](docs/reference/providers.md#跟随-claude-code-或-codex)。
 - 评估：`scripts/run_evals.py` 在 13 个固定的编码任务（修 bug、加功能、重构）上运行 MossCode，每次用任务项目的新副本，结束后用 Agent 没见过的测试判定；报告每个 Provider 的通过率、平均请求次数和 Token、对话缓存命中率、耗时和费用，以及每个任务的结果。`--provider` 可重复给出以对比多个模型，`--repeat` 多跑几次看稳定性。任务和用法见 [评估任务](evals/README.md)。

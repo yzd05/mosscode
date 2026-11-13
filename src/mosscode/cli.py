@@ -33,6 +33,7 @@ from .mcp_client import MCPManager
 from .mcp_config import MCPConfigError, load_mcp_settings, project_mcp
 from .memory import MemoryStore
 from .messages import (
+    STOPPED_EARLY,
     AutoContinue,
     CompactFailed,
     CompactFinished,
@@ -430,11 +431,7 @@ async def _text_prompt(
                     print(f"\n计划：\n{plan_text(event.call.arguments)}", flush=True)
                 elif isinstance(event, ToolProgress) and event.phase == "finished":
                     print(f"\n● {event.call.name} · {event.elapsed:.1f}s\n└ {event.result.output}", flush=True)
-                elif isinstance(event, RunStopped) and event.reason in {
-                    "max_iterations",
-                    "unknown_tools",
-                    "max_tokens",
-                }:
+                elif isinstance(event, RunStopped) and event.reason in STOPPED_EARLY:
                     print("\n" + event.notice, flush=True)
                 elif isinstance(event, Retrying):
                     print(
