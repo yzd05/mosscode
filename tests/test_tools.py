@@ -226,7 +226,12 @@ def test_powershell_errors_point_at_the_command_not_the_prelude(tmp_path):
         shell.args(f"$ErrorView = 'NormalView'\nGet-Item '{missing}'"), capture_output=True, text=True, encoding="utf-8"
     )
     assert result.returncode == 1
-    shown = [line for line in result.stderr.splitlines() if line.startswith("+ ") and "~" not in line]
+    lines = result.stderr.splitlines()
+    shown = [
+        line
+        for line, marker in zip(lines, lines[1:])
+        if line.startswith("+ ") and marker.startswith("+ ") and marker[2:].lstrip().startswith("~")
+    ]
     assert shown and all("Get-Item" in line and "OutputEncoding" not in line for line in shown), result.stderr
 
 
