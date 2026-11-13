@@ -567,7 +567,7 @@ class ThinkingProvider(FakeProvider):
         self.text_ready = asyncio.Event()
         self.advance = asyncio.Event()
 
-    async def stream(self, messages, system):
+    async def stream(self, messages, system, tools=(), *, allow_tools=True):
         self.requests.append(tuple(messages))
         try:
             yield Delta("thinking", "服务返回的思考片段")
