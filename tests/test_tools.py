@@ -221,7 +221,10 @@ def test_powershell_errors_point_at_the_command_not_the_prelude(tmp_path):
 
     shell = Shell("powershell", shutil.which("powershell"), "PowerShell")
     missing = tmp_path / "no-such-file"
-    result = subprocess.run(shell.args(f"Get-Item '{missing}'"), capture_output=True, text=True, encoding="utf-8")
+    # PowerShell 7's concise view omits the source-line format this test checks.
+    result = subprocess.run(
+        shell.args(f"$ErrorView = 'NormalView'\nGet-Item '{missing}'"), capture_output=True, text=True, encoding="utf-8"
+    )
     assert result.returncode == 1
     shown = [line for line in result.stderr.splitlines() if line.startswith("+ ") and "~" not in line]
     assert shown and all("Get-Item" in line and "OutputEncoding" not in line for line in shown), result.stderr

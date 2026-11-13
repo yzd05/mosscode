@@ -415,6 +415,9 @@ needs_token = pytest.mark.skipif(not token_usable(), reason="needs Windows where
 def token_box(tmp_path_factory):
     base = tmp_path_factory.mktemp("token")
     root, home, temp = project(base)
+    # Elevated runners' private pytest directories can grant only Administrators; LUA tokens lose that grant.
+    user = subprocess.check_output(["whoami"], text=True).strip()
+    subprocess.run(["icacls", str(root), "/grant", f"{user}:(OI)(CI)M"], check=True, capture_output=True)
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     outside = base / "outside"
     outside.mkdir()

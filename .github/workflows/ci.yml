@@ -60,7 +60,6 @@ jobs:
       - run: uv pip install -e ".[dev]"
       - name: Prepare test artifacts
         run: python -c "from pathlib import Path; Path('.test-artifacts').mkdir(exist_ok=True)"
-      # Runner profile temp directories can have ACLs that reject the restricted test token.
       - run: python -m pytest -q --color=yes --basetemp .test-artifacts/ci -p no:cacheprovider
       - run: moss --version
 
