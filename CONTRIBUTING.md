@@ -76,4 +76,4 @@ ruff format --check .
 
 1. 更新 `pyproject.toml` 中的 `version`；把 `CHANGELOG.md` 中 `[Unreleased]` 的内容移到新版本标题下，写上日期，并更新底部的比较链接。
 2. 提交后打标签并推送：`git tag v0.1.1`、`git push origin v0.1.1`。
-3. 发布流程自动构建，先上传到 TestPyPI 并检查能否安装，再上传到 PyPI，最后创建 GitHub Release。上传使用 PyPI 的 Trusted Publishing，不需要 API 令牌。
+3. 发布流程先在打标签的提交上跑一遍完整的 CI（ruff、三个系统上的测试、打包检查），全部通过后才构建；任何一项失败都不会上传，修复后删除标签、重新打标签推送即可（PyPI 上的版本一旦上传就不能替换）。之后先上传到 TestPyPI 并检查能否安装，再上传到 PyPI，最后创建 GitHub Release。上传使用 PyPI 的 Trusted Publishing，不需要 API 令牌。
