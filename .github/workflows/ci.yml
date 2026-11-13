@@ -58,7 +58,8 @@ jobs:
           esac
           rg --version
       - run: uv pip install -e ".[dev]"
-      - run: python -m pytest -q --color=yes
+      # Runner profile temp directories can have ACLs that reject the restricted test token.
+      - run: python -m pytest -q --color=yes --basetemp .test-artifacts/ci -p no:cacheprovider
       - run: moss --version
 
   test-without-ripgrep:
@@ -78,7 +79,7 @@ jobs:
         run: |
           while command -v rg >/dev/null; do sudo rm "$(command -v rg)"; done
       - run: uv pip install -e ".[dev]"
-      - run: python -m pytest -q --color=yes
+      - run: python -m pytest -q --color=yes --basetemp .test-artifacts/ci -p no:cacheprovider
 
   package:
     runs-on: ubuntu-latest
