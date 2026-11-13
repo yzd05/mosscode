@@ -522,6 +522,8 @@ async def test_redraws_wait_while_drawing_the_open_block_is_slow(monkeypatch):
     ticks = iter(range(10**6))
     # Every render is timed at 0.05 s, as a long code block still being written would take.
     monkeypatch.setattr("mosscode.scrollback.perf_counter", lambda: next(ticks) * 0.05)
+    clock = [0.0]
+    monkeypatch.setattr("mosscode.tui.perf_counter", lambda: clock[0])
     ready, pending = asyncio.Event(), asyncio.Event()
 
     async def stream():
@@ -534,11 +536,11 @@ async def test_redraws_wait_while_drawing_the_open_block_is_slow(monkeypatch):
         await send_and_wait(app, pilot, "问题", ready)
         entry = app.query(ChatEntry)[1]
         assert answer_rows(app, entry) == ["甲"] and entry._markdown.tail_seconds == pytest.approx(0.05)
+        clock[0] = 1.0  # Past the redraw interval, independently of how long the runner takes.
         entry.append(Delta("text", "乙"))
         await pilot.pause()
-        assert answer_rows(app, entry) == ["甲乙"]  # Drawn at once: the last redraw is long past.
+        assert answer_rows(app, entry) == ["甲乙"]
         entry.append(Delta("text", "丙"))
-        await pilot.pause()
         assert answer_rows(app, entry) == ["甲乙"] and entry._paint_timer is not None
         await pilot.pause(0.3)
         assert answer_rows(app, entry) == ["甲乙丙"] and entry._paint_timer is None
