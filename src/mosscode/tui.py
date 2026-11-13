@@ -1695,7 +1695,7 @@ class MossCodeApp(TerminalApp[None]):
             self._refresh_hints(self.query_one("#prompt", PromptArea).value)
 
     def _fit_chat(self) -> None:
-        if not self.query("#chat") or not self.query("#status"):
+        if not self.is_running or not self.query("#chat") or not self.query("#status"):
             return
         # Reserve the actual controls, rather than a percentage or spare rows.
         input_row = self.query_one("#input-row")
@@ -1938,8 +1938,8 @@ class MossCodeApp(TerminalApp[None]):
         )
 
     def _tick(self) -> None:
-        if self._closing or not self.query("#status"):
-            return  # A queued timer can run after the screen's widgets have unmounted.
+        if not self.is_running:
+            return  # Textual stops running before it unmounts the screen widgets.
         self._paint_activity()  # Keeps the spinner turning in stages that have nothing else to refresh.
         if self._approval_request is not None and not self._waiting(self._approval_request):
             # Withdrawn without an answer, e.g. a sandboxed command ended while asking to connect.

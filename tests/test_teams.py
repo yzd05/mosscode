@@ -1340,8 +1340,11 @@ async def test_a_withdrawn_approval_can_outlive_its_panel(tmp_path):
             ApprovalRequest("r1", "", Operation("write_file", "b.txt"), "Write?", ("once", "deny"), source="alice")
         )
         pending.pop("r1").cancel()
-        await app.screen.remove_children()
+        # Textual stops running before it removes widgets or sends the app's Unmount event.
+        app._running = False
+        await app.query_one("#activity").remove()
         app._tick()
+        app._fit_chat()
 
 
 # Coordinator mode ----------------------------------------------------------------------
