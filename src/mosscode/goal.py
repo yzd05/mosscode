@@ -11,7 +11,8 @@ from time import monotonic
 from typing import Literal
 
 from .context import estimate_text
-from .messages import CONTINUE, NOTIFICATION, Completed, ContentBlock, Message, ProviderError
+from .limits import stream
+from .messages import CONTINUE, NOTIFICATION, REMINDER, Completed, ContentBlock, Message, ProviderError
 from .prompts import Supplement
 
 GOAL = "goal"  # Message.synthetic of the message that starts a continuation turn.
@@ -119,6 +120,8 @@ def conversation_tail(messages: Sequence[Message], limit: int = INPUT_TOKENS) ->
     shown = {id(r) for r in results[-RESULTS_SHOWN:]}
     kept, used = [], 0
     for message in reversed(messages):
+        if message.synthetic == REMINDER:
+            continue  # The agent's own notes (the checklist, the goal itself) are not evidence.
         block = _render(message, shown)
         cost = estimate_text(block) + 1
         if kept and used + cost > limit:
@@ -152,11 +155,13 @@ def parse_verdict(text: str) -> Verdict:
     return Verdict(raw["verdict"], " ".join(reason.split())[:REASON_CHARS])
 
 
-async def evaluate(provider, condition: str, messages: Sequence[Message], on_usage: Callable | None = None) -> Verdict:
+async def evaluate(
+    provider, condition: str, messages: Sequence[Message], on_usage: Callable | None = None, limits=None
+) -> Verdict:
     """One request without tools; ProviderError or ValueError when it fails."""
     prompt = evaluation_prompt(condition, messages)
     async with aclosing(
-        provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (), allow_tools=False)
+        stream(provider, [Message("user", (ContentBlock("text", prompt),))], SYSTEM, allow_tools=False, limits=limits)
     ) as events:
         async for event in events:
             if isinstance(event, Completed):

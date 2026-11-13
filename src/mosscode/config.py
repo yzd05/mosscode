@@ -65,6 +65,10 @@ class ProviderConfig:
     images: bool | None = None  # Whether the model accepts images; None follows the protocol.
     reasoning: bool | None = None  # Whether /thinking applies; None follows the model catalog.
     catalog_model: str | None = None  # The model catalog entry, when the model name is an alias it does not list.
+    preset: str | None = None  # The vendor preset the entry is written with (presets.py).
+    follow: str | None = None  # claude-code / codex: address, key and model come from that tool (follow.py).
+    # A following provider's entry as written: read again, with the tool's settings, when /model picks it.
+    entry: tuple = field(default=(), compare=False, repr=False)
     # Filled in when the configuration is read: the catalog entry and which fields came from it.
     catalog: ModelInfo | None = field(default=None, compare=False, repr=False)
     from_catalog: tuple[str, ...] = field(default=(), compare=False, repr=False)
@@ -156,9 +160,11 @@ class Settings:
     default_provider: str | None = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     max_iterations: int = 200
+    run_budget: dict[str, int] = field(default_factory=dict, kw_only=True)
     source: Path | None = None
     shell: str = "auto"
     auto_compact: bool = True
+    context_collapse: bool = True
     persist_sessions: bool = True
     memory: bool = True
     auto_memory: bool = True
@@ -166,6 +172,7 @@ class Settings:
     agent_auto_background: float = 120.0  # Seconds before a foreground sub-agent moves on; 0 never.
     agent_max_background: int = 4  # Running background tasks at most.
     command_max_background: int = 8  # Running background commands at most; 0 turns them off.
+    command_auto_background: float = 5.0  # Seconds before a foreground command moves to the background; 0 never.
     todo_tool: bool = True  # Offer todo_write, the model's task checklist.
     goal_max_turns: int = 30  # /goal: automatic turns before it pauses; resuming allows as many again.
     goal_provider: str | None = None  # /goal's evaluator; None uses memory_provider, then the current provider.
@@ -349,6 +356,10 @@ def _host(item: ProviderConfig) -> str:
 
 
 def _credential(item: ProviderConfig | WebSearchConfig) -> str:
+    if getattr(item, "follow", None):
+        from .follow import SOURCES
+
+        return f"{SOURCES[item.follow]} 的设置中的密钥"
     if item.api_key_env:
         return f"环境变量 {_shown(item.api_key_env)}"
     if item.api_key_keyring:
@@ -402,12 +413,21 @@ def _links(raw: Any) -> tuple[str, ...]:
     return tuple(links)
 
 
-def _provider(raw: Any) -> ProviderConfig:
+def _provider(raw: Any, home: Path | None = None) -> ProviderConfig:
     if not isinstance(raw, dict):
         raise ConfigError("providers 的每一项必须是配置对象。")
-    allowed = set(ProviderConfig.__dataclass_fields__) - {"catalog", "from_catalog"}
+    allowed = set(ProviderConfig.__dataclass_fields__) - {"catalog", "from_catalog", "entry"}
     if set(raw) - allowed:
         raise ConfigError("Provider 包含未知字段，请对照 config.example.yaml。")
+    written = raw
+    if raw.get("follow") is not None:
+        from .follow import resolve
+
+        raw = resolve(raw, home)
+    elif raw.get("preset") is not None:
+        from .presets import expand
+
+        raw = expand(raw)
     for key in ("name", "protocol", "model"):
         if not isinstance(raw.get(key), str) or not raw[key].strip():
             raise ConfigError(f"Provider 的 {key} 必须是非空字符串。")
@@ -485,11 +505,18 @@ def _provider(raw: Any) -> ProviderConfig:
     ):
         raise ConfigError("手动思考预算需至少 1024 且小于 max_output_tokens。")
     data["thinking"] = thinking
+    if data.get("follow"):
+        data["entry"] = tuple(written.items())
     config = ProviderConfig(**data)
     problem = config.budget().problem()
     if problem:
         raise ConfigError(f"Provider {config.name}：{problem}")
     return config
+
+
+def refreshed(config: ProviderConfig, home: Path | None = None) -> ProviderConfig:
+    """A following provider read again from the tool it follows (after a switch in CC Switch, say); others as is."""
+    return _provider(dict(config.entry), home) if config.follow else config
 
 
 def catalog_window(info: ModelInfo, output: int | None = None) -> int | None:
@@ -596,8 +623,10 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         "default_provider",
         "system_prompt",
         "max_iterations",
+        "run_budget",
         "shell",
         "auto_compact",
+        "context_collapse",
         "persist_sessions",
         "memory",
         "auto_memory",
@@ -605,6 +634,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         "agent_auto_background",
         "agent_max_background",
         "command_max_background",
+        "command_auto_background",
         "todo_tool",
         "goal_max_turns",
         "goal_provider",
@@ -619,7 +649,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         "sandbox",
     }:
         raise ConfigError("配置顶层包含未知字段。")
-    providers = tuple(_provider(item) for item in raw["providers"])
+    providers = tuple(_provider(item, home) for item in raw["providers"])
     if len({p.name for p in providers}) != len(providers):
         raise ConfigError("Provider name 不能重复。")
     default = raw.get("default_provider")
@@ -629,11 +659,18 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     if not isinstance(system, str):
         raise ConfigError("system_prompt 必须是字符串。")
     iterations = _positive_int(raw.get("max_iterations", Settings.max_iterations), "max_iterations")
+    run_budget = raw.get("run_budget", {})
+    if (
+        not isinstance(run_budget, dict)
+        or set(run_budget) - {"requests", "tokens"}
+        or any(type(v) is not int or v < 0 for v in run_budget.values())
+    ):
+        raise ConfigError("run_budget 仅支持 requests、tokens，值为非负整数（0 不限制）。")
     shell = raw.get("shell", Settings.shell)
     if not isinstance(shell, str) or not shell.strip():
         raise ConfigError("shell 需为 auto、bash、powershell 或 shell 可执行文件路径。")
     switches = {}
-    for key in ("auto_compact", "persist_sessions", "memory", "auto_memory", "todo_tool"):
+    for key in ("auto_compact", "context_collapse", "persist_sessions", "memory", "auto_memory", "todo_tool"):
         switches[key] = raw.get(key, True)
         if type(switches[key]) is not bool:
             raise ConfigError(f"{key} 必须是布尔值。")
@@ -655,6 +692,9 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     commands = raw.get("command_max_background", Settings.command_max_background)
     if type(commands) is not int or not 0 <= commands <= 64:
         raise ConfigError("command_max_background 需为 0–64 之间的整数（0 表示关闭后台命令）。")
+    command_auto = raw.get("command_auto_background", Settings.command_auto_background)
+    if type(command_auto) not in {int, float} or not 0 <= command_auto <= 600:
+        raise ConfigError("command_auto_background 需为 0–600 之间的秒数（0 表示前台命令不自动转入后台）。")
     links = _links(raw.get("worktree_links", []))
     stale = raw.get("worktree_stale_hours", Settings.worktree_stale_hours)
     if type(stale) not in {int, float} or not 0 <= stale <= 8760:
@@ -689,11 +729,13 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         Path(path),
         shell.strip(),
         memory_provider=memory_provider,
+        run_budget=run_budget,
         goal_max_turns=goal_turns,
         goal_provider=goal_provider,
         agent_auto_background=float(auto_background),
         agent_max_background=max_background,
         command_max_background=commands,
+        command_auto_background=float(command_auto),
         worktree_links=links,
         worktree_stale_hours=float(stale),
         team_max_members=members,

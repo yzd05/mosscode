@@ -10,6 +10,11 @@ default_provider: claude
 #   你的完整系统提示
 # 单次任务最多请求模型的次数（默认 200）；达到上限后可继续输入推进。
 # max_iterations: 200
+# 本次启动共享的模型调用预算，主 Agent、子 Agent、摘要和记忆等合计；0 不限制，默认关闭。
+# Token 按服务返回用量累计，达到后不再发起请求；不限制在途用量或费用。
+# run_budget:
+#   requests: 200
+#   tokens: 1000000
 # execute_command 使用的 shell：auto（默认；Windows 优先 Git Bash，找不到时用 PowerShell）、bash、powershell，
 # 或 bash.exe 的完整路径。明确指定但找不到时启动报错；不支持 System32 下的 WSL bash。
 # shell: auto
@@ -25,6 +30,8 @@ default_provider: claude
 # memory_provider: deepseek
 # 同时运行的后台命令上限（execute_command 的 run_in_background，默认 8，最多 64）；0 关闭后台命令。
 # command_max_background: 8
+# 前台命令运行超过这么多秒就自动转入后台，模型不必干等（默认 5，最多 600）；0 表示一直在前台等它结束。
+# command_auto_background: 5
 # Agent 团队的成员在哪里运行：auto（默认；在 tmux 中用 tmux 窗格，在 Windows Terminal 中用分屏窗格，否则进程内）、
 # in-process、windows-terminal、tmux。显式指定的窗格后端不可用时报错，不改用其他后端。
 # teammate_mode: auto
@@ -68,11 +75,11 @@ providers:
     # catalog_model: claude-sonnet-4-5
     # 请求开始输出前遇到限流、过载、5xx 或断连时自动重试的次数（默认 4，0 表示关闭）。
     # max_retries: 4
-    # 默认官方 SDK 地址启用稳定提示缓存边界；兼容服务支持时可明确打开。
-    # prompt_cache: true
+    # Anthropic 只缓存请求中标记的前缀，默认对任何地址（包括 CC Switch 等中转）都加缓存标记；
+    # 服务因这个标记拒绝请求时自动去掉重发，之后不再加。设 false 一直不加：
+    # prompt_cache: false
     # 中转若兼容 Messages，也使用同一个适配器：
     # base_url: https://your-gateway.example
-    # 不支持缓存标记的中转可设 prompt_cache: false（不关闭服务自动缓存）。
     # auth_type: bearer  # 中转若要求 Authorization: Bearer
     # thinking: {type: adaptive, effort: high}
     # 老模型/服务手动预算：thinking: {type: enabled, budget_tokens: 2048}
@@ -113,3 +120,14 @@ providers:
     # context_window: 1000000
     # 大窗口时每次请求都可能接近百万 Token；需要控制成本和延迟时可以提前压缩：
     # compact_threshold: 200000
+
+  # 厂商预设：preset 代替 protocol、base_url、默认 model 和密钥变量名（deepseek、kimi、glm、qwen、openrouter、
+  # anthropic、openai），写出的字段优先。详见 docs/reference/providers.md 的“厂商预设”。
+  # - name: kimi
+  #   preset: kimi
+  #   model: kimi-k3.1-pro
+
+  # 跟随 Claude Code（~/.claude/settings.json）或 Codex（~/.codex/config.toml）的服务地址、密钥和模型，
+  # CC Switch、Magpie 切换后在 /model 中重新读取；不能再写 base_url、headers 和凭据字段。
+  # - name: cc
+  #   follow: claude-code

@@ -71,3 +71,5 @@ ignore = [
     "E402",  # Some test modules import helpers after the fixtures they depend on.
     "B008",  # Fake providers default to an immutable Usage().
 ]
+# The evaluation tasks' projects carry their bugs on purpose.
+"evals/tasks/*/repo/*" = ["B006"]

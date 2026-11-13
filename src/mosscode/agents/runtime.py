@@ -267,6 +267,7 @@ class SubAgents:
             self.tasks.changed(task)
 
         loop.on_usage = counted
+        loop.run_budget = main.run_budget
         loop.registry.task_id = task.id  # Its background commands end with it.
         conversation = self.conversation
         session = conversation.session
@@ -347,6 +348,7 @@ class SubAgents:
         loop.instructions = self.conversation.project_instructions
         loop.git = git if git is not None else main.git
         loop.budget, loop.auto_compact, loop.session = budget, main.auto_compact, main.session
+        loop.context_collapse = main.context_collapse
         self.attach(task, loop)
         return loop, owned
 
@@ -376,7 +378,8 @@ class SubAgents:
             loop.active_skills.activate(item.skill, item.arguments, item.text)
         loop._announced = main._announced
         loop.budget, loop.auto_compact, loop.session = main.budget, main.auto_compact, main.session
-        loop.history = fork_history(main.history)
+        loop.context_collapse = main.context_collapse
+        loop.history = fork_history(main.projected())  # Collapsed turns as the main conversation sends them.
         self.attach(task, loop)
         return loop
 

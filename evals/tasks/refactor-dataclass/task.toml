@@ -1,0 +1,4 @@
+category = "refactor"
+prompt = """
+把 point.py 的 Point 改写成不可变（frozen）的 dataclass，删掉手写的 __init__、__eq__ 和 __repr__；相等比较、repr 的格式和 distance_to 的行为保持不变，并且 Point 可以作为字典的键。
+"""

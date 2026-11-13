@@ -124,12 +124,69 @@ class Wizard:
                 return int(answer)
             self.write(f"  请输入 1–{len(options)} 之间的数字。")
 
-    def collect(self) -> dict | None:
+    def collect(self, home: Path | None = None) -> dict | None:
         """The provider entry, or None when the user did not confirm. Raises Cancelled on Ctrl+D."""
+        from .follow import SOURCES, detected
+        from .presets import PRESETS
+
+        # Claude Code's or Codex's settings that already work (CC Switch and Magpie write them) come first.
+        choices = [
+            ("follow", source, f"跟随 {SOURCES[source]} 的设置（在 CC Switch、Magpie 中切换后随之切换）")
+            for source in detected(home, self.environ)
+        ]
+        choices += [("preset", key, preset.label) for key, preset in PRESETS.items()]
+        choices.append(("custom", "", "其他服务（手动填写协议、地址和模型）"))
+        self.write("")
+        kind, key, _ = choices[self.choose("选择模型服务", [label for *_, label in choices]) - 1]
+        if kind == "follow":
+            return self._follow(key, home)
+        if kind == "preset":
+            return self._preset(PRESETS[key])
+        return self._custom()
+
+    def _follow(self, source: str, home: Path | None) -> dict | None:
+        from .follow import SOURCES, resolve, settings_path
+
+        provider = {"name": source, "follow": source}
+        found = resolve(provider, home, self.environ)
+        self.write("")
+        self.write("将写入：")
+        for line in (
+            f"名称 {source}（默认 Provider）",
+            f"跟随 {SOURCES[source]} 的设置 {settings_path(source, home, self.environ)}",
+            f"现在是 {found['protocol']} / {found['model']}，"
+            f"服务地址 {found.get('base_url') or '官方地址 ' + OFFICIAL[found['protocol']]}",
+            f"密钥 留在 {SOURCES[source]} 的设置中，不写入 MossCode 的配置",
+        ):
+            self.write("  " + line)
+        return provider if self._confirmed() else None
+
+    def _preset(self, preset) -> dict | None:
+        from .catalog import lookup
+
+        self.write(f"  {preset.label}：{preset.protocol} · {preset.base_url or OFFICIAL[preset.protocol]}")
+        model = self.ask("模型名", preset.model)
+        alias = preset.catalog_model if model == preset.model else None
+        if lookup(model, base_url=preset.base_url, protocol=preset.protocol, alias=alias) is None:
+            self.write(
+                f"  模型目录中没有 {model}，按 128K 估算上下文；可以在配置中填写 context_window，"
+                "或用 catalog_model 指定目录中的条目（moss models <关键词> 查找）。"
+            )
+        provider = {"name": preset.key, "preset": preset.key, "model": model}
+        self._credential(provider, "凭据", preset.api_key_env)
+        self.write("")
+        self.write("将写入：")
+        for line in summary(provider):
+            self.write("  " + line)
+        return provider if self._confirmed() else None
+
+    def _confirmed(self) -> bool:
+        return self.ask("确认写入？(Y/n)").lower() in {"", "y", "yes", "是"}
+
+    def _custom(self) -> dict | None:
         from .catalog import lookup, tokens_label
         from .config import catalog_window
 
-        self.write("")
         protocol = PROTOCOLS[self.choose("1/5 协议", [label for _, label in PROTOCOLS]) - 1][0]
         if protocol == "openai-chat-completions":
             self.write("  DeepSeek、Qwen 等兼容服务请填写它的地址，例如 https://api.deepseek.com")
@@ -161,7 +218,20 @@ class Wizard:
         provider: dict = {"name": name, "protocol": protocol, "model": model}
         if base_url:
             provider["base_url"] = base_url
-        self.write("5/5 凭据")
+        default = f"{name.upper().replace('-', '_')}_API_KEY" if _host_name(base_url) else KEYS[protocol]
+        self._credential(provider, "5/5 凭据", default)
+        if window is not None:
+            provider["context_window"] = window
+        self.write("")
+        self.write("将写入：")
+        for line in summary(provider, known):
+            self.write("  " + line)
+        return provider if self._confirmed() else None
+
+    def _credential(self, provider: dict, title: str, variable_default: str) -> None:
+        """Where the key is kept: the credential manager (saved once confirmed), a variable, or the file."""
+        name = provider["name"]
+        self.write(title)
         problem = self.vault.problem()
         methods = (
             []
@@ -179,20 +249,12 @@ class Wizard:
             self.pending_key = self._key()
             provider["api_key_keyring"] = name
         elif method == "env":
-            default = f"{name.upper().replace('-', '_')}_API_KEY" if _host_name(base_url) else KEYS[protocol]
-            while not ENV_NAME.fullmatch(variable := self.ask("环境变量名", default)):
+            while not ENV_NAME.fullmatch(variable := self.ask("环境变量名", variable_default)):
                 self.write("  请填写变量名（字母、数字和下划线），不要填写密钥本身。")
             provider["api_key_env"] = variable
         else:
             self.write("  " + PLAINTEXT_WARNING)
             provider["api_key"] = self._key()
-        if window is not None:
-            provider["context_window"] = window
-        self.write("")
-        self.write("将写入：")
-        for line in summary(provider, known):
-            self.write("  " + line)
-        return provider if self.ask("确认写入？(Y/n)").lower() in {"", "y", "yes", "是"} else None
 
     def _key(self) -> str:
         while True:
@@ -210,8 +272,23 @@ def summary(provider: dict, catalog_window: int | None = None) -> list[str]:
     from .catalog import tokens_label
 
     window = f"未填写，按模型目录 {tokens_label(catalog_window)}" if catalog_window else "未填写，按 128K 估算"
+    if "preset" in provider:
+        from .catalog import lookup
+        from .config import catalog_window as known
+        from .presets import PRESETS, expand
+
+        preset = PRESETS[provider["preset"]]
+        provider = expand(provider)
+        info = lookup(
+            provider["model"],
+            base_url=provider.get("base_url"),
+            protocol=provider["protocol"],
+            alias=provider.get("catalog_model"),
+        )
+        size = known(info) if info else None
+        window = f"按模型目录 {tokens_label(size)}" if size else "按 128K 估算"
     lines = [
-        f"名称 {provider['name']}（默认 Provider）",
+        f"名称 {provider['name']}（默认 Provider）" + (f"，预设 {preset.label}" if "preset" in provider else ""),
         f"协议 {provider['protocol']}",
         f"模型 {provider['model']}",
         f"服务地址 {provider.get('base_url') or '官方地址 ' + OFFICIAL[provider['protocol']]}",
@@ -250,7 +327,7 @@ def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: 
         wizard.write("MossCode 还没有配置。下面创建用户级配置，之后在任何目录都能使用。")
     wizard.write(f"将写入 {path}。按 Ctrl+C 随时退出，不写入任何文件。")
     try:
-        provider = wizard.collect()
+        provider = wizard.collect(home)
     except (Cancelled, KeyboardInterrupt):
         wizard.write("\n已退出，没有写入文件。")
         return "cancelled"
@@ -274,7 +351,7 @@ def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: 
         wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
         return "failed"
     try:
-        load_settings(path)
+        load_settings(path, home)
     except ConfigError as exc:
         wizard.write(f"已写入 {path}，但校验失败：{exc} 请修改文件后再运行 moss。")
         return "failed"

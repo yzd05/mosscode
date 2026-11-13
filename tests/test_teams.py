@@ -393,7 +393,7 @@ import re  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from mosscode.agents.runtime import GLOBAL_BAN  # noqa: E402
-from mosscode.messages import ToolCall  # noqa: E402
+from mosscode.messages import REMINDER, ToolCall  # noqa: E402
 from mosscode.teams.member import TeamAccess  # noqa: E402
 from mosscode.tools.team import LEAD_TOOLS, TEAM_TOOLS  # noqa: E402
 from mosscode.worktree.meta import load_meta  # noqa: E402
@@ -426,6 +426,8 @@ class Script:
         self.seen: dict[str, list] = {}  # name -> [(messages, tools)] of each request.
 
     def __call__(self, messages, system, tools):
+        # Scripts answer the conversation; the agent's reminders (plan rules, mode changes) are not part of it.
+        messages = [m for m in messages if m.synthetic != REMINDER]
         name = member_of(system)
         if name is None:
             return self.lead(messages, tools)

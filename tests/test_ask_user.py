@@ -165,7 +165,7 @@ async def test_the_model_gets_the_answer_within_the_same_turn(tmp_path):
             asked.append(event.questions[0].header)
             reg.permissions.answer(event.id, (Answer(("深色（推荐）",)),))
     assert asked == ["配色"]
-    result = conv.history[2].tool_results[0]
+    result = conv.history[3].tool_results[0]  # After the message and the plan-mode reminder that follows it.
     assert not result.is_error and "回答：深色（推荐）" in result.output
     assert conv.history[-1].text == "按深色做"
     await conv.close()

@@ -14,7 +14,7 @@ import yaml
 
 from mosscode.config import ConfigError, load_settings
 from mosscode.context import ContextBudget, ContextMeter, estimate_message, estimate_text
-from mosscode.messages import ContentBlock, Message, ToolCall, ToolResult, Usage
+from mosscode.messages import REMINDER, ContentBlock, Message, ToolCall, ToolResult, Usage
 from mosscode.providers import _safe_error
 from mosscode.session import MARKER, Session, prune_sessions
 from mosscode.tool_budget import MESSAGE_TOKENS, READ_FLOOR, RESULT_TOKENS, bound_message, share
@@ -504,6 +504,29 @@ NO_SUMMARY = Completed(Message("assistant", (ContentBlock("text", "忘了写摘�
 OVERFLOW = ProviderError("请求超出模型的上下文窗口（HTTP 400）。", code="context_overflow")
 
 
+async def test_summary_requests_count_in_usage_but_not_in_the_hit_rate():
+    from dataclasses import replace
+
+    from mosscode.builtin_commands import _usage_line
+    from mosscode.usage import cache_hit_rate
+
+    provider = SequenceProvider(
+        response("一", usage=Usage(1_000, 10, 900, 0)),
+        replace(summary_reply(), usage=Usage(3_000, 200, 0, 0)),
+        response("二", usage=Usage(1_200, 10, 1_000, 0)),
+    )
+    conv = seeded(provider, chat(8), auto_compact=False)
+    await conv.ask("一")
+    [e async for e in conv.compact()]
+    await conv.ask("二")
+    usage = conv.total_usage
+    assert usage.requests == 3 and usage.input_tokens == 5_200 and usage.output_tokens == 220
+    assert (usage.side_requests, usage.side_input_tokens) == (1, 3_000)
+    assert cache_hit_rate(usage) == 86  # 1,900 of the conversation's 2,200, the summary left out.
+    line = _usage_line(conv)
+    assert "对话缓存命中率 86%" in line and "其中摘要、目标判断和记忆整理 1 次，输入 3,000" in line
+
+
 def seeded(provider, history, **options):
     conv = Conversation(provider, budget=SMALL, **options)
     conv._agent.history = list(history)
@@ -512,7 +535,7 @@ def seeded(provider, history, **options):
 
 async def test_threshold_reached_compacts_before_the_request():
     provider = SequenceProvider(summary_reply(), response("好"))
-    conv = seeded(provider, chat(8))  # About 32K tokens, estimated in full: over 27K.
+    conv = seeded(provider, chat(8), context_collapse=False)  # About 32K tokens, estimated in full: over 27K.
     events = [e async for e in conv.reply("继续")]
     started = [e for e in events if isinstance(e, CompactStarted)]
     finished = [e for e in events if isinstance(e, CompactFinished)]
@@ -559,7 +582,7 @@ async def test_three_failures_pause_automatic_compaction_until_a_manual_success(
         summary_reply(),
         response("5"),
     )
-    conv = seeded(provider, chat(8))
+    conv = seeded(provider, chat(8), context_collapse=False)
     seen = []
     for prompt in ("a", "b", "c"):
         before = len(conv.history)
@@ -613,8 +636,10 @@ async def test_compaction_forgets_reads_and_repeats_the_mode_reminder(tmp_path):
     [e async for e in conv.compact()]
     await conv.ask("二")
     await conv.ask("三")
-    reminders = [[s.kind for s in r[1].supplements].count("system-reminder") for r in provider.requests if r[3]]
-    assert reminders == [1, 1, 0]
+    # Told at the end of the first request and again once the summary replaced it, not after that.
+    told = [r[0][-1].synthetic == REMINDER and "计划模式" in r[0][-1].text for r in provider.requests if r[3]]
+    assert told == [True, True, False]
+    assert all(s.kind != "system-reminder" for r in provider.requests if r[3] for s in r[1].supplements)
     edit = ToolCall("e", "edit_file", json.dumps({"path": "a.txt", "old_text": "old", "new_text": "new"}))
     conv.set_mode("normal")
     assert (await reg.execute(edit)).code == "not_read"
@@ -646,7 +671,7 @@ def notes(app):
 
 async def test_tui_shows_automatic_compaction_before_the_reply_and_the_context_share():
     provider = SequenceProvider(summary_reply(), response("好", usage=Usage(20_000, 100)))
-    app = MossCodeApp(seeded(provider, chat(8)), "Demo")
+    app = MossCodeApp(seeded(provider, chat(8), context_collapse=False), "Demo")
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause()
         app.query_one("#prompt", PromptArea).value = "继续"
@@ -688,7 +713,7 @@ async def test_tui_shows_a_live_row_while_compacting_and_turns_it_into_the_resul
         yield summary_reply()
 
     provider = SequenceProvider(hold, response("好"))
-    app = MossCodeApp(seeded(provider, chat(8)), "Demo")
+    app = MossCodeApp(seeded(provider, chat(8), context_collapse=False), "Demo")
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause()
         app.query_one("#prompt", PromptArea).value = "继续"
@@ -746,12 +771,12 @@ def test_compact_notices_cover_success_failure_and_pause():
 
 
 async def test_headless_output_counts_compactions(capsys):
-    conv = seeded(SequenceProvider(summary_reply(), response("好")), chat(8))
+    conv = seeded(SequenceProvider(summary_reply(), response("好")), chat(8), context_collapse=False)
     result = await cli._prompt(conv, "继续", output_format="stream-json")
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [e["subtype"] for e in lines if e["type"] == "compact"] == ["started", "finished"]
     assert result["compactions"] == 1 and lines[-1]["compactions"] == 1
-    conv = seeded(SequenceProvider(summary_reply(), response("好")), chat(8))
+    conv = seeded(SequenceProvider(summary_reply(), response("好")), chat(8), context_collapse=False)
     await cli._prompt(conv, "继续")
     captured = capsys.readouterr()
     assert "正在压缩上下文" in captured.err and "已压缩上下文" in captured.err and "好" in captured.out
@@ -970,7 +995,7 @@ async def test_a_history_that_clearing_cannot_bring_down_is_summarized_untouched
     session = Session.create(tmp_path)
     provider = SequenceProvider(summary_reply(), response("好"))
     history = steps(2) + chat(6)  # 8K of results in 32K: clearing leaves about 24K, over half the threshold.
-    conv = seeded(provider, history, session=session)
+    conv = seeded(provider, history, session=session, context_collapse=False)
     events = [e async for e in conv.reply("继续")]
     assert not any(isinstance(e, ResultsCleared) for e in events)
     assert any(isinstance(e, CompactFinished) for e in events) and conv.compactions == 1
@@ -1058,3 +1083,28 @@ async def test_tui_and_headless_output_report_cleared_results(tmp_path, capsys):
     await cli._prompt(conv, "继续")
     captured = capsys.readouterr()
     assert "已清理较早的工具结果" in captured.err and "正在压缩上下文" not in captured.err and "好" in captured.out
+
+
+async def test_repeated_compaction_keeps_the_latest_correction_goal_and_checklist(tmp_path):
+    from mosscode.messages import REMINDER
+    from mosscode.tools import create_default_registry
+
+    provider = SequenceProvider(summary_reply("旧约束摘要"), summary_reply("再次摘要"), response("按最新要求继续"))
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    conv = seeded(
+        provider,
+        [text("user", "使用旧接口"), *chat(8), text("user", "纠正：必须使用新接口")],
+        registry=registry,
+        auto_compact=False,
+    )
+    conv.set_goal("新接口测试通过")
+    registry.todos.replace([(None, "补充新接口的测试", "in_progress")])
+    [event async for event in conv.compact()]
+    conv._agent.history += chat(8)
+    [event async for event in conv.compact()]
+    assert await conv.ask("继续") == "按最新要求继续"
+    request = provider.requests[-1][0]
+    assert any("纠正：必须使用新接口" in m.text for m in request)
+    reminders = "\n".join(m.text for m in request if m.synthetic == REMINDER)
+    assert "新接口测试通过" in reminders and "补充新接口的测试" in reminders
+    await conv.close()

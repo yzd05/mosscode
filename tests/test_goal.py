@@ -17,7 +17,7 @@ from mosscode.goal import (
     goal_reminder,
     parse_verdict,
 )
-from mosscode.messages import ContentBlock, Message, ToolResult
+from mosscode.messages import REMINDER, ContentBlock, Message, ToolResult
 from mosscode.session import load_session
 from test_agent import SequenceProvider, call, response
 from test_commands import context, run
@@ -106,15 +106,21 @@ async def test_not_met_continues_with_the_reason_and_met_ends_the_goal(tmp_path)
     assert "[工具调用 · write_file]" in request[0][0].text
 
     await drain(conv.reply(step.prompt, synthetic=GOAL))
-    assert conv.history[4].synthetic == GOAL
-    # Every request of the goal carries the reminder after the cached prefix, the latest reason in it.
-    supplements = {s.kind: s for s in work.requests[-1][1].supplements}
-    assert "还没有验证 a.txt" in supplements["goal"].text
+    assert conv.history[5].synthetic == GOAL
+    # The goal is told in the history once per turn, the latest reason in it; earlier requests stay as they were.
+    told = [m.text for m in work.requests[-1][0] if m.synthetic == REMINDER]
+    assert len(told) == 2 and all("<goal>" in t for t in told) and "还没有验证 a.txt" in told[1]
+    assert conv.history[6].synthetic == REMINDER and conv.history[6].text == told[1]
+    assert all(work.requests[i + 1][0][: len(r[0])] == r[0] for i, r in enumerate(work.requests[:-1]))
     assert len({request[1].stable for request in work.requests}) == 1
+    assert all(s.kind != "goal" for request in work.requests for s in request[1].supplements)
     step = await conv.goal_after_turn()
+    # The evaluator reads the conversation, not the agent's own reminders.
+    assert "<goal>" not in judge.requests[1][0][0].text
     assert step.action == "met" and "a.txt 已写入并读回" in step.note
     assert conv.goal is None and conv.last_goal == ("写好 a.txt 并验证", "achieved", "a.txt 已写入并读回")
     assert conv._agent.goal_note is None  # No reminder once the goal has ended.
+    assert conv.total_usage.side_requests == 2  # The two checks count as one-off requests.
     saved = [(r["event"], r["condition"]) for r in records(conv.session.transcript_path) if r["type"] == "goal"]
     assert saved == [("set", "写好 a.txt 并验证"), ("achieved", "写好 a.txt 并验证")]
     await conv.close()
@@ -347,7 +353,7 @@ async def test_the_interface_continues_until_met_and_shows_the_goal(tmp_path):
         assert any("目标尚未达成：还没验证" in n for n in notes) and any("目标已达成：a.txt 已验证" in n for n in notes)
         # The continuation is not shown as the user's message.
         assert [e.body for e in app.query(ChatEntry) if e.speaker == "You"] == ["/goal 写好并验证 a.txt"]
-        assert conv.history[4].synthetic == GOAL and len(work.requests) == 4
+        assert conv.history[5].synthetic == GOAL and len(work.requests) == 4
         assert "◎ 目标" not in str(app.query_one("#status", Static).render())
 
 

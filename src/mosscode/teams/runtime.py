@@ -291,11 +291,13 @@ async def build_runner(
     loop = AgentLoop(provider, system, registry, max_iterations=turns, unknown_limit=main.unknown_limit)
     loop.instructions, loop.git = conversation.project_instructions, git
     loop.budget, loop.auto_compact, loop.session = budget, main.auto_compact, main.session
+    loop.context_collapse = main.context_collapse
 
     def counted(usage) -> None:  # The session total includes in-process members.
         main.total_usage = add_usage(main.total_usage, usage, price_of(loop.provider))
 
     loop.on_usage = counted
+    loop.run_budget = main.run_budget
     log = SubagentLog(
         store.directory / member.transcript,
         {
@@ -879,6 +881,12 @@ class TeamRuntime:
 
     def _choose(self) -> Choice:
         """From the current teammate_mode, every time a member starts."""
+        if self.conversation.run_budget.enabled:
+            if self.teammate_mode not in {"auto", IN_PROCESS}:
+                raise TeamError(
+                    "budget_backend", "共享调用预算需要进程内成员；请设置 teammate_mode: in-process 或 auto。"
+                )
+            return Choice(IN_PROCESS, "共享调用预算使用进程内成员")
         return detect_backend(self.teammate_mode, self.env, self.which)
 
     async def spawn(

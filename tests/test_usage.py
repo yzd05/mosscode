@@ -63,6 +63,16 @@ def test_cache_hit_rate_needs_every_request_to_report_input_and_cache_reads():
     assert cache_hit_rate(zero) == 0
 
 
+def test_one_off_requests_count_in_usage_but_not_in_the_hit_rate():
+    total = add_usage(UsageTotals(), Usage(10_000, 10, 9_000, 0))
+    total = add_usage(total, Usage(6_000, 300, 0, 0), side=True)  # A summary or a note extraction.
+    assert total.requests == 2 and total.input_tokens == 16_000 and total.cached_input_tokens == 9_000
+    assert (total.side_requests, total.side_input_tokens, total.side_cached_input_tokens) == (1, 6_000, 0)
+    assert cache_hit_rate(total) == 90
+    only = add_usage(UsageTotals(), Usage(6_000, 300, 0, 0), side=True)
+    assert cache_hit_rate(only) is None  # No conversation request yet: nothing to rate.
+
+
 def test_approximate_token_counts():
     assert [approx_tokens(n) for n in (0, 999, 1000, 8930, 999_499, 999_500, 1_234_567, 2_000_000)] == [
         "0",

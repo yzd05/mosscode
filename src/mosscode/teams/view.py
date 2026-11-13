@@ -10,7 +10,17 @@ from pathlib import Path
 from rich.text import Text
 
 from ..appearance import ERROR_COLOR, MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR
-from ..messages import CONTINUE, Completed, Message, ProviderError, RunStopped, ToolCall, ToolProgress, ToolResult
+from ..messages import (
+    CONTINUE,
+    REMINDER,
+    Completed,
+    Message,
+    ProviderError,
+    RunStopped,
+    ToolCall,
+    ToolProgress,
+    ToolResult,
+)
 from ..permissions import safe_display
 from ..serialization import message_from_json
 from .member import TYPE_LABELS
@@ -64,6 +74,8 @@ def message_lines(message: Message) -> list[Text]:
             return [Text(COMPACTED, style=MUTED_COLOR)]
         if message.synthetic == CONTINUE:
             return [Text("↻ 回复达到输出上限，自动续写", style=MUTED_COLOR)]
+        if message.synthetic == REMINDER:
+            return []
         text = message.text.strip()
         if text.startswith("<incoming-messages>"):
             return _incoming(text)

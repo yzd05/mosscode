@@ -10,6 +10,7 @@ import mosscode.cli as cli
 from mosscode.conversation import Conversation
 from mosscode.messages import (
     CONTINUE,
+    REMINDER,
     AutoContinue,
     Completed,
     ContentBlock,
@@ -229,7 +230,11 @@ async def test_one_time_reminders_go_with_the_repeated_request():
     conv = Conversation(provider)
     conv._agent.remind(Supplement("system-reminder", "距离上次对话已经很久"))
     await run(conv)
-    assert [notes(r, "system-reminder") for r in provider.requests] == [["距离上次对话已经很久"]] * 2
+    told = [[m.text for m in r[0] if m.synthetic == REMINDER] for r in provider.requests]
+    assert told[0] == told[1] and len(told[0]) == 1 and "距离上次对话已经很久" in told[0][0]
+    # Kept once in the history, with the message it came with.
+    assert [m.text for m in conv.history if m.synthetic == REMINDER] == told[0]
+    assert all(s.kind != "system-reminder" for r in provider.requests for s in r[1].supplements)
 
 
 async def test_headless_output_reports_the_retry(capsys):

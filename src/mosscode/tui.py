@@ -5,7 +5,7 @@ import re
 import sys
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import aclosing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic, perf_counter
 from typing import TypeVar
@@ -53,9 +53,10 @@ from .catalog import tokens_label
 from .choice_list import KeyboardOptions
 from .clipboard import ClipboardError, is_image_file, pasted_image_paths, read_clipboard_async
 from .commands import CommandContext, CommandRegistry, Hint, Parsed, parse_input, unknown_note
-from .config import ConfigError, ProviderConfig, Settings
+from .config import ConfigError, ProviderConfig, Settings, refreshed
 from .conversation import Conversation, MemoryUpdated, Notice, Resumed
 from .coordinator import BADGE as COORDINATOR_BADGE
+from .follow import SOURCES as FOLLOWED
 from .goal import GOAL, GoalStep, elapsed_text
 from .images import ImageError, ImageRef, ProcessedImage, load_image, size_label
 from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, MemberList, MemberPanel, MemberView
@@ -66,12 +67,15 @@ from .messages import (
     IMAGE_MARK,
     MENTIONS,
     NOTIFICATION,
+    REMINDER,
     SHELL,
+    STOPPED_EARLY,
     AutoContinue,
     CompactFailed,
     CompactFinished,
     CompactStarted,
     Completed,
+    ContextCollapsed,
     Delta,
     FilesAttached,
     IterationProgress,
@@ -723,6 +727,22 @@ class ConfigTrustApp(PluginTrustApp):
         yield KeyboardOptions(*(Text(option) for option in self.OPTIONS), id="selection")
 
 
+class MCPTrustApp(PluginTrustApp):
+    """Asked before a session starts the MCP servers a project's files declare; what each runs is printed above.
+    True trusts them; Esc and 本次不启动 return False or None."""
+
+    SUB_TITLE = "确认项目 MCP 服务器"
+    OPTIONS = ("信任并启动", "本次不启动")
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            f"信任并启动项目 MCP 服务器 {'、'.join(self.names)}？↑ / ↓ 选择，Enter 确认；Esc 本次不启动。",
+            id="selection-help",
+            markup=False,
+        )
+        yield KeyboardOptions(*(Text(option) for option in self.OPTIONS), id="selection")
+
+
 class ChatEntry(Vertical):
     def __init__(self, speaker: str, text: str = "", notes: list[str] | tuple[str, ...] = ()) -> None:
         super().__init__(classes="entry user-entry" if speaker == "You" else "entry assistant-entry")
@@ -1045,7 +1065,7 @@ def attached_line(entries) -> str:
 
 def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGES) -> list:
     """The latest messages in brief, for the scrollback after a resume."""
-    shown = [m for m in history if m.role != "tool"][-limit:]
+    shown = [m for m in history if m.role != "tool" and m.synthetic != REMINDER][-limit:]
     # ask_user's answers are shown with its call, so a resumed session still tells what the user chose.
     answers = {
         r.call_id: r.details
@@ -2548,10 +2568,26 @@ class MossCodeApp(TerminalApp[None]):
 
     async def switch_model(self, name: str) -> None:
         config = next(item for item in self.settings.providers if item.name == name)
-        await self._switch_model(config)
+        if not config.follow:
+            await self._switch_model(config)
+            return
+        # Read again: the tool it follows may have been switched (in CC Switch, say) since MossCode started.
+        try:
+            config = refreshed(config)
+        except ConfigError as exc:
+            await self._local_note(f"切换失败：{exc}")
+            return
+        from .credentials import remember
 
-    async def _switch_model(self, config: ProviderConfig) -> None:
-        if config.name == self.provider_name:
+        remember(config.api_key)  # A key switched to in that tool since startup is kept out of output too.
+        providers = tuple(config if item.name == name else item for item in self.settings.providers)
+        self.settings = replace(self.settings, providers=providers)
+        self.conversation.provider_configs = providers  # Skills and sub-agents that name it get this one.
+        await self._switch_model(config, again=config.name == self.provider_name)
+
+    async def _switch_model(self, config: ProviderConfig, *, again: bool = False) -> None:
+        """again: the current provider, read again from the tool it follows."""
+        if config.name == self.provider_name and not again:
             await self._local_note(f"└ 已在使用 {config.name}（{config.model}）。")
             return
         try:
@@ -2568,7 +2604,13 @@ class MossCodeApp(TerminalApp[None]):
             self._banner_provider = self.provider_name
         self._refresh_context()
         self._status("")
-        await self._local_note(f"└ 已切换到 {config.name}（{config.protocol} / {config.model}）；对话历史保留。")
+        if again:
+            await self._local_note(
+                f"└ 已重新读取 {FOLLOWED[config.follow]} 的设置：{config.name}"
+                f"（{config.protocol} / {config.model}）；对话历史保留。"
+            )
+        else:
+            await self._local_note(f"└ 已切换到 {config.name}（{config.protocol} / {config.model}）；对话历史保留。")
         if note := config.window_note():
             await self._local_note(f"└ {note}")
         if (problem := self.conversation.thinking_problem()) is not None:
@@ -2893,7 +2935,7 @@ class MossCodeApp(TerminalApp[None]):
                     elif isinstance(event, CompactStarted):
                         # Before a reply that has not started yet, so the row reads in time order.
                         await self._show_compact(event.manual, None if continuation else reply)
-                    elif isinstance(event, (CompactFinished, CompactFailed, ResultsCleared)):
+                    elif isinstance(event, (CompactFinished, CompactFailed, ResultsCleared, ContextCollapsed)):
                         await self._end_compact(
                             compact_notice(event), self._compact_style(event), None if continuation else reply
                         )
@@ -2904,7 +2946,7 @@ class MossCodeApp(TerminalApp[None]):
                             if result.call_id in tool_rows:
                                 tool_rows[result.call_id].complete(result)
                                 self._record_tool(tool_rows[result.call_id])
-                        if event.reason in {"max_iterations", "unknown_tools", "max_tokens"}:
+                        if event.reason in STOPPED_EARLY:
                             await self._local_note("└ " + event.notice)
                             self._status("已停止 · 可以继续提问")
                     elif isinstance(event, Retrying):

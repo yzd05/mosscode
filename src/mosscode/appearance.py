@@ -185,6 +185,8 @@ def compact_notice(event) -> str:
     """One line for a finished or failed compaction, shared by the TUI and headless text output."""
     if hasattr(event, "results"):
         return f"✓ 已清理较早的工具结果 · {event.results} 个 · 约 {event.tokens} Token"
+    if hasattr(event, "after"):
+        return f"✓ 已折叠较早的对话 · {event.messages} 条消息 · 约 {event.before} → {event.after} Token"
     if hasattr(event, "removed"):
         return (
             f"✓ 已压缩上下文 · {event.removed} 条消息 → 摘要 · 约 {event.summary_tokens} Token"

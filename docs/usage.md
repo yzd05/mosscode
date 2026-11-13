@@ -20,7 +20,7 @@ README 只列出最常用的内容。这里是安装细节、全部常用配置�
 
 ### 模型
 
-第一次运行 `moss` 时如果找不到配置，会在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），配置只写名称；也可以只写环境变量名，或直接把密钥以明文写进这个文件。
+第一次运行 `moss` 时如果找不到配置，会先让你选择模型服务：已有 Claude Code 或 Codex 的设置（例如 CC Switch、Magpie 写入的）时可以直接跟随，不用再填地址和密钥；DeepSeek、Kimi 等厂商预设只问模型和凭据；其他服务在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），配置只写名称；也可以只写环境变量名，或直接把密钥以明文写进这个文件。
 
 追加 Provider 或调整其他选项时手动编辑，字段说明见 [config.example.yaml](../config.example.yaml)：
 
@@ -200,4 +200,4 @@ moss -p "列出 src 下的模块" --output-format json
 Get-Content error.log | moss -p "解释这个错误"
 ```
 
-`-p`（`--prompt`）运行一个任务后退出；管道输入附在任务之后，只有管道输入时它就是任务。不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。未经确认的项目级 Hook 在 `-p` 中不启用（stderr 有提示），`--trust-project-hooks` 只在本次信任，`--no-hooks` 不加载任何 Hook；未确认的项目插件同样不加载，`--trust-project-plugins` 只在本次信任。模型启动的后台子 Agent 在 `-p` 中照常运行：回复结束后等待它们完成，每个结果开启新的一轮，全部结束后才退出；stderr 提示任务的开始与结束。格式说明见 [模型提供商](reference/providers.md#无界面模式与输出格式)。
+`-p`（`--prompt`）运行一个任务后退出；管道输入附在任务之后，只有管道输入时它就是任务。不等待审批（可以加 `--resume ID` 或 `-c` 在已有会话上继续）：需要确认的调用返回 approval_required，模型据此调整。`-p "/test 只测 cli"` 这类 Skill 命令展开后执行（fork 方式的 Skill 在独立上下文中运行）；本地命令和未知命令以退出码 2 结束。`--output-format` 可选 `text`、`json`、`stream-json`；json 格式中 `is_error` 为真时退出码为 1，配置或连接错误在任何格式下都以 1 退出。未经确认的项目级 Hook 在 `-p` 中不启用（stderr 有提示），`--trust-project-hooks` 只在本次信任，`--no-hooks` 不加载任何 Hook；未确认的项目插件同样不加载，`--trust-project-plugins` 只在本次信任；项目 `.mosscode/mcp.yaml` 和导入的 `.mcp.json` 中未确认的 MCP 服务器不启动，`--trust-project-mcp` 只在本次信任。模型启动的后台子 Agent 在 `-p` 中照常运行：回复结束后等待它们完成，每个结果开启新的一轮，全部结束后才退出；stderr 提示任务的开始与结束。格式说明见 [模型提供商](reference/providers.md#无界面模式与输出格式)。

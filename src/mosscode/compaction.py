@@ -11,9 +11,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
-from .context import ContextBudget, estimate_messages, estimate_text
+from .context import ContextBudget, estimate_message, estimate_messages, estimate_text
 from .images import ImageRef
-from .messages import Completed, ContentBlock, Message, ProviderError, ToolResult
+from .limits import stream
+from .messages import Collapse, Completed, ContentBlock, Message, ProviderError, ToolResult
 from .session import Session
 
 KEEP_TOKENS = 10_000
@@ -25,6 +26,8 @@ RESULT_CLIP = 2_000
 SHRINK_STEPS = 3
 DROP_SHARE = 0.2
 BOUNDARY = "compact"
+COLLAPSE = "collapse"  # Message.synthetic of a collapse summary; it is only ever in requests, never the history.
+SUMMARIES = (BOUNDARY, COLLAPSE)
 QUOTE = "\n\n▸ "  # Prefix of each verbatim user quote block in a boundary message.
 CLIPPED = " …（较长，原文见记录文件）"
 NOTHING = "没有可压缩的内容：对话中只有最近一轮。"
@@ -33,6 +36,11 @@ CLEARABLE = frozenset({"read_file", "grep", "glob", "execute_command", "web_fetc
 CLEAR_MINIMUM = 300  # Tokens: a smaller result saves too little once the note replaces it.
 CLEAR_TARGET = 0.5  # Of the auto threshold: clearing alone is enough when the context ends up under it.
 CLEAR_NOTE = 100  # Tokens a note is assumed to cost when sizing up what clearing would free.
+# Collapsing stops once the context is estimated under this share of the auto threshold: higher than clearing's,
+# since a collapse costs a request and every message it leaves out of the range stays word for word.
+COLLAPSE_TARGET = 0.6
+COLLAPSE_LIMIT = 2  # Summaries in a request at most; the next time a full summary replaces them.
+COLLAPSE_SUMMARY = 2_000  # Tokens the written summary is assumed to take; the user quotes are counted exactly.
 
 SYSTEM = "你是对话摘要器。禁止调用任何工具，只输出纯文本；任何工具调用都会被拒绝，本次任务会失败。"
 
@@ -72,7 +80,7 @@ def _group_start(history: Sequence[Message], index: int) -> int:
 
 def _only_boundary(messages: Sequence[Message]) -> bool:
     # Re-summarizing a lone summary gains nothing.
-    return all(m.synthetic == BOUNDARY for m in messages)
+    return all(m.synthetic in SUMMARIES for m in messages)
 
 
 def split_point(history: Sequence[Message], threshold: int) -> int:
@@ -116,9 +124,9 @@ def _clearable(result: ToolResult) -> bool:
     return estimate_text(result.model_text()) > CLEAR_MINIMUM
 
 
-def clearable_tokens(history: Sequence[Message], cut: int) -> int:
-    """About how much clearing the results before cut would free; nothing is written."""
-    sizes = [estimate_text(r.model_text()) for m in history[:cut] for r in m.tool_results if _clearable(r)]
+def clearable_tokens(history: Sequence[Message], cut: int, start: int = 0) -> int:
+    """About how much clearing the results from start to cut would free; nothing is written."""
+    sizes = [estimate_text(r.model_text()) for m in history[start:cut] for r in m.tool_results if _clearable(r)]
     return sum(max(size - CLEAR_NOTE, 0) for size in sizes)
 
 
@@ -144,13 +152,18 @@ def _cleared(result: ToolResult, session: Session | None) -> ToolResult | None:
     return replace(result, output=note, details={**result.details, "persisted": path, "cleared": True})
 
 
-def clear_results(history: Sequence[Message], cut: int, session: Session | None) -> Cleared:
-    """The history with the larger tool results before cut replaced by notes; no message is added or removed."""
+def clear_results(history: Sequence[Message], cut: int, session: Session | None, start: int = 0) -> Cleared:
+    """The history with the larger tool results from start to cut replaced by notes; no message is added or removed.
+
+    start skips collapsed messages: they are not sent, and /rewind may bring them back as they were.
+    """
     changed: dict[str, ToolResult] = {}
     cleared_paths: list[str] = []
     freed = 0
     updated = list(history)
     for index, message in enumerate(history[:cut]):
+        if index < start:
+            continue
         results = list(message.tool_results)
         for position, result in enumerate(results):
             note = _cleared(result, session) if _clearable(result) else None
@@ -175,7 +188,7 @@ def collect_quotes(removed: Sequence[Message]) -> list[str]:
     """User input in time order, including quotes a previous compaction attached."""
     quotes = []
     for message in removed:
-        if message.synthetic == BOUNDARY:
+        if message.synthetic in SUMMARIES:
             quotes.extend(carried_quotes(message))
         elif message.role == "user" and message.synthetic is None and message.text.strip():
             quotes.append(message.text)
@@ -205,7 +218,7 @@ def _image(image: ImageRef) -> str:
 
 def render(message: Message, shrink: bool = False) -> str:
     """One message as role-tagged plain text, so no protocol ever sees unpaired tool calls."""
-    if message.synthetic == BOUNDARY:
+    if message.synthetic in SUMMARIES:
         return "[之前的压缩摘要]\n" + message.text.strip()
     if message.role == "user":
         content = (_image(b.image) if b.image is not None else b.text for b in message.content if b.kind != "thinking")
@@ -255,23 +268,30 @@ def parse_summary(response: Completed) -> str:
     return summary
 
 
-def record_text(removed: Sequence[Message]) -> str:
+def record_text(removed: Sequence[Message], action: str = "压缩") -> str:
     stamp = datetime.now().isoformat(timespec="seconds")
-    return f"# MossCode 压缩记录\n\n压缩时间：{stamp}\n被压缩的消息：{len(removed)} 条\n\n{transcript(removed)}\n"
+    return (
+        f"# MossCode {action}记录\n\n{action}时间：{stamp}\n被{action}的消息：{len(removed)} 条\n\n"
+        f"{transcript(removed)}\n"
+    )
 
 
-def boundary(summary: str, quotes: Sequence[str], omitted: int, record: Path | None) -> Message:
+LEADS = {
+    BOUNDARY: ("（上下文已压缩：较早的对话由下面的摘要代替，之后的消息保留原文。）", "压缩"),
+    COLLAPSE: ("（较早的一段对话已折叠：这一段由下面的摘要代替，之后的消息保留原文。）", "折叠"),
+}
+
+
+def boundary(summary: str, quotes: Sequence[str], omitted: int, record: Path | None, kind: str = BOUNDARY) -> Message:
     """Replaces the compacted messages; quotes stay separate blocks so the next compaction carries them."""
-    blocks = [
-        ContentBlock("text", "（上下文已压缩：较早的对话由下面的摘要代替，之后的消息保留原文。）"),
-        ContentBlock("text", f"\n\n摘要：\n{summary}"),
-    ]
+    lead, action = LEADS[kind]
+    blocks = [ContentBlock("text", lead), ContentBlock("text", f"\n\n摘要：\n{summary}")]
     if quotes:
         blocks.append(ContentBlock("text", "\n\n用户原话（按时间顺序，由程序原样附上）："))
         blocks += [ContentBlock("text", QUOTE + quote) for quote in quotes]
     if omitted:
         blocks.append(ContentBlock("text", f"\n\n（另有 {omitted} 条更早的用户消息未附上，原文见记录文件。）"))
-    where = f"压缩前的完整记录：{record}\n" if record else "（本次未能保存压缩前的完整记录。）\n"
+    where = f"{action}前的完整记录：{record}\n" if record else f"（本次未能保存{action}前的完整记录。）\n"
     blocks.append(
         ContentBlock(
             "text",
@@ -279,41 +299,44 @@ def boundary(summary: str, quotes: Sequence[str], omitted: int, record: Path | N
             "文件可能已变化，修改前必须重新读取，不要依据摘要补写代码。",
         )
     )
-    return Message("user", tuple(blocks), synthetic=BOUNDARY)
+    return Message("user", tuple(blocks), synthetic=kind)
 
 
-async def _ask(provider, prompt: str) -> Completed:
+async def _ask(provider, prompt: str, on_usage=None, limits=None) -> Completed:
     async with aclosing(
-        provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (), allow_tools=False)
+        stream(provider, [Message("user", (ContentBlock("text", prompt),))], SYSTEM, allow_tools=False, limits=limits)
     ) as events:
         async for event in events:
             if isinstance(event, Completed):
+                if on_usage is not None:
+                    on_usage(event.usage)
                 return event
     raise ProviderError("摘要回复在完成信号前中断。")
 
 
-async def compact_history(
-    provider,
-    history: Sequence[Message],
-    budget: ContextBudget,
-    *,
-    session: Session | None = None,
-    instructions: str = "",
-    manual: bool = False,
-) -> Compacted:
-    cut = cut_point(history, budget.auto_threshold, manual=manual)
-    if cut == 0:
-        raise CompactionError(NOTHING, "nothing")
-    removed, tail = list(history[:cut]), list(history[cut:])
-    limit = budget.manual_limit
+def _keep_record(session: Session | None, text: str, name: str) -> Path | None:
+    if session is None:
+        return None
+    try:
+        return session.write_record(text, name)
+    except OSError:
+        return None
+
+
+async def _summarize(
+    provider, removed: Sequence[Message], limit: int, instructions: str = "", on_usage=None, limits=None
+) -> str:
+    """The summary of removed, shrinking the request while it does not fit."""
     shrink, dropped = False, 0
     for step in range(SHRINK_STEPS + 1):
         prompt = summary_request(transcript(removed[dropped:], shrink=shrink, dropped=dropped), instructions)
         response = None
         if estimate_text(SYSTEM) + estimate_text(prompt) <= limit:
             try:
-                response = await _ask(provider, prompt)
+                response = await _ask(provider, prompt, on_usage, limits)
             except ProviderError as exc:
+                if exc.code == "budget_exhausted":
+                    raise
                 if exc.code != "context_overflow":
                     raise CompactionError(f"摘要请求失败：{exc}") from None
         if response is not None:
@@ -328,12 +351,90 @@ async def compact_history(
         if remaining <= 1:
             raise CompactionError("摘要请求超出上下文窗口，且无法继续缩减。")
         dropped += min(remaining - 1, max(1, math.ceil(remaining * DROP_SHARE)))
-    summary = parse_summary(response)
+    return parse_summary(response)
+
+
+async def compact_history(
+    provider,
+    history: Sequence[Message],
+    budget: ContextBudget,
+    *,
+    session: Session | None = None,
+    instructions: str = "",
+    manual: bool = False,
+    on_usage=None,
+    limits=None,
+) -> Compacted:
+    cut = cut_point(history, budget.auto_threshold, manual=manual)
+    if cut == 0:
+        raise CompactionError(NOTHING, "nothing")
+    removed, tail = list(history[:cut]), list(history[cut:])
+    summary = await _summarize(provider, removed, budget.manual_limit, instructions, on_usage, limits)
     quotes, omitted = fit_quotes(collect_quotes(removed))
-    record = None
-    if session is not None:
-        try:
-            record = session.write_record(record_text(removed))
-        except OSError:
-            record = None
+    record = _keep_record(session, record_text(removed), "compact")
     return Compacted([boundary(summary, quotes, omitted, record)] + tail, cut, estimate_text(summary), record)
+
+
+# Collapse: the oldest part of the conversation becomes a summary in requests only. ---------------------------
+
+
+def project(history: Sequence[Message], collapses: Sequence[Collapse]) -> list[Message]:
+    """What requests are built from: the collapse summaries, then the history after the last one."""
+    if not collapses:
+        return list(history)
+    return [collapse.summary for collapse in collapses] + list(history[collapses[-1].end :])
+
+
+def collapse_end(
+    history: Sequence[Message], collapses: Sequence[Collapse], cut: int, estimate: int, target: int
+) -> int | None:
+    """Where a new collapse would end: the fewest whole turns after the last collapse that bring the estimate to
+    target. None when that reaches into the kept tail (cut, an index into the projection) or the limit is reached.
+
+    A range always ends right before a message the user typed, so what follows a summary is a turn's start.
+    """
+    if len(collapses) >= COLLAPSE_LIMIT:
+        return None
+    start = collapses[-1].end if collapses else 0
+    limit = min(cut - len(collapses) + start, len(history) - 1)
+    freed = 0
+    for end in range(start + 1, limit + 1):
+        freed += estimate_message(history[end - 1])
+        typed = history[end].role == "user" and history[end].synthetic is None
+        if not typed or _only_boundary(history[start:end]) or estimate - freed + COLLAPSE_SUMMARY > target:
+            continue
+        # The summary carries the user's words in the range verbatim, up to QUOTE_TOKENS.
+        quotes, _ = fit_quotes(collect_quotes(history[start:end]))
+        if estimate - freed + COLLAPSE_SUMMARY + sum(map(estimate_text, quotes)) <= target:
+            return end
+    return None
+
+
+def released_reads(history: Sequence[Message], start: int, end: int) -> tuple[str, ...]:
+    """Files whose reads are all in history[start:end]: once those leave the requests, edits need a new read."""
+    inside = [r.details["path"] for m in history[start:end] for r in m.tool_results if _is_read(r)]
+    held = {
+        r.details["path"] for m in history[end:] for r in m.tool_results if _is_read(r) and not r.details.get("cleared")
+    }
+    return tuple(dict.fromkeys(path for path in inside if path not in held))
+
+
+async def collapse_segment(
+    provider,
+    history: Sequence[Message],
+    collapses: Sequence[Collapse],
+    end: int,
+    budget: ContextBudget,
+    *,
+    session: Session | None = None,
+    on_usage=None,
+    limits=None,
+) -> Collapse:
+    """A summary of the history from the end of the last collapse up to end; the history itself is not changed."""
+    start = collapses[-1].end if collapses else 0
+    removed = list(history[start:end])
+    summary = await _summarize(provider, removed, budget.manual_limit, on_usage=on_usage, limits=limits)
+    quotes, omitted = fit_quotes(collect_quotes(removed))
+    record = _keep_record(session, record_text(removed, "折叠"), "collapse")
+    message = boundary(summary, quotes, omitted, record, COLLAPSE)
+    return Collapse(end, message, str(record) if record else None)

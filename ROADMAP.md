@@ -12,7 +12,7 @@ MossCode 已经做了什么、接下来做什么，以及为什么这样排。�
 | 模型协议 | Anthropic Messages、OpenAI Responses、Chat Completions；流式；提示缓存；思考强度；图片输入；随程序发布的模型目录与费用估算 | [模型提供商](docs/reference/providers.md) |
 | 工具 | 读、写、改、命令、glob、grep，任务清单、向用户提问、记忆、网页读取与搜索；先读后改；只读调用并发 | [工具](docs/reference/tools.md#工具) |
 | 安全 | 四个权限档位与分层规则；命令风险分级；四种沙箱后端与域名代理；密钥不进入命令环境、在结果中隐藏 | [权限](docs/reference/permissions.md)、[命令沙箱](docs/reference/sandbox.md) |
-| 上下文 | 以服务用量为锚的估算；大结果存盘；压缩前先清理旧工具结果；摘要压缩与熔断 | [上下文管理](docs/reference/context.md) |
+| 上下文 | 以服务用量为锚的估算；大结果存盘；压缩前先清理旧工具结果，再折叠最早的一段对话（历史不动，`/rewind` 能回到其中）；摘要压缩与熔断 | [上下文管理](docs/reference/context.md) |
 | 会话 | 实时存档与恢复；检查点与 `/rewind` | [会话存档与恢复](docs/reference/sessions.md) |
 | 长任务 | `todo_write`、`ask_user`、`/goal`；后台命令、Ctrl+B 转入后台 | [任务清单](docs/reference/tools.md#任务清单)、[目标](docs/reference/commands.md#目标) |
 | 多 Agent | 定义式与 Fork 子 Agent、后台运行、git 工作树隔离、Agent 团队与分屏窗格 | [子 Agent](docs/reference/subagents.md)、[Agent 团队](docs/reference/teams.md) |
@@ -24,7 +24,6 @@ MossCode 已经做了什么、接下来做什么，以及为什么这样排。�
 
 | 优先级 | 状态 | 内容 | 为什么 |
 | --- | --- | --- | --- |
-| P1 | 进行中 | **投影式折叠**：原始记录不动，只把发给模型的版本中一段较早的历史换成摘要（[规格草案](docs/specs/context-collapse/spec.md)，待确认） | 在全量摘要之前多一层更细的手段；只在自动压缩本来就到期时尝试，不额外损失提示缓存 |
 | P1 | 待做 | **MCP 资源和提示词**：`resources/list`、`resources/read`、`prompts/list`、`prompts/get` | 现在只用了 MCP 的工具，部分 Server 的主要内容是资源 |
 | P2 | 待做 | **MCP stdio 分帧自动识别**：兼容用 `Content-Length` 分帧的旧式 Server | 只影响少数不规范的 Server |
 | P2 | 待做 | **`/loop`**：每隔一段时间重发同一个提示词 | 轮询 CI、PR 评论一类任务；`/goal` 已覆盖“做到完成为止” |

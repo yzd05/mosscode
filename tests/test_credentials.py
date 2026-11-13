@@ -137,7 +137,7 @@ class Vault:
 
 def test_setup_recommends_the_credential_manager_when_there_is_one(tmp_path):
     vault = Vault()
-    w, out = wizard(["3", "https://api.deepseek.com", "deepseek-chat", "", "", ""], secret=lambda question: KEY)
+    w, out = wizard(["8", "3", "https://api.deepseek.com", "deepseek-chat", "", "", ""], secret=lambda question: KEY)
     w.vault = vault
     assert setup(tmp_path, w) == "ready"
     provider = load_settings(user_config(tmp_path)).providers[0]
@@ -148,13 +148,13 @@ def test_setup_recommends_the_credential_manager_when_there_is_one(tmp_path):
     assert KEY not in user_config(tmp_path).read_text(encoding="utf-8")
     # Left before confirming: nothing saved.
     vault = Vault()
-    w, _ = wizard(["3", "https://api.deepseek.com", "m", "", "", "n"], secret=lambda question: KEY)
+    w, _ = wizard(["8", "3", "https://api.deepseek.com", "m", "", "", "n"], secret=lambda question: KEY)
     w.vault = vault
     assert setup(tmp_path / "other", w) == "cancelled" and vault.saved == {}
 
 
 def test_setup_without_a_credential_manager_says_why_and_offers_the_rest(tmp_path):
-    w, out = wizard(["3", "https://api.deepseek.com", "m", "", "", "", ""])
+    w, out = wizard(["8", "3", "https://api.deepseek.com", "m", "", "", "", ""])
     w.vault = Vault("这台机器没有可用的系统凭据管理器")
     setup(tmp_path, w)
     shown = "\n".join(map(str, out))

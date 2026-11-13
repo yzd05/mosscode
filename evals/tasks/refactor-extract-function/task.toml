@@ -1,0 +1,4 @@
+category = "refactor"
+prompt = """
+orders.py 里 invoice_total 和 quote_total 重复计算折扣和税。抽出一个 price_with_tax(subtotal, discount, tax_rate)，返回打折并加税后的价格（不取整），两个函数都改为调用它；两个函数的结果（包括取整）保持不变。
+"""

@@ -1,7 +1,8 @@
 name: Release
 
-# A pushed tag v<version> builds once, uploads to TestPyPI, checks that the upload installs, then
-# uploads the same files to PyPI and creates the GitHub release. Uploads use Trusted Publishing:
+# A pushed tag v<version> first runs the whole CI on the tagged commit (lint, tests on every platform,
+# package check); only when all of it passes does it build once, upload to TestPyPI, check that the upload
+# installs, then upload the same files to PyPI and create the GitHub release. Uploads use Trusted Publishing:
 # the testpypi and pypi environments must be registered as trusted publishers on each index.
 
 on:
@@ -11,7 +12,15 @@ on:
 permissions: {}
 
 jobs:
+  # A tag can point at a commit CI never ran on (pushed straight to the tag, or CI was red on main), and a
+  # PyPI version cannot be replaced once uploaded, so the gate runs here rather than trusting an earlier run.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
+    needs: ci
     runs-on: ubuntu-latest
     permissions:
       contents: read

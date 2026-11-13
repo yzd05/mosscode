@@ -239,9 +239,11 @@ class HookEngine:
                 return HookOutcome(
                     (hook.id, f"Hook {hook.id} 拒绝了此调用：{hook.reject}"), tuple(notes), (*ran, hook.id)
                 )
-            blocking = hook.reject is None and hook.on_error == "block"
+            blocking = event.name == "pre_finish" or hook.reject is None and hook.on_error == "block"
             result = await self._run(hook, event, fields, quiet=blocking)
             ran.append(hook.id)
+            if event.name == "pre_finish" and result.outcome != "ok":
+                return HookOutcome((hook.id, f"验收 {hook.id} 未通过：{result.detail}"), tuple(notes), tuple(ran))
             if hook.reject is not None:
                 return HookOutcome((hook.id, f"Hook {hook.id} 拒绝了此调用：{hook.reject}"), tuple(notes), tuple(ran))
             if result.outcome == "rejected":

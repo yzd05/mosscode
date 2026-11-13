@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from time import monotonic
 
 from pydantic import Field, model_validator
 
@@ -393,8 +394,9 @@ class ExecuteCommand(Tool):
         self.background_enabled = False
         self._description, self._guidelines = self.description, self.prompt_guidelines
 
-    def allow_background(self, time_limit: float | None = None) -> None:
-        """run_in_background and ctrl+b, when the session keeps background commands (registry.commands)."""
+    def allow_background(self, time_limit: float | None = None, auto: float = 0.0) -> None:
+        """run_in_background and ctrl+b, when the session keeps background commands (registry.commands);
+        auto: seconds before a foreground command of the main conversation moves there by itself, 0 never."""
         self.background_enabled = True
         self.params_model = SandboxBackgroundCommandParams if self.sandboxed else BackgroundCommandParams
         default = f"省略时为 {time_limit:.0f} 秒" if time_limit else "省略时不限时"
@@ -403,6 +405,10 @@ class ExecuteCommand(Tool):
             f"<task-notification>；description 是 3–10 个字的任务标签；timeout 此时是时间限制，最大 {TIMEOUT_LIMIT}，"
             f"{default}。"
         )
+        if auto:
+            self.description += (
+                f"前台命令运行超过 {auto:g} 秒会自动转入后台并返回任务 id，命令继续运行，timeout 仍是它的时间限制。"
+            )
         self.prompt_guidelines = (*self._guidelines, BACKGROUND_GUIDELINE)
 
     async def execute(self, params: CommandParams):
@@ -450,25 +456,32 @@ class ExecuteCommand(Tool):
         process = asyncio.create_task(self._spawn(params.command, cwd, inside, proxy, output))
         # Only the main conversation's commands move with ctrl+b; a sub-agent's end with it anyway.
         detach = commands.foreground() if commands is not None and not owner else None
+        # Through the sandbox's proxy a new domain asks the user, which a background command cannot: those stay.
+        auto = commands.auto_background if detach is not None and proxy is None else 0.0
+        begun = monotonic()
         try:
-            details = await self._wait(process, detach)
+            details = await self._wait(process, detach, auto)
         finally:
             if detach is not None:
                 commands.release(detach)
-        if details is None:  # ctrl+b
+        if details is None:  # ctrl+b, or running longer than auto
+            by_user = detach.is_set()
             state["background"] = True
+            # The model's own timeout still ends a command that moved by itself; ctrl+b lifts it.
+            remaining = max(1.0, params.timeout - (monotonic() - begun)) if params.timeout else None
             try:
-                task = open_task(commands.time_limit)
+                task = open_task(commands.time_limit if by_user else remaining)
             except ToolFailure:
                 process.cancel()
                 await asyncio.gather(process, return_exceptions=True)
                 raise
             output.move_to(task.command.log)
             commands.launch(task, process, finish)
-            return started(task, moved=True), {
+            return started(task, moved=True, auto=None if by_user else auto), {
                 "task": task.id,
                 "background": True,
                 "moved": True,
+                "auto": not by_user,
                 "log": str(task.command.log.path),
             }
         failure, notes, hint = self._sandbox_report(params.command, inside, proxy, details)
@@ -489,13 +502,14 @@ class ExecuteCommand(Tool):
         return (text or "命令完成，无输出。") + hint, details
 
     @staticmethod
-    async def _wait(process: asyncio.Task, detach: asyncio.Event | None) -> dict | None:
-        """The process's details, or None when ctrl+b moved it to the background (it keeps running)."""
+    async def _wait(process: asyncio.Task, detach: asyncio.Event | None, auto: float = 0.0) -> dict | None:
+        """The process's details, or None when ctrl+b, or running auto seconds, moved it to the background (it
+        keeps running)."""
         if detach is None:
             return await process
         waiter = asyncio.ensure_future(detach.wait())
         try:
-            await asyncio.wait({process, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({process, waiter}, timeout=auto or None, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
             process.cancel()
             await asyncio.gather(process, return_exceptions=True)

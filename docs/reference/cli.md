@@ -40,6 +40,7 @@ moss setup | doctor | models
 | `--trust-project-hooks` | 本次运行信任项目级 Hook 文件，不写入确认记录 |
 | `--trust-project-plugins` | 本次运行信任项目声明的插件，不写入确认记录；用于 `-p` |
 | `--trust-project-config` | 本次运行信任项目的 `.mosscode/config.yaml`，不写入确认记录；用于 `-p`，见 [项目配置需要确认](#项目配置需要确认) |
+| `--trust-project-mcp` | 本次运行信任项目的 `.mosscode/mcp.yaml` 和导入的 `.mcp.json`，不写入确认记录；用于 `-p`，见 [项目的 MCP 服务器需要确认](mcp.md#项目的-mcp-服务器需要确认) |
 
 `--team-dir`、`--team-member` 是团队成员在分屏窗格中启动时用的内部参数，不在帮助中显示。
 
@@ -47,7 +48,13 @@ moss setup | doctor | models
 
 ### setup
 
-`moss setup` 在终端中逐项询问：协议（Anthropic Messages、OpenAI Responses、OpenAI Chat Completions）、服务地址 `base_url`（回车使用协议的官方地址，提问中写明是哪个；选 OpenAI Chat Completions 时提示填写兼容服务的地址，例如 `https://api.deepseek.com`）、模型名、上下文窗口（如 `200k`）、凭据。填完模型名后在[模型目录](providers.md#模型目录)中查找：找到时上下文窗口一步回车即采用目录中的值，且不写入配置，以后随目录更新；找不到时说明可以用 `catalog_model` 指定条目，回车按 128K 估算。凭据有三种保存方式：
+`moss setup` 先让你选择模型服务：
+
+- 已有可用的 Claude Code 或 Codex 设置（例如由 CC Switch、Magpie 写入）时排在最前，选中后写入 `follow: claude-code` 或 `follow: codex`，显示当前的协议、模型和服务地址，不询问也不写入密钥，见[跟随 Claude Code 或 Codex](providers.md#跟随-claude-code-或-codex)。
+- DeepSeek、Kimi、智谱 GLM、通义千问、OpenRouter、Anthropic、OpenAI 这些[厂商预设](providers.md#厂商预设)只询问模型名（回车用预设的默认模型；模型目录中没有时提示）和凭据，配置中写 `preset`。
+- “其他服务”按下面的步骤逐项询问。
+
+其他服务逐项询问：协议（Anthropic Messages、OpenAI Responses、OpenAI Chat Completions）、服务地址 `base_url`（回车使用协议的官方地址，提问中写明是哪个；选 OpenAI Chat Completions 时提示填写兼容服务的地址，例如 `https://api.deepseek.com`）、模型名、上下文窗口（如 `200k`）、凭据。填完模型名后在[模型目录](providers.md#模型目录)中查找：找到时上下文窗口一步回车即采用目录中的值，且不写入配置，以后随目录更新；找不到时说明可以用 `catalog_model` 指定条目，回车按 128K 估算。凭据有三种保存方式：
 
 - 系统凭据管理器（有可用的凭据管理器时为默认）：输入时不显示，密钥保存到 Windows 凭据管理器、macOS 钥匙串或 Linux Secret Service，配置中只写 `api_key_keyring: 名称`（名称同 Provider 名称）。确认写入后才保存密钥。没有可用的凭据管理器（例如没有桌面环境的 Linux）时说明原因，这一项不出现。
 - 环境变量（没有凭据管理器时为默认）：配置中只写变量名，按协议默认 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，给了服务地址时按域名取名，如 `DEEPSEEK_API_KEY`。变量还没设置时，写完后显示 PowerShell 的设置方法。

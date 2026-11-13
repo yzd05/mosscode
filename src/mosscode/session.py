@@ -16,7 +16,7 @@ from typing import Any
 
 from .checkpoints import Snapshot
 from .images import ImageRef, ProcessedImage, store_image
-from .messages import Message, ToolResult
+from .messages import REMINDER, Collapse, Message, ToolResult
 from .paths import SESSION_ID, mosscode_home, new_session_id, project_dir
 from .serialization import jsonable, message_from_json, message_to_json
 from .todo import items_from_json
@@ -92,12 +92,12 @@ class Session:
         self.ensure()
         return store_image(self.directory / "images", image, alt)
 
-    def write_record(self, text: str) -> Path:
-        """compact-<n>.md with the next free n; earlier records are never overwritten."""
+    def write_record(self, text: str, name: str = "compact") -> Path:
+        """<name>-<n>.md with the next free n; earlier records are never overwritten."""
         self.ensure()
         number = 1
         while True:
-            path = self.directory / f"compact-{number}.md"
+            path = self.directory / f"{name}-{number}.md"
             try:
                 with path.open("x", encoding="utf-8", newline="") as stream:
                     stream.write(text)
@@ -120,6 +120,20 @@ def message_record(message: Message) -> dict:
 def compact_record(boundary: Message, keep: int, record: str | None) -> dict:
     """The history became the boundary plus the last `keep` messages."""
     return {"type": "compact", "time": _now(), "boundary": message_to_json(boundary), "keep": keep, "record": record}
+
+
+def collapse_record(collapse: Collapse) -> dict:
+    """Requests replace the history from the previous collapse up to `end` with the summary; the history stays."""
+    summary = message_to_json(collapse.summary)
+    return {"type": "collapse", "time": _now(), "end": collapse.end, "summary": summary, "record": collapse.record}
+
+
+def _collapse(record: dict, collapses: Sequence[Collapse], history: Sequence[Message], images, lost) -> Collapse:
+    end, path = record.get("end"), record.get("record")
+    start = collapses[-1].end if collapses else 0
+    if type(end) is not int or not start < end <= len(history) or (path is not None and not isinstance(path, str)):
+        raise ValueError("collapse 记录不合法")
+    return Collapse(end, message_from_json(record.get("summary"), images, lost), path)
 
 
 def clear_record(results) -> dict:
@@ -440,6 +454,7 @@ class Restored:
     marks: dict[str, int] = field(default_factory=dict)  # Message id -> snapshots taken before it was sent.
     todos: tuple = ()  # The main agent's latest checklist (TodoItem).
     goal: str | None = None  # The condition of a goal set and not yet ended.
+    collapses: tuple[Collapse, ...] = ()  # In record order; each ends where the next begins.
 
 
 def _apply_clear(history: Sequence[Message], results) -> list[Message]:
@@ -517,6 +532,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     marks: dict[str, int] = {}
     todos: list[tuple[int, tuple]] = []  # (keep, items) per change, so rewinds can step back.
     goal: str | None = None
+    collapses: list[Collapse] = []
     images, lost = path.with_suffix("") / "images", []
     with path.open("rb") as stream:
         for raw in stream:
@@ -540,6 +556,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                         raise ValueError("keep 不合法")
                     history = history[:keep]
                     todos = [entry for entry in todos if entry[0] <= keep]
+                    collapses = [collapse for collapse in collapses if collapse.end <= keep]
                 elif kind == "compact":
                     keep = record.get("keep")
                     if type(keep) is not int or keep < 0:
@@ -547,6 +564,9 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     boundary = message_from_json(record.get("boundary"), images, lost)
                     history = [boundary] + (history[len(history) - min(keep, len(history)) :] if keep else [])
                     todos = [(0, todos[-1][1])] if todos else []
+                    collapses = []
+                elif kind == "collapse":
+                    collapses.append(_collapse(record, collapses, history, images, lost))
                 elif kind == "clear":
                     history = _apply_clear(history, record.get("results"))
                 elif kind == "provider":
@@ -589,10 +609,17 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
             differs = protocol is not None and protocol != provider[1]
         if differs and any(m.protocol or m.native for m in history):
             history, stripped = _strip(history), True
-    history, filled = repair(history)
+    repaired, filled = repair(history)
+    if filled or len(repaired) != len(history):
+        collapses = []  # Their ends count messages of a history that was not well formed.
+    history = repaired
     unanswered = []
-    while history and history[-1].role == "user" and history[-1].synthetic is None:
-        unanswered.insert(0, history.pop().shown)
+    # A reminder added for a request that never got its reply is told again with the next one.
+    while history and history[-1].role == "user" and history[-1].synthetic in (None, REMINDER):
+        message = history.pop()
+        if message.synthetic is None:
+            unanswered.insert(0, message.shown)
+    collapses = [collapse for collapse in collapses if collapse.end <= len(history)]
     return Restored(
         path.stem,
         history,
@@ -608,6 +635,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
         marks,
         todos[-1][1] if todos else (),
         goal,
+        tuple(collapses),
     )
 
 

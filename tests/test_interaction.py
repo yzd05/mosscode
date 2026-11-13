@@ -12,7 +12,17 @@ from mosscode import cli
 from mosscode.catalog import ModelInfo
 from mosscode.config import ProviderConfig, Settings
 from mosscode.conversation import Conversation
-from mosscode.messages import Completed, ContentBlock, Delta, Message, ProviderError, ToolCall, ToolResult, Usage
+from mosscode.messages import (
+    REMINDER,
+    Completed,
+    ContentBlock,
+    Delta,
+    Message,
+    ProviderError,
+    ToolCall,
+    ToolResult,
+    Usage,
+)
 from mosscode.permissions import MODES
 from mosscode.providers import AnthropicProvider, ChatCompletionsProvider, ResponsesProvider
 from mosscode.tools import create_default_registry
@@ -374,8 +384,11 @@ async def test_clear_starts_fresh_context_and_keeps_mode(tmp_path):
     conv = Conversation(provider, registry=reg)
     app = MossCodeApp(conv, "Demo")
 
-    def reminders(index):
-        return [s.kind for s in provider.requests[index][1].supplements if s.kind != "environment"]
+    def reminders(index, since=0):
+        # What the request tells beyond its first `since` messages, which an earlier request already carried.
+        told = [m.text for m in provider.requests[index][0][since:] if m.synthetic == REMINDER]
+        assert all(s.kind == "environment" for s in provider.requests[index][1].supplements)
+        return ["system-reminder" for t in told if t.startswith("<system-reminder>")]
 
     async with app.run_test(size=(100, 36)) as pilot:
         await send(app, pilot, "/plan")
@@ -383,7 +396,7 @@ async def test_clear_starts_fresh_context_and_keeps_mode(tmp_path):
         await asyncio.wait_for(app._reply_task, 5)
         await send(app, pilot, "问题二")
         await asyncio.wait_for(app._reply_task, 5)
-        assert reminders(0) == ["system-reminder"] and reminders(1) == []
+        assert reminders(0) == ["system-reminder"] and reminders(1, len(provider.requests[0][0])) == []
         assert "上下文 约" in status(app)
         await send(app, pilot, "/clear")
         assert "已开始新会话" in str(app.query(".local-note")[-1].render())
@@ -391,7 +404,7 @@ async def test_clear_starts_fresh_context_and_keeps_mode(tmp_path):
         assert reg.permissions.mode == "plan" and conv.mode == "plan"
         await send(app, pilot, "问题三")
         await asyncio.wait_for(app._reply_task, 5)
-        assert [m.text for m in provider.requests[2][0]] == ["问题三"]
+        assert [m.text for m in provider.requests[2][0]][0] == "问题三" and len(provider.requests[2][0]) == 2
         assert reminders(2) == ["system-reminder"]  # The fresh context hears the plan rules again.
 
 

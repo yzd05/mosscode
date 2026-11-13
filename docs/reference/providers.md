@@ -22,6 +22,47 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
     api_key_env: MY_GATEWAY_API_KEY
 ```
 
+### 厂商预设
+
+`preset` 代替协议、服务地址、默认模型和密钥变量名，一项配置只需两三行：
+
+```yaml
+  - name: deepseek
+    preset: deepseek
+  - name: kimi
+    preset: kimi
+    model: kimi-k3.1        # 换模型时只写 model
+    api_key_keyring: kimi   # 不用环境变量时写明凭据
+```
+
+| preset | 协议 | 服务地址 | 默认模型 | 密钥变量 |
+|--------|------|----------|----------|----------|
+| `deepseek` | openai-chat-completions | `https://api.deepseek.com` | `deepseek-flash` | `DEEPSEEK_API_KEY` |
+| `kimi` | openai-chat-completions | `https://api.moonshot.cn/v1` | `kimi-k3.1-pro` | `MOONSHOT_API_KEY` |
+| `glm` | openai-chat-completions | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.3` | `ZHIPUAI_API_KEY` |
+| `qwen` | openai-chat-completions | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | `DASHSCOPE_API_KEY` |
+| `openrouter` | openai-chat-completions | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-5.5` | `OPENROUTER_API_KEY` |
+| `anthropic` | anthropic-messages | 官方地址 | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY` |
+| `openai` | openai-responses | 官方地址 | `gpt-5.6` | `OPENAI_API_KEY` |
+
+配置中写出的字段优先，预设只填配置没写的部分；写了 `api_key`、`api_key_env` 或 `api_key_keyring` 时不再使用预设的变量名。默认模型都在[模型目录](#模型目录)中，上下文窗口和价格随之而来。
+
+### 跟随 Claude Code 或 Codex
+
+已经用 CC Switch、Magpie 等工具管理 Claude Code 或 Codex 的服务时，不必再填一遍地址和密钥，让 MossCode 读取它们的设置：
+
+```yaml
+  - name: cc
+    follow: claude-code   # 或 codex
+```
+
+- `follow: claude-code` 读取 `~/.claude/settings.json` 的 `env`（设置了 `CLAUDE_CONFIG_DIR` 时读取那个目录）：`ANTHROPIC_BASE_URL` 为服务地址，`ANTHROPIC_AUTH_TOKEN`（bearer 认证）或 `ANTHROPIC_API_KEY` 为密钥，`ANTHROPIC_CUSTOM_HEADERS` 为额外请求头，模型取 `ANTHROPIC_MODEL` 或设置中的 `model`；`opus`、`sonnet`、`haiku` 这样的别名按 `ANTHROPIC_DEFAULT_*_MODEL` 换成实际模型名，模型名后的 `[1m]` 表示上下文窗口为 1M。设置中没有的变量从启动 MossCode 的环境中取，和 Claude Code 一致。协议为 anthropic-messages。
+- `follow: codex` 读取 `~/.codex/config.toml`（设置了 `CODEX_HOME` 时读取那个目录）：`model`、`model_provider` 和 `[model_providers.<id>]` 中的 `base_url`、`wire_api`（`responses` 或 `chat`）、`http_headers`，以及当前 `profile` 的覆盖；密钥取 `env_key` 指定的环境变量，没有时取 `auth.json` 中的 `OPENAI_API_KEY`。
+
+设置在启动时读取，在 `/model` 中选中这一项时重新读取：在 CC Switch 中切换了服务，回到 MossCode 执行 `/model`（只有这一项时直接重新读取）即可，对话历史保留。密钥只在内存中使用，不写入 MossCode 的配置，和其他密钥一样从输出中隐藏。
+
+跟随的一项可以填写 `model`（覆盖跟随的模型）、`context_window`、`max_output_tokens`、`thinking` 等调整项，但不能填写 `protocol`、`base_url`、`headers`、`auth_type` 和凭据字段：这些只来自被跟随的设置，项目配置因此无法把你的密钥发往别处。用账号登录的 Claude Code、用 ChatGPT 账号登录的 Codex、`apiKeyHelper` 生成的密钥以及 Codex 内置的 `ollama` 等服务没有可共用的密钥或地址，启动时说明原因。
+
 ## 密钥保护
 
 无论密钥放在哪里，MossCode 都不让它经由工具进入对话：
@@ -39,7 +80,7 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
 
 启动时优先使用 `--provider 配置名称`，其次使用显式设置的 `default_provider`，两者都会直接进入对话。都未设置时，只有一项配置直接进入；多项配置按 `name` 列出，用 ↑ / ↓ 移动、Enter 确认。需要每次启动手动选择时，删除或注释 `default_provider`。Esc、Ctrl+C 或 Ctrl+Q 可退出选择，确认前不创建模型客户端、不发起请求。进入对话后，启动区显示选中的 `name`，实际 API 请求仍使用该配置的 `model`。
 
-无界面 `--prompt` 模式不打开列表，优先使用显式 Provider、默认配置；两者都没有时使用列表第一项。对话中可用 `/model` 切换到其他已配置的提供商，对话历史保留（见“终端界面与本地命令”）。
+无界面 `--prompt` 模式不打开列表，优先使用显式 Provider、默认配置；两者都没有时使用列表第一项。对话中可用 `/model` 切换到其他已配置的提供商，对话历史保留（见“终端界面与本地命令”）；选中[跟随](#跟随-claude-code-或-codex)的一项时重新读取它跟随的设置。
 
 ## 协议与兼容服务
 
@@ -147,6 +188,22 @@ MossCode 带有一份模型目录，记录各家模型的上下文窗口、输�
 
 包内的目录在发布时生成。新模型发布后不必等 MossCode 更新：运行 `moss models update` 从 LiteLLM 下载最新数据，写入 `~/.mosscode/models.json.gz`，以后优先使用它。`moss models <关键词>` 查找条目，见 [命令行](cli.md#models)。旧版本下载的目录不含思考相关的字段，仍然可用，只是 `/thinking` 无法判断哪些模型不支持，重新运行 `moss models update` 即可补上。用户目录中的文件损坏时，改用包内的目录并在启动区提示，重新运行 `moss models update` 即可修复。
 
+### 本次运行的共享调用预算
+
+可在顶层配置：
+
+```yaml
+run_budget:
+  requests: 200
+  tokens: 1000000
+```
+
+两项均为非负整数，0 或不填写表示不限制。主对话、子 Agent、Skill fork、进程内团队成员，以及摘要、目标判断、记忆提取，共享同一份额度。预算从本次启动到退出；切换模型、`/clear`、恢复会话不重置，`/status` 显示已用请求与 Token。
+
+请求额度在调用前领取；服务适配器内部的 HTTP 重试仍属于同一次调用，空回复重发、自动续写和新摘要请求各占一次。Token 按服务返回的总输入和输出累计，达到后停止新的请求；在途调用仍可继续产生 Token，所以这不是 Token 或费用的硬封顶。启用 Token 限额时，若服务缺少完整用量或流中断，停止后续调用并说明无法核算。预算耗尽按错误结束，目标暂停，已执行的工具和结果保留；已经启动的命令仍遵守各自的时间限制和停止规则。
+
+开启预算时，团队的 `auto` 使用进程内成员以共享额度；显式指定 tmux 或 Windows Terminal 窗格时报错，改用 `auto` 或 `in-process`。默认未开启预算时，团队后端行为不变。
+
 ### 费用估算
 
 目录中有价格的模型，每次请求按服务报告的 Token 数估算费用：未缓存输入 × 输入价格 + 缓存读取 × 缓存读取价格 + 缓存写入 × 缓存写入价格 + 输出 × 输出价格。缺少缓存价格时按输入价格计算。`/status` 的用量一行显示“费用 约 $0.0123”；部分请求没有价格（服务没报告 Token 数，或切换到了目录中没有价格的模型）时显示“≥ $…”，全部没有时显示“无价格信息”。子 Agent 和团队成员的请求与 Token 一样计入。`-p` 的 `json` 结果中是 `total_cost_usd`。
@@ -157,7 +214,7 @@ MossCode 带有一份模型目录，记录各家模型的上下文窗口、输�
 
 请求在收到任何流事件之前遇到限流（429）、过载（529 / overloaded_error）、5xx、超时或连接中断时自动重试，默认最多 4 次，指数退避并带随机抖动，遵守服务给出的 `retry-after`（最长 60 秒）；界面状态行与 `--prompt` 的 stderr 显示重试原因和等待时间，等待期间 Esc 可取消。收到首个事件后的断流不重试，因为正文可能已显示。认证失败、请求不被接受等错误立即报告；上下文超限错误（HTTP 400/413 且报错提到 prompt is too long、maximum context length 等）标记为 `context_overflow`，由 Agent Loop 压缩后重试一次。`max_retries: 0` 关闭重试；SDK 自身的重试保持关闭，避免叠加。没有自动协议降级。未完整接收的 assistant 响应不进入历史；已经完整接收并执行的工具调用与实际结果保留。取消表示停止接收并关闭流，不保证远程服务已经停止计费。
 
-模型偶尔返回没有可用内容的回复：既没有正文也没有工具调用（只有空白或只有思考也算），或者还没写出任何正文和工具调用就碰到输出上限（多半是思考过长）。这样的回复不进入历史，MossCode 带一条说明重发同一请求：空回复时请模型继续（刚收到工具结果时请它根据结果继续），思考截断时请它缩短思考、直接给出回复或下一步工具调用。说明只随这次请求发送，排在历史之后，不改变提示缓存前缀。每次请求最多重发 2 次，界面状态行和 `--prompt` 的 stderr 显示“模型返回了空回复，重新请求（1/2）”。仍然没有内容时本轮以错误结束，说明中写出停止原因、收到的内容块类型和建议（思考截断时建议调高 `max_output_tokens` 或降低思考强度）。没有内容且停止原因是服务拒绝（`refusal`、`content_filter`）时不重发，直接报告。被丢弃的回复同样计入用量和费用。已经写出正文后才碰到输出上限的回复照常保留，MossCode 随即自动发一条“从中断处直接接着写，不要重复”的消息，请模型续写，下一段显示为新的一条回复，两段之间有一行“↻ 回复达到输出上限，自动续写（1/3）”。这条消息不算你的输入，恢复会话时显示为同样的一行。每轮最多自动续写 3 次，仍被截断时本轮停止，提示已经续写的次数，可以输入“继续”或调高 `max_output_tokens`；`/goal` 只在这时才因截断暂停。续写的几段合起来是完整的回答：`--prompt` 的 text 格式在 stdout 连续输出，stderr 打印上面那行说明；json 的 `result`、子 Agent 和 Skill 返回的结果都是合起来的全文。带工具调用的回复被截断时不续写：调用不执行，模型收到“参数可能不完整”的结果后重试。
+模型偶尔返回没有可用内容的回复：既没有正文也没有工具调用（只有空白或只有思考也算），或者还没写出任何正文和工具调用就碰到输出上限（多半是思考过长）。这样的回复不进入历史，MossCode 带一条说明重发同一请求：空回复时请模型继续（刚收到工具结果时请它根据结果继续），思考截断时请它缩短思考、直接给出回复或下一步工具调用。说明只随重发的请求发送，排在历史之后，不写入历史，不改变之前已缓存的前缀。每次请求最多重发 2 次，界面状态行和 `--prompt` 的 stderr 显示“模型返回了空回复，重新请求（1/2）”。仍然没有内容时本轮以错误结束，说明中写出停止原因、收到的内容块类型和建议（思考截断时建议调高 `max_output_tokens` 或降低思考强度）。没有内容且停止原因是服务拒绝（`refusal`、`content_filter`）时不重发，直接报告。被丢弃的回复同样计入用量和费用。已经写出正文后才碰到输出上限的回复照常保留，MossCode 随即自动发一条“从中断处直接接着写，不要重复”的消息，请模型续写，下一段显示为新的一条回复，两段之间有一行“↻ 回复达到输出上限，自动续写（1/3）”。这条消息不算你的输入，恢复会话时显示为同样的一行。每轮最多自动续写 3 次，仍被截断时本轮停止，提示已经续写的次数，可以输入“继续”或调高 `max_output_tokens`；`/goal` 只在这时才因截断暂停。续写的几段合起来是完整的回答：`--prompt` 的 text 格式在 stdout 连续输出，stderr 打印上面那行说明；json 的 `result`、子 Agent 和 Skill 返回的结果都是合起来的全文。带工具调用的回复被截断时不续写：调用不执行，模型收到“参数可能不完整”的结果后重试。
 
 ## 无界面模式与输出格式
 
@@ -166,12 +223,14 @@ MossCode 带有一份模型目录，记录各家模型的上下文窗口、输�
 | 格式 | 输出 |
 | --- | --- |
 | `text`（默认） | 正文流式输出到 stdout，提示与 `--show-usage` 用量输出到 stderr，与以往一致；任务中的 `@路径`（见 [终端界面](interface.md#引用文件)）附上后，stderr 打印一行“已附上 …” |
-| `json` | 结束时输出一个结果对象：`type`、`subtype`（`completed`、`max_iterations`、`error` 等停止原因）、`is_error`、`result`（最终正文或错误说明）、`num_turns`、`duration_ms`、`usage`、`total_cost_usd`（按[模型目录](#费用估算)估算的美元费用，没有价格时为 null）、`compactions`（成功压缩上下文的次数）、`model`、`permission_mode` |
+| `json` | 结束时输出一个结果对象：`type`、`subtype`（`completed`、`max_iterations`、`repeated_calls`、`finish_check_failed`、`error` 等停止原因；`repeated_calls` 见[重复调用检测](tools.md#重复调用检测)）、`is_error`、`result`（最终正文或错误说明）、`num_turns`、`duration_ms`、`usage`、`total_cost_usd`（按[模型目录](#费用估算)估算的美元费用，没有价格时为 null）、`compactions`（成功压缩上下文的次数）、`model`、`permission_mode` |
 | `stream-json` | 每行一个 JSON 事件：`system`（init：cwd、model、permission_mode、tools）、`assistant`（text、tool_calls、stop_reason、usage）、`tool_result`（有图片时带 `images`：文件名、媒体类型、宽、高，不含图片数据）、`retry`、`reply_retry`（没有可用内容的回复被丢弃并重发：`attempt`、`max_attempts`、`reason`）、`auto_continue`（回复写到一半碰到输出上限，自动续写：`attempt`、`max_attempts`）、`notice`、`files_attached`（`entries`：每个 `@` 引用附上了什么，与界面中的说明相同）、`compact`（subtype 为 started、finished、failed，见 [上下文管理](context.md#界面与无界面输出)），最后一行是与 json 格式相同的 `result` |
 
 ```powershell
 moss -p "列出 src 下的模块" --output-format json
 ```
+
+配置了[完成前验收](hooks.md#完成前验收)时，未通过的草稿在 stream-json 中带 `stop_reason: finish_check`；达到失败上限后，三种输出格式均以退出码 1 结束，JSON 结果为 `subtype: finish_check_failed`。
 
 JSON 输出始终为 UTF-8，与控制台代码页无关。`is_error` 为真时进程以退出码 1 结束，便于脚本判断；无界面模式不等待审批，需要确认的调用返回 approval_required。
 

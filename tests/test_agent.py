@@ -7,6 +7,7 @@ import pytest
 from mosscode.agent import AgentLoop
 from mosscode.conversation import Conversation
 from mosscode.messages import (
+    REMINDER,
     Completed,
     ContentBlock,
     Delta,
@@ -252,7 +253,7 @@ async def test_plan_offers_only_read_tools_and_blocks_writes_and_command(tmp_pat
     conv.set_mode("plan")
     assert await conv.ask("先规划") == "实施计划"
     assert (tmp_path / "a").read_text() == "old"
-    assert [r.code for r in conv.history[2].tool_results] == ["plan_blocked"] * 3 + [None]
+    assert [r.code for r in conv.history[3].tool_results] == ["plan_blocked"] * 3 + [None]
     assert conv.mode == "plan"
     assert all(
         {t.name for t in r[2]}
@@ -269,7 +270,8 @@ async def test_plan_offers_only_read_tools_and_blocks_writes_and_command(tmp_pat
         }
         for r in provider.requests
     )
-    assert "计划模式" in provider.requests[0][1].supplements[-1].text
+    rules = provider.requests[0][0][-1]
+    assert rules.synthetic == REMINDER and "计划模式" in rules.text and conv.history[1] == rules
     conv.set_mode("normal")
     assert await conv.ask("执行") == "完成"
     assert (tmp_path / "a").read_text() == "new" and len(provider.requests[-1][2]) == 10

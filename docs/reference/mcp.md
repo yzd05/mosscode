@@ -55,7 +55,18 @@ Server 级规则按配置中的 Server 名称匹配，名称被摘要缩短的�
 
 ## 读取 .mcp.json
 
-**读取 `.mcp.json`（可选）。** 在任一 `mcp.yaml` 顶层设置 `import_mcp_json: true` 后，读取项目根目录的 `.mcp.json`（Claude Code 的 `mcpServers` 格式）。省略 `type` 且有 `command` 时视为 stdio；支持 `http`，`sse` 等其他类型提示“不受支持”并跳过；command、args、url、env、headers 都展开 `${VAR}` / `${VAR:-默认值}`。优先级：[插件](plugins.md)中的服务器 < 用户 `mcp.yaml` < `.mcp.json` < 项目 `mcp.yaml`，同名整项覆盖。插件自带的 `.mcp.json` 不受这个开关限制（安装时已确认），其中可以用 `${CLAUDE_PLUGIN_ROOT}` 等[插件变量](plugins.md#变量)。`.mcp.json` 随仓库分发、会启动其中的程序，因此默认不读取；开启前请确认其内容可信。模型不能写入或编辑 `.mcp.json`（返回 policy_protected）。
+**读取 `.mcp.json`（可选）。** 在任一 `mcp.yaml` 顶层设置 `import_mcp_json: true` 后，读取项目根目录的 `.mcp.json`（Claude Code 的 `mcpServers` 格式）。省略 `type` 且有 `command` 时视为 stdio；支持 `http`，`sse` 等其他类型提示“不受支持”并跳过；command、args、url、env、headers 都展开 `${VAR}` / `${VAR:-默认值}`。优先级：[插件](plugins.md)中的服务器 < 用户 `mcp.yaml` < `.mcp.json` < 项目 `mcp.yaml`，同名整项覆盖。插件自带的 `.mcp.json` 不受这个开关限制（安装时已确认），其中可以用 `${CLAUDE_PLUGIN_ROOT}` 等[插件变量](plugins.md#变量)。`.mcp.json` 随仓库分发、会启动其中的程序，因此默认不读取；开启后，其中的服务器和项目 `mcp.yaml` 一样，要先经过[确认](#项目的-mcp-服务器需要确认)才会启动。模型不能写入或编辑 `.mcp.json`（返回 policy_protected）。
+
+## 项目的 MCP 服务器需要确认
+
+项目的 `.mosscode/mcp.yaml` 和（开启 `import_mcp_json` 时）`.mcp.json` 随仓库而来，stdio 服务器在会话开始时就以你的权限运行其中的命令。所以克隆一个仓库后第一次在其中启动时，这些服务器在你确认之前不会启动；用户级 `~/.mosscode/mcp.yaml` 和已安装插件中的服务器不受影响。
+
+- **交互界面**：启动时先列出每个项目服务器要运行的命令行（`${VAR}` 不展开）、它引用的环境变量名，或远端服务器的地址（不显示其中的用户名和密码），然后询问。选“信任并启动”后记住这两个文件内容的 SHA-256，记录在 `~/.mosscode/projects/<项目键>/mcp-trust.json`；审批展示、摘要与本次加载使用同一次读取的配置快照，等待审批时替换文件不会改变本次启动的内容；任一文件有任何变化（包括 `.mcp.json` 被换掉）都会重新询问。
+- **选“本次不启动”或按 Esc**：只启动用户级和插件中的服务器，项目文件中的服务器一个都不启动，也不能覆盖同名的用户级服务器；启动区说明，下次启动再次询问。
+- **`-p`**：不询问。未确认的项目服务器不启动，stderr 说明原因；先在交互界面中确认一次，或加 `--trust-project-mcp`（只在本次信任，不写入记录）。
+- **`moss doctor`**：指出尚未确认的项目服务器。
+
+即使用户级 `mcp.yaml` 中设了 `import_mcp_json: true`，项目的 `.mcp.json` 也要按项目确认：这个开关表示愿意读取这种格式，不代表信任每个仓库放进去的内容。
 
 ## 安全边界与结果
 

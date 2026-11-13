@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from mosscode.config import ConfigError, load_settings
+from mosscode.messages import REMINDER
 from mosscode.session import Session, Transcript, compact_record, load_session, message_record, rewind_record
 from mosscode.todo import TodoError, TodoItem, TodoList, render, todo_reminder
 from mosscode.tools import create_default_registry
@@ -133,26 +134,31 @@ async def test_a_sub_agent_view_has_its_own_list(tmp_path):
     assert [i.content for i in view.todos.items] == ["子 Agent 的项"]
 
 
-async def test_snapshot_follows_the_history_and_leaves_the_cached_prefix_alone(tmp_path):
+async def test_snapshot_is_appended_once_when_the_list_changes_and_never_rewrites_earlier_requests(tmp_path):
     from mosscode.conversation import Conversation
 
     provider = SequenceProvider(
         response("建清单", [todo_call("a", {"content": "甲", "status": "in_progress"})]),
+        response("看看", [call("glob", "g", pattern="*.none")]),
         response("做完", [todo_call("b", {"id": "1", "content": "甲", "status": "completed"})]),
         response("完成"),
     )
     reg = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
     conv = Conversation(provider, registry=reg)
     assert await conv.ask("开始") == "完成"
-    kinds = [[s.kind for s in request[1].supplements] for request in provider.requests]
-    assert "todo-list" not in kinds[0] and "todo-list" in kinds[1] and "todo-list" not in kinds[2]
-    snapshot = next(s for s in provider.requests[1][1].supplements if s.kind == "todo-list")
-    assert "[>] 1. 甲" in snapshot.text
-    # The stable prompt and the tools are the same in every request: the snapshot never enters the cached prefix.
+    first, second, third, fourth = (request[0] for request in provider.requests)
+    assert not any(m.synthetic == REMINDER for m in first)
+    # The snapshot follows the todo_write result as the last message of the next request.
+    assert second[-1].synthetic == REMINDER and "[>] 1. 甲" in second[-1].text and second[-2].role == "tool"
+    # The same list is not told again; with every item done there is nothing left to tell.
+    assert [m.text for m in fourth if m.synthetic == REMINDER] == [second[-1].text]
+    # Each request starts with the whole of the one before it, so a cache of that request is reused.
+    assert second[: len(first)] == first and third[: len(second)] == second and fourth[: len(third)] == third
+    # The stable prompt, the supplements and the tools are the same in every request.
     assert len({request[1].stable for request in provider.requests}) == 1
+    assert len({request[1].supplements for request in provider.requests}) == 1
     assert len({tuple(d.name for d in request[2]) for request in provider.requests}) == 1
-    # Nor the history: no message carries it.
-    assert all("<todo-list>" not in m.text for request in provider.requests for m in request[0])
+    assert all(s.kind != "todo-list" for request in provider.requests for s in request[1].supplements)
     await conv.close()
 
 

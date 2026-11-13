@@ -1,0 +1,4 @@
+category = "bugfix"
+prompt = """
+用关键字参数调用被 memoize 装饰的函数，会拿到之前别的参数算出的缓存结果。修复 memo.py。
+"""

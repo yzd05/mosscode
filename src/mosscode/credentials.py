@@ -170,7 +170,8 @@ def keyring_label() -> str:
 def plaintext_notice(settings, root) -> str | None:
     """A key written in plain text in a configuration inside the project, where the model's tools can read it."""
     source = settings.source
-    plain = [config.name for config in settings.providers if config.api_key] + (
+    # A following provider's key stays in the followed tool's file; this one does not hold it.
+    plain = [config.name for config in settings.providers if config.api_key and not config.follow] + (
         ["web_search"] if settings.web_search and settings.web_search.api_key else []
     )
     if source is None or not plain:

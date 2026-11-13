@@ -30,14 +30,16 @@ from .credentials import plaintext_notice, protect
 from .hooks import HookEngine
 from .launcher import is_terminal, parse_arguments
 from .mcp_client import MCPManager
-from .mcp_config import MCPConfigError, load_mcp_settings
+from .mcp_config import MCPConfigError, ProjectMCP, load_mcp_settings, project_mcp
 from .memory import MemoryStore
 from .messages import (
+    STOPPED_EARLY,
     AutoContinue,
     CompactFailed,
     CompactFinished,
     CompactStarted,
     Completed,
+    ContextCollapsed,
     Delta,
     FilesAttached,
     Message,
@@ -61,7 +63,7 @@ from .skills import ForkRequest, SkillCatalog
 from .tools import create_default_registry
 from .tools.background import HEADLESS_TIME_LIMIT
 from .tools.shell import ShellNotFound
-from .tui import ConfigTrustApp, MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
+from .tui import ConfigTrustApp, MCPTrustApp, MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
 from .usage import request_usage_text
 
 
@@ -150,6 +152,16 @@ def _compact_event(event) -> dict:
         }
     if isinstance(event, ResultsCleared):
         return {"type": "compact", "subtype": "cleared", "results": event.results, "tokens": event.tokens}
+    if isinstance(event, ContextCollapsed):
+        return {
+            "type": "compact",
+            "subtype": "collapsed",
+            "messages": event.messages,
+            "before": event.before,
+            "after": event.after,
+            "duration_ms": round(event.elapsed * 1000),
+            "record": event.record,
+        }
     return {
         "type": "compact",
         "subtype": "failed",
@@ -239,8 +251,10 @@ async def _prompt(
 ) -> dict | None:
     """Run one headless task; JSON formats return the result object instead of raising."""
     if output_format == "text":
-        await _text_prompt(conversation, prompt, show_usage=show_usage, resume=resume, command=command, skill=skill)
-        return None
+        failed = await _text_prompt(
+            conversation, prompt, show_usage=show_usage, resume=resume, command=command, skill=skill
+        )
+        return {"is_error": True} if failed else None
     stream_json = output_format == "stream-json"
     started = monotonic()
     stopped: RunStopped | None = None
@@ -300,7 +314,9 @@ async def _prompt(
                     if not stream_json:
                         continue
                     if isinstance(event, ResponseBoundary):
-                        _emit(_assistant(event.message, usage, "tool_use"))
+                        _emit(
+                            _assistant(event.message, usage, "tool_use" if event.message.tool_calls else "finish_check")
+                        )
                     elif isinstance(event, Completed):
                         _emit(_assistant(event.message, usage, event.stop_reason))
                     elif isinstance(event, ToolProgress) and event.phase == "finished":
@@ -341,7 +357,9 @@ async def _prompt(
                         )
                     elif isinstance(event, AutoContinue):
                         _emit({"type": "auto_continue", "attempt": event.attempt, "max_attempts": event.max_attempts})
-                    elif isinstance(event, (CompactStarted, CompactFinished, CompactFailed, ResultsCleared)):
+                    elif isinstance(
+                        event, (CompactStarted, CompactFinished, CompactFailed, ResultsCleared, ContextCollapsed)
+                    ):
                         _emit(_compact_event(event))
                     elif isinstance(event, Notice):
                         _emit({"type": "notice", "text": event.text})
@@ -387,7 +405,7 @@ async def _text_prompt(
     resume: str | None = None,
     command: str | None = None,
     skill: str | None = None,
-) -> None:
+) -> bool:
     def report(kind, value):
         if kind == "compact":
             print(
@@ -400,6 +418,7 @@ async def _text_prompt(
 
     _background_notices(conversation, report)
     _task_notices(conversation, report)
+    finish_failed = False
     try:
         await _resume(conversation, resume, report)
         for notice in await conversation.start():
@@ -417,12 +436,9 @@ async def _text_prompt(
                     print(f"\n计划：\n{plan_text(event.call.arguments)}", flush=True)
                 elif isinstance(event, ToolProgress) and event.phase == "finished":
                     print(f"\n● {event.call.name} · {event.elapsed:.1f}s\n└ {event.result.output}", flush=True)
-                elif isinstance(event, RunStopped) and event.reason in {
-                    "max_iterations",
-                    "unknown_tools",
-                    "max_tokens",
-                }:
+                elif isinstance(event, RunStopped) and event.reason in STOPPED_EARLY:
                     print("\n" + event.notice, flush=True)
+                    finish_failed = event.reason == "finish_check_failed"
                 elif isinstance(event, Retrying):
                     print(
                         f"{event.reason}，{event.delay:.1f} 秒后重试（{event.attempt}/{event.max_attempts}）",
@@ -440,13 +456,14 @@ async def _text_prompt(
                     print(request_usage_text(event.usage, event.iteration), file=sys.stderr, flush=True)
                 elif isinstance(event, CompactStarted):
                     print("正在压缩上下文…", file=sys.stderr, flush=True)
-                elif isinstance(event, (CompactFinished, CompactFailed, ResultsCleared)):
+                elif isinstance(event, (CompactFinished, CompactFailed, ResultsCleared, ContextCollapsed)):
                     print(compact_notice(event), file=sys.stderr, flush=True)
                 elif isinstance(event, Notice):
                     print(event.text, file=sys.stderr, flush=True)
                 elif isinstance(event, FilesAttached):
                     print("已附上 " + "、".join(event.entries), file=sys.stderr, flush=True)
         print()
+        return finish_failed
     finally:
         await conversation.close()
 
@@ -489,6 +506,29 @@ def load_plugins(args, root: Path) -> Installed:
             )
     combined = with_project(user, project) if use else user
     return Installed(combined.plugins, (*combined.notices, *notices))
+
+
+def confirm_project_mcp(args, root: Path, project: ProjectMCP | None = None) -> tuple[bool, tuple[str, ...]]:
+    """Whether the servers the project's files declare may start: a cloned repository could otherwise run any
+    command as soon as moss opens in it. The interface asks once per content, -p needs --trust-project-mcp or an
+    earlier confirmation."""
+    project = project if project is not None else project_mcp(root)
+    if not project.servers or args.trust_project_mcp or project.trusted():
+        return True, ()
+    names = list(project.servers)
+    if args.prompt is not None:
+        return False, (
+            f"项目 MCP 服务器 {'、'.join(names)} 未经确认，未启动；请在交互界面中启动一次并确认，"
+            "或使用 --trust-project-mcp。",
+        )
+    print(project.text())
+    if not MCPTrustApp(names).run(inline=True, mouse=False):
+        return False, ("本次未启动项目 MCP 服务器；下次启动时会再次询问。",)
+    try:
+        project.trust()
+    except OSError as exc:
+        return True, (f"无法写入项目 MCP 服务器的确认记录（{exc.strerror or exc}），只在本次启动。",)
+    return True, ()
 
 
 def claude_notice(root: Path) -> str | None:
@@ -606,12 +646,16 @@ def run(args: argparse.Namespace) -> None:
             todo=settings.todo_tool,
             ask=args.prompt is None,  # -p has nobody to answer.
         )
-        mcp_settings = load_mcp_settings(Path.cwd(), plugins=plugins.plugins)
+        project = project_mcp(Path.cwd())
+        project_servers, mcp_notices = confirm_project_mcp(args, Path.cwd(), project)
+        mcp_settings = load_mcp_settings(
+            Path.cwd(), plugins=plugins.plugins, project=project if project_servers else False
+        )
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
         prune_all()
         budget = config.budget()
         hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None, plugins=plugins.plugins)
-        notices = config_notices + plugins.notices + skills.problems + skipped + hook_notices
+        notices = config_notices + plugins.notices + skills.problems + skipped + hook_notices + mcp_notices
         if args.prompt is None and not claude and (found := claude_notice(Path.cwd())):
             notices += (found,)
         coordinator, coordinator_notice = decide_coordinator(
@@ -631,10 +675,12 @@ def run(args: argparse.Namespace) -> None:
             registry,
             mcp_manager=manager,
             max_iterations=settings.max_iterations,
+            run_budget=settings.run_budget,
             context_root=Path.cwd(),
             budget=budget,
             session=Session.new(Path.cwd()),
             auto_compact=settings.auto_compact,
+            context_collapse=settings.context_collapse,
             notices=notices,
             persist=settings.persist_sessions,
             skills=skills,
@@ -646,6 +692,7 @@ def run(args: argparse.Namespace) -> None:
             agent_auto_background=settings.agent_auto_background,
             agent_max_background=settings.agent_max_background,
             command_max_background=settings.command_max_background,
+            command_auto_background=settings.command_auto_background,
             # -p must end: background commands without their own timeout get a limit there.
             command_time_limit=None if args.prompt is None else HEADLESS_TIME_LIMIT,
             worktree_links=settings.worktree_links,

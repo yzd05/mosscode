@@ -1,0 +1,4 @@
+category = "bugfix"
+prompt = """
+parse_duration('1h30m') 返回 3600，应该是 5400。修复它：h、m、s 的任意组合都要算对；不合法的输入（空字符串、未知单位、末尾多出没有单位的数字）抛 ValueError。
+"""

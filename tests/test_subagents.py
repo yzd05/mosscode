@@ -10,7 +10,7 @@ from mosscode.agents import AgentCatalog, AgentError, parse_agent
 from mosscode.agents.runtime import FORK_PLACEHOLDER, effective_mode
 from mosscode.agents.tasks import Task
 from mosscode.hooks import HookEngine
-from mosscode.messages import NOTIFICATION, ApprovalRequest, Delta, TasksNotified, Usage
+from mosscode.messages import NOTIFICATION, REMINDER, ApprovalRequest, Delta, TasksNotified, Usage
 from mosscode.permissions import PermissionPolicy, stricter
 from mosscode.prompts import PREFIX_KINDS
 from mosscode.tools import create_default_registry
@@ -364,7 +364,8 @@ async def test_plan_session_blocks_general_writes(tmp_path):
             and messages[0].text == "写文件"
         ):
             pass
-        if len(messages) == 1 and asked(messages) == "写文件":
+        # The child's first request: its prompt, then the plan-mode reminder it inherits.
+        if asked(messages) == "写文件" and all(m.role == "user" for m in messages):
             return response(calls=[call("write_file", "w", path="a.txt", content="x")])
         if messages[0].text == "写文件":
             return response("SUB-结束")
@@ -376,6 +377,7 @@ async def test_plan_session_blocks_general_writes(tmp_path):
     conv = conversation(tmp_path, provider, mode="plan")
     await drain(conv.reply("开始"))
     child = [r for r in provider.requests if r[0][0].text == "写文件"]
+    assert child[0][0][-1].synthetic == REMINDER and "计划模式" in child[0][0][-1].text
     assert tool_results_of(child[1])[0].code == "plan_blocked"
     assert "write_file" not in {tool.name for tool in child[0][2]}
     await conv.close()

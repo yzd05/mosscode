@@ -27,7 +27,7 @@ MossCode is a coding assistant that works in your terminal, written in Python. I
 - **Three protocols**: streaming, prompt caching, thinking effort and image input; a model catalog shipped with MossCode supplies context windows and cost estimates.
 - **Tools**: read, write, edit, commands, glob, grep, web fetch and search, the `todo_write` task list and `ask_user` questions; files must be read before they are edited, and long commands can move to the background.
 - **Permissions and sandbox**: four permission modes with layered rules and risk levels for commands; command sandboxes on Linux, macOS and Windows, with network access through a domain proxy; keys never reach the commands' environment.
-- **Long tasks**: `/goal` keeps working until a condition is met; large results go to disk, old tool results are cleared before compaction, and summarizing compaction has a circuit breaker.
+- **Long tasks**: `/goal` keeps working until a condition is met; large results go to disk; before summarizing, old tool results are cleared and then the oldest turns are collapsed; summarizing compaction has a circuit breaker.
 - **Sessions and memory**: sessions are saved as they go and resumed with `-c` or `/resume`; `/rewind` rolls files and conversation back to before any earlier message; memory notes carry across sessions.
 - **Multiple agents**: defined and forked sub-agents, background runs and git worktree isolation; agent teams work in parallel in Windows Terminal or tmux split panes.
 - **Extensions**: MCP, skills, hooks and plugins, compatible with Claude Code's plugin format.

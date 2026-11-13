@@ -144,7 +144,7 @@ class ToolProgress:
 
 @dataclass(frozen=True)
 class ResponseBoundary:
-    """A complete assistant tool request, followed by execution and another iteration."""
+    """A complete assistant draft, followed by tools or finish checks and another iteration."""
 
     message: Message
 
@@ -169,6 +169,11 @@ class UsageTotals:
     missing_cache_write: int = 0
     cost_usd: float = 0.0  # Estimated from the model catalog's base prices.
     missing_cost: int = 0  # Requests without a price: model not in the catalog, or counts not reported.
+    # Of the above, the one-off requests (note extraction, goal checks, summaries): each has a prompt of its own,
+    # so it cannot reuse what the conversation's requests cached.
+    side_requests: int = 0
+    side_input_tokens: int = 0
+    side_cached_input_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -179,11 +184,31 @@ class UsageUpdate:
 
 
 @dataclass(frozen=True)
+class Notice:
+    """A local runtime note, separate from the model's output."""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class RunStopped:
-    reason: Literal["completed", "max_iterations", "max_tokens", "unknown_tools", "cancelled", "error"]
+    reason: Literal[
+        "completed",
+        "max_iterations",
+        "max_tokens",
+        "unknown_tools",
+        "repeated_calls",
+        "finish_check_failed",
+        "cancelled",
+        "error",
+    ]
     notice: str
     iterations: int
     results: tuple[ToolResult, ...] = ()
+
+
+# A turn the agent ended itself before the model finished: its notice explains why and how to go on.
+STOPPED_EARLY = frozenset({"max_iterations", "max_tokens", "unknown_tools", "repeated_calls", "finish_check_failed"})
 
 
 @dataclass(frozen=True)
@@ -204,6 +229,9 @@ NOTIFICATION = "task-notification"  # Message.synthetic of a background task not
 MENTIONS = "file-mentions"  # Message.synthetic of what a typed message's @ mentions hold, right after it.
 SHELL = "shell-command"  # Message.synthetic of a command the user ran with ! and its output.
 CONTINUE = "continue"  # Message.synthetic asking the model to go on after a reply was cut off.
+# Message.synthetic of what the agent tells the model besides the conversation (the checklist, the goal, a mode
+# change), added to the history right before the request that first carries it.
+REMINDER = "system-reminder"
 
 
 @dataclass(frozen=True)
@@ -274,6 +302,29 @@ class ResultsCleared:
     tokens: int  # Freed, by estimate.
 
 
+@dataclass(frozen=True)
+class ContextCollapsed:
+    """Automatic compaction was due and the oldest part of the conversation was folded into a summary.
+
+    Only the requests change: the history keeps every message, so /rewind and the transcript still have them.
+    """
+
+    messages: int
+    before: int  # Context estimate, in tokens.
+    after: int
+    elapsed: float
+    record: str | None = None
+
+
+@dataclass(frozen=True)
+class Collapse:
+    """In requests, the history from the end of the previous collapse up to `end` is replaced by `summary`."""
+
+    end: int  # An index into the history: the first message sent as it is.
+    summary: Message
+    record: str | None = None
+
+
 StreamEvent = (
     Delta
     | Completed
@@ -282,6 +333,7 @@ StreamEvent = (
     | IterationProgress
     | UsageUpdate
     | RunStopped
+    | Notice
     | ApprovalRequest
     | QuestionRequest
     | Retrying
@@ -292,6 +344,7 @@ StreamEvent = (
     | CompactFinished
     | CompactFailed
     | ResultsCleared
+    | ContextCollapsed
 )
 
 

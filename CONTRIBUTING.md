@@ -31,6 +31,8 @@ python -m pytest -q
 
 没有安装 ripgrep 时，搜索测试走内置实现；CI 中两种情况都会测试。
 
+改动提示、工具或 Agent Loop 后，想知道对真实模型完成任务的影响，可以运行评估：`python scripts/run_evals.py` 在一组固定的编码任务上运行 MossCode，用隐藏测试判定，报告通过率、Token、缓存命中率和耗时，见 [评估任务](evals/README.md)。评估会请求真实服务并产生费用。
+
 ## 在容器中开发
 
 在 Windows 或 macOS 上想在 Linux 中跑测试，或者不想让开发中的 MossCode 直接接触主机，可以用容器。虚拟环境要建在挂载目录之外，否则会覆盖主机上的 `.venv`：
@@ -66,7 +68,7 @@ ruff format --check .
 - 一个 Pull Request 做一件事；提交信息的第一行说明改了什么。
 - 新行为和修复的缺陷都要有测试。
 - 用户可见的变化同步更新 `docs/reference/` 中的文档，并在 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]` 下记一条。
-- CI 在 Windows、Linux 和 macOS 上运行测试、代码检查和打包检查，全部通过后合并。
+- CI 在 Windows、Linux 和 macOS 上运行测试、代码检查和打包检查，全部通过后合并。安装 wheel 后还在源码目录之外运行 `scripts/smoke_wheel.py`，用假模型完成配置加载、文件读写，并检查内置 Skill 和模型目录资源，不读取个人配置、不联网。
 
 ## 发布
 
@@ -74,4 +76,4 @@ ruff format --check .
 
 1. 更新 `pyproject.toml` 中的 `version`；把 `CHANGELOG.md` 中 `[Unreleased]` 的内容移到新版本标题下，写上日期，并更新底部的比较链接。
 2. 提交后打标签并推送：`git tag v0.1.1`、`git push origin v0.1.1`。
-3. 发布流程自动构建，先上传到 TestPyPI 并检查能否安装，再上传到 PyPI，最后创建 GitHub Release。上传使用 PyPI 的 Trusted Publishing，不需要 API 令牌。
+3. 发布流程先在打标签的提交上跑一遍完整的 CI（ruff、三个系统上的测试、打包检查），全部通过后才构建；任何一项失败都不会上传，修复后删除标签、重新打标签推送即可（PyPI 上的版本一旦上传就不能替换）。之后先上传到 TestPyPI 并检查能否安装，再上传到 PyPI，最后创建 GitHub Release。上传使用 PyPI 的 Trusted Publishing，不需要 API 令牌。

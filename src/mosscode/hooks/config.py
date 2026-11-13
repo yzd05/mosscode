@@ -321,6 +321,8 @@ def parse_hook(raw, source: str, path: Path) -> Hook:
     for name in ("once", "async"):
         if type(raw.get(name, False)) is not bool:
             raise HookConfigError(f"{name} 需为 true 或 false。")
+    if event == "pre_finish" and raw.get("once", False):
+        raise HookConfigError("pre_finish 不能 once：每次结束前都需要重新检查。")
     if "action" in raw:
         action = _action(raw["action"], event)
     elif reject is not None:
@@ -332,7 +334,7 @@ def parse_hook(raw, source: str, path: Path) -> Hook:
     asynchronous = raw.get("async", False)
     if asynchronous:
         if spec.sync_only:
-            raise HookConfigError("pre_tool_use 只能同步执行，不能 async。")
+            raise HookConfigError(f"{event} 只能同步执行，不能 async。")
         if action is not None and action.type == "prompt":
             raise HookConfigError("prompt 动作不能 async：后台结果来不及注入。")
         if action is not None and action.feedback:

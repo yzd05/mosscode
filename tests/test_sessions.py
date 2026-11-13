@@ -14,6 +14,7 @@ from mosscode.context import ContextBudget
 from mosscode.conversation import Conversation, Notice, Resumed
 from mosscode.images import load_image
 from mosscode.messages import (
+    REMINDER,
     CompactFailed,
     CompactFinished,
     CompactStarted,
@@ -447,6 +448,18 @@ def test_missing_results_are_filled_orphans_dropped_and_trailing_users_returned(
     assert [m.role for m in restored.history] == ["user", "assistant", "tool"]
 
 
+def test_a_reminder_left_without_a_reply_does_not_hide_the_unanswered_messages(tmp_path):
+    reminder = Message("user", (ContentBlock("text", "<todo-list>\n[>] 1. 甲\n</todo-list>"),), synthetic=REMINDER)
+    lines = [user("做"), assistant("看", THREE), user("排队一"), reminder]
+    restored = load_session(_raw_session(tmp_path, [message_record(m) for m in lines]))
+    assert restored.unanswered == ("排队一",)
+    assert [m.role for m in restored.history] == ["user", "assistant", "tool"]
+    # A reminder that has its reply stays.
+    lines = [user("做"), reminder, assistant("好")]
+    restored = load_session(_raw_session(tmp_path, [message_record(m) for m in lines]))
+    assert restored.unanswered == () and [m.synthetic for m in restored.history] == [None, REMINDER, None]
+
+
 @pytest.mark.parametrize("case", range(3))
 async def test_every_protocol_accepts_the_repaired_history(case):
     from test_providers import CASES, SSEBody, adapter
@@ -526,12 +539,14 @@ async def test_failed_compaction_still_restores(tmp_path):
     await conv.close()
 
 
-def _supplements(request):
-    return " ".join(item.text for item in request[1].supplements)
+def _reminders(request):
+    """The reminders a request carries, all of them in its messages: nothing rides on the request alone."""
+    assert all(item.kind == "environment" for item in request[1].supplements)
+    return [m.text for m in request[0] if m.synthetic == REMINDER]
 
 
 @pytest.mark.parametrize("hours,reminded", [(7, True), (5, False)])
-async def test_gap_reminder_once_and_never_saved(tmp_path, hours, reminded):
+async def test_gap_reminder_once_and_kept_in_the_history(tmp_path, hours, reminded):
     when = datetime.now().astimezone() - timedelta(hours=hours)
     saved = write_session(tmp_path, [user("一"), assistant("二")], when=when)
     provider = SequenceProvider(response("三"), response("四"))
@@ -539,10 +554,13 @@ async def test_gap_reminder_once_and_never_saved(tmp_path, hours, reminded):
     await drain(conv.resume(saved.id))
     await conv.ask("继续")
     await conv.ask("再继续")
-    assert ("距上次对话已过去约 7 小时" in _supplements(provider.requests[0])) is reminded
-    assert "距上次对话" not in _supplements(provider.requests[1])
-    assert "距上次对话" not in saved.transcript_path.read_text(encoding="utf-8")
-    assert [m.text for m in provider.requests[0][0]] == ["一", "二", "继续"]
+    first, second = provider.requests
+    told = _reminders(first)
+    assert len(told) == reminded and all("距上次对话已过去约 7 小时" in t for t in told)
+    assert [m.text for m in first[0]] == ["一", "二", "继续", *told]
+    # The second request repeats the first and its reply, and tells nothing new.
+    assert second[0][: len(first[0])] == first[0] and _reminders(second) == told
+    assert ("距上次对话" in saved.transcript_path.read_text(encoding="utf-8")) is reminded
     await conv.close()
 
 

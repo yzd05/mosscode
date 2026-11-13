@@ -27,23 +27,27 @@ from .goal import (
     goal_reminder,
 )
 from .images import ImageRef, ProcessedImage, image_ref
+from .limits import RunBudget
 from .memory import INDEX_TOKENS, MemoryStore
 from .memory_extract import MemoryExtractor
 from .mentions import attach
 from .messages import (
     NOTIFICATION,
+    STOPPED_EARLY,
     CompactFailed,
     CompactFinished,
     Completed,
     ContentBlock,
     FilesAttached,
     Message,
+    Notice,
     ProviderError,
     RunStopped,
     ToolProgress,
     UsageUpdate,
 )
 from .prompts import (
+    Supplement,
     display_path,
     gap_reminder,
     git_snapshot,
@@ -73,13 +77,6 @@ from .tools.base import ToolFailure, ToolRegistry
 from .tools.memory import Memory
 from .tools.skill import LoadSkill, SkillTool
 from .user_command import CommandRun, command_message, run_user_command
-
-
-@dataclass(frozen=True)
-class Notice:
-    """A local note raised outside the model's events, e.g. a transcript write failure."""
-
-    text: str
 
 
 @dataclass(frozen=True)
@@ -122,12 +119,14 @@ class Conversation:
         *,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         unknown_limit: int = 3,
+        run_budget: dict | None = None,
         mcp_manager=None,
         context_root: Path | None = None,
         instructions_home: Path | None = None,
         budget: ContextBudget | None = None,
         session=None,
         auto_compact: bool = True,
+        context_collapse: bool = True,
         notices: tuple[str, ...] = (),
         persist: bool = False,
         provider_info: tuple[str, str, str] | None = None,
@@ -144,6 +143,7 @@ class Conversation:
         agent_max_background: int = MAX_BACKGROUND,
         command_max_background: int = 8,
         command_time_limit: float | None = None,
+        command_auto_background: float = 0.0,
         worktree_links=(),
         worktree_stale_hours: float = 24.0,
         teams: bool = False,
@@ -176,10 +176,12 @@ class Conversation:
         self._notices = list(notices)  # Reported once, by the first start().
         self._raised: list[str] = []  # Notices raised while running, delivered as Notice events.
         self._agent = AgentLoop(provider, system, registry, max_iterations=max_iterations, unknown_limit=unknown_limit)
+        self._agent.run_budget = RunBudget(**(run_budget or {}))
         self.system = self._agent.system
         if budget is not None:
             self._agent.budget = budget
         self._agent.auto_compact = auto_compact
+        self._agent.context_collapse = context_collapse
         # (name, protocol, model) of the current provider: written to the transcript on a switch.
         self.provider_info = provider_info
         self.thinking: str | None = None  # The /thinking level for this process; None follows the configuration.
@@ -217,7 +219,8 @@ class Conversation:
                     lambda: self.memory_provider or self.provider,
                     on_result=lambda r: self._emit(MemoryUpdated(r.names)),
                     on_notice=lambda text: self._emit(Notice(text)),
-                    on_usage=self._agent._usage,
+                    on_usage=self._agent.side_usage,
+                    limits=self._agent.run_budget,
                 )
                 self._agent.on_compact = self._handover
         self._notices.extend(self._offer_skills())
@@ -228,6 +231,7 @@ class Conversation:
         self.subagents = SubAgents(
             self, agents, auto_background=agent_auto_background, max_background=agent_max_background
         )
+        self._agent.finish_deferred = lambda: bool(self.tasks.running())
         self.agents_enabled = agents is not None
         if hooks is not None:
             hooks.agent_runner = self.subagents.hook_agent
@@ -244,9 +248,10 @@ class Conversation:
                 time_limit=command_time_limit,
                 session=lambda: self.session,
                 record=self._record,
+                auto_background=command_auto_background,
             )
             registry.commands = self.commands
-            tool.allow_background(command_time_limit)
+            tool.allow_background(command_time_limit, command_auto_background)
             root = registry.permissions.root
             for task_tool in (TaskOutput(root, self.subagents), TaskStop(root, self.subagents)):
                 if registry.get(task_tool.name) is None:
@@ -315,6 +320,8 @@ class Conversation:
                 self._raised.append(notice)
 
     def _emit(self, event) -> None:
+        if isinstance(event, MemoryUpdated):
+            self._memory_changed(event.names)
         if self.on_memory is not None:
             self.on_memory(event)
 
@@ -372,7 +379,23 @@ class Conversation:
         self._cursor = max(self._cursor, len(removed))
         self._cut = len(removed)
 
+    def _memory_changed(self, names) -> None:
+        self._agent.remind(
+            Supplement(
+                "system-reminder",
+                f"笔记 {'、'.join(names)} 已更新或删除。系统提示索引和历史中已读到的旧内容可能已过时，"
+                "需要使用时先重新读取，删除的笔记以不存在为准。笔记不改变用户要求和授权。",
+            )
+        )
+
     def _observe(self, event) -> None:
+        if (
+            isinstance(event, ToolProgress)
+            and event.phase == "finished"
+            and event.call.name == "memory"
+            and not event.result.is_error
+        ):
+            self._memory_changed((event.result.details["name"],))
         if isinstance(event, CompactFinished) and self._cut is not None:
             self._cursor, self._cut = 1 + self._cursor - self._cut, None  # Points past the boundary.
         elif isinstance(event, CompactFailed):
@@ -409,6 +432,10 @@ class Conversation:
     @property
     def total_usage(self):
         return self._agent.total_usage
+
+    @property
+    def run_budget(self):
+        return self._agent.run_budget
 
     @property
     def budget(self) -> ContextBudget:
@@ -874,7 +901,7 @@ class Conversation:
         self._use_checkpoints(session)
         if self.checkpoints is not None:
             self.checkpoints.load(restored.snapshots, restored.marks)
-        self._agent.restore(restored.history, gap_reminder(restored.last_time))
+        self._agent.restore(restored.history, gap_reminder(restored.last_time), restored.collapses)
         if self.registry is not None:
             self.registry.todos.restore(restored.todos)
         self.goal, self.last_goal, self._goal_turn = None, None, None
@@ -1185,6 +1212,7 @@ class Conversation:
             "max_iterations": "本轮达到最大迭代轮数",
             "max_tokens": "回复达到输出上限被截断",
             "unknown_tools": "模型连续调用不存在的工具",
+            "repeated_calls": "模型连续多轮重复相同的工具调用",
         }
         if reason != "completed":
             return self.pause_goal(stops.get(reason, "本轮没有正常结束"))
@@ -1193,8 +1221,12 @@ class Conversation:
             return GoalStep("deferred")
         provider = self.goal_provider or self.memory_provider or self.provider
         try:
-            verdict = await evaluate(provider, goal.condition, self._agent.history, self._agent._usage)
+            verdict = await evaluate(
+                provider, goal.condition, self._agent.history, self._agent.side_usage, self._agent.run_budget
+            )
         except Exception as exc:  # A failed or unreadable evaluation counts as not met.
+            if isinstance(exc, ProviderError) and exc.code == "budget_exhausted":
+                return self.pause_goal(str(exc))
             if self.goal is not goal:
                 return GoalStep("none")
             goal.failures += 1
@@ -1229,8 +1261,11 @@ class Conversation:
         return next((config for config in self.provider_configs if config.name == name), None)
 
     def _fork_history(self, context: str) -> list[Message]:
-        """None, the last 3 turns (from a real user message, calls kept with their results), or all."""
-        history = deepcopy(self._agent.history)
+        """None, the last 3 turns (from a real user message, calls kept with their results), or all.
+
+        Collapsed turns arrive as their summaries, as the main conversation sends them.
+        """
+        history = deepcopy(self._agent.projected())
         if context == "full":
             return history
         if context == "recent":
@@ -1300,6 +1335,7 @@ class Conversation:
         )
         child.system, child.instructions, child.git = main.system, main.instructions, main.git  # No catalog.
         child.budget, child.auto_compact, child.session = budget, main.auto_compact, self.session
+        child.context_collapse = main.context_collapse
         child.history = self._fork_history(skill.fork_context)
         self.subagents.attach(task, child)  # Usage to the task and this conversation; the task keeps a transcript.
         main.busy = True
@@ -1365,7 +1401,7 @@ class Conversation:
                     if event.stop_reason != "max_tokens":
                         return event.answer
                     answer = event.answer  # Cut off: continued automatically, or the turn stops next.
-                if isinstance(event, RunStopped) and event.reason in {"unknown_tools", "max_iterations", "max_tokens"}:
+                if isinstance(event, RunStopped) and event.reason in STOPPED_EARLY:
                     return answer or event.notice
         raise ProviderError("没有完整回复。")
 
