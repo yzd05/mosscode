@@ -223,7 +223,11 @@ def test_powershell_errors_point_at_the_command_not_the_prelude(tmp_path):
     missing = tmp_path / "no-such-file"
     # PowerShell 7's concise view omits the source-line format this test checks.
     result = subprocess.run(
-        shell.args(f"$ErrorView = 'NormalView'\nGet-Item '{missing}'"), capture_output=True, text=True, encoding="utf-8"
+        shell.args(f"$ErrorView = 'NormalView'\nGet-Item '{missing}'"),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "NO_COLOR": "1"},
     )
     assert result.returncode == 1
     lines = result.stderr.splitlines()
