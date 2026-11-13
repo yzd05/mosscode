@@ -37,7 +37,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # The hosted ARM pool can time out before starting any test; keep full macOS coverage on Intel.
+        os: [windows-latest, ubuntu-latest, macos-26-intel]
         python: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7
