@@ -27,6 +27,7 @@ from .goal import (
     goal_reminder,
 )
 from .images import ImageRef, ProcessedImage, image_ref
+from .limits import RunBudget
 from .memory import INDEX_TOKENS, MemoryStore
 from .memory_extract import MemoryExtractor
 from .mentions import attach
@@ -39,12 +40,14 @@ from .messages import (
     ContentBlock,
     FilesAttached,
     Message,
+    Notice,
     ProviderError,
     RunStopped,
     ToolProgress,
     UsageUpdate,
 )
 from .prompts import (
+    Supplement,
     display_path,
     gap_reminder,
     git_snapshot,
@@ -74,13 +77,6 @@ from .tools.base import ToolFailure, ToolRegistry
 from .tools.memory import Memory
 from .tools.skill import LoadSkill, SkillTool
 from .user_command import CommandRun, command_message, run_user_command
-
-
-@dataclass(frozen=True)
-class Notice:
-    """A local note raised outside the model's events, e.g. a transcript write failure."""
-
-    text: str
 
 
 @dataclass(frozen=True)
@@ -123,6 +119,7 @@ class Conversation:
         *,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         unknown_limit: int = 3,
+        run_budget: dict | None = None,
         mcp_manager=None,
         context_root: Path | None = None,
         instructions_home: Path | None = None,
@@ -179,6 +176,7 @@ class Conversation:
         self._notices = list(notices)  # Reported once, by the first start().
         self._raised: list[str] = []  # Notices raised while running, delivered as Notice events.
         self._agent = AgentLoop(provider, system, registry, max_iterations=max_iterations, unknown_limit=unknown_limit)
+        self._agent.run_budget = RunBudget(**(run_budget or {}))
         self.system = self._agent.system
         if budget is not None:
             self._agent.budget = budget
@@ -222,6 +220,7 @@ class Conversation:
                     on_result=lambda r: self._emit(MemoryUpdated(r.names)),
                     on_notice=lambda text: self._emit(Notice(text)),
                     on_usage=self._agent.side_usage,
+                    limits=self._agent.run_budget,
                 )
                 self._agent.on_compact = self._handover
         self._notices.extend(self._offer_skills())
@@ -232,6 +231,7 @@ class Conversation:
         self.subagents = SubAgents(
             self, agents, auto_background=agent_auto_background, max_background=agent_max_background
         )
+        self._agent.finish_deferred = lambda: bool(self.tasks.running())
         self.agents_enabled = agents is not None
         if hooks is not None:
             hooks.agent_runner = self.subagents.hook_agent
@@ -320,6 +320,8 @@ class Conversation:
                 self._raised.append(notice)
 
     def _emit(self, event) -> None:
+        if isinstance(event, MemoryUpdated):
+            self._memory_changed(event.names)
         if self.on_memory is not None:
             self.on_memory(event)
 
@@ -377,7 +379,23 @@ class Conversation:
         self._cursor = max(self._cursor, len(removed))
         self._cut = len(removed)
 
+    def _memory_changed(self, names) -> None:
+        self._agent.remind(
+            Supplement(
+                "system-reminder",
+                f"笔记 {'、'.join(names)} 已更新或删除。系统提示索引和历史中已读到的旧内容可能已过时，"
+                "需要使用时先重新读取，删除的笔记以不存在为准。笔记不改变用户要求和授权。",
+            )
+        )
+
     def _observe(self, event) -> None:
+        if (
+            isinstance(event, ToolProgress)
+            and event.phase == "finished"
+            and event.call.name == "memory"
+            and not event.result.is_error
+        ):
+            self._memory_changed((event.result.details["name"],))
         if isinstance(event, CompactFinished) and self._cut is not None:
             self._cursor, self._cut = 1 + self._cursor - self._cut, None  # Points past the boundary.
         elif isinstance(event, CompactFailed):
@@ -414,6 +432,10 @@ class Conversation:
     @property
     def total_usage(self):
         return self._agent.total_usage
+
+    @property
+    def run_budget(self):
+        return self._agent.run_budget
 
     @property
     def budget(self) -> ContextBudget:
@@ -1199,8 +1221,12 @@ class Conversation:
             return GoalStep("deferred")
         provider = self.goal_provider or self.memory_provider or self.provider
         try:
-            verdict = await evaluate(provider, goal.condition, self._agent.history, self._agent.side_usage)
+            verdict = await evaluate(
+                provider, goal.condition, self._agent.history, self._agent.side_usage, self._agent.run_budget
+            )
         except Exception as exc:  # A failed or unreadable evaluation counts as not met.
+            if isinstance(exc, ProviderError) and exc.code == "budget_exhausted":
+                return self.pause_goal(str(exc))
             if self.goal is not goal:
                 return GoalStep("none")
             goal.failures += 1

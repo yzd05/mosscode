@@ -677,6 +677,11 @@ def status_report(ctx: CommandContext) -> str:
         ("图片", _image_line(ctx)),
         ("记忆", memory),
     ]
+    limits = conversation.run_budget
+    if limits.enabled:
+        requests = f"{limits.used_requests}/{limits.requests or '不限'} 次请求"
+        tokens = f"{limits.used_tokens:,}/{limits.tokens or '不限'} Token"
+        rows.append(("本次运行预算", requests + " · " + tokens + ("（部分用量未知）" if limits.unknown else "")))
     if conversation.hooks is not None:
         rows.append(("Hook", hooks_line(conversation.hooks)))
     if conversation.active_skills:

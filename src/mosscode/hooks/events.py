@@ -13,7 +13,7 @@ class EventSpec:
     fields: tuple[str, ...]
     actions: tuple[str, ...]
     background: bool = False  # Command, http and agent actions always run in the background.
-    sync_only: bool = False  # pre_tool_use: async is not allowed.
+    sync_only: bool = False  # async is not allowed.
     feedback: bool = False  # Command output may be injected.
     tool: bool = False  # args.<name> fields; MOSSCODE_TOOL_NAME and MOSSCODE_FILE_PATH.
 
@@ -23,6 +23,7 @@ EVENTS: dict[str, EventSpec] = {
     "session_end": EventSpec(("reason",), EXTERNAL),
     "turn_start": EventSpec(("prompt",), ACTIONS, feedback=True),
     "turn_end": EventSpec(("reason",), EXTERNAL),
+    "pre_finish": EventSpec(("iteration", "attempt"), ("command",), sync_only=True),
     "pre_send": EventSpec(("iteration",), ACTIONS, background=True),
     "post_receive": EventSpec(("iteration", "tool_calls"), EXTERNAL, background=True),
     "pre_tool_use": EventSpec(TOOL_FIELDS, ACTIONS, sync_only=True, feedback=True, tool=True),

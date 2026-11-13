@@ -52,13 +52,15 @@ def mcp_json_path(root: Path) -> Path:
     return root / ".mcp.json"
 
 
-def _read(path: Path) -> tuple[dict, bool]:
+def _read(path: Path, content: bytes | None = None) -> tuple[dict, bool]:
     try:
-        if not path.exists():
-            if path.is_symlink():
-                raise MCPConfigError("配置文件是失效链接。")
-            return {}, False
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if content is None:
+            if not path.exists():
+                if path.is_symlink():
+                    raise MCPConfigError("配置文件是失效链接。")
+                return {}, False
+            content = path.read_bytes()
+        raw = yaml.safe_load(content.decode("utf-8"))
         if raw is None:
             return {}, False
         if not isinstance(raw, dict) or set(raw) - {"mcp_servers", "import_mcp_json"}:
@@ -163,14 +165,23 @@ def _server(name, raw):
 
 
 def _read_mcp_json(
-    path: Path, label: str | None = None, plugin: PluginRef | None = None, project: Path | None = None
+    path: Path,
+    label: str | None = None,
+    plugin: PluginRef | None = None,
+    project: Path | None = None,
+    *,
+    content: bytes | None = None,
 ) -> tuple[dict, list[str]]:
     """Claude Code's project file, converted to the mcp.yaml shape. Problems are notices, never fatal."""
     label = label or path.name
     try:
-        if not path.is_file():
+        if content is None:
+            if not path.is_file():
+                return {}, []
+            content = path.read_bytes()
+        if not content:
             return {}, []
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(content)
         servers = raw.get("mcpServers", raw if plugin is not None else None) if isinstance(raw, dict) else None
         if not isinstance(servers, dict):
             raise ValueError
@@ -260,25 +271,27 @@ def plugin_servers(plugin: Plugin, root: Path) -> tuple[list[ServerConfig], list
 
 
 def load_mcp_settings(
-    root: Path, *, user_path: Path | None = None, plugins: tuple[Plugin, ...] | None = None, project: bool = True
+    root: Path,
+    *,
+    user_path: Path | None = None,
+    plugins: tuple[Plugin, ...] | None = None,
+    project: "ProjectMCP | bool" = True,
 ) -> MCPSettings:
     """Lowest first: plugins (plugins.yaml order), user mcp.yaml, .mcp.json when imported, project mcp.yaml.
     plugins: None reads the installed ones. project=False leaves out everything the project's files supply (its
     mcp.yaml and .mcp.json, even when the user's file imports the latter) because the user has not trusted it."""
-    user_file, project_file = config_paths(root, user_path)
-    user, user_import = _read(user_file)
-    own, project_import = _read(project_file) if project else ({}, False)
+    user_file, _ = config_paths(root, user_path)
+    user, _ = _read(user_file)
+    own = project_mcp(root, user_path=user_path) if project is True else project
     merged, notices = {}, []
     for plugin in resolve(plugins, root=root):
         servers, issues = _plugin_servers(plugin, root)
         merged.update(servers)
         notices += issues
     merged.update(user)
-    if project and (user_import or project_import):
-        imported, issues = _read_mcp_json(mcp_json_path(root))
-        merged.update(imported)
-        notices += issues
-    merged.update(own)  # Replace the complete server, never merge transport fields.
+    if own:
+        merged.update(own.servers)  # Replace the complete server, never merge transport fields.
+        notices += own.notices
     servers = []
     for name, raw in merged.items():
         try:
@@ -298,6 +311,7 @@ class ProjectMCP:
     files: tuple[Path, ...] = ()  # The files that contribute, for the confirmation text.
     servers: dict = field(default_factory=dict, repr=False)  # Raw entries by name, before ${VAR} substitution.
     digest: str = ""
+    notices: tuple[str, ...] = ()
 
     def _store(self, home: Path | None):
         from .hooks.config import TrustStore
@@ -342,25 +356,38 @@ def _target(entry) -> str:
 
 
 def project_mcp(root: Path, *, user_path: Path | None = None) -> ProjectMCP:
-    """The project-supplied part of load_mcp_settings, with a digest of the bytes it came from."""
+    """Read project files once: the preview, trust digest and loaded servers share these bytes."""
+    present = []
+
+    def read(path):
+        try:
+            content = path.read_bytes()
+        except FileNotFoundError:
+            if path.is_symlink():
+                raise MCPConfigError(f"MCP 配置 {path}：配置文件是失效链接。") from None
+            return b""
+        except OSError:
+            raise MCPConfigError(f"MCP 配置 {path}：无法读取有效 UTF-8 配置。") from None
+        present.append(path)
+        return content
+
     user_file, project_file = config_paths(root, user_path)
     _, user_import = _read(user_file)
-    own, project_import = _read(project_file)
-    servers, files = {}, []
+    content = read(project_file)
+    own, project_import = _read(project_file, content)
+    servers, sources, notices = {}, [], []
     if user_import or project_import:
-        imported, _ = _read_mcp_json(mcp_json_path(root))
+        path = mcp_json_path(root)
+        imported_content = read(path)
+        imported, notices = _read_mcp_json(path, content=imported_content)
         servers.update(imported)
-        files.append(mcp_json_path(root))
+        sources.append((path, imported_content))
     servers.update(own)
-    if project_file.exists():
-        files.append(project_file)
+    if project_file in present:
+        sources.append((project_file, content))
     digest = hashlib.sha256()
-    for path in files:
+    for path, content in sources:
         digest.update(f"{path.name}\0".encode())
-        try:
-            digest.update(path.read_bytes())
-        except OSError:
-            pass
+        digest.update(content)
         digest.update(b"\0")
-    present = tuple(path for path in files if path.exists())
-    return ProjectMCP(root, present, servers, digest.hexdigest() if servers else "")
+    return ProjectMCP(root, tuple(present), servers, digest.hexdigest() if servers else "", tuple(notices))

@@ -6,6 +6,12 @@
 
 ### 新增
 
+- 新增可选的 `pre_finish` 命令 Hook：主对话完成前运行确定性验收，失败反馈给模型修复，最多失败 3 次后明确停止；纯问答和可确认的只读调查跳过，默认关闭。见[完成前验收](docs/reference/hooks.md#完成前验收)。
+
+- 本次运行可用 `run_budget.requests`、`run_budget.tokens` 限制共享模型调用额度，主对话、子 Agent 和辅助调用合计，`/status` 显示消耗；默认关闭。见[共享调用预算](docs/reference/providers.md#本次运行的共享调用预算)。
+- 记忆笔记更新或删除后，当前会话下一次请求收到旧内容失效提醒，保持系统提示前缀不变；补充助手复述外部内容的提取规则。见[记忆笔记](docs/reference/memory.md)。
+- 发布产物验收：安装 wheel 后在源码目录外用假模型完成读写任务，并检查内置 Skill 和模型目录资源。
+
 - 重复调用检测：同一次任务连续 3 轮使用相同参数调用相同工具、得到相同结果时，提醒模型换一种做法；连续 5 轮仍然相同时停止，保留已执行的调用和结果。参数或结果变化、用户补充信息或收到后台通知后重新计数。界面和 `-p` 说明原因，json / stream-json 返回 `repeated_calls`，`/goal` 暂停续跑，子 Agent 返回未完成。见[重复调用检测](docs/reference/tools.md#重复调用检测)。
 - 命令：主对话的前台命令运行超过 5 秒自动转入后台（`command_auto_background`，0 关闭），模型可以先做别的事，需要结果时用 `task_output` 等它；模型给的 `timeout` 仍然有效。`task_output` 已经交出结果的任务不再重复发送通知。沙箱经代理联网的命令留在前台，以便询问新域名。
 - 配置：`follow: claude-code` 或 `follow: codex` 的 Provider 读取 Claude Code、Codex 的设置（CC Switch、Magpie 写入的服务地址、密钥和模型），不再重复填写；在那边切换服务后，`/model` 选中它即重新读取，对话历史保留。`preset: deepseek` 等厂商预设（DeepSeek、Kimi、GLM、通义千问、OpenRouter、Anthropic、OpenAI）代替协议、地址、默认模型和密钥变量名。`moss setup` 先列出可跟随的设置和预设，只有“其他服务”才逐项询问。见 [跟随 Claude Code 或 Codex](docs/reference/providers.md#跟随-claude-code-或-codex)。
@@ -44,6 +50,8 @@
 - PowerShell 命令出错时，报错的位置行显示命令本身，不再显示 MossCode 加在前面的编码设置。
 
 ### 修复
+
+- 项目 MCP 配置在等待确认期间被替换后，可能出现批准旧内容却加载新内容。审批、信任摘要和本次加载现在共用一次读取的配置快照；更改后的配置在下次启动时重新询问。
 
 - 克隆的仓库在启动时就能运行任意命令：项目的 `.mosscode/mcp.yaml`（以及开启 `import_mcp_json` 时的 `.mcp.json`）中的 stdio 服务器此前在会话开始时直接启动。现在和项目配置、项目插件一样先确认：界面列出每个服务器要运行的命令后询问，内容有变化再次询问；`-p` 不启动未确认的项目服务器，`--trust-project-mcp` 只在本次信任；`moss doctor` 指出未确认的项目服务器。见 [项目的 MCP 服务器需要确认](docs/reference/mcp.md#项目的-mcp-服务器需要确认)。
 - 缓存命中率被一次性请求拉低：底栏的“缓存命中”此前把后台记忆整理和 `/goal` 判断也算进去，这些请求各用自己的提示，几乎不会命中，对话本身缓存得再好，显示的比例也偏低。现在命中率只算对话请求（主对话、子 Agent、团队成员）；`/status` 的用量一行另写“对话缓存命中率”，并单独列出摘要、目标判断和记忆整理的次数、输入和缓存命中。压缩和折叠的摘要请求此前没有计入用量和费用，现在也计入。

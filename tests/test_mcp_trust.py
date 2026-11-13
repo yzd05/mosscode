@@ -142,3 +142,33 @@ def test_doctor_names_unconfirmed_project_servers(home, project):
     assert any("cloned" in item.text and "尚未确认" in item.text for item in items)
     project_mcp(project).trust()
     assert not any("尚未确认" in item.text for item in check_project(project, home=home))
+
+
+@pytest.mark.parametrize("source", ["yaml", "json"])
+def test_confirmation_loads_the_reviewed_snapshot_when_the_file_changes(home, project, monkeypatch, source):
+    if source == "json":
+        write_yaml(project / ".mosscode/mcp.yaml", {"import_mcp_json": True})
+        write_mcp_json(project, "reviewed")
+    else:
+        write_yaml(project / ".mosscode/mcp.yaml", {"mcp_servers": {"demo": {"type": "stdio", "command": "reviewed"}}})
+    snapshot = project_mcp(project)
+
+    class Panel:
+        def __init__(self, names):
+            pass
+
+        def run(self, **options):
+            if source == "json":
+                write_mcp_json(project, "replaced")
+            else:
+                write_yaml(
+                    project / ".mosscode/mcp.yaml", {"mcp_servers": {"demo": {"type": "stdio", "command": "replaced"}}}
+                )
+            return True
+
+    monkeypatch.setattr(cli, "MCPTrustApp", Panel)
+    args = argparse.Namespace(prompt=None, trust_project_mcp=False)
+    use, notices = cli.confirm_project_mcp(args, project, snapshot)
+    loaded = load_mcp_settings(project, plugins=(), project=snapshot if use else False)
+    assert notices == () and [server.command for server in loaded.servers] == ["reviewed"]
+    assert not project_mcp(project).trusted()

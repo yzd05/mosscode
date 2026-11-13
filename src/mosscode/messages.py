@@ -144,7 +144,7 @@ class ToolProgress:
 
 @dataclass(frozen=True)
 class ResponseBoundary:
-    """A complete assistant tool request, followed by execution and another iteration."""
+    """A complete assistant draft, followed by tools or finish checks and another iteration."""
 
     message: Message
 
@@ -184,9 +184,23 @@ class UsageUpdate:
 
 
 @dataclass(frozen=True)
+class Notice:
+    """A local runtime note, separate from the model's output."""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class RunStopped:
     reason: Literal[
-        "completed", "max_iterations", "max_tokens", "unknown_tools", "repeated_calls", "cancelled", "error"
+        "completed",
+        "max_iterations",
+        "max_tokens",
+        "unknown_tools",
+        "repeated_calls",
+        "finish_check_failed",
+        "cancelled",
+        "error",
     ]
     notice: str
     iterations: int
@@ -194,7 +208,7 @@ class RunStopped:
 
 
 # A turn the agent ended itself before the model finished: its notice explains why and how to go on.
-STOPPED_EARLY = frozenset({"max_iterations", "max_tokens", "unknown_tools", "repeated_calls"})
+STOPPED_EARLY = frozenset({"max_iterations", "max_tokens", "unknown_tools", "repeated_calls", "finish_check_failed"})
 
 
 @dataclass(frozen=True)
@@ -319,6 +333,7 @@ StreamEvent = (
     | IterationProgress
     | UsageUpdate
     | RunStopped
+    | Notice
     | ApprovalRequest
     | QuestionRequest
     | Retrying

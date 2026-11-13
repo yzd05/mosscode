@@ -68,7 +68,7 @@ ruff format --check .
 - 一个 Pull Request 做一件事；提交信息的第一行说明改了什么。
 - 新行为和修复的缺陷都要有测试。
 - 用户可见的变化同步更新 `docs/reference/` 中的文档，并在 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]` 下记一条。
-- CI 在 Windows、Linux 和 macOS 上运行测试、代码检查和打包检查，全部通过后合并。
+- CI 在 Windows、Linux 和 macOS 上运行测试、代码检查和打包检查，全部通过后合并。安装 wheel 后还在源码目录之外运行 `scripts/smoke_wheel.py`，用假模型完成配置加载、文件读写，并检查内置 Skill 和模型目录资源，不读取个人配置、不联网。
 
 ## 发布
 

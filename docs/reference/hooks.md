@@ -48,8 +48,8 @@ hooks:
 | `action` | 对象，`type` 为 `command`、`prompt`、`http`、`agent`，见 [动作](#动作)。写了 `reject` 的 Hook 可以省略 |
 | `reject` | 只用于 `pre_tool_use`：命中即拒绝，值是给模型看的原因（非空字符串，最多 2000 个字符）。不能与 `prompt` 动作同用 |
 | `on_error` | 只用于 `pre_tool_use`：`ignore`（缺省，失败时放行）或 `block`（失败时拒绝） |
-| `once` | 每个会话最多执行一次。条件满足、开始执行就算一次，失败也算；`/clear` 和恢复会话时重置 |
-| `async` | 后台执行，不阻塞主流程，结果只进入日志和失败提示。不能用于 `pre_tool_use`、`prompt` 动作、`feedback: true` |
+| `once` | 每个会话最多执行一次（`pre_finish` 不允许）。条件满足、开始执行就算一次，失败也算；`/clear` 和恢复会话时重置 |
+| `async` | 后台执行，不阻塞主流程，结果只进入日志和失败提示。不能用于 `pre_tool_use`、`pre_finish`、`prompt` 动作、`feedback: true` |
 
 ## 事件
 
@@ -66,7 +66,8 @@ hooks:
 | `session_start` | 启动加载上下文之后（界面中在项目 Hook 确认之后）、`/clear` 之后、恢复会话之后 | `source`：`new`、`clear`、`resume` | command、prompt、http、agent | 同步或 `async` |
 | `session_end` | `/clear` 之前、恢复另一个会话之前、退出时 | `reason`：`clear`、`resume`、`exit` | command、http、agent | 同步或 `async` |
 | `turn_start` | 用户提交消息或命令后，第一次请求模型之前；运行中排队的消息不算新一轮 | `prompt`：输入原文（命令为命令原文） | command、prompt、http、agent | 同步或 `async` |
-| `turn_end` | 一轮结束 | `reason`：`completed`、`max_tokens`、`unknown_tools`、`repeated_calls`、`max_iterations`、`cancelled`、`error` | command、http、agent | 同步或 `async` |
+| `pre_finish` | 主对话执行可能改变状态的工具后，准备正常结束之前 | `iteration`：本轮请求次数；`attempt`：本轮第几次验收（1–3） | command | 只能同步，失败阻止完成 |
+| `turn_end` | 一轮结束 | `reason`：`completed`、`max_tokens`、`unknown_tools`、`repeated_calls`、`finish_check_failed`、`max_iterations`、`cancelled`、`error` | command、http、agent | 同步或 `async` |
 | `pre_send` | 主对话每次请求模型之前 | `iteration`：本轮第几次请求（从 1 开始） | prompt；其他动作总在后台 | 见下 |
 | `post_receive` | 主对话每次收到完整回复之后 | `iteration`；`tool_calls`：本次回复调用的工具数 | command、http、agent，总在后台 | 见下 |
 | `pre_tool_use` | 参数校验、硬检查和拒绝规则都通过之后，审批之前 | `tool`、`path`、`command`、`args.<参数名>` | command、prompt、http、agent | 只能同步 |
@@ -82,6 +83,28 @@ hooks:
 - `subagent_start` 的 prompt 和 feedback 放在该子 Agent 第一条用户消息之前，只发给这个子 Agent。
 - 压缩、记忆提取和子 Agent 的请求不触发 `pre_send` / `post_receive`。
 - `agent` 动作总在后台执行，见 [agent](#agent)。
+
+## 完成前验收
+
+`pre_finish` 让你用固定命令检查交付结果。默认不启用；在自己信任的 Hook 文件中配置，例如只检查本次涉及的模块：
+
+```yaml
+hooks:
+  - id: verify-change
+    event: pre_finish
+    action:
+      type: command
+      command: ["${PYTHON}", -m, pytest, -q, tests/test_permissions.py]
+      timeout: 120
+```
+
+只有匹配条件的命令全部以 0 退出，主对话才正常完成。非零退出码、超时、找不到命令或启动错误都阻止本次完成；失败原因和截断后的命令输出送回模型，让它继续修复。每轮最多失败 3 次，随后以 `finish_check_failed` 停止；最大迭代数和[共享调用预算](providers.md#本次运行的共享调用预算)仍有效。验收不能使用 `once`、`async`、`on_error` 或其他动作，避免跳过复查或由模型自己判定通过。
+
+纯问答、只读工具、网页查询、笔记操作、现有命令分类器确认的只读命令（如 `git status`）及计划模式不运行验收。无法确认只读的命令会保守地触发，其他可能改变状态的工具也会触发。命令由你配置，不会自动推断应跑哪些测试。已有待验收改动时，即使下一轮只回复文字，也会重试检查；通过后清除标记，`/clear` 也会清除。标记不跨进程恢复。
+
+后台命令和子 Agent 尚未结束时暂缓验收，收到其结果后由主对话继续检查；它不替代团队的任务管理，也不自动安装到子 Agent、Skill fork 或其他进程。检查通过只说明这些命令通过，仍需根据实际任务审查结果。
+
+界面和 `-p` 显示检查中、失败修复或通过的状态；已流出的草稿可能仍可见。失败草稿不会作为最终结果，`stream-json` 中其 `assistant.stop_reason` 为 `finish_check`。达到失败上限时，最终结果是 `subtype: finish_check_failed`、`is_error: true`；三种 `-p` 输出格式的进程退出码均为 1。取消会终止检查进程，已经执行的工具和结果仍保留。
 
 ## 条件
 

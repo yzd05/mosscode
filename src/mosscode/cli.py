@@ -30,7 +30,7 @@ from .credentials import plaintext_notice, protect
 from .hooks import HookEngine
 from .launcher import is_terminal, parse_arguments
 from .mcp_client import MCPManager
-from .mcp_config import MCPConfigError, load_mcp_settings, project_mcp
+from .mcp_config import MCPConfigError, ProjectMCP, load_mcp_settings, project_mcp
 from .memory import MemoryStore
 from .messages import (
     STOPPED_EARLY,
@@ -251,8 +251,10 @@ async def _prompt(
 ) -> dict | None:
     """Run one headless task; JSON formats return the result object instead of raising."""
     if output_format == "text":
-        await _text_prompt(conversation, prompt, show_usage=show_usage, resume=resume, command=command, skill=skill)
-        return None
+        failed = await _text_prompt(
+            conversation, prompt, show_usage=show_usage, resume=resume, command=command, skill=skill
+        )
+        return {"is_error": True} if failed else None
     stream_json = output_format == "stream-json"
     started = monotonic()
     stopped: RunStopped | None = None
@@ -312,7 +314,9 @@ async def _prompt(
                     if not stream_json:
                         continue
                     if isinstance(event, ResponseBoundary):
-                        _emit(_assistant(event.message, usage, "tool_use"))
+                        _emit(
+                            _assistant(event.message, usage, "tool_use" if event.message.tool_calls else "finish_check")
+                        )
                     elif isinstance(event, Completed):
                         _emit(_assistant(event.message, usage, event.stop_reason))
                     elif isinstance(event, ToolProgress) and event.phase == "finished":
@@ -401,7 +405,7 @@ async def _text_prompt(
     resume: str | None = None,
     command: str | None = None,
     skill: str | None = None,
-) -> None:
+) -> bool:
     def report(kind, value):
         if kind == "compact":
             print(
@@ -414,6 +418,7 @@ async def _text_prompt(
 
     _background_notices(conversation, report)
     _task_notices(conversation, report)
+    finish_failed = False
     try:
         await _resume(conversation, resume, report)
         for notice in await conversation.start():
@@ -433,6 +438,7 @@ async def _text_prompt(
                     print(f"\n● {event.call.name} · {event.elapsed:.1f}s\n└ {event.result.output}", flush=True)
                 elif isinstance(event, RunStopped) and event.reason in STOPPED_EARLY:
                     print("\n" + event.notice, flush=True)
+                    finish_failed = event.reason == "finish_check_failed"
                 elif isinstance(event, Retrying):
                     print(
                         f"{event.reason}，{event.delay:.1f} 秒后重试（{event.attempt}/{event.max_attempts}）",
@@ -457,6 +463,7 @@ async def _text_prompt(
                 elif isinstance(event, FilesAttached):
                     print("已附上 " + "、".join(event.entries), file=sys.stderr, flush=True)
         print()
+        return finish_failed
     finally:
         await conversation.close()
 
@@ -501,11 +508,11 @@ def load_plugins(args, root: Path) -> Installed:
     return Installed(combined.plugins, (*combined.notices, *notices))
 
 
-def confirm_project_mcp(args, root: Path) -> tuple[bool, tuple[str, ...]]:
+def confirm_project_mcp(args, root: Path, project: ProjectMCP | None = None) -> tuple[bool, tuple[str, ...]]:
     """Whether the servers the project's files declare may start: a cloned repository could otherwise run any
     command as soon as moss opens in it. The interface asks once per content, -p needs --trust-project-mcp or an
     earlier confirmation."""
-    project = project_mcp(root)
+    project = project if project is not None else project_mcp(root)
     if not project.servers or args.trust_project_mcp or project.trusted():
         return True, ()
     names = list(project.servers)
@@ -639,8 +646,11 @@ def run(args: argparse.Namespace) -> None:
             todo=settings.todo_tool,
             ask=args.prompt is None,  # -p has nobody to answer.
         )
-        project_servers, mcp_notices = confirm_project_mcp(args, Path.cwd())
-        mcp_settings = load_mcp_settings(Path.cwd(), plugins=plugins.plugins, project=project_servers)
+        project = project_mcp(Path.cwd())
+        project_servers, mcp_notices = confirm_project_mcp(args, Path.cwd(), project)
+        mcp_settings = load_mcp_settings(
+            Path.cwd(), plugins=plugins.plugins, project=project if project_servers else False
+        )
         manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
         prune_all()
         budget = config.budget()
@@ -665,6 +675,7 @@ def run(args: argparse.Namespace) -> None:
             registry,
             mcp_manager=manager,
             max_iterations=settings.max_iterations,
+            run_budget=settings.run_budget,
             context_root=Path.cwd(),
             budget=budget,
             session=Session.new(Path.cwd()),

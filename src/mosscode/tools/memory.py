@@ -60,6 +60,6 @@ class Memory(Tool):
             raise ToolFailure(exc.code, str(exc)) from None
         verb = "已保存" if created else "已更新"
         return (
-            f"{verb}{label}笔记 {note.name}：{note.path}\n索引已重新生成；本会话的系统提示不会变化，下次会话开始时生效。",
+            f"{verb}{label}笔记 {note.name}：{note.path}\n索引已重新生成；下次请求会提醒模型重新读取，系统提示前缀保持不变。",
             {"action": "save", "scope": params.scope, "name": note.name, "path": str(note.path), "created": created},
         )

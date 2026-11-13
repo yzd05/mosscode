@@ -188,6 +188,22 @@ MossCode 带有一份模型目录，记录各家模型的上下文窗口、输�
 
 包内的目录在发布时生成。新模型发布后不必等 MossCode 更新：运行 `moss models update` 从 LiteLLM 下载最新数据，写入 `~/.mosscode/models.json.gz`，以后优先使用它。`moss models <关键词>` 查找条目，见 [命令行](cli.md#models)。旧版本下载的目录不含思考相关的字段，仍然可用，只是 `/thinking` 无法判断哪些模型不支持，重新运行 `moss models update` 即可补上。用户目录中的文件损坏时，改用包内的目录并在启动区提示，重新运行 `moss models update` 即可修复。
 
+### 本次运行的共享调用预算
+
+可在顶层配置：
+
+```yaml
+run_budget:
+  requests: 200
+  tokens: 1000000
+```
+
+两项均为非负整数，0 或不填写表示不限制。主对话、子 Agent、Skill fork、进程内团队成员，以及摘要、目标判断、记忆提取，共享同一份额度。预算从本次启动到退出；切换模型、`/clear`、恢复会话不重置，`/status` 显示已用请求与 Token。
+
+请求额度在调用前领取；服务适配器内部的 HTTP 重试仍属于同一次调用，空回复重发、自动续写和新摘要请求各占一次。Token 按服务返回的总输入和输出累计，达到后停止新的请求；在途调用仍可继续产生 Token，所以这不是 Token 或费用的硬封顶。启用 Token 限额时，若服务缺少完整用量或流中断，停止后续调用并说明无法核算。预算耗尽按错误结束，目标暂停，已执行的工具和结果保留；已经启动的命令仍遵守各自的时间限制和停止规则。
+
+开启预算时，团队的 `auto` 使用进程内成员以共享额度；显式指定 tmux 或 Windows Terminal 窗格时报错，改用 `auto` 或 `in-process`。默认未开启预算时，团队后端行为不变。
+
 ### 费用估算
 
 目录中有价格的模型，每次请求按服务报告的 Token 数估算费用：未缓存输入 × 输入价格 + 缓存读取 × 缓存读取价格 + 缓存写入 × 缓存写入价格 + 输出 × 输出价格。缺少缓存价格时按输入价格计算。`/status` 的用量一行显示“费用 约 $0.0123”；部分请求没有价格（服务没报告 Token 数，或切换到了目录中没有价格的模型）时显示“≥ $…”，全部没有时显示“无价格信息”。子 Agent 和团队成员的请求与 Token 一样计入。`-p` 的 `json` 结果中是 `total_cost_usd`。
@@ -207,12 +223,14 @@ MossCode 带有一份模型目录，记录各家模型的上下文窗口、输�
 | 格式 | 输出 |
 | --- | --- |
 | `text`（默认） | 正文流式输出到 stdout，提示与 `--show-usage` 用量输出到 stderr，与以往一致；任务中的 `@路径`（见 [终端界面](interface.md#引用文件)）附上后，stderr 打印一行“已附上 …” |
-| `json` | 结束时输出一个结果对象：`type`、`subtype`（`completed`、`max_iterations`、`repeated_calls`、`error` 等停止原因；`repeated_calls` 见[重复调用检测](tools.md#重复调用检测)）、`is_error`、`result`（最终正文或错误说明）、`num_turns`、`duration_ms`、`usage`、`total_cost_usd`（按[模型目录](#费用估算)估算的美元费用，没有价格时为 null）、`compactions`（成功压缩上下文的次数）、`model`、`permission_mode` |
+| `json` | 结束时输出一个结果对象：`type`、`subtype`（`completed`、`max_iterations`、`repeated_calls`、`finish_check_failed`、`error` 等停止原因；`repeated_calls` 见[重复调用检测](tools.md#重复调用检测)）、`is_error`、`result`（最终正文或错误说明）、`num_turns`、`duration_ms`、`usage`、`total_cost_usd`（按[模型目录](#费用估算)估算的美元费用，没有价格时为 null）、`compactions`（成功压缩上下文的次数）、`model`、`permission_mode` |
 | `stream-json` | 每行一个 JSON 事件：`system`（init：cwd、model、permission_mode、tools）、`assistant`（text、tool_calls、stop_reason、usage）、`tool_result`（有图片时带 `images`：文件名、媒体类型、宽、高，不含图片数据）、`retry`、`reply_retry`（没有可用内容的回复被丢弃并重发：`attempt`、`max_attempts`、`reason`）、`auto_continue`（回复写到一半碰到输出上限，自动续写：`attempt`、`max_attempts`）、`notice`、`files_attached`（`entries`：每个 `@` 引用附上了什么，与界面中的说明相同）、`compact`（subtype 为 started、finished、failed，见 [上下文管理](context.md#界面与无界面输出)），最后一行是与 json 格式相同的 `result` |
 
 ```powershell
 moss -p "列出 src 下的模块" --output-format json
 ```
+
+配置了[完成前验收](hooks.md#完成前验收)时，未通过的草稿在 stream-json 中带 `stop_reason: finish_check`；达到失败上限后，三种输出格式均以退出码 1 结束，JSON 结果为 `subtype: finish_check_failed`。
 
 JSON 输出始终为 UTF-8，与控制台代码页无关。`is_error` 为真时进程以退出码 1 结束，便于脚本判断；无界面模式不等待审批，需要确认的调用返回 approval_required。
 

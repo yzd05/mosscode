@@ -97,3 +97,5 @@ jobs:
           uv pip install --python /tmp/wheel-check/bin/python dist/*.whl
           /tmp/wheel-check/bin/moss --version
           /tmp/wheel-check/bin/moss --help > /dev/null
+          cd "$(mktemp -d)"
+          /tmp/wheel-check/bin/python "$GITHUB_WORKSPACE/scripts/smoke_wheel.py"

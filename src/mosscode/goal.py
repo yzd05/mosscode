@@ -11,6 +11,7 @@ from time import monotonic
 from typing import Literal
 
 from .context import estimate_text
+from .limits import stream
 from .messages import CONTINUE, NOTIFICATION, REMINDER, Completed, ContentBlock, Message, ProviderError
 from .prompts import Supplement
 
@@ -154,11 +155,13 @@ def parse_verdict(text: str) -> Verdict:
     return Verdict(raw["verdict"], " ".join(reason.split())[:REASON_CHARS])
 
 
-async def evaluate(provider, condition: str, messages: Sequence[Message], on_usage: Callable | None = None) -> Verdict:
+async def evaluate(
+    provider, condition: str, messages: Sequence[Message], on_usage: Callable | None = None, limits=None
+) -> Verdict:
     """One request without tools; ProviderError or ValueError when it fails."""
     prompt = evaluation_prompt(condition, messages)
     async with aclosing(
-        provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (), allow_tools=False)
+        stream(provider, [Message("user", (ContentBlock("text", prompt),))], SYSTEM, allow_tools=False, limits=limits)
     ) as events:
         async for event in events:
             if isinstance(event, Completed):

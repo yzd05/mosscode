@@ -1083,3 +1083,28 @@ async def test_tui_and_headless_output_report_cleared_results(tmp_path, capsys):
     await cli._prompt(conv, "继续")
     captured = capsys.readouterr()
     assert "已清理较早的工具结果" in captured.err and "正在压缩上下文" not in captured.err and "好" in captured.out
+
+
+async def test_repeated_compaction_keeps_the_latest_correction_goal_and_checklist(tmp_path):
+    from mosscode.messages import REMINDER
+    from mosscode.tools import create_default_registry
+
+    provider = SequenceProvider(summary_reply("旧约束摘要"), summary_reply("再次摘要"), response("按最新要求继续"))
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    conv = seeded(
+        provider,
+        [text("user", "使用旧接口"), *chat(8), text("user", "纠正：必须使用新接口")],
+        registry=registry,
+        auto_compact=False,
+    )
+    conv.set_goal("新接口测试通过")
+    registry.todos.replace([(None, "补充新接口的测试", "in_progress")])
+    [event async for event in conv.compact()]
+    conv._agent.history += chat(8)
+    [event async for event in conv.compact()]
+    assert await conv.ask("继续") == "按最新要求继续"
+    request = provider.requests[-1][0]
+    assert any("纠正：必须使用新接口" in m.text for m in request)
+    reminders = "\n".join(m.text for m in request if m.synthetic == REMINDER)
+    assert "新接口测试通过" in reminders and "补充新接口的测试" in reminders
+    await conv.close()

@@ -10,6 +10,11 @@ default_provider: claude
 #   你的完整系统提示
 # 单次任务最多请求模型的次数（默认 200）；达到上限后可继续输入推进。
 # max_iterations: 200
+# 本次启动共享的模型调用预算，主 Agent、子 Agent、摘要和记忆等合计；0 不限制，默认关闭。
+# Token 按服务返回用量累计，达到后不再发起请求；不限制在途用量或费用。
+# run_budget:
+#   requests: 200
+#   tokens: 1000000
 # execute_command 使用的 shell：auto（默认；Windows 优先 Git Bash，找不到时用 PowerShell）、bash、powershell，
 # 或 bash.exe 的完整路径。明确指定但找不到时启动报错；不支持 System32 下的 WSL bash。
 # shell: auto

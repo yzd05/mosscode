@@ -160,6 +160,7 @@ class Settings:
     default_provider: str | None = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     max_iterations: int = 200
+    run_budget: dict[str, int] = field(default_factory=dict, kw_only=True)
     source: Path | None = None
     shell: str = "auto"
     auto_compact: bool = True
@@ -622,6 +623,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         "default_provider",
         "system_prompt",
         "max_iterations",
+        "run_budget",
         "shell",
         "auto_compact",
         "context_collapse",
@@ -657,6 +659,13 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     if not isinstance(system, str):
         raise ConfigError("system_prompt 必须是字符串。")
     iterations = _positive_int(raw.get("max_iterations", Settings.max_iterations), "max_iterations")
+    run_budget = raw.get("run_budget", {})
+    if (
+        not isinstance(run_budget, dict)
+        or set(run_budget) - {"requests", "tokens"}
+        or any(type(v) is not int or v < 0 for v in run_budget.values())
+    ):
+        raise ConfigError("run_budget 仅支持 requests、tokens，值为非负整数（0 不限制）。")
     shell = raw.get("shell", Settings.shell)
     if not isinstance(shell, str) or not shell.strip():
         raise ConfigError("shell 需为 auto、bash、powershell 或 shell 可执行文件路径。")
@@ -720,6 +729,7 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
         Path(path),
         shell.strip(),
         memory_provider=memory_provider,
+        run_budget=run_budget,
         goal_max_turns=goal_turns,
         goal_provider=goal_provider,
         agent_auto_background=float(auto_background),

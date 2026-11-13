@@ -238,3 +238,13 @@ def test_a_catalog_window_too_small_for_the_agent_is_not_used(tmp_path):
     ).select()
     assert config.context_window is None and config.max_output_tokens == 8_192
     assert "上下文窗口为 8K，不足以运行 MossCode" in config.window_note()
+
+
+@pytest.mark.parametrize("value", [{"requests": -1}, {"tokens": True}, {"seconds": 10}])
+def test_run_budget_accepts_only_nonnegative_request_and_token_limits(tmp_path, value):
+    path = write_config(tmp_path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["run_budget"] = value
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ConfigError, match="run_budget"):
+        load_settings(path)

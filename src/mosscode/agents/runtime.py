@@ -267,6 +267,7 @@ class SubAgents:
             self.tasks.changed(task)
 
         loop.on_usage = counted
+        loop.run_budget = main.run_budget
         loop.registry.task_id = task.id  # Its background commands end with it.
         conversation = self.conversation
         session = conversation.session

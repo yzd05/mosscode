@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .context import ContextBudget, estimate_message, estimate_messages, estimate_text
 from .images import ImageRef
+from .limits import stream
 from .messages import Collapse, Completed, ContentBlock, Message, ProviderError, ToolResult
 from .session import Session
 
@@ -301,9 +302,9 @@ def boundary(summary: str, quotes: Sequence[str], omitted: int, record: Path | N
     return Message("user", tuple(blocks), synthetic=kind)
 
 
-async def _ask(provider, prompt: str, on_usage=None) -> Completed:
+async def _ask(provider, prompt: str, on_usage=None, limits=None) -> Completed:
     async with aclosing(
-        provider.stream([Message("user", (ContentBlock("text", prompt),))], SYSTEM, (), allow_tools=False)
+        stream(provider, [Message("user", (ContentBlock("text", prompt),))], SYSTEM, allow_tools=False, limits=limits)
     ) as events:
         async for event in events:
             if isinstance(event, Completed):
@@ -322,7 +323,9 @@ def _keep_record(session: Session | None, text: str, name: str) -> Path | None:
         return None
 
 
-async def _summarize(provider, removed: Sequence[Message], limit: int, instructions: str = "", on_usage=None) -> str:
+async def _summarize(
+    provider, removed: Sequence[Message], limit: int, instructions: str = "", on_usage=None, limits=None
+) -> str:
     """The summary of removed, shrinking the request while it does not fit."""
     shrink, dropped = False, 0
     for step in range(SHRINK_STEPS + 1):
@@ -330,8 +333,10 @@ async def _summarize(provider, removed: Sequence[Message], limit: int, instructi
         response = None
         if estimate_text(SYSTEM) + estimate_text(prompt) <= limit:
             try:
-                response = await _ask(provider, prompt, on_usage)
+                response = await _ask(provider, prompt, on_usage, limits)
             except ProviderError as exc:
+                if exc.code == "budget_exhausted":
+                    raise
                 if exc.code != "context_overflow":
                     raise CompactionError(f"摘要请求失败：{exc}") from None
         if response is not None:
@@ -358,12 +363,13 @@ async def compact_history(
     instructions: str = "",
     manual: bool = False,
     on_usage=None,
+    limits=None,
 ) -> Compacted:
     cut = cut_point(history, budget.auto_threshold, manual=manual)
     if cut == 0:
         raise CompactionError(NOTHING, "nothing")
     removed, tail = list(history[:cut]), list(history[cut:])
-    summary = await _summarize(provider, removed, budget.manual_limit, instructions, on_usage)
+    summary = await _summarize(provider, removed, budget.manual_limit, instructions, on_usage, limits)
     quotes, omitted = fit_quotes(collect_quotes(removed))
     record = _keep_record(session, record_text(removed), "compact")
     return Compacted([boundary(summary, quotes, omitted, record)] + tail, cut, estimate_text(summary), record)
@@ -422,11 +428,12 @@ async def collapse_segment(
     *,
     session: Session | None = None,
     on_usage=None,
+    limits=None,
 ) -> Collapse:
     """A summary of the history from the end of the last collapse up to end; the history itself is not changed."""
     start = collapses[-1].end if collapses else 0
     removed = list(history[start:end])
-    summary = await _summarize(provider, removed, budget.manual_limit, on_usage=on_usage)
+    summary = await _summarize(provider, removed, budget.manual_limit, on_usage=on_usage, limits=limits)
     quotes, omitted = fit_quotes(collect_quotes(removed))
     record = _keep_record(session, record_text(removed, "折叠"), "collapse")
     message = boundary(summary, quotes, omitted, record, COLLAPSE)
