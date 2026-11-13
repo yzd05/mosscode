@@ -42,8 +42,10 @@ def test_environment_is_limited_data_not_arbitrary_environment_variables(tmp_pat
 
 @pytest.mark.parametrize("mode", ["plan", "normal"])
 async def test_reminder_only_on_mode_change_stable_prefix_and_append_only_history(tmp_path, mode):
-    (tmp_path / "a").write_text("content")
-    steps = [response(calls=[call("read_file", str(i), path="a")]) for i in range(3)]
+    # Distinct reads keep this about mode reminders rather than repetition nudges.
+    for i in range(3):
+        (tmp_path / f"a{i}").write_text("content")
+    steps = [response(calls=[call("read_file", str(i), path=f"a{i}")]) for i in range(3)]
     provider = SequenceProvider(*steps, response("完成"), response("新任务"))
     conv = Conversation(
         provider,
