@@ -1328,6 +1328,22 @@ async def test_status_bar_counts_members_and_their_approvals(tmp_path):
         await conv.teams.close()
 
 
+async def test_a_withdrawn_approval_can_outlive_its_panel(tmp_path):
+    from mosscode.tui import MossCodeApp
+
+    _, conv = team_conversation(tmp_path, Script(alice=done))
+    app = MossCodeApp(conv, "Demo")
+    async with app.run_test():
+        pending = conv.registry.permissions.pending
+        pending["r1"] = asyncio.get_running_loop().create_future()
+        app._show_approval(
+            ApprovalRequest("r1", "", Operation("write_file", "b.txt"), "Write?", ("once", "deny"), source="alice")
+        )
+        pending.pop("r1").cancel()
+        await app.screen.remove_children()
+        app._tick()
+
+
 # Coordinator mode ----------------------------------------------------------------------
 
 import dataclasses  # noqa: E402
