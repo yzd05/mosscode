@@ -1,0 +1,133 @@
+# 复制到 .mosscode/config.yaml（项目）或 ~/.mosscode/config.yaml（用户），填写服务实际接受的 model 和环境变量名。
+# 项目的 .mosscode/config.yaml 第一次使用和内容变化后需要确认（-p 中用 --trust-project-config）。
+# 查找顺序：./.mosscode/config.yaml → ~/.mosscode/config.yaml，第一个存在的生效；--config 可直接指定。
+# 第一次使用可以运行 moss setup，按提示生成 ~/.mosscode/config.yaml。
+# 省略 base_url 时使用该协议官方 SDK 的默认地址。
+# 设置默认项后直接进入对话；删除或注释这一行，多配置启动时会显示选择列表。
+default_provider: claude
+# 默认使用内置七模块提示。system_prompt 可完整替换稳定提示，不是补充指令。
+# system_prompt: |-
+#   你的完整系统提示
+# 单次任务最多请求模型的次数（默认 200）；达到上限后可继续输入推进。
+# max_iterations: 200
+# 本次启动共享的模型调用预算，主 Agent、子 Agent、摘要和记忆等合计；0 不限制，默认关闭。
+# Token 按服务返回用量累计，达到后不再发起请求；不限制在途用量或费用。
+# run_budget:
+#   requests: 200
+#   tokens: 1000000
+# execute_command 使用的 shell：auto（默认；Windows 优先 Git Bash，找不到时用 PowerShell）、bash、powershell，
+# 或 bash.exe 的完整路径。明确指定但找不到时启动报错；不支持 System32 下的 WSL bash。
+# shell: auto
+# 接近上下文窗口时自动压缩较早的对话（默认 true）；关闭后仍可用 /compact。
+# auto_compact: true
+# 会话实时存档到 ~/.mosscode/projects/<项目键>/sessions/，可用 -c、--resume 或 /resume 恢复（默认 true）。
+# persist_sessions: true
+# 记忆笔记：索引注入系统提示、memory 工具和后台提取（默认 true）；false 时全部关闭。
+# memory: true
+# 任务完成后在后台提取值得记住的内容（默认 true）；false 时只保留 memory 工具。
+# auto_memory: true
+# 后台提取使用的 Provider 名称，可以指定较便宜的模型；未设置时用当前 Provider。
+# memory_provider: deepseek
+# 同时运行的后台命令上限（execute_command 的 run_in_background，默认 8，最多 64）；0 关闭后台命令。
+# command_max_background: 8
+# 前台命令运行超过这么多秒就自动转入后台，模型不必干等（默认 5，最多 600）；0 表示一直在前台等它结束。
+# command_auto_background: 5
+# Agent 团队的成员在哪里运行：auto（默认；在 tmux 中用 tmux 窗格，在 Windows Terminal 中用分屏窗格，否则进程内）、
+# in-process、windows-terminal、tmux。显式指定的窗格后端不可用时报错，不改用其他后端。
+# teammate_mode: auto
+# 每个团队的成员上限（默认 4，最多 8）。
+# team_max_members: 4
+# 协调者模式：Lead 不直接改文件，把实施交给成员。还需要环境变量 MOSSCODE_COORDINATOR_MODE=1；只用于交互界面。
+# coordinator_mode: false
+# 网络搜索（web_search 工具）。未配置或环境变量为空时不提供搜索；读取网页（web_fetch）不需要配置。
+# 目前支持 tavily；api_key_env 填环境变量名称，api_key_keyring 填 moss key set 保存的名称，直接填密钥请改用 api_key。
+# web_search:
+#   provider: tavily
+#   api_key_env: TAVILY_API_KEY
+# 模型运行的命令看不到形似密钥的环境变量（名称含 TOKEN、SECRET、PASSWORD 等）。命令确实需要的写在 keep，
+# 要额外去掉的写在 drop；变量名可用 *。
+# command_env 和下面的 sandbox 以用户配置（~/.mosscode/config.yaml）为准：写在项目的 .mosscode/config.yaml 中时
+# 只能收紧（mode: on、network: none、allow_unsandboxed: never、deny_read、drop），放宽的键被忽略并提示。
+# command_env:
+#   keep: [GITHUB_TOKEN]
+#   drop: [INTERNAL_*]
+
+# 命令沙箱（Linux 用 bubblewrap，macOS 用 Seatbelt，Windows 用 MXC 或受限令牌）：模型的命令只能写项目目录，联网经 MossCode 的代理、新域名需确认，越界时带理由申请。
+# sandbox:
+#   mode: on
+#   backend: auto           # 或 bubblewrap / seatbelt / mxc / token
+#   allow_write: [D:/cache]
+#   allow_read: [D:/sdk]
+#   allow_unsandboxed: ask  # never：不允许在沙箱外运行
+#   network: proxy          # none：完全断网
+
+providers:
+  - name: claude
+    protocol: anthropic-messages
+    model: replace-with-your-claude-model
+    api_key_env: ANTHROPIC_API_KEY  # 填环境变量名称；直接填密钥请改用 api_key。
+    # api_key_keyring: claude  # 或者：系统凭据管理器中的名称，用 moss key set claude 保存（三者选一）。
+    max_output_tokens: 32000  # 单次回复的输出上限；达到上限会提示截断，不当作完成。
+    # 上下文窗口、输出上限、是否接受图片通常不必填写，从模型目录中取（moss models 查看匹配结果）。
+    # 目录中没有该模型时填写窗口（Token），否则按 128K 估算并在启动时提示：
+    # context_window: 200000
+    # 模型名是目录中没有的别名时，指定目录中的条目（moss models <关键词> 查找）：
+    # catalog_model: claude-sonnet-4-5
+    # 请求开始输出前遇到限流、过载、5xx 或断连时自动重试的次数（默认 4，0 表示关闭）。
+    # max_retries: 4
+    # Anthropic 只缓存请求中标记的前缀，默认对任何地址（包括 CC Switch 等中转）都加缓存标记；
+    # 服务因这个标记拒绝请求时自动去掉重发，之后不再加。设 false 一直不加：
+    # prompt_cache: false
+    # 中转若兼容 Messages，也使用同一个适配器：
+    # base_url: https://your-gateway.example
+    # auth_type: bearer  # 中转若要求 Authorization: Bearer
+    # thinking: {type: adaptive, effort: high}
+    # 老模型/服务手动预算：thinking: {type: enabled, budget_tokens: 2048}
+
+  - name: openai
+    protocol: openai-responses
+    model: replace-with-your-openai-model
+    api_key_env: OPENAI_API_KEY
+    max_output_tokens: 32000
+    # store=false 的多轮请求保留服务返回的不透明推理数据。
+    # 兼容端点若不接受 include，可关闭；没有加密数据时只回传正文。
+    include_encrypted_reasoning: true
+    # base_url: https://your-gateway.example/v1
+
+  - name: compatible
+    protocol: openai-chat-completions
+    model: replace-with-service-model
+    base_url: https://your-gateway.example/v1
+    api_key_env: COMPATIBLE_API_KEY
+    max_output_tokens: 8192
+    # 请求用量是可选的，有些兼容端点不接受 stream_options：
+    stream_usage: false
+    # 支持较新 token 参数的服务可以改为 max_completion_tokens：
+    max_tokens_field: max_tokens
+    # 模型是否接受图片：Chat Completions 默认不接受，所用模型支持时改为 true（其他协议默认接受）。
+    # images: true
+    # /thinking 默认按模型目录判断模型是否支持思考；目录不准确时明确填写 true 或 false。
+    # reasoning: true
+
+  - name: deepseek
+    protocol: openai-chat-completions
+    model: replace-with-deepseek-model
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    max_output_tokens: 16384
+    stream_usage: true
+    # 模型目录中有的模型不必填写 context_window；目录中没有时以官方文档为准填写：
+    # context_window: 1000000
+    # 大窗口时每次请求都可能接近百万 Token；需要控制成本和延迟时可以提前压缩：
+    # compact_threshold: 200000
+
+  # 厂商预设：preset 代替 protocol、base_url、默认 model 和密钥变量名（deepseek、kimi、glm、qwen、openrouter、
+  # anthropic、openai），写出的字段优先。详见 docs/reference/providers.md 的“厂商预设”。
+  # - name: kimi
+  #   preset: kimi
+  #   model: kimi-k3.1-pro
+
+  # 跟随 Claude Code（~/.claude/settings.json）或 Codex（~/.codex/config.toml）的服务地址、密钥和模型，
+  # CC Switch、Magpie 切换后在 /model 中重新读取；不能再写 base_url、headers 和凭据字段。
+  # - name: cc
+  #   follow: claude-code

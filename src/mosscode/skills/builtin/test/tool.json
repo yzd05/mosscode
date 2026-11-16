@@ -1,0 +1,9 @@
+[
+  {
+    "name": "detect",
+    "description": "检测项目类型，返回建议的测试命令及依据（只读取项目文件，不运行测试）",
+    "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+    "command": ["${PYTHON}", "${SKILL_DIR}/scripts/detect.py"],
+    "timeout": 30
+  }
+]

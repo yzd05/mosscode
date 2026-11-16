@@ -1,0 +1,17 @@
+{
+  "$schema": "https://cdn.agentclientprotocol.com/registry/v1/latest/agent.schema.json",
+  "id": "mosscode",
+  "name": "MossCode",
+  "version": "0.3.0",
+  "description": "A terminal and editor coding agent with OS sandboxing, fine-grained permissions, MCP, skills, hooks, and multi-provider support.",
+  "authors": ["yzd05"],
+  "license": "MIT",
+  "repository": "https://github.com/yzd05/mosscode",
+  "icon": "icon.svg",
+  "distribution": {
+    "uvx": {
+      "package": "mosscode==0.3.0",
+      "args": ["acp"]
+    }
+  }
+}

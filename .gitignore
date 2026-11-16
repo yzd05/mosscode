@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Test runs
+.test-artifacts/
+
+# Local configuration: provider keys, machine-specific MCP servers and grants
+config.yaml
+mcp.yaml
+.mosscode/mcp.yaml
+.mosscode/permissions.local.yaml
+.env

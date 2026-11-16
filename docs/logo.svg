@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="264" height="168" viewBox="0 0 264 168" role="img" aria-label="MossCode">
+  <rect width="264" height="168" rx="24" fill="#0c0c0c"/>
+  <rect x="28" y="133" width="14" height="7" rx="2" fill="#3b3f55"/>
+  <rect x="44" y="133" width="14" height="7" rx="2" fill="#465071"/>
+  <rect x="60" y="126" width="14" height="14" rx="2" fill="#50608e"/>
+  <rect x="76" y="126" width="14" height="14" rx="2" fill="#5a70aa"/>
+  <rect x="92" y="119" width="14" height="21" rx="2" fill="#6581c6"/>
+  <rect x="108" y="112" width="14" height="28" rx="2" fill="#7092e3"/>
+  <rect x="124" y="105" width="14" height="35" rx="2" fill="#7aa2ff"/>
+  <rect x="140" y="98" width="14" height="42" rx="2" fill="#8baeff"/>
+  <rect x="156" y="91" width="14" height="49" rx="2" fill="#9cb9ff"/>
+  <rect x="172" y="77" width="14" height="63" rx="2" fill="#adc4ff"/>
+  <rect x="188" y="63" width="14" height="77" rx="2" fill="#bed0ff"/>
+  <rect x="204" y="49" width="14" height="91" rx="2" fill="#cfdcff"/>
+  <rect x="220" y="28" width="14" height="112" rx="2" fill="#e0e7ff"/>
+</svg>

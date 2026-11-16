@@ -1,0 +1,393 @@
+"""Two-layer MCP configuration plus opt-in .mcp.json; credentials stay out of repr and diagnostics."""
+
+import hashlib
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import yaml
+
+from .plugins import Plugin, PluginError, PluginRef, resolve
+
+
+class MCPConfigError(ValueError):
+    pass
+
+
+DEFAULT_TIMEOUT = 30.0
+DEFAULT_STARTUP_TIMEOUT = 10.0
+SERVER_NAME = r"[A-Za-z0-9_-]{1,64}"
+OPTIONS = {"timeout", "startup_timeout", "trust_read_only_hint"}
+MCP_TRUST = "mcp-trust.json"
+
+
+@dataclass(frozen=True)
+class ServerConfig:
+    name: str
+    type: str
+    command: str | None = None
+    args: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict, repr=False)
+    url: str | None = field(default=None, repr=False)
+    headers: dict[str, str] = field(default_factory=dict, repr=False)
+    timeout: float = DEFAULT_TIMEOUT  # One tool call.
+    startup_timeout: float | None = None  # Connect + discovery; None uses the manager default.
+    trust_read_only_hint: bool = False  # Treat readOnlyHint tools as read-only tools.
+
+
+@dataclass(frozen=True)
+class MCPSettings:
+    servers: tuple[ServerConfig, ...] = ()
+    notices: tuple[str, ...] = ()
+
+
+def config_paths(root: Path, user_path: Path | None = None):
+    return user_path or Path.home() / ".mosscode/mcp.yaml", root / ".mosscode/mcp.yaml"
+
+
+def mcp_json_path(root: Path) -> Path:
+    return root / ".mcp.json"
+
+
+def _read(path: Path, content: bytes | None = None) -> tuple[dict, bool]:
+    try:
+        if content is None:
+            if not path.exists():
+                if path.is_symlink():
+                    raise MCPConfigError("配置文件是失效链接。")
+                return {}, False
+            content = path.read_bytes()
+        raw = yaml.safe_load(content.decode("utf-8"))
+        if raw is None:
+            return {}, False
+        if not isinstance(raw, dict) or set(raw) - {"mcp_servers", "import_mcp_json"}:
+            raise MCPConfigError("顶层仅支持 mcp_servers 和 import_mcp_json。")
+        if type(raw.get("import_mcp_json", False)) is not bool:
+            raise MCPConfigError("import_mcp_json 必须是 true 或 false。")
+        servers = raw.get("mcp_servers", {}) or {}
+        if not isinstance(servers, dict):
+            raise MCPConfigError("mcp_servers 必须是以 Server 名称为键的对象。")
+        if any(not isinstance(k, str) or not re.fullmatch(SERVER_NAME, k) for k in servers):
+            raise MCPConfigError("Server 名称需为 1–64 位英文字母、数字、下划线或连字符。")
+        return servers, raw.get("import_mcp_json", False)
+    except (OSError, UnicodeError, yaml.YAMLError, MCPConfigError) as exc:
+        detail = str(exc) if isinstance(exc, MCPConfigError) else "无法读取有效 UTF-8 YAML。"
+        raise MCPConfigError(f"MCP 配置 {path}：{detail}") from None
+
+
+PLACEHOLDER = r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}"
+
+
+def substitute_env(value: str) -> str:
+    """${VAR} must be set; ${VAR:-default} falls back when VAR is unset or empty."""
+    if "${" in re.sub(PLACEHOLDER, "", value):
+        raise MCPConfigError("环境变量占位符需为 ${VAR} 或 ${VAR:-默认值} 格式。")
+
+    def replace(match):
+        value = os.environ.get(match[1])
+        if match[2] is not None and not value:
+            return match[2]
+        if value is None:
+            raise MCPConfigError("配置引用的环境变量未设置。")
+        return value
+
+    return re.sub(PLACEHOLDER, replace, value)
+
+
+def _expand(values, label):
+    if not isinstance(values, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in values.items()):
+        raise MCPConfigError(f"{label} 必须是字符串键值对象。")
+    return {k: substitute_env(v) for k, v in values.items()}
+
+
+def _options(raw) -> dict:
+    options = {}
+    for key, default, limit in (("timeout", DEFAULT_TIMEOUT, 600), ("startup_timeout", None, 120)):
+        value = raw.get(key, default)
+        if value is not None and (type(value) not in {int, float} or not 0 < value <= limit):
+            raise MCPConfigError(f"{key} 必须是 (0, {limit}] 秒之间的数字。")
+        options[key] = None if value is None else float(value)
+    trust = raw.get("trust_read_only_hint", False)
+    if type(trust) is not bool:
+        raise MCPConfigError("trust_read_only_hint 必须是 true 或 false。")
+    options["trust_read_only_hint"] = trust
+    return options
+
+
+def _server(name, raw):
+    if not isinstance(raw, dict):
+        raise MCPConfigError("Server 配置必须是对象。")
+    kind = raw.get("type")
+    options = _options(raw)
+    if kind == "stdio":
+        if set(raw) - {"type", "command", "args", "env"} - OPTIONS:
+            raise MCPConfigError("stdio 仅支持 type、command、args、env 及超时和只读提示选项。")
+        command, args = raw.get("command"), raw.get("args", [])
+        if not isinstance(command, str) or not command.strip() or "\0" in command:
+            raise MCPConfigError("command 必须是非空可执行文件名或路径。")
+        if not isinstance(args, list) or any(not isinstance(a, str) or "\0" in a for a in args):
+            raise MCPConfigError("args 必须是字符串列表。")
+        env = _expand(raw.get("env", {}), "env")
+        if any(not k or "=" in k or "\0" in k or "\0" in v for k, v in env.items()):
+            raise MCPConfigError("env 包含非法名称或空字符。")
+        return ServerConfig(name, kind, command, tuple(args), env, **options)
+    if kind == "http":
+        if set(raw) - {"type", "url", "headers"} - OPTIONS:
+            raise MCPConfigError("http 仅支持 type、url、headers 及超时和只读提示选项。")
+        url = raw.get("url")
+        try:
+            if not isinstance(url, str) or any(c.isspace() or ord(c) < 32 for c in url):
+                raise ValueError
+            parsed = urlsplit(url) if isinstance(url, str) else None
+            if (
+                not parsed
+                or parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.fragment
+            ):
+                raise ValueError
+            _ = parsed.port  # Raises ValueError for a port out of range.
+        except ValueError:
+            raise MCPConfigError("url 必须是无嵌入凭据和 fragment 的 HTTP(S) 地址。") from None
+        headers = _expand(raw.get("headers", {}), "headers")
+        if any(
+            not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", k) or any(c in v for c in "\r\n\0")
+            for k, v in headers.items()
+        ):
+            raise MCPConfigError("headers 含非法字段或换行。")
+        return ServerConfig(name, kind, url=url, headers=headers, **options)
+    raise MCPConfigError("type 必须是 stdio 或 http（Streamable HTTP）。")
+
+
+def _read_mcp_json(
+    path: Path,
+    label: str | None = None,
+    plugin: PluginRef | None = None,
+    project: Path | None = None,
+    *,
+    content: bytes | None = None,
+) -> tuple[dict, list[str]]:
+    """Claude Code's project file, converted to the mcp.yaml shape. Problems are notices, never fatal."""
+    label = label or path.name
+    try:
+        if content is None:
+            if not path.is_file():
+                return {}, []
+            content = path.read_bytes()
+        if not content:
+            return {}, []
+        raw = json.loads(content)
+        servers = raw.get("mcpServers", raw if plugin is not None else None) if isinstance(raw, dict) else None
+        if not isinstance(servers, dict):
+            raise ValueError
+    except (OSError, UnicodeError, ValueError):
+        return {}, [f"MCP 配置 {label}：无法读取有效 UTF-8 JSON 或缺少 mcpServers 对象，已忽略。"]
+    return _convert_mcp_json(servers, label, plugin, project)
+
+
+def _convert_mcp_json(
+    servers: dict, label: str, plugin: PluginRef | None = None, project: Path | None = None
+) -> tuple[dict, list[str]]:
+    converted, notices = {}, []
+    for name, entry in servers.items():
+        if not isinstance(name, str) or not re.fullmatch(SERVER_NAME, name):
+            notices.append(f"MCP 配置 {label}：Server 名称需为 1–64 位英文字母、数字、下划线或连字符，已跳过一项。")
+            continue
+        if not isinstance(entry, dict):
+            notices.append(f"MCP {name} 不可用：Server 配置必须是对象。")
+            continue
+        if plugin is not None:
+            try:
+                entry = plugin.substitute_all(entry, project)
+            except PluginError as exc:
+                notices.append(f"MCP {name} 不可用：{exc}。")
+                continue
+        kind = entry.get("type", "stdio" if "command" in entry else None)
+        if kind not in {"stdio", "http"}:
+            notices.append(f"MCP {name} 不可用：{label} 中的传输方式 {kind!s} 不受支持（支持 stdio、http）。")
+            continue
+        keys = {"command", "args", "env"} if kind == "stdio" else {"url", "headers"}
+        item = {"type": kind, **{k: entry[k] for k in keys | OPTIONS if k in entry}}
+        try:
+            # Claude Code expands variables in these fields too, not only env/headers.
+            if isinstance(item.get("command"), str):
+                item["command"] = substitute_env(item["command"])
+            if isinstance(item.get("url"), str):
+                item["url"] = substitute_env(item["url"])
+            if isinstance(item.get("args"), list):
+                item["args"] = [substitute_env(a) if isinstance(a, str) else a for a in item["args"]]
+        except MCPConfigError as exc:
+            notices.append(f"MCP {name} 不可用：{exc}")
+            continue
+        converted[name] = item
+    return converted, notices
+
+
+def _plugin_servers(plugin: Plugin, root: Path) -> tuple[dict, list[str]]:
+    """A plugin's .mcp.json files, the servers in its plugin.json and its mcp.yaml, in that order. Its stdio
+    servers also get the plugin's directories as environment variables."""
+    ref, merged, notices = plugin.ref, {}, []
+    for path in plugin.mcp_json:
+        servers, issues = _read_mcp_json(path, f"插件 {plugin.name} 的 {path.name}", ref, root)
+        merged.update(servers)
+        notices += issues
+    if plugin.mcp_inline:
+        servers, issues = _convert_mcp_json(dict(plugin.mcp_inline), f"插件 {plugin.name} 的 plugin.json", ref, root)
+        merged.update(servers)
+        notices += issues
+    if plugin.mcp_yaml is not None:
+        try:
+            raw, _ = _read(plugin.mcp_yaml)
+        except MCPConfigError as exc:
+            notices.append(f"插件 {plugin.name}：{exc}")
+            raw = {}
+        for name, entry in raw.items():
+            try:
+                merged[name] = ref.substitute_all(entry, root)
+            except PluginError as exc:
+                notices.append(f"MCP {name} 不可用：{exc}。")
+    for entry in merged.values():
+        if isinstance(entry, dict) and entry.get("type", "stdio") == "stdio":
+            env = entry.get("env", {})
+            entry["env"] = {**ref.env(root), **env} if isinstance(env, dict) else env
+    return merged, notices
+
+
+def plugin_servers(plugin: Plugin, root: Path) -> tuple[list[ServerConfig], list[str]]:
+    """One plugin's servers, for showing it before installing and in /plugins."""
+    raw, notices = _plugin_servers(plugin, root)
+    servers = []
+    for name, entry in raw.items():
+        try:
+            servers.append(_server(name, entry))
+        except MCPConfigError as exc:
+            notices.append(f"MCP {name} 不可用：{exc}")
+    return servers, notices
+
+
+def load_mcp_settings(
+    root: Path,
+    *,
+    user_path: Path | None = None,
+    plugins: tuple[Plugin, ...] | None = None,
+    project: "ProjectMCP | bool" = True,
+) -> MCPSettings:
+    """Lowest first: plugins (plugins.yaml order), user mcp.yaml, .mcp.json when imported, project mcp.yaml.
+    plugins: None reads the installed ones. project=False leaves out everything the project's files supply (its
+    mcp.yaml and .mcp.json, even when the user's file imports the latter) because the user has not trusted it."""
+    user_file, _ = config_paths(root, user_path)
+    user, _ = _read(user_file)
+    own = project_mcp(root, user_path=user_path) if project is True else project
+    merged, notices = {}, []
+    for plugin in resolve(plugins, root=root):
+        servers, issues = _plugin_servers(plugin, root)
+        merged.update(servers)
+        notices += issues
+    merged.update(user)
+    if own:
+        merged.update(own.servers)  # Replace the complete server, never merge transport fields.
+        notices += own.notices
+    servers = []
+    for name, raw in merged.items():
+        try:
+            servers.append(_server(name, raw))
+        except MCPConfigError as exc:
+            notices.append(f"MCP {name} 不可用：{exc}")
+    return MCPSettings(tuple(servers), tuple(notices))
+
+
+@dataclass(frozen=True)
+class ProjectMCP:
+    """The servers the project's own files would start: its mcp.yaml and, when imported, its .mcp.json. A stdio
+    server runs its command with the user's rights as soon as a session starts, so these start only once the user
+    has trusted this exact content; any edit to either file asks again."""
+
+    root: Path
+    files: tuple[Path, ...] = ()  # The files that contribute, for the confirmation text.
+    servers: dict = field(default_factory=dict, repr=False)  # Raw entries by name, before ${VAR} substitution.
+    digest: str = ""
+    notices: tuple[str, ...] = ()
+
+    def _store(self, home: Path | None):
+        from .hooks.config import TrustStore
+
+        return TrustStore(self.root, home, MCP_TRUST)
+
+    def trusted(self, home: Path | None = None) -> bool:
+        return bool(self.servers) and self._store(home).trusted("mcp", self.digest)
+
+    def trust(self, home: Path | None = None) -> None:
+        self._store(home).trust("mcp", self.digest)
+
+    def text(self) -> str:
+        """What the startup panel asks about: each server and what it would run or reach."""
+        lines = [
+            f"项目的 MCP 配置 {'、'.join(map(str, self.files))} 尚未确认（第一次使用，或内容有变化）。",
+            "这些 MCP 服务器以你的权限运行，stdio 服务器会在会话开始时执行下面的命令；请先确认内容：",
+        ]
+        for name, entry in self.servers.items():
+            lines.append(f"  {name}：{_target(entry)}")
+        return "\n".join(lines)
+
+
+def _target(entry) -> str:
+    """A server's command line or address as written, ${VAR} left unexpanded; never a URL's credentials."""
+    if not isinstance(entry, dict):
+        return "（格式无效）"
+    kind = entry.get("type", "stdio")
+    if kind == "stdio":
+        args = entry.get("args", [])
+        words = [str(entry.get("command", "")), *(map(str, args) if isinstance(args, list) else [])]
+        env = entry.get("env")
+        names = f"（环境变量：{'、'.join(map(str, env))}）" if isinstance(env, dict) and env else ""
+        return " ".join(words) + names
+    parts = urlsplit(str(entry.get("url", "")))
+    host = parts.hostname or ""
+    try:
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        port = ""
+    return f"{kind} {parts.scheme}://{host}{port}{parts.path}"
+
+
+def project_mcp(root: Path, *, user_path: Path | None = None) -> ProjectMCP:
+    """Read project files once: the preview, trust digest and loaded servers share these bytes."""
+    present = []
+
+    def read(path):
+        try:
+            content = path.read_bytes()
+        except FileNotFoundError:
+            if path.is_symlink():
+                raise MCPConfigError(f"MCP 配置 {path}：配置文件是失效链接。") from None
+            return b""
+        except OSError:
+            raise MCPConfigError(f"MCP 配置 {path}：无法读取有效 UTF-8 配置。") from None
+        present.append(path)
+        return content
+
+    user_file, project_file = config_paths(root, user_path)
+    _, user_import = _read(user_file)
+    content = read(project_file)
+    own, project_import = _read(project_file, content)
+    servers, sources, notices = {}, [], []
+    if user_import or project_import:
+        path = mcp_json_path(root)
+        imported_content = read(path)
+        imported, notices = _read_mcp_json(path, content=imported_content)
+        servers.update(imported)
+        sources.append((path, imported_content))
+    servers.update(own)
+    if project_file in present:
+        sources.append((project_file, content))
+    digest = hashlib.sha256()
+    for path, content in sources:
+        digest.update(f"{path.name}\0".encode())
+        digest.update(content)
+        digest.update(b"\0")
+    return ProjectMCP(root, tuple(present), servers, digest.hexdigest() if servers else "", tuple(notices))

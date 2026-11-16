@@ -1,0 +1,32 @@
+# 手动复制到 ~/.mosscode/mcp.yaml 或 <项目>/.mosscode/mcp.yaml 后填写。
+# 同名 Server：项目级整项覆盖用户级，不混合两种传输的字段。
+# 默认没有 Server；不会自动启动示例程序或请求示例地址。
+mcp_servers: {}
+
+# 本地 stdio 示例（请先安装所选 Server，使用实际可执行文件及参数）：
+# mcp_servers:
+#   local_notes:
+#     type: stdio
+#     command: 'C:\path\to\python.exe'
+#     args: ['C:\path\to\your_mcp_server.py']
+#     env:
+#       SERVICE_TOKEN: '${NOTES_TOKEN}'
+#
+# 远程 Streamable HTTP 示例（不是旧版 SSE 专用地址）：
+# mcp_servers:
+#   remote_notes:
+#     type: http
+#     url: https://your-server.example/mcp
+#     headers:
+#       Authorization: 'Bearer ${NOTES_TOKEN}'
+#
+# env 和 headers 的值支持 ${VAR} 与 ${VAR:-默认值}；command、args、url 不展开。
+# Server 名称使用英文字母、数字、下划线或连字符，长度 1–64。
+#
+# 每个 Server 可选：
+#     timeout: 30               # 单次工具调用超时（秒，0–600）
+#     startup_timeout: 10       # 连接与发现超时（秒，0–120）
+#     trust_read_only_hint: false  # 为 true 时 readOnlyHint 工具按只读工具处理（免审批、计划模式可用）
+#
+# 读取项目根目录的 .mcp.json（Claude Code 格式，仅 stdio 与 http）；需显式开启：
+# import_mcp_json: true

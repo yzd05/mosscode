@@ -1,0 +1,10 @@
+{
+  "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "date": "2026-11-14",
+  "model": "deepseek-flash",
+  "model_version": "DeepSeek-V4.1-Flash-1017",
+  "period": "off-peak",
+  "input": 0.15,
+  "cached_input": 0.003,
+  "output": 0.6
+}

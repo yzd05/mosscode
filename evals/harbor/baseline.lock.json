@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "id": "deepseek-tb21-dev12-20261114",
+  "created_at": "2026-11-14",
+  "scope": "dev",
+  "tasks": [
+    "cancel-async-tasks",
+    "large-scale-text-editing",
+    "sqlite-db-truncate",
+    "portfolio-optimization",
+    "llm-inference-batching-scheduler",
+    "train-fasttext",
+    "regex-log",
+    "git-multibranch",
+    "video-processing",
+    "mteb-leaderboard",
+    "modernize-scientific-stack",
+    "chess-best-move"
+  ],
+  "repeat": 1,
+  "concurrency": 1,
+  "automatic_retries": 0,
+  "agent_setup_timeout_multiplier": 2,
+  "agents": [
+    {
+      "label": "candidate",
+      "revision": "0d748f09eb0551dd23c99119ea3dfefdfdcef0f5",
+      "wheel_sha256": "f2e083891a5c4a18fc53353795ff25cd0d792dc1f325a93e5acc485e74037123"
+    },
+    {
+      "label": "terminus-2",
+      "version": "2.0.0",
+      "setup_adapter_only": true
+    }
+  ],
+  "model": {
+    "requested": "deepseek/deepseek-flash",
+    "base_url": "https://api.deepseek.com",
+    "protocol": "openai_chat_completions",
+    "max_output_tokens": 16384,
+    "context_window": 128000,
+    "sampling": "service_default",
+    "thinking": "service_default",
+    "backend_version": "DeepSeek-V4.1-Flash-1017"
+  },
+  "pricing": {
+    "snapshot": "evals/harbor/prices.deepseek-flash.json",
+    "off_peak_estimate_usd": 0.43,
+    "peak_equivalent_usd": 0.86,
+    "recommended_budget_usd": 1.5,
+    "estimated_attempt_usd": 0.06
+  },
+  "artifacts": {
+    "dataset_lock_sha256": "f83d792024759cce43ec94f7ccefd5f02be3de31f13bd658b0577aa612520996",
+    "job_config_sha256": "169a1f4b31caa9ecd23067c44a93c5d86a4ed0e81d4977dc179d4be163eaac59",
+    "runner": "d237fc8a227cace84e52328c499fe77524fbb6a6974a0ae74a49e3c35229b63e",
+    "mosscode_adapter": "396b676990db3a54e464ce6bf0ec400bb5957f48f896eb5d55ec93286d25e146",
+    "terminus_setup_adapter": "7e6ba1d33d4a624367965d0ab9016578dfac837018c29cb529f78f48fb1c5531"
+  }
+}

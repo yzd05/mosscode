@@ -1,0 +1,33 @@
+n_attempts: 1
+n_concurrent_trials: 1
+retry:
+  max_retries: 0
+agent_setup_timeout_multiplier: 2
+environment:
+  type: docker
+  delete: true
+agents:
+  - import_path: evals.harbor.mosscode_agent:MossCodeAgent
+    model_name: deepseek/deepseek-flash
+    base_url: https://api.deepseek.com
+    model_api_key_name: DEEPSEEK_API_KEY
+    model_api_format: openai_chat_completions
+    kwargs:
+      label: candidate
+      wheel: build-the-wheel-first.whl
+      max_output_tokens: 16384
+      context_window: 128000
+  - import_path: evals.harbor.terminus_agent:Terminus2Agent
+    model_name: deepseek/deepseek-flash
+    base_url: https://api.deepseek.com
+    model_api_key_name: DEEPSEEK_API_KEY
+    model_api_format: openai_chat_completions
+    kwargs:
+      record_terminal_session: false
+      temperature: null
+      reasoning_effort: null
+      model_info:
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+      llm_call_kwargs:
+        max_tokens: 16384
