@@ -213,6 +213,8 @@ def test_subprocess_stdio_cold_start_and_clean_jsonrpc(tmp_path):
             assert line.strip(), "missing JSON-RPC response line"
             msgs.append(json.loads(line))
         proc.stdin.close()
+        # Python 3.12 POSIX subprocess._communicate flushes self.stdin if non-None.
+        proc.stdin = None
         _, stderr = proc.communicate(timeout=15)
         assert proc.returncode == 0, stderr
     finally:

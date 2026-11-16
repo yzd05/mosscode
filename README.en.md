@@ -21,10 +21,6 @@
 
 MossCode is a coding assistant that works in your terminal and ACP-compatible IDEs, written in Python. It is designed after Claude Code and pi: one agent loop with local and MCP tools, four permission modes including a read-only plan mode, and three protocols: Anthropic Messages, OpenAI Responses and Chat Completions. The interface and the detailed reference documentation are in Chinese.
 
-<p align="center">
-  <img src="docs/assets/terminal-session.png" alt="MossCode inline terminal session, diff view, and status bar" width="840" />
-</p>
-
 ### Core features
 
 - **Agent loop**: many tool steps per turn, with adjacent read-only calls run concurrently; empty replies and replies cut off while thinking are retried, and replies cut off mid-text are continued automatically.

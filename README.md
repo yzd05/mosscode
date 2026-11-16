@@ -21,10 +21,6 @@
 
 MossCode 是在终端里工作的编码助手，用 Python 写成。设计上参考 Claude Code 与 pi：一个 Agent Loop 加本地工具和 MCP 工具，四档权限与只读的计划模式，支持 Anthropic Messages、OpenAI Responses 和 Chat Completions 三种协议，并提供 ACP 协议服务供 PyCharm、Zed 等编辑器接入。
 
-<p align="center">
-  <img src="docs/assets/terminal-session.png" alt="MossCode 终端内联对话、代码差异与状态栏" width="840" />
-</p>
-
 ### 核心能力
 
 - **Agent Loop**：一轮中多步调用工具，相邻的只读调用并发；空回复和思考截断后自动重发，正文截断后自动续写。
