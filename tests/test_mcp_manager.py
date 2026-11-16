@@ -42,12 +42,13 @@ async def test_tui_background_startup_registers_between_requests(tmp_path):
 
     reg = create_default_registry(tmp_path, load_permissions=False)
     hang = replace(stdio_config("hang", tmp_path / "hang.log", "hang"), startup_timeout=60)
-    manager = MCPManager(tmp_path, MCPSettings((stdio_config("notes", tmp_path / "calls.log"), hang)))
+    manager = MCPManager(tmp_path, MCPSettings((stdio_config("notes", tmp_path / "calls.log", "gate"), hang)))
     app = None
     seen_mid_task = []
 
     async def first():
         # The server becomes ready while this task runs; its notice must wait.
+        (tmp_path / "calls.release").write_text("go", encoding="utf-8")
         await until(lambda: reg.get("mcp__notes__echo") is not None)
         await asyncio.sleep(0.2)
         seen_mid_task.append(any("MCP notes" in text for text in notes_text(app)))

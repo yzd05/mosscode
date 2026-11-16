@@ -20,6 +20,10 @@ def respond(request):
     if method == "initialize":
         if mode == "hang":
             return
+        if mode == "gate":
+            deadline = time.monotonic() + 15
+            while not log.with_suffix(".release").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
         result = {
             "protocolVersion": params["protocolVersion"],
             "capabilities": {"tools": {}},
