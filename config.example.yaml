@@ -20,6 +20,8 @@ default_provider: claude
 # shell: auto
 # 接近上下文窗口时自动压缩较早的对话（默认 true）；关闭后仍可用 /compact。
 # auto_compact: true
+# 自动压缩前优先折叠最早的一段对话摘要、保留会话历史原貌与 /rewind 回退点（默认 true）。
+# context_collapse: true
 # 会话实时存档到 ~/.mosscode/projects/<项目键>/sessions/，可用 -c、--resume 或 /resume 恢复（默认 true）。
 # persist_sessions: true
 # 记忆笔记：索引注入系统提示、memory 工具和后台提取（默认 true）；false 时全部关闭。
@@ -30,8 +32,8 @@ default_provider: claude
 # memory_provider: deepseek
 # 同时运行的后台命令上限（execute_command 的 run_in_background，默认 8，最多 64）；0 关闭后台命令。
 # command_max_background: 8
-# 前台命令运行超过这么多秒就自动转入后台，模型不必干等（默认 5，最多 600）；0 表示一直在前台等它结束。
-# command_auto_background: 5
+# 前台命令运行超过这么多秒就自动转入后台，模型不必干等（默认 30，最多 600）；0 表示一直在前台等它结束。
+# command_auto_background: 30
 # Agent 团队的成员在哪里运行：auto（默认；在 tmux 中用 tmux 窗格，在 Windows Terminal 中用分屏窗格，否则进程内）、
 # in-process、windows-terminal、tmux。显式指定的窗格后端不可用时报错，不改用其他后端。
 # teammate_mode: auto

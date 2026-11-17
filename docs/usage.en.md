@@ -6,7 +6,7 @@ The README covers the essentials. This page has the installation details, the co
 
 ## Installation details
 
-This installs two identical commands, `moss` and `mosscode`, usable from any directory. If uv warns that `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows) is not on PATH, run `uv tool update-shell` and open a new terminal. `moss doctor` checks the installation, PATH, configuration and helper tools without sending any request.
+This installs two identical commands, `moss` and `mosscode`, usable from any directory. If uv warns that `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows) is not on PATH, run `uv tool update-shell` and open a new terminal. `moss doctor` checks the installation, PATH, configuration and helper tools offline; pass `--ping` (optionally `--provider <name>`) to send one minimal probe and verify model connectivity.
 
 Upgrade with `uv tool upgrade mosscode` and uninstall with `uv tool uninstall mosscode`. `pipx install mosscode` also works.
 
@@ -30,7 +30,7 @@ Installing from source, development and tests: [contributing](../CONTRIBUTING.md
 
 ### Models
 
-On first run without a configuration, `moss` asks in the terminal for the protocol, endpoint, model, context window and credential, writes `~/.mosscode/config.yaml`, and opens the interface. `moss setup` runs the same steps at any time and leaves an existing configuration alone.
+On first run without a configuration, `moss` guides you in the terminal: it can follow an existing Claude Code or Codex setup directly, start from a built-in provider preset (DeepSeek, Kimi, GLM, Qwen, OpenRouter, Anthropic, OpenAI), or prompt for custom endpoint settings, writing `~/.mosscode/config.yaml` before opening the interface. `moss setup` runs the same wizard at any time without overwriting an existing file, and `moss setup --add` appends a new provider while preserving existing settings and comments.
 
 Credentials go to the system credential store by default (Windows Credential Manager, macOS Keychain, Linux Secret Service), and the configuration only stores their name. You can also reference an environment variable, or put the key in the file in plain text.
 
@@ -79,10 +79,13 @@ Common top-level options:
 | `shell` | `auto` | Git Bash first on Windows, PowerShell if not found; or `bash`, `powershell`, or a path to bash.exe |
 | `system_prompt` | built-in | Replaces the built-in system prompt entirely |
 | `auto_compact` | `true` | Compact older conversation automatically near the context window ([context](reference/context.md)) |
+| `context_collapse` | `true` | Collapse the oldest conversation segment into a summary before full compaction, keeping history and `/rewind` intact |
 | `persist_sessions` | `true` | Save the session as it goes, for resuming ([sessions](reference/sessions.md)) |
 | `memory` | `true` | Memory notes: an index in the system prompt, the `memory` tool and background extraction ([memory](reference/memory.md)) |
 | `auto_memory` | `true` | Extract things worth remembering in the background after a task; `false` keeps only the `memory` tool |
 | `memory_provider` | current provider | Provider used for background extraction, for example a cheaper model |
+| `command_auto_background` | `30` | Seconds after which a foreground command automatically moves to the background (`0` disables) |
+| `run_budget` | off | Shared per-run cap on model `requests` and `tokens` ([model providers](reference/providers.md)) |
 | `worktree_links` | `[]` | Paths (relative to the repository root) linked into every git worktree, such as `node_modules` or `.venv` |
 | `worktree_stale_hours` | `24` | Hours after which unchanged worktrees left by sub-agents are removed; `0` turns this off |
 | `teammate_mode` | `auto` | Where team members run: `auto`, `in-process`, `windows-terminal`, `tmux` |
@@ -119,9 +122,11 @@ moss --provider claude        # choose a provider
 moss --list-providers
 moss -c                       # resume this project's latest session
 moss --resume                 # pick a session to resume
+moss --sandbox                # run commands inside the OS command sandbox
+moss acp                      # start the ACP server for Zed, JetBrains IDEs, Neovim, etc.
 ```
 
-All options, subcommands and exit codes: [command line](reference/cli.md).
+All options, subcommands and exit codes: [command line](reference/cli.md) and [ACP integration](reference/acp.md).
 
 ## Keys and commands
 
@@ -137,6 +142,9 @@ Describe the task in plain language, for example "read README.md and explain the
 | ↑ / ↓ | Input history; choose a suggestion when suggestions are open |
 | Tab | Complete commands and arguments |
 | Shift+Tab | Cycle permission modes default → acceptEdits → plan |
+| Ctrl+O | Expand or collapse thinking blocks and full tool outputs / diffs |
+| Ctrl+B | Move the running foreground command or sub-agent to the background |
+| Ctrl+T | Toggle the agent team member panel |
 | Esc / Ctrl+C | Cancel generation; with queued messages, the first Esc only brings them back to the prompt; during an approval, Esc refuses the call |
 | Esc Esc | When idle with an empty prompt, open `/rewind` |
 | Ctrl+Q | Quit |
@@ -146,11 +154,13 @@ Describe the task in plain language, for example "read README.md and explain the
 | `/help [command]` | Commands and keys; with a name, that command's usage and aliases |
 | `/clear` | Start a new session: clear the screen, scrollback, model context and token counts; mode, session approvals and MCP connections stay |
 | `/compact [note]` | Compact the context: older conversation becomes a summary, recent messages and your own words stay |
-| `/resume [ID]` | Resume a session of this project, from a list or by ID |
+| `/resume [ID\|keyword]` | Resume a session of this project, from a list, by ID, or filtered by keyword |
 | `/rewind` | Pick an earlier message and roll files, conversation or both back to before it was sent |
 | `/session` | The current session's ID, file, title and message count |
+| `/rename <title>` | Rename the current session title |
+| `/fork [title]` | Branch the current session into a new session copy and switch to it, keeping the original intact |
 | `/memory [name]` | Loaded project instruction files and memory notes; with a name, that note in full |
-| `/model [name]` | Switch provider from a list or by name; the conversation is kept |
+| `/model [name\|model]` | Switch provider or model (`/model <provider>`, `/model <provider>/<model>`, or `:<model>`); conversation is kept |
 | `/thinking [level]` | Thinking effort for this session (off, low, medium, high, or `default`) |
 | `/plan [task]` | Read-only investigation and planning; the plan runs after you approve it |
 | `/do [task]` | Leave plan mode |
@@ -210,10 +220,10 @@ Both send addresses or queries outside, so each new domain and each search needs
 
 ## Security notes
 
-- Path checks are an application-level limit, not an operating-system sandbox: an approved command runs with your permissions, so read it before you confirm. For isolation, run MossCode in Docker or a dev container ([running in a container](reference/container.md)); a container isolates files and processes, not the network.
+- By default, path checks are an application-level limit and approved commands run with your permissions. For operating-system isolation, enable the built-in command sandbox (`sandbox.mode: on` or `--sandbox`; see [command sandbox](reference/sandbox.md)) or run MossCode in Docker / a dev container ([running in a container](reference/container.md)).
 - Web pages and search results are untrusted data, and the model is told not to follow instructions in them; still read its answers with care after it visits an unfamiliar site.
-- Hooks, MCP configuration and plugin declarations in a project start programs: project hooks and project plugins need your confirmation before they run, and `.mcp.json` is not read by default. Look at the files under `.mosscode/` before opening an unfamiliar repository.
-- Resource quotas and audit logs are not supported yet.
+- Hooks, MCP configuration, project configurations and plugin declarations in a project can start programs or redirect requests: project-level files need your confirmation before they take effect, and `.mcp.json` is not read by default. Look at the files under `.mosscode/` before opening an unfamiliar repository.
+- Per-run model request and token quotas can be bounded via `run_budget`; external audit logging can be wired through lifecycle hooks.
 
 ## Headless mode
 

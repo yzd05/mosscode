@@ -6,7 +6,7 @@ README 只列出最常用的内容。这里是安装细节、全部常用配置�
 
 ## 安装细节
 
-安装后得到 `moss` 和 `mosscode` 两个相同的命令，在任意目录都能运行。uv 若提示 `~/.local/bin`（Windows 上是 `%USERPROFILE%\.local\bin`）不在 PATH 中，运行 `uv tool update-shell`，然后打开新的终端。`moss doctor` 检查安装、PATH、配置和依赖工具，不发送请求。
+安装后得到 `moss` 和 `mosscode` 两个相同的命令，在任意目录都能运行。uv 若提示 `~/.local/bin`（Windows 上是 `%USERPROFILE%\.local\bin`）不在 PATH 中，运行 `uv tool update-shell`，然后打开新的终端。`moss doctor` 离线检查安装、PATH、配置和依赖工具；加 `--ping`（可选 `--provider <名称>`）可发送一次最小探针验证模型连通性。
 
 升级：`uv tool upgrade mosscode`；卸载：`uv tool uninstall mosscode`。也可以用 pipx：`pipx install mosscode`。
 
@@ -20,7 +20,7 @@ README 只列出最常用的内容。这里是安装细节、全部常用配置�
 
 ### 模型
 
-第一次运行 `moss` 时如果找不到配置，会先让你选择模型服务：已有 Claude Code 或 Codex 的设置（例如 CC Switch、Magpie 写入的）时可以直接跟随，不用再填地址和密钥；DeepSeek、Kimi 等厂商预设只问模型和凭据；其他服务在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它）。凭据默认保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），配置只写名称；也可以只写环境变量名，或直接把密钥以明文写进这个文件。
+第一次运行 `moss` 时如果找不到配置，会先让你选择模型服务：已有 Claude Code 或 Codex 的设置（例如 CC Switch、Magpie 写入的）时可以直接跟随，不用再填地址和密钥；DeepSeek、Kimi 等厂商预设只问模型和凭据；其他服务在终端中逐项询问协议、服务地址、模型、上下文窗口和凭据，写入 `~/.mosscode/config.yaml` 后直接进入界面；也可以随时运行 `moss setup`（已有配置时不修改它），或运行 `moss setup --add` 在保留原配置与注释的前提下追加新的 Provider。凭据默认保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），配置只写名称；也可以只写环境变量名，或直接把密钥以明文写进这个文件。
 
 追加 Provider 或调整其他选项时手动编辑，字段说明见 [config.example.yaml](../config.example.yaml)：
 
@@ -56,10 +56,13 @@ providers:
 | `shell` | `auto` | Windows 优先 Git Bash，找不到时用 PowerShell；可设 `bash`、`powershell` 或 bash.exe 路径 |
 | `system_prompt` | 默认提示 | 填写后完整替换默认系统提示 |
 | `auto_compact` | `true` | 接近上下文窗口时自动压缩较早的对话，见 [上下文管理](reference/context.md) |
+| `context_collapse` | `true` | 压缩前优先将最早的一段对话折叠为摘要，保留会话记录原貌与 `/rewind` 回退点 |
 | `persist_sessions` | `true` | 把会话实时存档，用于恢复，见 [会话存档与恢复](reference/sessions.md) |
 | `memory` | `true` | 记忆笔记：索引注入系统提示、`memory` 工具和后台提取，见 [记忆笔记](reference/memory.md) |
 | `auto_memory` | `true` | 任务完成后在后台提取值得记住的内容；`false` 时只保留 `memory` 工具 |
 | `memory_provider` | 当前 Provider | 后台提取使用的 Provider 名称，可以指定较便宜的模型 |
+| `command_auto_background` | `30` | 主对话前台命令运行超过多少秒自动转入后台，0–600；`0` 关闭 |
+| `run_budget` | 关闭 | 本次运行共享的模型调用预算（`requests`、`tokens`），见 [模型提供商](reference/providers.md#本次运行的共享调用预算) |
 | `worktree_links` | `[]` | 链接进每个 git 工作树的路径（相对仓库根），如 `node_modules`、`.venv`，见 [Git 工作树](reference/worktree.md#初始化) |
 | `worktree_stale_hours` | `24` | 子 Agent 留下的无改动工作树多少小时后自动清理；`0` 关闭 |
 | `teammate_mode` | `auto` | 团队成员在哪里运行：`auto`、`in-process`、`windows-terminal`、`tmux`，见 [Agent 团队](reference/teams.md#后端) |
@@ -96,9 +99,11 @@ moss --provider claude        # 指定 Provider
 moss --list-providers
 moss -c                       # 恢复本项目最近的会话
 moss --resume                 # 启动后从列表中选择会话
+moss --sandbox                # 在原生命令沙箱中运行
+moss acp                      # 启动 ACP 服务，供 Zed、JetBrains IDE 等编辑器接入
 ```
 
-完整的选项、子命令和退出码见 [命令行](reference/cli.md)。
+完整的选项、子命令和退出码见 [命令行](reference/cli.md)，编辑器配置方式见 [ACP 编辑器集成](reference/acp.md)。
 
 ## 按键与命令
 
@@ -114,6 +119,9 @@ moss --resume                 # 启动后从列表中选择会话
 | ↑ / ↓ | 浏览输入历史；命令提示打开时选择提示 |
 | Tab | 补全命令和参数 |
 | Shift+Tab | 切换权限档位 default → acceptEdits → plan |
+| Ctrl+O | 展开或收起思考内容与完整工具输出/差异 |
+| Ctrl+B | 将正在运行的前台命令或子 Agent 转入后台 |
+| Ctrl+T | 打开或收起 Agent 团队成员面板 |
 | Esc / Ctrl+C | 取消生成；有排队消息时第一次 Esc 只把排队消息取回输入框，任务继续；审批时 Esc 拒绝当前调用 |
 | Esc Esc | 空闲且输入框为空时打开 `/rewind` |
 | Ctrl+Q | 退出 |
@@ -123,14 +131,14 @@ moss --resume                 # 启动后从列表中选择会话
 | `/help [命令]` | 显示命令与快捷键；带命令名时显示该命令的用法和别名 |
 | `/clear` | 开始新会话：清空屏幕与终端滚动历史、模型上下文和 Token 统计；权限档位、会话授权和 MCP 连接保留，AGENTS.md 重新加载 |
 | `/compact [说明]` | 压缩上下文：较早的对话换成摘要，近期消息和用户原话保留；说明用于指定摘要侧重点 |
-| `/resume` | 列出本项目最近的会话，↑ / ↓ 选择、Enter 恢复、Esc 收起 |
-| `/resume ID` | 直接恢复指定会话 |
+| `/resume [ID\|关键词]` | 不带参数列出最近会话；带完整 ID 直接恢复；带关键词或部分 ID 按标题与 ID 筛选后选择 |
 | `/rewind` | 选一条之前的消息，把文件、对话或两者退回到它发出之前 |
 | `/session` | 显示当前会话的 ID、存档路径、标题和消息数 |
+| `/rename <标题>` | 重命名当前会话标题，写入会话存档供恢复列表与 `/session` 显示 |
+| `/fork [标题]` | 从当前会话复制派生新分支并切入，原会话保持不变，随时可用 `/resume` 切回 |
 | `/memory` | 列出已加载的项目指令文件，以及用户级和项目级的记忆笔记及目录 |
 | `/memory 名称` | 显示该笔记的路径和全文 |
-| `/model` | 在输入框下方列出配置的提供商（当前项带 ✓），↑ / ↓ 选择、Enter 切换、Esc 收起 |
-| `/model 名称` | 直接切换到指定提供商；对话历史保留 |
+| `/model [名称\|模型]` | 打开提供商或同服务模型选择列表；支持 `/model <提供商>`、`/model <提供商>/<模型>` 或 `:<模型>` 直接切换，对话历史保留 |
 | `/thinking [档位]` | 设置本会话的思考强度（off、low、medium、high，`default` 回到配置）；不带参数时打开选择列表 |
 | `/plan` | 只读调查与规划，模型提交计划经批准后执行 |
 | `/plan 任务` | 切入计划模式并立即调查、生成计划 |
@@ -186,10 +194,10 @@ moss --resume                 # 启动后从列表中选择会话
 
 ## 安全说明
 
-- 路径检查是应用层限制，不是系统沙箱：确认过的命令以你的系统权限运行，确认前请看清命令内容。需要隔离时在 Docker 或 Dev Container 中运行，见 [在容器中运行](reference/container.md)；容器隔离文件和进程，不隔离网络。
+- 默认模式下路径检查是应用层限制，确认过的命令以你的系统权限运行；需要系统级隔离时，可开启内置命令沙箱（`sandbox.mode: on` 或 `--sandbox`，见 [命令沙箱](reference/sandbox.md)），或在 Docker / Dev Container 中运行（见 [在容器中运行](reference/container.md)）。
 - 网页内容和搜索结果是不可信的数据，模型被要求不执行其中的指令；读取陌生网站时仍应留意它的回答。
-- 项目中的 Hook、MCP 配置和插件声明会启动程序：项目级 Hook 和项目插件需要你确认后才启用，`.mcp.json` 默认不读取；打开不熟悉的仓库前先查看 `.mosscode/` 下的文件。
-- 目前不支持资源配额和审计日志。
+- 项目中的 Hook、MCP 配置和插件声明会启动程序：项目级 Hook、项目配置和项目插件需要你确认后才启用，`.mcp.json` 默认不读取；打开不熟悉的仓库前先查看 `.mosscode/` 下的文件。
+- 单次启动的模型调用上限可通过 `run_budget`（`requests`、`tokens`）限制；如需外部审计日志采集，可通过生命周期 Hook 对接。
 
 ## 无界面模式
 

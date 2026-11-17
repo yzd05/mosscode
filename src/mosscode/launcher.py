@@ -17,8 +17,8 @@ USAGE = "%(prog)s [选项] [PROMPT]\n       %(prog)s setup | doctor | models | k
 DESCRIPTION = "MossCode：终端中的 coding agent。在项目目录中运行即可开始。"
 EXAMPLES = """\
 子命令：
-  setup                 创建用户级配置 ~/.mosscode/config.yaml
-  doctor                检查安装、配置和依赖工具，不发送请求
+  setup [--add]         创建用户级配置 ~/.mosscode/config.yaml，或追加 Provider
+  doctor [--ping]       检查安装、配置和依赖工具；默认不发送请求，加 --ping 探测连通性
   models [关键词|update] 查找模型目录中的窗口和价格，或下载最新目录
   key set|delete 名称    在系统凭据管理器中保存或删除 API 密钥
   plugin install|list|update|remove|enable|disable
