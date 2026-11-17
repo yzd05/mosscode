@@ -168,6 +168,8 @@ def test_a_failed_write_leaves_the_original_note(tmp_path, monkeypatch):
     note, _ = store.save("user", "keep", "user", "原描述", "原正文")
     before = note.path.read_text(encoding="utf-8")
 
+    real_replace = memory_module.os.replace
+
     def broken(*args):
         raise OSError("disk full")
 
@@ -176,6 +178,21 @@ def test_a_failed_write_leaves_the_original_note(tmp_path, monkeypatch):
         store.save("user", "keep", "user", "新描述", "新正文")
     assert note.path.read_text(encoding="utf-8") == before
     assert not list(store.directory("user").glob("*.tmp")) and not list(store.directory("user").glob(".*.tmp"))
+
+    # On Windows, transient PermissionError from file watchers during os.replace is retried cleanly.
+    attempts = 0
+
+    def transient_lock(src, dst):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("locked by watcher")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(memory_module.os, "name", "nt")
+    monkeypatch.setattr(memory_module.os, "replace", transient_lock)
+    updated, _ = store.save("user", "keep", "user", "新描述", "新正文")
+    assert attempts >= 2 and "新正文" in updated.path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

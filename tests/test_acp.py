@@ -120,6 +120,8 @@ async def _connect_agent(agent: MossCodeAcpAgent, client: RecordingClient):
 
 
 def test_registry_manifest_and_monochrome_icon():
+    from importlib.metadata import version
+
     root = Path(__file__).resolve().parents[1]
     manifest_path = root / "registry" / "mosscode" / "agent.json"
     icon_path = root / "registry" / "mosscode" / "icon.svg"
@@ -131,7 +133,7 @@ def test_registry_manifest_and_monochrome_icon():
     assert manifest["license"] == "MIT"
     assert manifest["icon"] == "icon.svg"
     assert manifest["distribution"]["uvx"]["args"] == ["acp"]
-    assert re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"])
+    assert manifest["version"] == version("mosscode")
     assert manifest["distribution"]["uvx"]["package"] == f"mosscode=={manifest['version']}"
 
     svg = icon_path.read_text(encoding="utf-8")

@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -141,7 +142,15 @@ def atomic_write(path: Path, text: str) -> None:
     try:
         with open(temp, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-        os.replace(temp, path)
+        for attempt in range(5):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                # Windows indexers and IDE file watchers can briefly lock the target without FILE_SHARE_DELETE.
+                if os.name != "nt" or attempt == 4:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
     except BaseException:
         temp.unlink(missing_ok=True)
         raise

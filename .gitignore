@@ -10,9 +10,11 @@ build/
 # Test runs
 .test-artifacts/
 
-# Local configuration: provider keys, machine-specific MCP servers and grants
+# Local configuration and nested agent worktrees
 config.yaml
 mcp.yaml
 .mosscode/mcp.yaml
 .mosscode/permissions.local.yaml
+.mosscode/worktrees/
+.claude/worktrees/
 .env

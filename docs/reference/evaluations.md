@@ -1,6 +1,6 @@
 # 评估与版本对照
 
-日常修改运行相关 pytest，不自动调用付费模型。公开能力评测使用锁定的 Harbor 0.26.0 与 Terminal-Bench 2.1；现有 13 个小任务继续用于受控回归，两者分开报告。评测脚本、任务清单与冻结配置保存在开发仓库的 `evals/` 与 `scripts/` 目录中（不随安装包或公开源码导出分发）。
+日常修改运行相关 pytest，不自动调用付费模型。公开能力评测使用锁定的 Harbor 0.26.0 与 Terminal-Bench 2.1，评测适配器、冻结任务清单与比较脚本位于仓库的 `evals/harbor/` 与 `scripts/` 目录中（仅存在于源码仓库，不打入 PyPI 安装包）。
 
 ## 准备公开基准
 
@@ -73,22 +73,9 @@ python -m scripts.compare_evals <基线目录>/normalized.json <候选目录>/no
 
 比较脚本不调用模型。可追加 `--prices <JSON>` 在同一价格快照下重算双方费用，不修改原始结果。不同任务/判定器配置、模型端点、后端版本、资源、并发或价格快照会拒绝直接比较。报告包括覆盖率、每题各次结果、按任务等权的端到端单次成功率、失败开销、耗时中位数/P90，以及双方均成功尝试的费用/耗时比例。零成功没有“每成功费用”；缺失和取消保留为不完整，正常结束但判定失败不自动称作谎报完成。
 
-## 受控回归
-
-继续使用源码仓库 `evals/tasks/` 中的现有 13 题（说明见 `evals/README.md`）：
-
-```sh
-python scripts/run_evals.py --output .test-artifacts/evals/local.json --budget-usd 1 --estimate-usd 0.05
-python scripts/run_evals.py --output .test-artifacts/evals/local.json --budget-usd 1 --estimate-usd 0.05 --resume
-```
-
-每次结束立即保存检查点，恢复需匹配任务、配置和 Python 源码指纹。执行隐藏判定和项目可见测试；删除的原有测试会恢复，合法重命名等测试更新会保留。记录改动文件、文本增删行和测试改动数。可用 `--finish-command 'python -m pytest 可见测试.py'` 单独启用完成前验收，默认不读取用户 Hook；不能把隐藏判定或参考答案放入命令。共享 `run_budget` 随现有配置进入生产 Conversation。
-
-新的受控检查点也可交给比较脚本；旧版没有实验标识的 JSON 只能保留为历史成本背景，不强行补全身份后比较。受控任务与公开基准不能混报。
-
 ## 验收与首次真实试跑
 
-普通开发环境运行 `tests/test_eval_framework.py`、相关 `tests/test_evals.py` 和 CLI 输出测试，不需要 Harbor。独立评估环境可显式运行 `python -m pytest evals/harbor/test_agent.py`，使用真实 Harbor 接口、模拟环境和模拟 CLI，不调用模型或 Docker。
+普通开发环境运行 `tests/test_eval_framework.py` 和 CLI 输出测试，不需要 Harbor。独立评估环境可显式运行 `python -m pytest evals/harbor/test_agent.py`，使用真实 Harbor 接口、模拟环境和模拟 CLI，不调用模型或 Docker。
 
 2026-11-14 已用 `deepseek-flash` 完成 `cancel-async-tasks` 单题：官方 reward 为 1，隐藏测试 6/6 通过，Agent 正常结束。产品 wheel 来自提交 `0d748f09eb0551dd23c99119ea3dfefdfdcef0f5`，评估适配器使用当前工作区实现。20 次请求，输入 469153 Token（其中缓存 457472）、输出 24538 Token；Agent 约 147 秒，含安装和判定共约 326 秒。按当日官方周末价格快照估算 $0.01785，未核对实际账单。
 

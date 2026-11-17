@@ -10,7 +10,8 @@ from .base import Params, Tool, ToolFailure
 from .process import run_process
 
 SKIP_DIRS = (".git", ".venv", "venv", "node_modules", "__pycache__")
-WORKTREES = (".mosscode", "worktrees")  # Skipped unless the search starts inside one.
+WORKTREES = (".mosscode", "worktrees")
+WORKTREE_DIRS = (WORKTREES, (".claude", "worktrees"))  # Skipped unless the search starts inside one.
 GLOB_LIMIT = 200
 
 
@@ -46,16 +47,21 @@ def stderr_hint(stderr: str) -> str:
     return f"\n{text}" if text else ""
 
 
-def inside_worktrees(path: Path) -> bool:
+def _inside_pair(path: Path, pair: tuple[str, str]) -> bool:
     parts = path.parts
-    return any(parts[i : i + 2] == WORKTREES for i in range(len(parts) - 1))
+    return any(parts[i : i + 2] == pair for i in range(len(parts) - 1))
+
+
+def inside_worktrees(path: Path) -> bool:
+    return any(_inside_pair(path, pair) for pair in WORKTREE_DIRS)
 
 
 def skip_globs(path: Path | None = None):
     # Later rg globs override earlier ones, so exclusions follow user filters.
     globs = [arg for name in SKIP_DIRS for arg in ("-g", f"!**/{name}/**")]
-    if path is None or not inside_worktrees(path):
-        globs.extend(("-g", "!**/.mosscode/worktrees/**"))
+    for parent, child in WORKTREE_DIRS:
+        if path is None or not _inside_pair(path, (parent, child)):
+            globs.extend(("-g", f"!**/{parent}/{child}/**"))
     return globs
 
 

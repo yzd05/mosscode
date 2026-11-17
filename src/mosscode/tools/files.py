@@ -3,6 +3,7 @@ import functools
 import json
 import os
 import tempfile
+import time
 import warnings
 from bisect import bisect_left
 from pathlib import Path
@@ -120,7 +121,14 @@ def atomic_write(path: Path, content: str | bytes) -> None:
                 stream.write(content)
         if previous_mode is not None:
             os.chmod(temporary, previous_mode)
-        os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == 4:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

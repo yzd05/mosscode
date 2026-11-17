@@ -641,6 +641,9 @@ async def test_search_skips_worktrees_unless_asked(tmp_path, monkeypatch, ripgre
     inner = project / ".mosscode" / "worktrees" / "agent-1a2b3c4d" / "src"
     inner.mkdir(parents=True)
     (inner / "copy.txt").write_text("needle", encoding="utf-8")
+    claude_inner = project / ".claude" / "worktrees" / "acp" / "src"
+    claude_inner.mkdir(parents=True)
+    (claude_inner / "claude_copy.txt").write_text("needle", encoding="utf-8")
     tools = create_default_registry(project, permission_mode="bypassPermissions", load_permissions=False)
     if not ripgrep:  # After the registry: the shell is found with shutil.which too.
         from mosscode.tools import search
@@ -651,11 +654,16 @@ async def test_search_skips_worktrees_unless_asked(tmp_path, monkeypatch, ripgre
         return (await tools.execute(ToolCall("c", name, json.dumps(args)))).output
 
     assert "copy.txt" not in await execute("glob", pattern="**/*.txt")
+    assert "claude_copy.txt" not in await execute("glob", pattern="**/*.txt")
     assert "copy.txt" not in await execute("grep", pattern="needle")
+    assert "claude_copy.txt" not in await execute("grep", pattern="needle")
     assert "main.txt" in await execute("grep", pattern="needle")
     inside = ".mosscode/worktrees/agent-1a2b3c4d"
     assert "copy.txt" in await execute("glob", pattern="**/*.txt", path=inside)
     assert "copy.txt" in await execute("grep", pattern="needle", path=inside)
+    claude_inside = ".claude/worktrees/acp"
+    assert "claude_copy.txt" in await execute("glob", pattern="**/*.txt", path=claude_inside)
+    assert "claude_copy.txt" in await execute("grep", pattern="needle", path=claude_inside)
 
 
 def candidates(root, tmp_path):

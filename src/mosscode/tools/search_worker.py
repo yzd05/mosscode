@@ -143,7 +143,7 @@ def files(root: Path, base: Path | None):
             path = current / name
             if (
                 name in SKIP_DIRS
-                or (name == "worktrees" and current.name == ".mosscode")
+                or (name == "worktrees" and current.name in {".mosscode", ".claude"})
                 or path.is_symlink()
                 or path.is_junction()
                 or not path.resolve().is_relative_to(boundary)

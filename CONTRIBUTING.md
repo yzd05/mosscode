@@ -31,7 +31,7 @@ python -m pytest -q
 
 没有安装 ripgrep 时，搜索测试走内置实现；CI 中两种情况都会测试。
 
-改动提示、工具或 Agent Loop 后，想知道对真实模型完成任务的影响，可以运行公开基准或受控评估，用法见 [评估与版本对照](docs/reference/evaluations.md)。评估会请求真实服务并产生费用。
+改动提示、工具或 Agent Loop 后，想知道对真实模型完成任务的影响，可以运行公开基准评估与版本对照，用法见 [评估与版本对照](docs/reference/evaluations.md)。评估会请求真实服务并产生费用。
 
 ## 在容器中开发
 

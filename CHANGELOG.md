@@ -9,10 +9,10 @@
 - 文件编辑容错、批量修改与语法反馈：`edit_file` 支持混合 CRLF/LF 文件行尾保留、忽略行尾空白与统一缩进偏移回退匹配，新增 `edits` 参数支持单文件多处原子替换（任一处失败整批不写盘），并在修改 `.py`、`.json`、`.sh`/`.bash` 文件后附带语法错误提示。
 - 会话分支、重命名与过滤：新增 `/fork [标题]` 复制当前会话派生新分支（保留原会话可随时 `/resume` 切回）、`/rename <标题>` 自定义会话标题，以及 `/resume <关键词>` 按标题或 ID 过滤历史会话。
 - 模型与配置体验：`/model` 支持 `/model <提供商>/<模型>`、`:<模型>` 与同厂商模型目录直接切换模型而不必重复编写 Provider 配置；`moss setup --add` 支持在已有 `config.yaml` 上增量追加 Provider；`moss doctor --ping` 支持发送最小探针验证在线连通性。
-- 交互与执行控制：TUI 新增 `Ctrl+O` 展开/收起思考内容与完整工具输出，打开选择面板时自动收起空输入框；工具分批执行期间收到用户排队新消息时，自动跳过本轮尚未开始的后续工具批次优先响应（Steering）；子进程默认注入 `GIT_TERMINAL_PROMPT=0`、`GIT_EDITOR=true`、`PAGER=cat` 等非交互变量；后台命令失败且输出较长时同时返回开头与结尾输出；定义式子 Agent 同步注入会话记忆笔记索引。
+- 交互与执行控制：TUI 新增 `Ctrl+O` 展开/收起思考内容与完整工具输出，打开选择面板时自动收起空输入框；工具分批执行期间收到用户排队新消息时，自动跳过本轮尚未开始的后续工具批次优先响应（Steering）；`glob`、`grep` 与 `@` 文件补全默认跳过 `.claude/worktrees` 嵌套工作树目录；子进程默认注入 `GIT_TERMINAL_PROMPT=0`、`GIT_EDITOR=true`、`PAGER=cat` 等非交互变量；后台命令失败且输出较长时同时返回开头与结尾输出；定义式子 Agent 同步注入会话记忆笔记索引。
 - 新增 Agent Client Protocol (ACP) 服务端入口 `moss acp`（兼容 `uvx mosscode acp`）与 ACP Registry 模板（`registry/mosscode/agent.json`、`icon.svg`）：支持 stdio JSON-RPC 2.0、`initialize` / `authenticate`（含 Terminal Auth 与 `-32000` 门禁）、多目录并发会话隔离、`session/load` 重放、`modes` 与 `configOptions` 联动、结构化 Diff/位置追踪、Todo/`plan` 同步、客户端 `mcpServers`、Slash 命令与 `session/request_permission` 审批桥接，继续沿用原生 OS 沙箱与项目 `TrustStore` 信任边界。见[ACP 编辑器集成](docs/reference/acp.md)。
 
-- 新增锁定 Harbor/Terminal-Bench 版本的评估适配器、无模型安装预检、冻结基线、显式付费运行入口、预算和恢复、逐任务版本比较；受控评估同时执行可见测试并记录改动量。`-p` JSON 追加统计完整性字段。见[评估与版本对照](docs/reference/evaluations.md)。
+- 新增锁定 Harbor/Terminal-Bench 版本的评估适配器、无模型安装预检、冻结基线、显式付费运行入口、预算和恢复、逐任务版本比较；`-p` JSON 追加统计完整性字段。见[评估与版本对照](docs/reference/evaluations.md)。
 
 - 新增可选的 `pre_finish` 命令 Hook：主对话完成前运行确定性验收，失败反馈给模型修复，最多失败 3 次后明确停止；纯问答和可确认的只读调查跳过，默认关闭。见[完成前验收](docs/reference/hooks.md#完成前验收)。
 
@@ -23,7 +23,7 @@
 - 重复调用检测：同一次任务连续 3 轮使用相同参数调用相同工具、得到相同结果时，提醒模型换一种做法；连续 5 轮仍然相同时停止，保留已执行的调用和结果。参数或结果变化、用户补充信息或收到后台通知后重新计数。界面和 `-p` 说明原因，json / stream-json 返回 `repeated_calls`，`/goal` 暂停续跑，子 Agent 返回未完成。见[重复调用检测](docs/reference/tools.md#重复调用检测)。
 - 命令：主对话的前台命令运行超过 30 秒自动转入后台（`command_auto_background`，0 关闭），模型可以先做别的事，需要结果时用 `task_output` 等它；模型给的 `timeout` 仍然有效。`task_output` 已经交出结果的任务不再重复发送通知。沙箱经代理联网的命令留在前台，以便询问新域名。
 - 配置：`follow: claude-code` 或 `follow: codex` 的 Provider 读取 Claude Code、Codex 的设置（CC Switch、Magpie 写入的服务地址、密钥和模型），不再重复填写；在那边切换服务后，`/model` 选中它即重新读取，对话历史保留。`preset: deepseek` 等厂商预设（DeepSeek、Kimi、GLM、通义千问、OpenRouter、Anthropic、OpenAI）代替协议、地址、默认模型和密钥变量名。`moss setup` 先列出可跟随的设置和预设，只有“其他服务”才逐项询问。见 [跟随 Claude Code 或 Codex](docs/reference/providers.md#跟随-claude-code-或-codex)。
-- 评估：受控回归任务与公开基准评估报告每个 Provider 的通过率、平均请求次数和 Token、对话缓存命中率、耗时和费用，以及每个任务的结果；`--provider` 可重复给出以对比多个模型，`--repeat` 多跑几次看稳定性。用法见 [评估与版本对照](docs/reference/evaluations.md)。
+- 评估：公开基准评估报告每个 Provider 的通过率、平均请求次数和 Token、对话缓存命中率、耗时和费用，以及每个任务的结果；`--provider` 可重复给出以对比多个模型，`--repeat` 多跑几次看稳定性。用法见 [评估与版本对照](docs/reference/evaluations.md)。
 - 最近工具的成败：任务运行时，输入框上方运行状态行的右端显示最近 5 个工具调用的结果（✓ 成功、× 失败、! 被取消或未执行），颜色与工具行的标记相同，长任务中不用往回翻也能看出最近有没有失败。只计主对话的工具调用，`/clear`、恢复会话和用 `/rewind` 回退对话后清空。
 - 文档：README 改为更简短的首页（logo、徽章、核心能力、快速开始、常用入口），完整的配置项、按键、命令和各项功能移到 [使用指南](docs/usage.md)；新增英文 README（[README.en.md](README.en.md)）和英文使用指南、与 Claude Code 设计逐项对照的 [对照 Claude Code](docs/claude-code-patterns.md) 和 [路线图](ROADMAP.md)。
 - 压缩前先清理工具结果：自动压缩到期时，如果只清理较早的工具结果（文件读取、搜索、命令输出、网页和 MCP 工具的结果）就能把上下文降到自动阈值的一半以下，就不再做摘要，对话文字全部保留原文，也不多发一次请求；被清理的读取结果可以重新读取，其他结果的原文保存在会话目录中。腾不出足够空间时照旧摘要。

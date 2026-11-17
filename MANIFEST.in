@@ -1,4 +1,4 @@
 include CHANGELOG.md
 graft tests
-exclude tests/test_evals.py tests/test_eval_framework.py tests/test_cache_probe.py
+exclude tests/test_eval_framework.py
 global-exclude __pycache__ *.py[cod]
