@@ -1,6 +1,7 @@
 """Parallelize adjacent reads, preserve ordering across side-effect barriers."""
 
 import asyncio
+from collections.abc import Callable
 from copy import deepcopy
 from time import monotonic
 
@@ -33,7 +34,14 @@ def partition_calls(calls, registry: ToolRegistry, concurrency: int = 4):
         yield batch
 
 
-async def execute_batch(message: Message, registry: ToolRegistry, history: list[Message], *, read_only: bool = False):
+async def execute_batch(
+    message: Message,
+    registry: ToolRegistry,
+    history: list[Message],
+    *,
+    read_only: bool = False,
+    steer: Callable[[], bool] | None = None,
+):
     calls = message.tool_calls
     results = [None] * len(calls)
     jobs: dict[int, asyncio.Task] = {}
@@ -47,7 +55,22 @@ async def execute_batch(message: Message, registry: ToolRegistry, history: list[
 
     try:
         yield ResponseBoundary(message)
-        for batch in partition_calls(calls, registry):
+        for batch_index, batch in enumerate(partition_calls(calls, registry)):
+            if batch_index > 0 and steer is not None and steer():
+                skipped = [i for i, existing in enumerate(results) if existing is None]
+                for index in skipped:
+                    results[index] = ToolResult(
+                        calls[index].id,
+                        calls[index].name,
+                        "收到用户新消息，跳过本轮剩余工具调用以优先响应。",
+                        True,
+                        "steered",
+                        {"executed": False},
+                    )
+                save()
+                for index in skipped:
+                    yield ToolProgress(calls[index], "finished", results[index], 0.0)
+                break
             for index in batch:
                 yield ToolProgress(calls[index], "running")
             for index in batch:

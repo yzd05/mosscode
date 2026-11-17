@@ -62,13 +62,14 @@ moss setup | doctor | models | key | plugin | sandbox | acp
 
 写入前显示汇总（密钥只显示“已设置”），确认后写入 `~/.mosscode/config.yaml`，并用与启动相同的规则校验。Provider 名称取自服务地址的域名（如 `deepseek`），没有地址时按协议取 `claude`、`openai` 或 `compat`，并设为 `default_provider`。
 
-- 文件已存在时不修改它，只显示位置；追加 Provider 请手动编辑。
-- 按 Ctrl+C 或在确认时回答 n，不写入任何文件。
+- 默认文件已存在时不修改它，只显示位置并提示 `moss setup --add`。
+- `moss setup --add` 在已有的 `~/.mosscode/config.yaml` 中追加一项新的 Provider，保留原有的 `default_provider` 和其他顶层设置；新名称与已有 Provider 重名时自动编号（如 `deepseek-2`，对应的凭据管理器条目也使用该编号名称，不会覆盖旧密钥），校验通过后原子替换文件。配置文件尚不存在时，`--add` 直接按首次初始化写入。
+- 按 Ctrl+C 或在确认时回答 n，不写入或修改任何文件。
 - 交互启动找不到任何配置时（没有 `--config`，且在终端中），`moss` 自动进入同样的引导，写入且凭据可用后直接进入界面。`-p`、`--list-providers` 和非终端仍然报错。
 
 ### doctor
 
-`moss doctor [--config 路径]` 只读检查，不启动会话，不发送请求。每项一行，以 ✓、!（警告）、✗（错误）开头，! 和 ✗ 的下一行是修复建议：
+`moss doctor [--config 路径] [--ping [--provider 名称]]` 默认只做本地离线检查，不启动会话，不发送任何网络请求；加 `--ping` 时在配置合法且已确认的前提下，向默认（或 `--provider` 指定的）Provider 发送一次不带工具的最小流式探测请求（15 秒超时），报告响应耗时或脱敏后的失败原因，失败时退出码为 1。每项一行，以 ✓、!（警告）、✗（错误）开头，! 和 ✗ 的下一行是修复建议：
 
 - 版本、解释器、安装方式（uv tool、pipx、虚拟环境，是否可编辑安装）；
 - PATH 中的 `moss`、`mosscode`：找不到、不是当前运行的这一个、或有多个时提示；

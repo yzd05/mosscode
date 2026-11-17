@@ -227,7 +227,8 @@ class Conversation:
         self._notices.extend(self._offer_skills())
         # Sub-agents. The agent tools are offered only with a catalog (None keeps the core hermetic);
         # the runtime itself always exists, Skill fork runs on it.
-        self.project_instructions = ""  # The project files only, for definition sub-agents.
+        self.project_instructions = ""  # The project files only, for team members and sub-agents.
+        self.memory_instructions = ""  # The frozen memory index, shared with definition sub-agents.
         self.on_tasks = None  # Set by the UI: background results wait while the main agent is idle.
         self.subagents = SubAgents(
             self, agents, auto_background=agent_auto_background, max_background=agent_max_background
@@ -955,10 +956,9 @@ class Conversation:
     async def _load_context(self) -> list[str]:
         root = self.context_root.resolve()
         files, problems = await asyncio.to_thread(load_instructions, root, self.instructions_home)
-        sections = [instructions_section(files)]
-        self.project_instructions = sections[0]
-        if self.memory is not None:
-            sections.append(await asyncio.to_thread(self._memory_section))
+        self.project_instructions = instructions_section(files)
+        self.memory_instructions = await asyncio.to_thread(self._memory_section) if self.memory is not None else ""
+        sections = [self.project_instructions, self.memory_instructions]
         self._agent.instructions = "\n\n".join(part for part in sections if part)
         self._agent.git = await asyncio.to_thread(git_snapshot, root)
 
@@ -1401,8 +1401,12 @@ class Conversation:
                 task.status = "cancelled"
                 end(f"[Skill {skill.name} 未完成：已取消]")
             main.busy = False
-            if owned:
-                await provider.close()
+            try:
+                if self.commands is not None:
+                    await self.commands.stop_owned(task.id)
+            finally:
+                if owned:
+                    await provider.close()
 
     async def ask(self, prompt: str) -> str:
         answer = ""

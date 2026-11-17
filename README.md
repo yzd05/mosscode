@@ -73,7 +73,7 @@ moss acp                       # 启动 ACP 服务（stdio JSON-RPC，供 IDE �
 
 | 模块 | 职责 |
 | :--- | :--- |
-| `launcher.py`、`cli.py` | 命令行入口与参数解析 |
+| `launcher.py`、`cli.py`、`runtime_factory.py` | 命令行入口、参数解析与共享会话装配 |
 | `conversation.py` | 会话生命周期、项目指令与上下文加载、MCP 启动与对外接口 |
 | `agent.py` | Agent Loop：模型请求、工具分批并发执行、停止条件与压缩时机 |
 | `context.py`、`compaction.py`、`tool_budget.py` | 上下文估算、旧工具输出清理、分段折叠、摘要压缩与大结果落盘 |
@@ -85,7 +85,7 @@ moss acp                       # 启动 ACP 服务（stdio JSON-RPC，供 IDE �
 | `permissions.py`、`security.py`、`sandbox/` | 权限档位与规则、命令风险分级、各平台命令沙箱与域名代理 |
 | `mcp_client.py`、`skills/`、`hooks/`、`plugins.py` | MCP 客户端、Skill 与脚本工具、生命周期 Hook、插件管理 |
 | `agents/`、`worktree/`、`teams/` | 子 Agent 运行时、Git 工作树管理、分屏团队通信与分支合并 |
-| `tui.py`、`windows_inline.py`、`scrollback.py` | 内联终端界面、Windows 控制台适配、流式 Markdown 与原生滚屏 |
+| `tui.py`、`tui_views.py`、`windows_inline.py`、`scrollback.py` | 内联终端界面、组件视图、Windows 控制台适配、流式 Markdown 与原生滚屏 |
 | `acp/` | ACP 编辑器服务端，多目录会话隔离与权限桥接 |
 
 </details>

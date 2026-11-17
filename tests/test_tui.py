@@ -221,6 +221,7 @@ async def test_model_picker_is_keyboard_only_and_escape_returns_to_input():
         banner = app.query_one("#banner")
         await send(app, pilot, "/model")
         assert app.query_one("#model-panel").display
+        assert not app.query_one("#input-row").display
         assert app.screen is original_screen and app.query_one("#banner") is banner
         assert app.query_one("#model-panel").region.y >= app.query_one("#input-row").region.bottom
         models = app.query_one("#models", OptionList)
@@ -240,6 +241,7 @@ async def test_model_picker_is_keyboard_only_and_escape_returns_to_input():
         await pilot.press("escape")
         await pilot.pause()
         assert not app.query_one("#model-panel").display
+        assert app.query_one("#input-row").display
         assert app.query_one("#prompt", PromptArea).has_focus
         assert provider.requests == [] and not provider.closed
 
@@ -899,3 +901,197 @@ async def test_a_long_choice_list_scrolls_with_a_thin_grey_bar():
         # The thumb is drawn reversed in the rules' grey, not as the theme's near-black block.
         assert thumb and all(segment.style.color.name == RULE_COLOR for segment in thumb)
         assert all(segment.style.bgcolor.is_default for segment in thumb)
+
+
+async def test_picker_panels_hide_input_row_preserve_draft_and_avoid_stacked_rules(tmp_path):
+    from test_sessions import assistant, make, user, write_session
+
+    write_session(tmp_path, [user("旧对话"), assistant("旧回复")])
+    provider = FakeProvider()
+    conv = make(tmp_path, provider)
+    app = MossCodeApp(conv, "test", settings=TWO_PROVIDERS, model="model-a")
+    async with app.run_test(size=(100, 32)) as pilot:
+        field = app.query_one("#prompt", PromptArea)
+        await send(app, pilot, "第一条消息")
+        await asyncio.wait_for(app._reply_task, timeout=5)
+
+        for cmd in ("/model", "/thinking", "/resume"):
+            await send(app, pilot, cmd)
+            panel = app.query_one("#model-panel")
+            assert panel.display and not app.query_one("#input-row").display
+            strips = [strip.text.strip() for strip in app.screen._compositor.render_strips()]
+            # No double-stacked horizontal border directly above #model-panel's top border.
+            assert strips[panel.region.y].startswith("──")
+            if panel.region.y > 0:
+                assert not strips[panel.region.y - 1].startswith("──")
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not panel.display and app.query_one("#input-row").display and field.has_focus
+
+        # Double-Esc /rewind and choose() preserve unsent draft when a picker opens directly.
+        await pilot.press("escape", "escape")
+        await pilot.pause()
+        assert app.query_one("#model-panel").display and not app.query_one("#input-row").display
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.query_one("#input-row").display and field.has_focus
+
+        field.value = "未发送草稿"
+        await pilot.pause()
+        picked = []
+
+        async def on_pick(index: int) -> None:
+            picked.append(index)
+
+        app.choose("测试选择器", ["选项一", "选项二"], 0, on_pick)
+        await pilot.pause()
+        assert app.query_one("#model-panel").display and not app.query_one("#input-row").display
+        assert not app.query_one("#command-hints").display
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert picked == [1]
+        assert not app.query_one("#model-panel").display and app.query_one("#input-row").display
+        assert field.has_focus and field.value == "未发送草稿"
+    await conv.close()
+
+
+async def test_ctrl_o_toggles_thinking_and_tool_output_details(tmp_path):
+    from mosscode.messages import ToolCall, ToolProgress, ToolResult
+    from mosscode.tools import create_default_registry
+    from mosscode.tui import DETAIL_ROWS, ToolEntry
+    from test_agent import SequenceProvider, call, response
+
+    target = tmp_path / "sample.txt"
+    target.write_text("".join(f"OLD-{i:02d}\n" for i in range(1, 31)), encoding="utf-8")
+    new_text = "".join(f"NEW-{i:02d}\n" for i in range(1, 31))
+
+    async def first_step():
+        yield Delta("thinking", "深层推理第一行\n深层推理第二行")
+        yield response(
+            "准备修改",
+            calls=[
+                call("read_file", "r1", path="sample.txt"),
+                call(
+                    "edit_file", "e1", path="sample.txt", old_text=target.read_text(encoding="utf-8"), new_text=new_text
+                ),
+            ],
+        )
+
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    conv = Conversation(SequenceProvider(first_step, response("全部完成")), registry=registry)
+    app = MossCodeApp(conv, "test")
+    async with app.run_test(size=(110, 45)) as pilot:
+        await send(app, pilot, "请检查并替换")
+        await asyncio.wait_for(app._reply_task, timeout=5)
+        await pilot.pause()
+
+        # Mount an extra tool row with 250 lines to verify the safe 200-line cap in detail view.
+        huge = ToolEntry(ToolProgress(ToolCall("h1", "read_file", '{"path":"huge.txt"}'), "running"))
+        await app.query_one("#chat").mount(huge)
+        huge.complete(ToolResult("h1", "read_file", "\n".join(f"HUGE-{i:03d}" for i in range(1, 251))), 0.1)
+
+        assistant_entries = [e for e in app.query(ChatEntry) if e.speaker != "You"]
+        think_entry = assistant_entries[0]
+        read_row, edit_row, huge_row = list(app.query(ToolEntry))
+
+        # Collapsed by default.
+        assert not app._show_details
+        assert not think_entry.query_one(".thinking").display
+        assert "OLD-15" not in str(read_row.render()) and "仅显示结果摘要" in str(read_row.render())
+        assert "NEW-28" not in str(edit_row.render()) and "行 diff 未显示" in str(edit_row.render())
+
+        # Expand with Ctrl+O.
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert app._show_details
+        assert "详情视图已开启（Ctrl+O 收起）" in str(app.query_one("#status", Static).render())
+        assert think_entry.query_one(".thinking").display
+        assert "深层推理第二行" in str(think_entry.query_one(".thinking", Static).render())
+        assert "OLD-15" in str(read_row.render()) and "仅显示结果摘要" not in str(read_row.render())
+        assert "NEW-28" in str(edit_row.render()) and "行 diff 未显示" not in str(edit_row.render())
+        huge_rendered = str(huge_row.render())
+        assert f"HUGE-{DETAIL_ROWS:03d}" in huge_rendered
+        assert f"HUGE-{DETAIL_ROWS + 1:03d}" not in huge_rendered
+        assert "还有 50 行输出未显示" in huge_rendered
+
+        # Collapse again with Ctrl+O.
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert not app._show_details
+        assert "详情视图已收起（Ctrl+O 展开）" in str(app.query_one("#status", Static).render())
+        assert not think_entry.query_one(".thinking").display
+        assert "OLD-15" not in str(read_row.render())
+        assert "NEW-28" not in str(edit_row.render())
+
+
+async def test_switch_model_overrides_model_enriches_catalog_and_updates_configs():
+    created: list[ProviderConfig] = []
+
+    class ConfiguredFake(FakeProvider):
+        def __init__(self, config: ProviderConfig):
+            super().__init__()
+            self.config = config
+
+    def factory(config: ProviderConfig):
+        created.append(config)
+        return ConfiguredFake(config)
+
+    initial_cfg = ProviderConfig("main", "anthropic-messages", "custom-old-model", api_key="sk-test")
+    other_cfg = ProviderConfig("backup", "openai-responses", "gpt-4.1-mini", api_key="sk-test-2")
+    settings = Settings((initial_cfg, other_cfg), "main")
+    conv = Conversation(ConfiguredFake(initial_cfg), provider_configs=settings.providers, provider_factory=factory)
+    app = MossCodeApp(conv, "main", settings=settings, model="custom-old-model", provider_factory=factory)
+    async with app.run_test(size=(100, 30)) as pilot:
+        # Switch model within the same provider ("main"): should re-enrich from catalog and recreate provider.
+        await app.switch_model("main", "claude-sonnet-4-6")
+        await pilot.pause()
+        assert len(created) == 1
+        switched_cfg = created[-1]
+        assert switched_cfg.name == "main" and switched_cfg.model == "claude-sonnet-4-6"
+        assert switched_cfg.catalog is not None
+        assert switched_cfg.context_window is not None
+        assert switched_cfg.images is True
+        assert app.model == "claude-sonnet-4-6"
+        assert app.settings.select("main").model == "claude-sonnet-4-6"
+        assert conv._fork_provider_config("main").model == "claude-sonnet-4-6"
+        assert conv.provider_info == ("main", "anthropic-messages", "claude-sonnet-4-6")
+
+        # Switching to the exact same provider AND model is a no-op.
+        await app.switch_model("main", "claude-sonnet-4-6")
+        await pilot.pause()
+        assert len(created) == 1
+        assert "已在使用 main（claude-sonnet-4-6）" in str(app.query(".local-note")[-1].render())
+
+        # Switching to another provider with an overridden model also updates settings and active provider.
+        await app.switch_model("backup", "o4-mini")
+        await pilot.pause()
+        assert len(created) == 2
+        assert app.provider_name == "backup" and app.model == "o4-mini"
+        assert app.settings.select("backup").model == "o4-mini"
+        assert conv._fork_provider_config("backup").model == "o4-mini"
+
+
+def test_tui_reexports_all_extracted_tui_views_symbols():
+    from mosscode import tui, tui_views
+
+    expected = (
+        "ProviderSelectApp",
+        "PluginTrustApp",
+        "ConfigTrustApp",
+        "MCPTrustApp",
+        "StreamingMarkdown",
+        "ChatEntry",
+        "ToolEntry",
+        "PlanEntry",
+        "CompactRow",
+        "ShellRow",
+        "PromptArea",
+        "resumed_rows",
+        "choice_label",
+        "choice_prompt",
+        "activity_row",
+        "diff_rows",
+        "turn_details_block",
+    )
+    for name in expected:
+        assert getattr(tui, name) is getattr(tui_views, name), name

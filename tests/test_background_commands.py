@@ -529,7 +529,38 @@ def test_config_auto_background_default_and_zero(tmp_path):
     from test_config import write_config
 
     path = write_config(tmp_path)
-    assert load_settings(path).command_auto_background == 5
+    assert load_settings(path).command_auto_background == 30
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     path.write_text(yaml.safe_dump({**data, "command_auto_background": 0}), encoding="utf-8")
     assert load_settings(path).command_auto_background == 0
+
+
+async def test_failed_long_background_command_includes_non_overlapping_head_and_tail(tmp_path):
+    registry, tasks, _ = setup(tmp_path)
+    fail_80 = "import sys\nfor i in range(1, 81):\n    print(f'FAIL-LINE-{i:03d}')\nsys.exit(2)\n"
+    await registry.execute(run(command=python_command(fail_80), run_in_background=True, description="长失败"))
+    task = await finished(tasks, "t1")
+    assert task.status == "failed"
+    note = notification(task)
+    assert "开头 15 行输出：\nFAIL-LINE-001\n" in note
+    assert "FAIL-LINE-015\n最后 20 行输出：\nFAIL-LINE-061\n" in note
+    assert "FAIL-LINE-080" in note and "FAIL-LINE-016" not in note
+    rep = report(task)
+    assert "开头 15 行输出：\nFAIL-LINE-001\n" in rep
+    assert "FAIL-LINE-015\n最后 50 行输出：\n" in rep
+    assert "FAIL-LINE-080" in rep
+
+    # Medium failure (25 lines): notification shows 5 non-overlapping head lines + 20 tail lines; report needs no head.
+    fail_25 = "import sys\nfor i in range(1, 26):\n    print(f'MED-{i:02d}')\nsys.exit(1)\n"
+    await registry.execute(run(command=python_command(fail_25), run_in_background=True))
+    med = await finished(tasks, "t2")
+    med_note = notification(med)
+    assert "开头 5 行输出：\nMED-01\nMED-02\nMED-03\nMED-04\nMED-05\n最后 20 行输出：\nMED-06\n" in med_note
+    assert "开头" not in report(med)
+
+    # Successful long command keeps tail-only output.
+    ok_80 = "for i in range(1, 81):\n    print(f'OK-{i:03d}')\n"
+    await registry.execute(run(command=python_command(ok_80), run_in_background=True))
+    ok = await finished(tasks, "t3")
+    assert ok.status == "completed"
+    assert "开头" not in notification(ok) and "开头" not in report(ok)

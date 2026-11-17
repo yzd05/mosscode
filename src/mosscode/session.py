@@ -25,7 +25,9 @@ MARKER = ".mosscode-session"
 KEEP_DAYS = 30
 TITLE_BYTES = 64 * 1024
 TITLE_CHARS = 40
+TITLE_LIMIT = 120
 MESSAGE_PREFIX = b'{"type":"message"'
+TITLE_PREFIXES = (b'{"type":"title"', b'{"type": "title"')
 INTERRUPTED = "会话中断，这个调用可能未执行，也可能执行了但结果丢失；需要时请检查当前状态后重新执行。"
 
 
@@ -176,6 +178,15 @@ def goal_record(event: str, condition: str, reason: str = "") -> dict:
 def provider_record(name: str, protocol: str, model: str) -> dict:
     """Earlier messages lose their native data, as in a /model switch."""
     return {"type": "provider", "time": _now(), "name": name, "protocol": protocol, "model": model}
+
+
+def _clean_title(title: str) -> str:
+    return " ".join(title.splitlines()).strip()[:TITLE_LIMIT]
+
+
+def title_record(title: str) -> dict:
+    """Custom session title set by /rename or /fork; the latest non-empty one wins."""
+    return {"type": "title", "time": _now(), "title": _clean_title(title)}
 
 
 # Locks --------------------------------------------------------------------------------------
@@ -368,13 +379,45 @@ def _first_user_line(data: Any) -> str | None:
     return text.splitlines()[0][:TITLE_CHARS] if text else None
 
 
+def _extract_title(line: bytes) -> str | None:
+    if not line.startswith(TITLE_PREFIXES):
+        return None
+    try:
+        data = json.loads(line)
+    except ValueError:
+        return None
+    raw = data.get("title") if isinstance(data, dict) else None
+    clean = _clean_title(raw) if isinstance(raw, str) else ""
+    return clean or None
+
+
 def read_title(path: Path) -> str:
-    """First real user message, looked for only in the first 64 KiB."""
+    """Latest non-empty title record anywhere in the file, or the first real user message in the first 64 KiB."""
+    custom: str | None = None
     try:
         with path.open("rb") as stream:
             head = stream.read(TITLE_BYTES)
+            carry = head
+            while True:
+                chunk = stream.read(1 << 20)
+                if not chunk:
+                    if b'"title"' in carry:
+                        for line in carry.split(b"\n"):
+                            custom = _extract_title(line) or custom
+                    break
+                data = carry + chunk
+                cut = data.rfind(b"\n")
+                if cut < 0:
+                    carry = data
+                    continue
+                complete, carry = data[:cut], data[cut + 1 :]
+                if b'"title"' in complete:
+                    for line in complete.split(b"\n"):
+                        custom = _extract_title(line) or custom
     except OSError:
         return "（无标题）"
+    if custom:
+        return custom
     for line in head.split(b"\n"):
         if line.startswith(MESSAGE_PREFIX):
             try:
@@ -384,6 +427,62 @@ def read_title(path: Path) -> str:
             if title:
                 return title
     return "（无标题）"
+
+
+def write_title(
+    session: Session,
+    title: str,
+    *,
+    transcript: Transcript | None = None,
+    cwd: Path | None = None,
+) -> str:
+    """Append a title record to the session's transcript, reusing an open Transcript when provided."""
+    if session.transcript_path is None:
+        raise ValueError("该会话没有存档路径。")
+    clean = _clean_title(title)
+    if not clean:
+        raise ValueError("会话标题不能为空。")
+    record = title_record(clean)
+    if transcript is not None:
+        notice = transcript.append(record)
+        if notice or transcript.failed:
+            raise OSError(transcript.failed or notice)
+        return clean
+    writer = Transcript(session, (cwd or session.directory.parent).resolve())
+    try:
+        if session.transcript_path.is_file():
+            writer.open_existing()
+        notice = writer.append(record)
+        if notice or writer.failed:
+            raise OSError(writer.failed or notice)
+    finally:
+        writer.close()
+    return clean
+
+
+def fork_session(session: Session, root: Path, *, home: Path | None = None, title: str = "") -> Session:
+    """Copy a persisted session and its sidecar directory to a new session ID, leaving the original intact."""
+    source = session.transcript_path
+    if source is None or not source.is_file():
+        raise ValueError("当前会话尚无存档记录，不能创建分支。")
+    old_title = read_title(source)
+    clean = _clean_title(title)
+    branch_title = clean if clean else _clean_title(f"{old_title} (分支)")
+    target = Session.new(root, home=home)
+    assert target.transcript_path is not None
+    target.transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copyfile(source, target.transcript_path)
+        if session.directory.is_dir():
+            shutil.copytree(session.directory, target.directory, dirs_exist_ok=True)
+        write_title(target, branch_title, cwd=root)
+    except Exception:
+        target.transcript_path.unlink(missing_ok=True)
+        target.transcript_path.with_suffix(".lock").unlink(missing_ok=True)
+        if target.directory.is_dir():
+            shutil.rmtree(target.directory, ignore_errors=True)
+        raise
+    return target
 
 
 def count_messages(path: Path) -> int:
@@ -532,6 +631,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
     marks: dict[str, int] = {}
     todos: list[tuple[int, tuple]] = []  # (keep, items) per change, so rewinds can step back.
     goal: str | None = None
+    custom_title: str | None = None
     collapses: list[Collapse] = []
     images, lost = path.with_suffix("") / "images", []
     with path.open("rb") as stream:
@@ -594,6 +694,11 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
                     if event not in GOAL_EVENTS or not isinstance(condition, str) or not condition:
                         raise ValueError("goal 记录不合法")
                     goal = condition if event == "set" else None
+                elif kind == "title":
+                    raw_title = record.get("title")
+                    if not isinstance(raw_title, str) or not _clean_title(raw_title):
+                        raise ValueError("title 记录不合法")
+                    custom_title = _clean_title(raw_title)
                 elif kind != "session":
                     pass  # A later version's record type.
             except (ValueError, TypeError, KeyError, UnicodeError):
@@ -627,7 +732,7 @@ def load_session(path: Path, provider: tuple[str, str] | None = None) -> Restore
         filled,
         tuple(unanswered),
         last_time,
-        read_title(path),
+        custom_title or read_title(path),
         stripped,
         tuple(skills),
         len(lost),

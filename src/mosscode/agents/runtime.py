@@ -345,7 +345,14 @@ class SubAgents:
         registry.nested = nested
         turns = min(agent.max_turns or main.max_iterations, main.max_iterations)
         loop = AgentLoop(provider, agent.prompt, registry, max_iterations=turns, unknown_limit=main.unknown_limit)
-        loop.instructions = self.conversation.project_instructions
+        loop.instructions = "\n\n".join(
+            part
+            for part in (
+                self.conversation.project_instructions,
+                getattr(self.conversation, "memory_instructions", ""),
+            )
+            if part
+        )
         loop.git = git if git is not None else main.git
         loop.budget, loop.auto_compact, loop.session = budget, main.auto_compact, main.session
         loop.context_collapse = main.context_collapse

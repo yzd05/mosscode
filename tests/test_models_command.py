@@ -113,3 +113,21 @@ def test_search_lists_the_makers_own_services_before_resellers():
     save(encode(slim(raw("aihubmix/kimi-a", "bedrock/us-east-1/kimi-b", "moonshot/kimi-z"), "2026-01-02")))
     lines = models_command.search("kimi", load_catalog()).splitlines()[1:4]
     assert [line.split()[0] for line in lines] == ["moonshot/kimi-z", "aihubmix/kimi-a", "bedrock/us-east-1/kimi-b"]
+
+
+async def test_updated_catalog_feeds_model_command_completions_and_overrides(tmp_path):
+    from mosscode.builtin_commands import BUILTIN
+    from mosscode.config import load_settings
+    from mosscode.conversation import Conversation
+    from test_commands import FakeUI, context, run
+    from test_conversation import FakeProvider
+
+    save(encode(slim(raw("deepseek/deepseek-v4-flash", "deepseek/deepseek-v5-preview"), "2026-02-01")))
+    path = tmp_path / "config.yaml"
+    path.write_text("providers:\n  - {name: deepseek, preset: deepseek, api_key: k}\n", encoding="utf-8")
+    settings = load_settings(path, tmp_path)
+    ctx = context(Conversation(FakeProvider()), settings, FakeUI("deepseek", "deepseek-flash"))
+    values = [hint.value for hint in BUILTIN.matches(ctx, "/model ")]
+    assert "/model deepseek/deepseek-v5-preview" in values
+    ui = await run(ctx, "/model deepseek-v5-preview")
+    assert ui.calls == [("switch_model", "deepseek", "deepseek-v5-preview")]

@@ -586,3 +586,41 @@ async def test_every_gap_above_the_prompt_is_one_row():
             panel.display = True
         await pilot.pause()
         assert shown()[:5] == ["   #todo-panel", "", "   #queue", "", shown()[4]] and shown()[4].lstrip()[0] == "─"
+
+
+async def test_ctrl_o_after_scrollback_commit_prints_last_turn_details_without_clearing(tmp_path):
+    from mosscode.tools import create_default_registry
+
+    (tmp_path / "notes.txt").write_text("\n".join(f"SCROLL-LINE-{i:02d}" for i in range(1, 12)), encoding="utf-8")
+
+    async def step_one():
+        yield Delta("thinking", "HIDDEN-SCROLLBACK-THINKING")
+        yield response(calls=[call("read_file", "r1", path="notes.txt")])
+
+    output = []
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    app = InlineRecordingApp(
+        Conversation(SequenceProvider(step_one, response("DONE-REPLY")), registry=registry), output
+    )
+    async with app.run_test(size=(80, 22)) as pilot:
+        await send(app, pilot, "读取 notes.txt")
+        before_toggle = plain(output)
+        assert "DONE-REPLY" in before_toggle
+        assert "HIDDEN-SCROLLBACK-THINKING" not in before_toggle
+        assert "SCROLL-LINE-09" not in before_toggle
+        assert not app.query(ChatEntry) and not app.query(ToolEntry)
+
+        start = len(output)
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert app._show_details
+        assert "详情视图已开启（Ctrl+O 收起）" in str(app.query_one("#status", Static).render())
+        added = plain(output[start:])
+        assert "HIDDEN-SCROLLBACK-THINKING" in added
+        assert "SCROLL-LINE-09" in added
+        assert CLEAR not in "".join(output[start:])
+
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert not app._show_details
+        assert "详情视图已收起（Ctrl+O 展开）" in str(app.query_one("#status", Static).render())

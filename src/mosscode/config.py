@@ -172,7 +172,7 @@ class Settings:
     agent_auto_background: float = 120.0  # Seconds before a foreground sub-agent moves on; 0 never.
     agent_max_background: int = 4  # Running background tasks at most.
     command_max_background: int = 8  # Running background commands at most; 0 turns them off.
-    command_auto_background: float = 5.0  # Seconds before a foreground command moves to the background; 0 never.
+    command_auto_background: float = 30.0  # Seconds before a foreground command moves to the background; 0 never.
     todo_tool: bool = True  # Offer todo_write, the model's task checklist.
     goal_max_turns: int = 30  # /goal: automatic turns before it pauses; resuming allows as many again.
     goal_provider: str | None = None  # /goal's evaluator; None uses memory_provider, then the current provider.

@@ -19,7 +19,9 @@ DEFAULT_LIMIT, MAX_LIMIT = 8, 64
 TIMEOUT_LIMIT = 3600  # The most a background command's own timeout may ask for.
 HEADLESS_TIME_LIMIT = 600.0  # -p must end: a background command without its own timeout gets this much.
 LOG_LIMIT = 256 * 1024 * 1024
+HEAD_KEEP = 16 * 1024  # Start of the output kept in memory so failure headers stay available without rereading disk.
 KEEP = 64 * 1024  # The end of the output kept in memory, so notifications need not reread the file.
+HEAD_LINES = 15
 NOTIFY_LINES, NOTIFY_CHARS = 20, 2000
 OUTPUT_LINES, OUTPUT_CHARS = 50, 8000
 STOPPED = "[命令已停止]"
@@ -36,7 +38,11 @@ class CommandLog:
         self.size = 0
         self.full = False
         self.on_full: Callable[[], None] | None = None
+        self._head = bytearray()
         self._tail = bytearray()
+        self._newlines = 0
+        self._ends_nl = True
+        self._notify_head: tuple[int, str] | None = None
 
     def write(self, data: bytes) -> None:
         if self._file is None or self.full or not data:
@@ -62,8 +68,40 @@ class CommandLog:
         except (OSError, ValueError):
             return
         self.size += len(data)
+        if len(self._head) < HEAD_KEEP:
+            self._head.extend(data[: HEAD_KEEP - len(self._head)])
         self._tail.extend(data)
         del self._tail[: max(0, len(self._tail) - KEEP)]
+        self._newlines += data.count(b"\n")
+        self._ends_nl = data.endswith(b"\n")
+
+    def total_lines(self) -> int:
+        if self.size == 0:
+            return 0
+        tail_data = bytes(self._tail)
+        tail_lines = len(decode_output(tail_data, cut_start=self.size > len(tail_data)).rstrip("\n").splitlines())
+        if self.size <= len(tail_data):
+            return tail_lines
+        return max(self._newlines + (0 if self._ends_nl else 1), tail_lines)
+
+    def head_lines(self, head_limit: int, tail_limit: int, chars: int) -> tuple[int, str]:
+        """Return (line_count, text) for non-overlapping leading lines when total lines exceed tail_limit."""
+        total = self.total_lines()
+        if total <= tail_limit or not self._head:
+            return 0, ""
+        data = bytes(self._head)
+        cut_end = self.size > len(data)
+        text = decode_output(data, cut_end=cut_end)
+        lines = text.rstrip("\n").splitlines()
+        if cut_end and not data.endswith(b"\n") and len(lines) > 1:
+            lines = lines[:-1]
+        picked = lines[: min(head_limit, total - tail_limit)]
+        if not picked:
+            return 0, ""
+        joined = "\n".join(picked)
+        if len(joined) > chars:
+            joined = joined[: chars - 1] + "…"
+        return len(picked), joined
 
     def last_lines(self, lines: int, chars: int) -> str:
         data = bytes(self._tail)
@@ -108,6 +146,14 @@ def notification(task: Task) -> str:
     ]
     if info.notes:
         lines.append("沙箱：" + " ".join(info.notes))
+    if task.status == "failed":
+        head_count, head_text = (
+            info.log._notify_head
+            if info.log._notify_head is not None
+            else info.log.head_lines(HEAD_LINES, NOTIFY_LINES, NOTIFY_CHARS)
+        )
+        if head_count:
+            lines += [f"开头 {head_count} 行输出：", head_text]
     lines += [
         f"最后 {NOTIFY_LINES} 行输出：",
         info.tail or "（无输出）",
@@ -121,10 +167,15 @@ def report(task: Task) -> str:
     """task_output: the state, the output file and its last lines."""
     info = task.command
     head = f"任务 {task.id}（{task.label}）：{status_text(task)}，用时 {task.elapsed:.0f} 秒。"
+    prefix = ""
+    if task.status == "failed":
+        head_count, head_text = info.log.head_lines(HEAD_LINES, OUTPUT_LINES, OUTPUT_CHARS)
+        if head_count:
+            prefix = f"开头 {head_count} 行输出：\n{head_text}\n"
     body = info.log.last_lines(OUTPUT_LINES, OUTPUT_CHARS)
     return (
         f"{head}\n命令：{_short(info.command, 500)}\n输出文件：{info.log.path}（{size_text(info.log.size)}）\n"
-        f"最后 {OUTPUT_LINES} 行输出：\n{body or '（无输出）'}"
+        f"{prefix}最后 {OUTPUT_LINES} 行输出：\n{body or '（无输出）'}"
     )
 
 
@@ -289,6 +340,7 @@ class BackgroundCommands:
                 error = str(exc)
             else:
                 error = f"命令没能运行：{type(exc).__name__}: {exc}"
+        log._notify_head = log.head_lines(HEAD_LINES, NOTIFY_LINES, NOTIFY_CHARS)
         info.tail = log.last_lines(NOTIFY_LINES, NOTIFY_CHARS)
         if details is not None:
             # Like a foreground command's stderr: where sandbox start failures and denials show.

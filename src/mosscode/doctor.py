@@ -1,21 +1,26 @@
 """`moss doctor` reads the installation, the configuration and the tools it relies on.
 
-It starts no session and sends no request. Credentials are reported as set or not, never shown.
+It starts no session and sends no request unless `--ping` is passed. Credentials are reported as set or not, never shown.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
+from contextlib import aclosing
 from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
 OK, WARN, ERROR = "✓", "!", "✗"
+PING_TIMEOUT = 15.0
 
 
 @dataclass(frozen=True)
@@ -435,17 +440,143 @@ def check_sandbox(config: str | None = None, *, probe=None) -> list[Item]:
     return items
 
 
-def run(config: str | None = None) -> list[Item]:
+def create_provider(config):
+    from .providers import create_provider as build
+
+    return build(config)
+
+
+async def ping_provider(
+    config: str | None = None,
+    *,
+    provider: str | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    provider_factory=None,
+    timeout: float = PING_TIMEOUT,
+    skip_on_config_error: bool = False,
+) -> list[Item]:
+    """Send one minimal non-tool probe to the default or named provider."""
+    from .config import ConfigError, find_config, load_settings, project_confirmed
+    from .credentials import protect, redact
+    from .messages import Completed, ContentBlock, Message, ProviderError
+    from .providers import _safe_error
+
+    cwd = Path.cwd() if cwd is None else cwd
+    try:
+        path = Path(config) if config is not None else find_config(cwd, home)
+        settings = load_settings(path, home)
+    except ConfigError as exc:
+        return [] if skip_on_config_error else [Item(ERROR, f"模型连通性：{exc}", "修复配置文件后重试")]
+    if not project_confirmed(settings, home):
+        return [
+            Item(
+                ERROR,
+                "模型连通性：项目配置尚未确认，未发送探测请求",
+                "启动 moss 确认项目配置，或用 --config 指定用户配置",
+            )
+        ]
+    protect(settings)
+    try:
+        target = settings.select(provider)
+    except ConfigError as exc:
+        return [Item(ERROR, f"模型连通性：{redact(str(exc))}", "用 --list-providers 查看已配置的 Provider 名称")]
+    probe_config = replace(target, timeout=min(target.timeout, timeout), max_retries=0)
+    factory = create_provider if provider_factory is None else provider_factory
+    started = time.perf_counter()
+    client = None
+    try:
+        async with asyncio.timeout(timeout):
+            client = factory(probe_config)
+            message = Message("user", (ContentBlock("text", "ping"),))
+            completed = False
+            async with aclosing(client.stream((message,), "", allow_tools=False)) as events:
+                async for event in events:
+                    if isinstance(event, Completed):
+                        completed = True
+            if not completed:
+                raise ProviderError("未收到完整响应。")
+    except TimeoutError:
+        return [
+            Item(
+                ERROR,
+                f"模型连通性：{target.name} 请求失败：请求超时（>{timeout:g} 秒）。",
+                "检查网络连接、代理或服务状态",
+            )
+        ]
+    except (ProviderError, ConfigError) as exc:
+        return [Item(ERROR, f"模型连通性：{target.name} 请求失败：{redact(str(exc))}", "检查凭据、端点和模型名称")]
+    except Exception as exc:
+        try:
+            safe = redact(str(_safe_error(exc)))
+        except Exception:
+            safe = f"连接或响应异常（{type(exc).__name__}）。"
+        return [Item(ERROR, f"模型连通性：{target.name} 请求失败：{safe}", "检查凭据、端点和网络连接")]
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
+    elapsed_ms = max(1, round((time.perf_counter() - started) * 1000))
+    return [Item(OK, f"模型连通性：{target.name}（{target.model}）响应正常（{elapsed_ms} ms）")]
+
+
+def check_ping(
+    config: str | None = None,
+    *,
+    provider: str | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    provider_factory=None,
+    timeout: float = PING_TIMEOUT,
+    skip_on_config_error: bool = False,
+) -> list[Item]:
+    coro = ping_provider(
+        config,
+        provider=provider,
+        cwd=cwd,
+        home=home,
+        provider_factory=provider_factory,
+        timeout=timeout,
+        skip_on_config_error=skip_on_config_error,
+    )
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    result: list[Item] = []
+    error: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            result.extend(asyncio.run(coro))
+        except BaseException as exc:  # pragma: no cover
+            error.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result
+
+
+def run(config: str | None = None, *, ping: bool = False, provider: str | None = None) -> list[Item]:
     return [
         *check_install(),
         *check_path(),
         *check_config(config),
+        *(check_ping(config, provider=provider, skip_on_config_error=True) if ping else ()),
         *check_home(),
         *check_tools(),
         *check_sandbox(config),
         *check_project(config=config),
         *check_plugins(),
     ]
+
+
+run_doctor = run
 
 
 def report(items: list[Item]) -> str:
@@ -459,11 +590,16 @@ def report(items: list[Item]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     command = argparse.ArgumentParser(
-        prog="moss doctor", description="检查安装、配置和依赖工具；不启动会话，不发送请求。"
+        prog="moss doctor",
+        description="检查安装、配置和依赖工具；默认不启动会话、不发送请求，加 --ping 可测试模型连通性。",
     )
     command.add_argument("--config", help="检查这个配置文件，而不是按默认顺序查找")
+    command.add_argument("--ping", action="store_true", help="向默认或 --provider 指定的模型发送一次最小探测请求")
+    command.add_argument("--provider", help="与 --ping 配合使用，指定要探测的 Provider 名称")
     args = command.parse_args(argv)
-    items = run(args.config)
+    if args.provider and not args.ping:
+        command.error("--provider 需要与 --ping 一起使用。")
+    items = run(args.config, ping=args.ping, provider=args.provider)
     text = report(items)
     try:
         print(text)

@@ -28,11 +28,8 @@ from .config import (
 from .conversation import Conversation, Notice, Resumed
 from .coordinator import decide as decide_coordinator
 from .credentials import plaintext_notice, protect
-from .hooks import HookEngine
 from .launcher import is_terminal, parse_arguments
-from .mcp_client import MCPManager
 from .mcp_config import MCPConfigError, ProjectMCP, load_mcp_settings, project_mcp
-from .memory import MemoryStore
 from .messages import (
     STOPPED_EARLY,
     AutoContinue,
@@ -54,13 +51,21 @@ from .messages import (
     UsageUpdate,
 )
 from .permissions import PermissionConfigError
-from .plugins import Installed, project_plugins, with_project
-from .plugins import installed as installed_plugins
+from .plugins import Installed
 from .providers import create_provider
+from .runtime_factory import (
+    build_conversation,
+    build_hook_engine,
+    build_mcp_manager,
+    build_memory_options,
+    claude_notice,
+    load_skills_and_commands,
+    resolve_plugins,
+)
 from .sandbox import configure as configure_sandbox
 from .sandbox import first_start_hint
 from .session import Session, prune_all
-from .skills import ForkRequest, SkillCatalog
+from .skills import ForkRequest
 from .tools import create_default_registry
 from .tools.background import HEADLESS_TIME_LIMIT
 from .tools.shell import ShellNotFound
@@ -222,21 +227,14 @@ async def _turns(conversation: Conversation, prompt: str, *, command: str | None
 
 def _hook_engine(args, registry, *, interactive: bool, plugins=None):
     """--no-hooks loads nothing; -p skips untrusted project files unless --trust-project-hooks."""
-    tool = registry.get("execute_command")
-    engine = HookEngine(
+    return build_hook_engine(
         Path.cwd(),
-        shell=getattr(tool, "shell", None),
-        enabled=not args.no_hooks,
-        trust_project=args.trust_project_hooks,
+        registry,
+        no_hooks=args.no_hooks,
+        trust_project_hooks=args.trust_project_hooks,
+        interactive=interactive,
         plugins=plugins,
     )
-    notices = list(engine.problems)
-    if not interactive:
-        notices += [
-            f"项目 Hook 文件 {file.path} 未经确认，未启用；请在交互界面中启动一次并确认，或使用 --trust-project-hooks。"
-            for file in engine.untrusted
-        ]
-    return engine, tuple(notices)
 
 
 async def _prompt(
@@ -472,42 +470,32 @@ async def _text_prompt(
 
 def _memory_options(settings, *, interactive: bool) -> dict:
     """Notes and the memory tool everywhere; background extraction only in the TUI."""
-    if not settings.memory:
-        return {}
-    options = {"memory": MemoryStore.for_project(Path.cwd()), "auto_memory": interactive and settings.auto_memory}
-    if options["auto_memory"] and settings.memory_provider:
-        options["memory_provider"] = create_provider(settings.select(settings.memory_provider))
-    return options
+    return build_memory_options(settings, Path.cwd(), auto_memory=interactive, provider_factory=create_provider)
 
 
 def load_plugins(args, root: Path) -> Installed:
     """The user's plugins and, once trusted, the project's: the interface asks before anything loads, -p loads
     them only with --trust-project-plugins or an earlier confirmation."""
-    user = installed_plugins()
-    project = project_plugins(root)
-    notices = list(project.notices)
-    use = bool(project.plugins) and (args.trust_project_plugins or project.trusted())
-    if project.plugins and not use:
-        names = [plugin.name for plugin in project.plugins]
-        if args.prompt is None:
-            from .plugin_command import trust_text
 
-            print(trust_text(project))
-            use = bool(PluginTrustApp(names).run(inline=True, mouse=False))
-            if not use:
-                notices.append("本次未启用项目插件；下次启动时会再次询问。")
-            else:
-                try:
-                    project.trust()
-                except OSError as exc:
-                    notices.append(f"无法写入项目插件的确认记录（{exc.strerror or exc}），只在本次启用。")
-        else:
-            notices.append(
-                f"项目插件 {'、'.join(names)} 未经确认，未加载；请在交互界面中启动一次并确认，"
-                "或使用 --trust-project-plugins。"
-            )
-    combined = with_project(user, project) if use else user
-    return Installed(combined.plugins, (*combined.notices, *notices))
+    def _confirm(project) -> tuple[bool, tuple[str, ...]]:
+        from .plugin_command import trust_text
+
+        names = [plugin.name for plugin in project.plugins]
+        print(trust_text(project))
+        use = bool(PluginTrustApp(names).run(inline=True, mouse=False))
+        if not use:
+            return False, ("本次未启用项目插件；下次启动时会再次询问。",)
+        try:
+            project.trust()
+        except OSError as exc:
+            return True, (f"无法写入项目插件的确认记录（{exc.strerror or exc}），只在本次启用。",)
+        return True, ()
+
+    return resolve_plugins(
+        root,
+        trust_project=args.trust_project_plugins,
+        confirm=_confirm if args.prompt is None else None,
+    )
 
 
 def confirm_project_mcp(args, root: Path, project: ProjectMCP | None = None) -> tuple[bool, tuple[str, ...]]:
@@ -531,18 +519,6 @@ def confirm_project_mcp(args, root: Path, project: ProjectMCP | None = None) -> 
     except OSError as exc:
         return True, (f"无法写入项目 MCP 服务器的确认记录（{exc.strerror or exc}），只在本次启动。",)
     return True, ()
-
-
-def claude_notice(root: Path) -> str | None:
-    """Definitions written for Claude Code in the project that stay unread while claude_directories is off."""
-    agents = sum(1 for path in (root / ".claude" / "agents").glob("*.md") if path.is_file())
-    skills = sum(1 for path in (root / ".claude" / "skills").glob("*/SKILL.md") if path.is_file())
-    found = "、".join(
-        part for part in (f"{agents} 个子 Agent" if agents else "", f"{skills} 个 Skill" if skills else "") if part
-    )
-    if not found:
-        return None
-    return f"发现 .claude 中的 {found}，在 config.yaml 中设置 claude_directories: true 即可使用。"
 
 
 def _config_path(args) -> Path | None:
@@ -619,25 +595,26 @@ def run(args: argparse.Namespace) -> None:
         if settings is None:
             return
         # Plugins are read once; skills come before the provider so that -p "/<name>" parses.
-        plugins = load_plugins(args, Path.cwd())
+        cwd = Path.cwd()
+        interactive = args.prompt is None
+        plugins = load_plugins(args, cwd)
         claude = settings.claude_directories
-        skills = SkillCatalog.load(Path.cwd(), reserved=BUILTIN.names(), plugins=plugins.plugins, claude=claude)
-        commands, skipped = BUILTIN.with_skills(skills)
+        skills, commands, skipped = load_skills_and_commands(
+            cwd,
+            plugins=plugins.plugins,
+            claude=claude,
+            builtin_commands=BUILTIN,
+        )
         prompt, command, skill = (
             _headless_input(args.prompt, commands, plugins.notices + skills.problems + skipped)
-            if args.prompt is not None
+            if not interactive
             else (None, None, None)
         )
         protect(settings)
         # Before the tools are built: the command tool's shell and parameters depend on it.
         sandbox = configure_sandbox(settings.sandbox, override=args.sandbox, source=settings.source)
         config = settings.select(args.provider)
-        if (
-            args.prompt is None
-            and args.provider is None
-            and settings.default_provider is None
-            and len(settings.providers) > 1
-        ):
+        if interactive and args.provider is None and settings.default_provider is None and len(settings.providers) > 1:
             config = ProviderSelectApp(settings).run(inline=True, mouse=False)
             if config is None:
                 return
@@ -646,72 +623,49 @@ def run(args: argparse.Namespace) -> None:
             shell=settings.shell,
             web_search=settings.web_search,
             todo=settings.todo_tool,
-            ask=args.prompt is None,  # -p has nobody to answer.
+            ask=interactive,  # -p has nobody to answer.
         )
-        project = project_mcp(Path.cwd())
-        project_servers, mcp_notices = confirm_project_mcp(args, Path.cwd(), project)
-        mcp_settings = load_mcp_settings(
-            Path.cwd(), plugins=plugins.plugins, project=project if project_servers else False
+        manager, mcp_notices = build_mcp_manager(
+            cwd,
+            plugins=plugins.plugins,
+            confirm=lambda proj: confirm_project_mcp(args, cwd, proj),
+            mcp_loader=load_mcp_settings,
         )
-        manager = MCPManager(Path.cwd(), mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
         prune_all()
-        budget = config.budget()
-        hooks, hook_notices = _hook_engine(args, registry, interactive=args.prompt is None, plugins=plugins.plugins)
+        hooks, hook_notices = _hook_engine(args, registry, interactive=interactive, plugins=plugins.plugins)
         notices = config_notices + plugins.notices + skills.problems + skipped + hook_notices + mcp_notices
-        if args.prompt is None and not claude and (found := claude_notice(Path.cwd())):
+        if interactive and not claude and (found := claude_notice(cwd)):
             notices += (found,)
         coordinator, coordinator_notice = decide_coordinator(
-            settings.coordinator_mode, os.environ, interactive=args.prompt is None
+            settings.coordinator_mode, os.environ, interactive=interactive
         )
         if coordinator_notice:
             notices += (coordinator_notice,)
         notices += tuple(filter(None, (project_notice(settings),))) + tuple(sandbox.notices())
-        if args.prompt is None and (hint := first_start_hint(sandbox, args.sandbox)):
+        if interactive and (hint := first_start_hint(sandbox, args.sandbox)):
             notices += (hint,)
-        notices += tuple(
-            filter(None, (load_catalog().problem, config.window_note(), plaintext_notice(settings, Path.cwd())))
-        )
-        conversation = Conversation(
-            create_provider(config),
-            settings.system_prompt,
-            registry,
-            mcp_manager=manager,
-            max_iterations=settings.max_iterations,
-            run_budget=settings.run_budget,
-            context_root=Path.cwd(),
-            budget=budget,
-            session=Session.new(Path.cwd()),
-            auto_compact=settings.auto_compact,
-            context_collapse=settings.context_collapse,
-            notices=notices,
-            persist=settings.persist_sessions,
+        notices += tuple(filter(None, (load_catalog().problem, config.window_note(), plaintext_notice(settings, cwd))))
+        conversation = build_conversation(
+            settings,
+            config,
+            root=cwd,
+            registry=registry,
             skills=skills,
-            provider_configs=settings.providers,
-            provider_factory=create_provider,
-            provider_info=(config.name, config.protocol, config.model),
+            agents=AgentCatalog.load(cwd, plugins=plugins.plugins, claude=claude),
+            mcp_manager=manager,
             hooks=hooks,
-            agents=AgentCatalog.load(Path.cwd(), plugins=plugins.plugins, claude=claude),
-            agent_auto_background=settings.agent_auto_background,
-            agent_max_background=settings.agent_max_background,
-            command_max_background=settings.command_max_background,
-            command_auto_background=settings.command_auto_background,
+            session=Session.new(cwd),
+            notices=notices,
+            auto_memory=interactive,
+            # -p has no /goal; a provider of its own only where it can be used.
+            enable_goal_provider=interactive,
             # -p must end: background commands without their own timeout get a limit there.
-            command_time_limit=None if args.prompt is None else HEADLESS_TIME_LIMIT,
-            worktree_links=settings.worktree_links,
-            worktree_stale_hours=settings.worktree_stale_hours,
-            teams=args.prompt is None,
-            team_max_members=settings.team_max_members,
-            teammate_mode=settings.teammate_mode,
+            command_time_limit=None if interactive else HEADLESS_TIME_LIMIT,
+            teams=interactive,
             team_launch={"config": settings.source, "provider": config.name, "digest": settings.project_digest},
             coordinator=coordinator,
-            goal_max_turns=settings.goal_max_turns,
-            # -p has no /goal; a provider of its own only where it can be used.
-            goal_provider=(
-                create_provider(settings.select(settings.goal_provider))
-                if args.prompt is None and settings.goal_provider
-                else None
-            ),
-            **_memory_options(settings, interactive=args.prompt is None),
+            provider_factory=create_provider,
+            conversation_cls=Conversation,
         )
         resume = args.resume
         if args.continue_session or resume:

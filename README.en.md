@@ -73,7 +73,7 @@ Source code lives in `src/mosscode/`. `launcher.py` provides a fast CLI entry po
 
 | Module | Responsibility |
 | :--- | :--- |
-| `launcher.py`, `cli.py` | CLI entry point and argument parsing |
+| `launcher.py`, `cli.py`, `runtime_factory.py` | CLI entry point, argument parsing, shared runtime assembly |
 | `conversation.py` | Session lifecycle, project instructions, MCP startup, public API |
 | `agent.py` | Agent loop: model requests, concurrent read-only batches, stop conditions, compaction |
 | `context.py`, `compaction.py`, `tool_budget.py` | Token estimation, tool-output clearing, turn collapsing, summary compaction, disk spill |
@@ -85,7 +85,7 @@ Source code lives in `src/mosscode/`. `launcher.py` provides a fast CLI entry po
 | `permissions.py`, `security.py`, `sandbox/` | Permission modes and rules, command risk analysis, OS sandboxes, domain proxy |
 | `mcp_client.py`, `skills/`, `hooks/`, `plugins.py` | MCP client, skills and script tools, lifecycle hooks, plugin manager |
 | `agents/`, `worktree/`, `teams/` | Sub-agent runtime, Git worktrees, split-pane teams, branch merging |
-| `tui.py`, `windows_inline.py`, `scrollback.py` | Inline Textual UI, Windows console driver, streaming Markdown, native scrollback |
+| `tui.py`, `tui_views.py`, `windows_inline.py`, `scrollback.py` | Inline Textual UI, widgets/views, Windows console driver, streaming Markdown, native scrollback |
 | `acp/` | ACP server for editors, multi-directory session isolation, permission bridging |
 
 </details>

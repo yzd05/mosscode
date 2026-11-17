@@ -9,7 +9,7 @@ import re
 import sys
 from collections.abc import Callable, Sequence
 from contextlib import aclosing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -40,7 +40,6 @@ from acp.schema import (
     ToolCallProgress,
 )
 
-from ..agents import AgentCatalog
 from ..builtin_commands import (
     BUILTIN,
     CLEARED,
@@ -60,11 +59,8 @@ from ..conversation import Conversation, Resumed
 from ..coordinator import decide as decide_coordinator
 from ..credentials import redact
 from ..goal import GOAL
-from ..hooks import HookEngine
 from ..images import ImageError, ProcessedImage, load_image
-from ..mcp_client import MCPManager
-from ..mcp_config import SERVER_NAME, MCPConfigError, MCPSettings, ServerConfig, load_mcp_settings, project_mcp
-from ..memory import MemoryStore
+from ..mcp_config import SERVER_NAME, ServerConfig
 from ..mentions import quoted
 from ..messages import NOTIFICATION, ProviderError, RunStopped, TasksNotified, ToolProgress, image_mark
 from ..permissions import MODES as PERMISSION_MODES
@@ -76,17 +72,22 @@ from ..permissions import (
     QuestionRequest,
     normalize_mode,
 )
-from ..plugins import Installed, project_plugins, with_project
-from ..plugins import installed as installed_plugins
+from ..plugins import Installed
 from ..providers import create_provider
 from ..reasoning import DEFAULT as DEFAULT_THINKING
 from ..reasoning import LEVELS
+from ..runtime_factory import (
+    assemble_workspace_extensions,
+    build_conversation,
+    claude_notice,
+    resolve_plugins,
+    with_model,
+)
 from ..sandbox import HOME_SECRETS, Sandbox, use_sandbox
 from ..security import inside
 from ..session import Session, SessionLocked, find_session
-from ..skills import ForkRequest, SkillCatalog
+from ..skills import ForkRequest
 from ..todo import TodoItem
-from ..tools import create_default_registry
 from .auth import load_session_settings, remember_settings_credentials
 from .events import (
     EXCLUDED_ACP_COMMANDS,
@@ -234,23 +235,25 @@ def convert_client_mcp_servers(
     return servers, notices
 
 
+_ACP_UNTRUSTED_PLUGINS_HINT = (
+    "项目插件 {names} 未经确认，未加载；请在终端启动一次确认，或传入 --trust-project-plugins。"
+)
+_ACP_UNTRUSTED_MCP_HINT = "项目 MCP 服务器 {names} 未经确认，未启动；请在终端确认或传入 --trust-project-mcp。"
+_ACP_UNTRUSTED_HOOK_HINT = "项目 Hook 文件 {path} 未经确认，未启用；可在终端确认或传入 --trust-project-hooks。"
+
+
 def _load_plugins_headless(
     cwd: Path,
     *,
     trust_project: bool = False,
     home: Path | None = None,
 ) -> Installed:
-    user = installed_plugins(home=home)
-    project = project_plugins(cwd, home=home)
-    notices = list(project.notices)
-    use = bool(project.plugins) and (trust_project or project.trusted(home))
-    if project.plugins and not use:
-        names = [plugin.name for plugin in project.plugins]
-        notices.append(
-            f"项目插件 {'、'.join(names)} 未经确认，未加载；请在终端启动一次确认，或传入 --trust-project-plugins。"
-        )
-    combined = with_project(user, project) if use else user
-    return Installed(combined.plugins, (*combined.notices, *notices))
+    return resolve_plugins(
+        cwd,
+        trust_project=trust_project,
+        home=home,
+        untrusted_hint=_ACP_UNTRUSTED_PLUGINS_HINT,
+    )
 
 
 def _decode_image_block(data_b64: str, mime_type: str) -> ProcessedImage | None:
@@ -259,17 +262,6 @@ def _decode_image_block(data_b64: str, mime_type: str) -> ProcessedImage | None:
         return load_image(raw)
     except (ImageError, ValueError, Exception):
         return None
-
-
-def _claude_notice(root: Path) -> str | None:
-    agents = sum(1 for path in (root / ".claude" / "agents").glob("*.md") if path.is_file())
-    skills = sum(1 for path in (root / ".claude" / "skills").glob("*/SKILL.md") if path.is_file())
-    found = "、".join(
-        part for part in (f"{agents} 个子 Agent" if agents else "", f"{skills} 个 Skill" if skills else "") if part
-    )
-    if not found:
-        return None
-    return f"发现 .claude 中的 {found}，在 config.yaml 中设置 claude_directories: true 即可使用。"
 
 
 class AcpSession:
@@ -380,14 +372,6 @@ class AcpSession:
             home=options.home,
         )
         claude = settings.claude_directories
-        skills = SkillCatalog.load(
-            resolved_cwd,
-            options.home,
-            reserved=BUILTIN.names(),
-            plugins=plugins.plugins,
-            claude=claude,
-        )
-        commands, skipped = BUILTIN.with_skills(skills)
         sandbox = Sandbox(settings.sandbox, enabled=options.sandbox, source=settings.source)
         command_env = (settings.command_env_keep, settings.command_env_drop)
 
@@ -402,67 +386,32 @@ class AcpSession:
             except PermissionConfigError as exc:
                 raise RequestError.invalid_params({"reason": str(exc)}) from None
 
-            registry = create_default_registry(
-                root=resolved_cwd,
-                permissions=permissions,
-                shell=settings.shell,
-                web_search=settings.web_search,
-                todo=settings.todo_tool,
-                ask=True,
-            )
-
-            user_mcp_path = options.home / ".mosscode" / "mcp.yaml" if options.home is not None else None
-            try:
-                proj_mcp = project_mcp(resolved_cwd, user_path=user_mcp_path)
-                use_proj_mcp = not proj_mcp.servers or options.trust_project_mcp or proj_mcp.trusted(options.home)
-                mcp_notices: list[str] = []
-                if proj_mcp.servers and not use_proj_mcp:
-                    names = "、".join(proj_mcp.servers)
-                    mcp_notices.append(
-                        f"项目 MCP 服务器 {names} 未经确认，未启动；请在终端确认或传入 --trust-project-mcp。"
-                    )
-                base_mcp = load_mcp_settings(
-                    resolved_cwd,
-                    user_path=user_mcp_path,
-                    plugins=plugins.plugins,
-                    project=proj_mcp if use_proj_mcp else False,
-                )
-            except MCPConfigError as exc:
-                mcp_notices = [str(exc)]
-                base_mcp = MCPSettings()
-
             client_servers, client_mcp_notices = convert_client_mcp_servers(mcp_servers)
-            merged_by_name = {srv.name: srv for srv in base_mcp.servers}
-            merged_by_name.update(client_servers)
-            mcp_settings = MCPSettings(
-                servers=tuple(merged_by_name.values()),
-                notices=(*base_mcp.notices, *mcp_notices, *client_mcp_notices),
-            )
-            manager = MCPManager(resolved_cwd, mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
-
-            exec_tool = registry.get("execute_command")
-            hooks = HookEngine(
+            components = assemble_workspace_extensions(
                 resolved_cwd,
+                settings,
                 home=options.home,
-                shell=getattr(exec_tool, "shell", None),
-                enabled=not options.no_hooks,
-                trust_project=options.trust_project_hooks,
-                plugins=plugins.plugins,
+                permissions=permissions,
+                ask=True,
+                no_hooks=options.no_hooks,
+                interactive_hooks=False,
+                trust_project_plugins=options.trust_project_plugins,
+                trust_project_mcp=options.trust_project_mcp,
+                trust_project_hooks=options.trust_project_hooks,
+                plugins=plugins,
+                extra_mcp_servers=client_servers,
+                extra_mcp_notices=client_mcp_notices,
+                catch_mcp_config_error=True,
+                merge_mcp_notices=True,
+                untrusted_plugins_hint=_ACP_UNTRUSTED_PLUGINS_HINT,
+                untrusted_mcp_hint=_ACP_UNTRUSTED_MCP_HINT,
+                untrusted_hook_hint=_ACP_UNTRUSTED_HOOK_HINT,
             )
-            hook_notices = list(hooks.problems) + [
-                f"项目 Hook 文件 {f.path} 未经确认，未启用；可在终端确认或传入 --trust-project-hooks。"
-                for f in hooks.untrusted
-            ]
+            commands = components.commands
 
-            extra_notices = [n for n in (None if claude else _claude_notice(resolved_cwd),) if n]
+            extra_notices = [n for n in (None if claude else claude_notice(resolved_cwd),) if n]
             notices = (
-                tuple(config_notices)
-                + plugins.notices
-                + skills.problems
-                + skipped
-                + tuple(hook_notices)
-                + tuple(extra_notices)
-                + tuple(sandbox.notices(resolved_cwd))
+                tuple(config_notices) + components.notices + tuple(extra_notices) + tuple(sandbox.notices(resolved_cwd))
             )
             coordinator, coord_notice = decide_coordinator(settings.coordinator_mode, {}, interactive=False)
             if coord_notice:
@@ -479,55 +428,28 @@ class AcpSession:
             except ConfigError as exc:
                 raise RequestError.auth_required({"reason": str(exc)}) from None
 
-            memory_opts = (
-                {"memory": MemoryStore.for_project(resolved_cwd, home=options.home), "auto_memory": False}
-                if settings.memory
-                else {}
-            )
-
             initial_session = Session.new(resolved_cwd, home=options.home)
             final_id = target_id if target_id is not None else initial_session.id
 
-            conversation = Conversation(
-                provider,
-                settings.system_prompt,
-                registry,
-                mcp_manager=manager,
-                max_iterations=settings.max_iterations,
-                run_budget=settings.run_budget,
-                context_root=resolved_cwd,
-                instructions_home=options.home,
-                budget=provider_config.budget(),
+            conversation = build_conversation(
+                settings,
+                provider_config,
+                root=resolved_cwd,
+                registry=components.registry,
+                skills=components.skills,
+                agents=components.agents,
+                mcp_manager=components.mcp_manager,
+                hooks=components.hooks,
                 session=initial_session,
-                sessions_home=options.home,
-                auto_compact=settings.auto_compact,
-                context_collapse=settings.context_collapse,
+                home=options.home,
                 notices=notices,
-                persist=settings.persist_sessions,
-                skills=skills,
-                provider_configs=settings.providers,
-                provider_factory=factory,
-                provider_info=(provider_config.name, provider_config.protocol, provider_config.model),
-                hooks=hooks,
-                agents=AgentCatalog.load(
-                    resolved_cwd,
-                    options.home,
-                    plugins=plugins.plugins,
-                    claude=claude,
-                ),
-                agent_auto_background=settings.agent_auto_background,
-                agent_max_background=settings.agent_max_background,
-                command_max_background=settings.command_max_background,
-                command_auto_background=settings.command_auto_background,
-                worktree_links=settings.worktree_links,
-                worktree_stale_hours=settings.worktree_stale_hours,
+                auto_memory=False,
+                enable_goal_provider=True,
                 teams=False,
-                team_max_members=settings.team_max_members,
-                teammate_mode=settings.teammate_mode,
                 coordinator=coordinator,
-                goal_max_turns=settings.goal_max_turns,
+                provider=provider,
                 goal_provider=goal_provider,
-                **memory_opts,
+                provider_factory=factory,
             )
 
         return cls(
@@ -703,6 +625,29 @@ class AcpSession:
             )
             return SetSessionModeResponse()
 
+    async def switch_model(self, name: str, model: str | None = None) -> None:
+        """Switch the active provider, optionally cloning it with an overridden model."""
+        selected = refreshed(self.settings.select(name), home=self.options.home)
+        if model is not None:
+            selected = with_model(selected, model, home=self.options.home)
+        selected.credential()
+        if (
+            selected.name != self.provider_config.name
+            or selected.model != self.provider_config.model
+            or selected.follow
+        ):
+            factory = self.options.provider_factory or create_provider
+            await self.conversation.set_provider(
+                factory(selected),
+                selected.budget(),
+                info=(selected.name, selected.protocol, selected.model),
+            )
+        if model is not None or selected.follow:
+            providers = tuple(selected if item.name == selected.name else item for item in self.settings.providers)
+            self.settings = replace(self.settings, providers=providers)
+            self.conversation.provider_configs = providers
+        self.provider_config = selected
+
     async def set_config_option(self, config_id: str, value: str | bool) -> SetSessionConfigOptionResponse:
         if not isinstance(value, str):
             raise RequestError.invalid_params({"configId": config_id, "reason": "仅支持字符串选择项。"})
@@ -728,24 +673,15 @@ class AcpSession:
                 )
             elif config_id == "model":
                 try:
-                    selected = refreshed(self.settings.select(value), home=self.options.home)
-                    selected.credential()
+                    await self.switch_model(value)
                 except ConfigError as exc:
                     raise RequestError.invalid_params(
                         {"configId": config_id, "value": value, "reason": str(exc)}
                     ) from None
-                factory = self.options.provider_factory or create_provider
-                try:
-                    await self.conversation.set_provider(
-                        factory(selected),
-                        selected.budget(),
-                        info=(selected.name, selected.protocol, selected.model),
-                    )
                 except ProviderError as exc:
                     raise RequestError(
                         -32001, str(exc), {"configId": config_id, "value": value, "reason": str(exc)}
                     ) from None
-                self.provider_config = selected
             elif config_id == "thought_level":
                 level: str | None = None if value == DEFAULT_THINKING else value
                 if level is not None:

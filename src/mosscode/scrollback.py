@@ -224,6 +224,14 @@ class StreamingMarkdown:
                 yield new_line
 
 
+def capped_lines(text: str, limit: int, label: str = "内容") -> str:
+    """Cap multi-line detail blocks (thinking, verbose tool output) before painting or committing."""
+    lines = text.splitlines()
+    if len(lines) <= limit:
+        return text
+    return "\n".join(lines[:limit]) + f"\n…（另有 {len(lines) - limit} 行{label}未显示）"
+
+
 def message_row(marker, body):
     from rich.table import Table
 

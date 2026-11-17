@@ -1041,3 +1041,33 @@ async def test_tasks_and_status_work_during_a_run(tmp_path):
         assert "└ 已停止任务 t1（w · 子任务）；不会再收到它的通知。" in notes
         assert conv.tasks.get("t1").status == "cancelled" and conv.history[-1].text == "主对话完成"
         assert any("子 Agent" in note and "权限" in note for note in notes)  # /status
+
+
+async def test_definition_subagent_receives_frozen_memory_section(tmp_path):
+    from mosscode.memory import MemoryStore
+
+    write_agent(agents_dir(tmp_path), "worker", "tools: Read\n", "SUB-MEM-WORKER")
+    (project_of(tmp_path) / "AGENTS.md").write_text("PROJECT-AGENTS-MD", encoding="utf-8")
+    store = MemoryStore(tmp_path / "user-mem", tmp_path / "proj-mem")
+    store.save("user", "user-style", "feedback", "偏好简洁错误处理", "详细内容一")
+    store.save("project", "api-contract", "project", "接口契约说明", "详细内容二")
+
+    def script(messages, system, tools):
+        if "SUB-MEM-WORKER" in system.stable:
+            return response("SUB-MEM-OK")
+        if messages[-1].role == "user":
+            return response(calls=[call("agent", "a1", description="检查记忆", prompt="查看约定", agent_type="worker")])
+        return response("完成")
+
+    provider = ScriptProvider(script)
+    conv = conversation(tmp_path, provider, memory=store)
+    await drain(conv.reply("开始"))
+    child = [r for r in provider.requests if "SUB-MEM-WORKER" in r[1].stable]
+    assert len(child) == 1
+    sub_system = child[0][1].stable
+    assert "PROJECT-AGENTS-MD" in sub_system
+    assert "## 记忆" in sub_system
+    assert "user-style" in sub_system and "偏好简洁错误处理" in sub_system
+    assert "api-contract" in sub_system and "接口契约说明" in sub_system
+    assert "## 子 Agent" not in sub_system
+    await conv.close()

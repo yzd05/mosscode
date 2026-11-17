@@ -916,7 +916,9 @@ class AgentLoop:
                     self.registry.images = getattr(getattr(self.provider, "config", None), "accepts_images", True)
                     # Checklist changes in this batch are undone by a /rewind that drops this response.
                     self.registry.todos.mark = len(self.history)
-                    async with aclosing(execute_batch(final.message, self.registry, self.history)) as batch:
+                    async with aclosing(
+                        execute_batch(final.message, self.registry, self.history, steer=lambda: bool(self.pending))
+                    ) as batch:
                         boundary = await anext(batch)
                         yield UsageUpdate(iteration, final.usage, self.total_usage)
                         yield boundary

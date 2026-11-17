@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -13,7 +14,9 @@ from .agents import claude_model
 from .agents.runtime import GLOBAL_BAN, WORKSPACE_TOOLS, effective_mode, stats
 from .agents.tasks import ORIGIN_LABELS, STATUS_LABELS
 from .appearance import KEY_HELP, MUTED_COLOR
+from .catalog import ModelInfo, load_catalog, lookup, providers_for, tokens_label
 from .commands import Command, CommandContext, CommandRegistry, Parsed, argument_problem
+from .config import catalog_window
 from .follow import SOURCES as FOLLOWED
 from .goal import GOAL, MAX_CONDITION, continue_prompt, elapsed_text
 from .hooks.config import SOURCE_LABELS as HOOK_SOURCES
@@ -21,6 +24,7 @@ from .memory import SCOPE_LABELS
 from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
 from .reasoning import DEFAULT, LEVEL_LABELS, LEVELS, Unsupported, thinking_options
+from .session import _clean_title, fork_session, read_title, write_title
 from .skills import ForkRequest, source_label
 from .todo import render as render_todos
 from .usage import approx_tokens, cache_hit_rate, cost_text
@@ -177,16 +181,46 @@ async def _compact(ctx: CommandContext, argument: str) -> None:
     await ctx.ui.compact(argument)
 
 
+def _session_rows(sessions, current: str | None) -> list[Text]:
+    rows = []
+    for item in sessions:
+        mark = "  （当前）" if item.id == current else "  （使用中）" if item.locked else ""
+        rows.append(
+            choice_row(f"{item.modified:%m-%d %H:%M}  {item.title}", f"· {item.messages} 条 · {item.id[-4:]}{mark}")
+        )
+    return rows
+
+
 async def _resume(ctx: CommandContext, argument: str) -> None:
-    if argument:
-        try:
-            ctx.conversation.resolve_session(argument)
-        except ProviderError as exc:
-            await ctx.ui.note(str(exc))
-        else:
-            await confirm_tasks(ctx.ui, ctx.conversation, lambda: _resume_now(ctx, argument))
+    if not argument:
+        await open_sessions(ctx)
         return
-    await open_sessions(ctx)
+    conversation = ctx.conversation
+    reason = conversation.unavailable()
+    if reason:
+        await ctx.ui.note(reason)
+        return
+    try:
+        exact = conversation.resolve_session(argument)
+    except ProviderError as exc:
+        not_found = str(exc)
+    else:
+        await confirm_tasks(ctx.ui, conversation, lambda: _resume_now(ctx, exact))
+        return
+    sessions = await asyncio.to_thread(conversation.sessions, 100)
+    needle = argument.casefold()
+    matched = [item for item in sessions if needle in item.title.casefold() or needle in item.id.casefold()]
+    if not matched:
+        await ctx.ui.note(not_found)
+        return
+    current = conversation.session_id
+    rows = _session_rows(matched, current)
+
+    async def pick(index: int) -> None:
+        await confirm_tasks(ctx.ui, conversation, lambda: _resume_now(ctx, matched[index].id))
+
+    default = next((i for i, item in enumerate(matched) if item.id != current), 0)
+    ctx.ui.choose(f"恢复会话 · 匹配“{argument}”", rows, default, pick)
 
 
 async def _resume_now(ctx: CommandContext, session_id: str) -> None:
@@ -204,12 +238,7 @@ async def open_sessions(ctx: CommandContext) -> None:
     if not any(item.id != current for item in sessions):
         await ctx.ui.note("本项目没有可恢复的会话。")
         return
-    rows = []
-    for item in sessions:
-        mark = "  （当前）" if item.id == current else "  （使用中）" if item.locked else ""
-        rows.append(
-            choice_row(f"{item.modified:%m-%d %H:%M}  {item.title}", f"· {item.messages} 条 · {item.id[-4:]}{mark}")
-        )
+    rows = _session_rows(sessions, current)
 
     async def pick(index: int) -> None:
         await confirm_tasks(ctx.ui, conversation, lambda: _resume_now(ctx, sessions[index].id))
@@ -217,6 +246,72 @@ async def open_sessions(ctx: CommandContext) -> None:
     ctx.ui.choose(
         "恢复会话 · 本项目最近的会话", rows, next((i for i, item in enumerate(sessions) if item.id != current), 0), pick
     )
+
+
+async def _rename(ctx: CommandContext, argument: str) -> None:
+    conversation = ctx.conversation
+    session = conversation.session
+    if session is None:
+        await ctx.ui.note("本次运行没有会话。")
+        return
+    if not conversation.persist or session.transcript_path is None:
+        await ctx.ui.note("会话存档已关闭（persist_sessions: false），不能重命名会话。")
+        return
+    clean_title = _clean_title(argument)
+    if not clean_title:
+        await ctx.ui.note("/rename 需要参数。用法：/rename <标题>")
+        return
+    try:
+        await asyncio.to_thread(
+            write_title,
+            session,
+            clean_title,
+            transcript=getattr(conversation, "_transcript", None),
+            cwd=conversation.context_root,
+        )
+    except (OSError, ValueError) as exc:
+        await ctx.ui.note(f"! 无法重命名会话：{exc}")
+        return
+    await ctx.ui.note(f"└ 已将当前会话重命名为：{clean_title}")
+
+
+async def _fork_session(ctx: CommandContext, argument: str) -> None:
+    conversation = ctx.conversation
+    session = conversation.session
+    if session is None:
+        await ctx.ui.note("本次运行没有会话。")
+        return
+    if not conversation.persist or session.transcript_path is None:
+        await ctx.ui.note("会话存档已关闭（persist_sessions: false），不能创建会话分支。")
+        return
+    if not session.transcript_path.is_file():
+        await ctx.ui.note("当前会话尚无已保存的消息，请先发送消息后再使用 /fork。")
+        return
+    await confirm_tasks(ctx.ui, conversation, lambda: _do_fork(ctx, argument))
+
+
+async def _do_fork(ctx: CommandContext, argument: str) -> None:
+    conversation = ctx.conversation
+    session = conversation.session
+    assert session is not None
+    original_id = session.id
+    root = conversation.context_root or Path.cwd()
+    try:
+        forked = await asyncio.to_thread(
+            fork_session,
+            session,
+            root,
+            home=conversation.sessions_home,
+            title=argument,
+        )
+    except (OSError, ValueError) as exc:
+        await ctx.ui.note(f"! 无法创建会话分支：{exc}")
+        return
+    branch_title = await asyncio.to_thread(read_title, forked.transcript_path)
+    await ctx.ui.note(
+        f"└ 已从当前会话创建分支 {forked.id}（{branch_title}）；原会话 {original_id} 保持不变，可用 /resume {original_id} 切回。"
+    )
+    ctx.ui.resume(forked.id)
 
 
 # (label, restore code, rewind the conversation); a message with no file changes offers the conversation only.
@@ -385,36 +480,149 @@ def _note_names(ctx: CommandContext):
 
 # Model and modes --------------------------------------------------------------------------
 
+_DATED_MODEL = re.compile(r"-(\d{4}-\d{2}-\d{2}|\d{8})$")
+_NON_CHAT_HINTS = ("-audio-", "gpt-audio", "-realtime-", "computer-use", "-transcribe", "-tts")
+MODEL_DETAILS = (
+    "用法：\n"
+    "  /model                  打开提供商或同服务模型选择列表\n"
+    "  /model <提供商>         切换到已配置的提供商\n"
+    "  /model <提供商>/<模型>  复用该提供商的凭据与服务地址，切换到指定模型\n"
+    "  /model <模型>           切换到当前提供商支持的模型目录条目（任意模型名可用 /model :<模型>）"
+)
+
 
 def _providers(ctx: CommandContext):
     return ctx.settings.providers if ctx.settings else ()
 
 
+def _current_provider_config(ctx: CommandContext, providers):
+    current = ctx.ui.provider_name
+    return (
+        next((item for item in providers if item.name == current), None)
+        or ctx.conversation.provider_config
+        or (providers[0] if providers else None)
+    )
+
+
+def _sibling_models(config, active_model: str = "", limit: int = 25) -> list[tuple[str, ModelInfo]]:
+    """Catalog models compatible with `config` when it comes from a preset or matched the catalog."""
+    if config is None or config.follow or (config.preset is None and config.catalog is None):
+        return []
+    catalog = load_catalog()
+    vendors = providers_for(config.base_url, config.protocol)
+    seen: dict[str, ModelInfo] = {}
+    if vendors:
+        for info in catalog.models.values():
+            if info.provider not in vendors or catalog_window(info) is None:
+                continue
+            model_id = info.name.removeprefix(f"{info.provider}/")
+            if model_id != active_model and (
+                model_id.startswith("ft:") or "/" in model_id or any(tag in model_id for tag in _NON_CHAT_HINTS)
+            ):
+                continue
+            seen.setdefault(model_id, info)
+    elif config.catalog is not None:
+        vendor = config.catalog.provider
+        for info in catalog.models.values():
+            if info.provider != vendor or catalog_window(info) is None:
+                continue
+            bare = info.name.removeprefix(f"{vendor}/")
+            if "/" in bare:
+                continue
+            model_id = f"{vendor}/{bare}"
+            seen.setdefault(model_id, info)
+    filtered = [
+        (mid, info)
+        for mid, info in seen.items()
+        if mid == active_model or not (_DATED_MODEL.search(mid) and _DATED_MODEL.sub("", mid) in seen)
+    ]
+    if active_model and config.catalog is not None and all(mid != active_model for mid, _ in filtered):
+        filtered.insert(0, (active_model, config.catalog))
+    filtered.sort(key=lambda item: (item[0] != active_model, item[0]))
+    return filtered[:limit]
+
+
+def _resolve_catalog_override(argument: str, config) -> str | None:
+    if config is None or not any(ch in argument for ch in ("/", "-", ".")):
+        return None
+    info = lookup(argument, base_url=config.base_url, protocol=config.protocol)
+    if info is None:
+        return None
+    vendors = providers_for(config.base_url, config.protocol)
+    if vendors and info.provider not in vendors:
+        return None
+    return argument.removeprefix(f"{info.provider}/") if vendors else argument
+
+
 async def _model(ctx: CommandContext, argument: str) -> None:
     providers = _providers(ctx)
+    argument = argument.strip()
     if argument:
-        if not any(item.name == argument for item in providers):
-            names = "、".join(item.name for item in providers) or "无"
-            await ctx.ui.note(f"未找到提供商 {argument}。可用：{names}")
-        else:
+        if any(item.name == argument for item in providers):
             await ctx.ui.switch_model(argument)
+            return
+        if argument.startswith(":") and argument[1:].strip():
+            active = _current_provider_config(ctx, providers)
+            if active is not None:
+                await ctx.ui.switch_model(active.name, argument[1:].strip())
+                return
+        if "/" in argument:
+            prefix, _, rest = argument.partition("/")
+            rest = rest.strip()
+            if rest and any(item.name == prefix for item in providers):
+                await ctx.ui.switch_model(prefix, rest)
+                return
+        active = _current_provider_config(ctx, providers)
+        override = _resolve_catalog_override(argument, active)
+        if active is not None and override is not None:
+            await ctx.ui.switch_model(active.name, override)
+            return
+        names = "、".join(item.name for item in providers) or "无"
+        await ctx.ui.note(f"未找到提供商 {argument}。可用：{names}")
         return
     current = ctx.ui.provider_name
     following = next((item for item in providers if item.name == current and item.follow), None)
     if len(providers) < 2 and following is not None:
         await ctx.ui.switch_model(current)  # Nothing to pick: read the followed tool's settings again.
         return
-    if len(providers) < 2:
+    if not providers:
         await ctx.ui.note(
             f"当前模型：{current}"
             + (f"（{ctx.ui.model}）" if ctx.ui.model else "")
             + "。在配置文件的 providers 中添加更多提供商后可以切换。"
         )
         return
+    if len(providers) == 1:
+        single = providers[0]
+        active_model = ctx.ui.model or single.model
+        siblings = _sibling_models(single, active_model)
+        if len(siblings) >= 2:
+            rows = [
+                choice_row(
+                    f"{single.name}/{mid}{'  ✓' if mid == active_model else ''}",
+                    f"{tokens_label(info.context_window)} 窗口"
+                    + (f" · 输出 {tokens_label(info.max_output_tokens)}" if info.max_output_tokens else ""),
+                )
+                for mid, info in siblings
+            ]
+
+            async def pick_model(index: int) -> None:
+                await ctx.ui.switch_model(single.name, siblings[index][0])
+
+            selected = next((i for i, (mid, _) in enumerate(siblings) if mid == active_model), 0)
+            ctx.ui.choose(f"切换模型 · {single.name}（对话历史保留）", rows, selected, pick_model)
+            return
+        await ctx.ui.note(
+            f"当前模型：{current}"
+            + (f"（{ctx.ui.model}）" if ctx.ui.model else "")
+            + f"。可用 /model {single.name}/<模型名> 切换同服务的模型，或在配置文件的 providers 中添加更多提供商。"
+        )
+        return
     rows = [
         choice_row(
             f"{item.name}{'  ✓' if item.name == current else ''}",
-            f"{item.protocol} / {item.model}" + (f" · 跟随 {FOLLOWED[item.follow]}" if item.follow else ""),
+            f"{item.protocol} / {ctx.ui.model if item.name == current and ctx.ui.model else item.model}"
+            + (f" · 跟随 {FOLLOWED[item.follow]}" if item.follow else ""),
         )
         for item in providers
     ]
@@ -429,7 +637,15 @@ async def _model(ctx: CommandContext, argument: str) -> None:
 
 def _provider_names(ctx: CommandContext):
     providers = _providers(ctx)
-    return [(item.name, "切换到该提供商") for item in providers] if len(providers) > 1 else []
+    choices = [(item.name, "切换到该提供商") for item in providers] if len(providers) > 1 else []
+    active = _current_provider_config(ctx, providers)
+    if active is not None and any(item.name == active.name for item in providers):
+        active_model = ctx.ui.model or active.model
+        choices.extend(
+            (f"{active.name}/{mid}", f"{active.name} · {tokens_label(info.context_window)} 窗口")
+            for mid, info in _sibling_models(active, active_model)
+        )
+    return choices
 
 
 THINKING_CHOICES = (DEFAULT, *LEVELS)
@@ -1592,11 +1808,11 @@ BUILTIN = CommandRegistry(
         ),
         Command(
             "resume",
-            "恢复本项目之前的会话",
-            "/resume [ID]",
+            "恢复本项目之前的会话（支持按关键词或 ID 筛选）",
+            "/resume [ID|关键词]",
             "local",
             argument="optional",
-            argument_hint="[ID]",
+            argument_hint="[ID|关键词]",
             handler=_resume,
         ),
         Command(
@@ -1608,6 +1824,24 @@ BUILTIN = CommandRegistry(
             handler=_rewind,
         ),
         Command("session", "查看当前会话的 ID、存档位置和消息数", "/session", "local", handler=_session),
+        Command(
+            "rename",
+            "重命名当前会话的标题",
+            "/rename <标题>",
+            "local",
+            argument="required",
+            argument_hint="<标题>",
+            handler=_rename,
+        ),
+        Command(
+            "fork",
+            "从当前会话分出新分支继续探索，原会话保留",
+            "/fork [标题]",
+            "local",
+            argument="optional",
+            argument_hint="[标题]",
+            handler=_fork_session,
+        ),
         Command(
             "memory",
             "查看已加载的项目指令和记忆笔记",
@@ -1621,12 +1855,13 @@ BUILTIN = CommandRegistry(
         Command(
             "model",
             "切换提供商与模型，对话历史保留",
-            "/model [名称]",
+            "/model [名称|模型]",
             "local",
             argument="optional",
-            argument_hint="[名称]",
+            argument_hint="[名称|模型]",
             handler=_model,
             complete=_provider_names,
+            details=MODEL_DETAILS,
         ),
         Command(
             "thinking",

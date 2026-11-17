@@ -395,3 +395,199 @@ async def test_command_cancel_or_timeout_kills_own_child(tmp_path, cancel):
                 await task
             except asyncio.CancelledError:
                 pass
+
+
+async def test_edit_file_mixed_line_endings_preserve_untouched_lines_and_dominant_newline(tmp_path):
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    mostly_crlf = tmp_path / "mixed_crlf.txt"
+    mostly_crlf.write_bytes(b"head\r\nmid1\nmid2\r\ntail\r\n")
+    await registry.execute(call("read_file", path="mixed_crlf.txt"))
+    res = await registry.execute(
+        call("edit_file", path="mixed_crlf.txt", old_text="mid1\nmid2", new_text="new1\nnew2\nnew3")
+    )
+    assert not res.is_error, res
+    # Inserted newlines use dominant CRLF; untouched head/tail CRLFs stay CRLF.
+    assert mostly_crlf.read_bytes() == b"head\r\nnew1\r\nnew2\r\nnew3\r\ntail\r\n"
+
+    mostly_lf = tmp_path / "mixed_lf.txt"
+    mostly_lf.write_bytes(b"l1\nl2\r\nl3\nl4\n")
+    await registry.execute(call("read_file", path="mixed_lf.txt"))
+    res_lf = await registry.execute(call("edit_file", path="mixed_lf.txt", old_text="l3\r\nl4", new_text="n3\nn4\nn5"))
+    assert not res_lf.is_error, res_lf
+    # Inserted newlines use dominant LF while untouched l2\r\n keeps its CRLF.
+    assert mostly_lf.read_bytes() == b"l1\nl2\r\nn3\nn4\nn5\n"
+
+
+async def test_edit_file_trailing_whitespace_and_indentation_fallbacks(tmp_path):
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    trailing = tmp_path / "trailing.py"
+    trailing.write_text("a = 1   \nb = 2\t\nc = 3\n", encoding="utf-8")
+    await registry.execute(call("read_file", path="trailing.py"))
+    res = await registry.execute(
+        call("edit_file", path="trailing.py", old_text="a = 1\nb = 2", new_text="a = 10\nb = 20")
+    )
+    assert not res.is_error and trailing.read_text(encoding="utf-8") == "a = 10\nb = 20\nc = 3\n"
+
+    # Multiple trailing-whitespace candidates require replace_all.
+    dup = tmp_path / "dup.txt"
+    dup.write_text("item  \nitem\t\n", encoding="utf-8")
+    await registry.execute(call("read_file", path="dup.txt"))
+    many = await registry.execute(call("edit_file", path="dup.txt", old_text="item\n", new_text="fixed\n"))
+    assert many.code == "match_count" and many.details["matches"] == 2
+    all_done = await registry.execute(
+        call("edit_file", path="dup.txt", old_text="item\n", new_text="fixed\n", replace_all=True)
+    )
+    assert not all_done.is_error and all_done.details["matches"] == 2
+    assert dup.read_text(encoding="utf-8") == "fixed\nfixed\n"
+
+    # Uniform positive indentation delta (+4 spaces) with an empty line preserved cleanly.
+    indented = tmp_path / "indent.py"
+    indented.write_text(
+        "class Demo:\n    def run(self):\n        x = 1\n\n        return x\n",
+        encoding="utf-8",
+    )
+    await registry.execute(call("read_file", path="indent.py"))
+    pos = await registry.execute(
+        call(
+            "edit_file",
+            path="indent.py",
+            old_text="def run(self):\n    x = 1\n\n    return x",
+            new_text="def run(self):\n    x = 2\n\n    return x + 1",
+        )
+    )
+    assert not pos.is_error, pos
+    assert indented.read_text(encoding="utf-8") == (
+        "class Demo:\n    def run(self):\n        x = 2\n\n        return x + 1\n"
+    )
+
+    # Uniform negative indentation delta (-4 spaces) when old_text was over-indented.
+    neg = await registry.execute(
+        call(
+            "edit_file",
+            path="indent.py",
+            old_text="        def run(self):\n            x = 2",
+            new_text="        def run(self):\n            x = 3",
+        )
+    )
+    assert not neg.is_error, neg
+    assert "    def run(self):\n        x = 3\n" in indented.read_text(encoding="utf-8")
+
+    # Ambiguous indentation-offset candidates fail with match_count and replace_all does not guess indentation.
+    ambig = tmp_path / "ambig.py"
+    ambig.write_text(
+        "def a():\n    x = 1\n    return x\n\ndef b():\n        x = 1\n        return x\n", encoding="utf-8"
+    )
+    await registry.execute(call("read_file", path="ambig.py"))
+    ambig_err = await registry.execute(
+        call("edit_file", path="ambig.py", old_text="x = 1\nreturn x\n", new_text="x = 2\nreturn x\n")
+    )
+    assert ambig_err.code == "match_count" and ambig_err.details["matches"] == 2
+    no_all = await registry.execute(
+        call("edit_file", path="ambig.py", old_text="x = 1\nreturn x\n", new_text="x = 2\nreturn x\n", replace_all=True)
+    )
+    assert no_all.code == "match_count" and no_all.details["matches"] == 0
+
+
+async def test_edit_file_multi_edit_batch_and_atomic_rollback(tmp_path):
+    from mosscode.credentials import PLACEHOLDER
+
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+    target = tmp_path / "multi.py"
+    original = "alpha = 1\nbeta = 2\ngamma = 3\ndelta = 1\n"
+    target.write_text(original, encoding="utf-8")
+    await registry.execute(call("read_file", path="multi.py"))
+
+    # Validation errors on missing/conflicting arguments and secret placeholders inside edits.
+    for bad in (
+        call("edit_file", path="multi.py"),
+        call("edit_file", path="multi.py", edits=[]),
+        call("edit_file", path="multi.py", old_text="alpha = 1"),
+        call(
+            "edit_file",
+            path="multi.py",
+            old_text="alpha = 1",
+            new_text="alpha = 2",
+            edits=[{"old_text": "beta = 2", "new_text": "beta = 3"}],
+        ),
+    ):
+        assert (await registry.execute(bad)).code == "invalid_arguments"
+
+    secret_err = await registry.execute(
+        call(
+            "edit_file",
+            path="multi.py",
+            edits=[{"old_text": "alpha = 1", "new_text": f"alpha = '{PLACEHOLDER}'"}],
+        )
+    )
+    assert secret_err.code == "secret_placeholder"
+
+    # Atomic rollback when a later edit fails: disk stays untouched.
+    failed = await registry.execute(
+        call(
+            "edit_file",
+            path="multi.py",
+            edits=[
+                {"old_text": "alpha = 1", "new_text": "alpha = 10"},
+                {"old_text": "missing_line", "new_text": "never"},
+            ],
+        )
+    )
+    assert failed.code == "match_count" and target.read_text(encoding="utf-8") == original
+
+    # Successful multi-edit applies sequentially, reports total match count, and previews cleanly.
+    tool = registry.get("edit_file")
+    params = tool.validate_arguments(
+        {
+            "path": "multi.py",
+            "edits": [
+                {"old_text": "= 1", "new_text": "= 10", "replace_all": True},
+                {"old_text": "beta = 2", "new_text": "beta = 20\nextra = 25"},
+            ],
+        }
+    )
+    preview = tool.approval_preview(params)
+    assert "+alpha = 10" in preview and "+extra = 25" in preview
+    ok = await registry.execute(
+        call(
+            "edit_file",
+            path="multi.py",
+            edits=[
+                {"old_text": "= 1", "new_text": "= 10", "replace_all": True},
+                {"old_text": "beta = 2", "new_text": "beta = 20\nextra = 25"},
+            ],
+        )
+    )
+    assert not ok.is_error and ok.details["matches"] == 3
+    assert target.read_text(encoding="utf-8") == "alpha = 10\nbeta = 20\nextra = 25\ngamma = 3\ndelta = 10\n"
+
+
+async def test_edit_file_appends_syntax_diagnostic_without_rolling_back(tmp_path):
+    registry = create_default_registry(tmp_path, permission_mode="bypassPermissions", load_permissions=False)
+
+    py = tmp_path / "bad.py"
+    py.write_text("x = 1\ny = 2\n", encoding="utf-8")
+    await registry.execute(call("read_file", path="bad.py"))
+    py_broken = await registry.execute(call("edit_file", path="bad.py", old_text="y = 2", new_text="def broken(:"))
+    assert not py_broken.is_error
+    assert py.read_text(encoding="utf-8") == "x = 1\ndef broken(:\n"
+    assert "注意：修改后检测到语法错误（第 2 行：" in py_broken.output
+    assert "第 2 行" in py_broken.details["syntax_error"]
+
+    py_fixed = await registry.execute(call("edit_file", path="bad.py", old_text="def broken(:", new_text="y = 3"))
+    assert not py_fixed.is_error and "syntax_error" not in py_fixed.details and "语法错误" not in py_fixed.output
+
+    js = tmp_path / "cfg.json"
+    js.write_text('{"a": 1}\n', encoding="utf-8")
+    await registry.execute(call("read_file", path="cfg.json"))
+    js_broken = await registry.execute(call("edit_file", path="cfg.json", old_text="1", new_text="1,"))
+    assert not js_broken.is_error and js.read_text(encoding="utf-8") == '{"a": 1,}\n'
+    assert "注意：修改后检测到语法错误" in js_broken.output and "syntax_error" in js_broken.details
+
+    sh = tmp_path / "run.sh"
+    sh.write_text("echo start\necho done\n", encoding="utf-8")
+    await registry.execute(call("read_file", path="run.sh"))
+    sh_broken = await registry.execute(
+        call("edit_file", path="run.sh", old_text="echo done", new_text="if true; then\n  echo oops")
+    )
+    assert not sh_broken.is_error and "if true; then" in sh.read_text(encoding="utf-8")
+    assert "注意：修改后检测到语法错误" in sh_broken.output and "syntax_error" in sh_broken.details

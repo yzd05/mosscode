@@ -39,6 +39,13 @@ SECRET_VALUE = re.compile(
 PROXY_NAMES = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "FTP_PROXY"}
 OWN_PREFIX = "MOSSCODE_"  # Set by MossCode for the command itself, such as the command text for Git Bash.
 TEMP_NAMES = ("TMPDIR", "TEMP", "TMP")
+NON_INTERACTIVE_DEFAULTS = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "never",
+    "GIT_EDITOR": "true",
+    "PAGER": "cat",
+    "GIT_PAGER": "cat",
+}
 STALE_SECONDS = 7 * 24 * 3600  # Temp directories a crashed process left behind.
 
 _keep: tuple[str, ...] = ()
@@ -113,6 +120,10 @@ def command_environment(env: Mapping[str, str] | None) -> dict[str, str]:
         if name.upper() in TEMP_NAMES:
             del cleaned[name]  # Windows names ignore case; one spelling of each is enough.
     cleaned.update(dict.fromkeys(TEMP_NAMES, temp))
+    present = {name.upper() for name in cleaned}
+    for name, value in NON_INTERACTIVE_DEFAULTS.items():
+        if name.upper() not in present:
+            cleaned[name] = value
     return cleaned
 
 

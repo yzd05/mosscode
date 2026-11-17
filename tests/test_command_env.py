@@ -120,6 +120,22 @@ def test_stale_temp_directories_are_swept(isolated_home):
     assert not stale.exists() and fresh.exists()
 
 
+def test_noninteractive_git_and_pager_defaults_respect_existing_env():
+    defaults = command_environment({"PATH": "/usr/bin"})
+    assert defaults["GIT_TERMINAL_PROMPT"] == "0"
+    assert defaults["GCM_INTERACTIVE"] == "never"
+    assert defaults["GIT_EDITOR"] == "true"
+    assert defaults["PAGER"] == "cat"
+    assert defaults["GIT_PAGER"] == "cat"
+
+    # Case-insensitive preservation of explicit caller/user settings without duplicate keys.
+    custom = command_environment({"git_pager": "delta", "Pager": "less -FRX", "GIT_TERMINAL_PROMPT": "1"})
+    assert custom["git_pager"] == "delta" and "GIT_PAGER" not in custom
+    assert custom["Pager"] == "less -FRX" and "PAGER" not in custom
+    assert custom["GIT_TERMINAL_PROMPT"] == "1"
+    assert custom["GCM_INTERACTIVE"] == "never" and custom["GIT_EDITOR"] == "true"
+
+
 CLIPBOARD_READ = """
 import ctypes
 from ctypes import wintypes

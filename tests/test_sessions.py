@@ -808,3 +808,74 @@ async def test_cleared_results_are_restored_as_notes(tmp_path):
     broken = [message_record(m) for m in history] + [{"type": "clear", "results": {"c0": {"output": 3}}}]
     whole = load_session(_raw_session(tmp_path / "other", broken))
     assert whole.skipped == 1 and whole.history == history
+
+
+def test_title_records_override_first_message_even_past_head_limit(tmp_path):
+    from mosscode.session import TITLE_BYTES, read_title, title_record, write_title
+
+    padding = "x" * (TITLE_BYTES + 8_192)
+    saved = write_session(tmp_path, [user("原始首行标题"), assistant(padding)])
+    assert read_title(saved.transcript_path) == "原始首行标题"
+    write_title(saved, "第一次重命名")
+    # Append more data after the title record so it sits neither in the first 64 KiB nor at the very end.
+    transcript = Transcript(saved, tmp_path / "project")
+    transcript.open_existing()
+    assert transcript.append(message_record(user("后续提问"))) is None
+    assert transcript.append(message_record(assistant(padding))) is None
+    transcript.close()
+    assert read_title(saved.transcript_path) == "第一次重命名"
+    write_title(saved, "  最终会话标题\n忽略换行  ")
+    listed = list_sessions(tmp_path / "project", home=tmp_path / "home")
+    assert listed[0].title == "最终会话标题 忽略换行"
+    restored = load_session(saved.transcript_path)
+    assert restored.title == "最终会话标题 忽略换行" and restored.skipped == 0
+    # Malformed title records are skipped without clobbering the previous valid title.
+    malformed = _raw_session(
+        tmp_path / "bad",
+        [
+            message_record(user("默认标题")),
+            title_record("有效标题"),
+            {"type": "title", "title": "   "},
+            {"type": "title", "title": 123},
+        ],
+    )
+    loaded = load_session(malformed)
+    assert loaded.title == "有效标题" and loaded.skipped == 2
+    assert read_title(malformed) == "有效标题"
+
+
+async def test_fork_session_copies_transcript_and_sidecar_without_modifying_original(tmp_path):
+    from mosscode.session import fork_session, read_title, write_title
+
+    project, home = tmp_path / "project", tmp_path / "home"
+    project.mkdir(exist_ok=True)
+    unpersisted = Session.new(project, home=home)
+    with pytest.raises(ValueError, match="尚无存档记录"):
+        fork_session(unpersisted, project, home=home)
+
+    saved = write_session(tmp_path, [user("主线方案"), assistant("收到")])
+    ref = saved.store_image(png("green"), "[图片 #1]")
+    saved.persist_result("call-1", "persisted output")
+    (saved.directory / "checkpoints").mkdir(exist_ok=True)
+    (saved.directory / "checkpoints" / ("a" * 32)).write_bytes(b"snapshot-bytes")
+    original_bytes = saved.transcript_path.read_bytes()
+
+    forked = fork_session(saved, project, home=home)
+    assert forked.id != saved.id
+    assert saved.transcript_path.read_bytes() == original_bytes
+    assert read_title(forked.transcript_path) == "主线方案 (分支)"
+    assert (forked.directory / "images" / ref.name).read_bytes() == ref.read()
+    assert (forked.directory / "tool-results" / "call-1.txt").read_text(encoding="utf-8") == "persisted output"
+    assert (forked.directory / "checkpoints" / ("a" * 32)).read_bytes() == b"snapshot-bytes"
+
+    named_fork = fork_session(saved, project, home=home, title="尝试替代架构")
+    assert read_title(named_fork.transcript_path) == "尝试替代架构"
+
+    conv = make(tmp_path, SequenceProvider(response("分支上的新回复")))
+    await drain(conv.resume(forked.id))
+    assert await conv.ask("在分支继续") == "分支上的新回复"
+    await conv.close()
+    assert saved.transcript_path.read_bytes() == original_bytes
+    write_title(forked, "已验证分支")
+    assert read_title(saved.transcript_path) == "主线方案"
+    assert read_title(forked.transcript_path) == "已验证分支"

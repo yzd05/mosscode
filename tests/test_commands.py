@@ -75,8 +75,8 @@ class FakeUI:
     def resume(self, session_id):
         self.calls.append(("resume", session_id))
 
-    async def switch_model(self, name):
-        self.calls.append(("switch_model", name))
+    async def switch_model(self, name, model=None):
+        self.calls.append(("switch_model", name) if model is None else ("switch_model", name, model))
 
     async def rewound(self, message):
         self.calls.append(("rewound", message.shown))
@@ -143,6 +143,8 @@ def test_builtin_registry_has_twenty_four_visible_commands():
         "resume",
         "rewind",
         "session",
+        "rename",
+        "fork",
         "memory",
         "model",
         "thinking",
@@ -188,9 +190,9 @@ def test_completion(tmp_path):
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
     conv = Conversation(FakeProvider(), registry=tools(tmp_path), memory=store)
     ctx = context(conv, Settings((ProviderConfig("only", "anthropic-messages", "m"),), "only"))
-    assert len(BUILTIN.matches(ctx, "/")) == 25
+    assert len(BUILTIN.matches(ctx, "/")) == 27
     hidden = CommandRegistry([*BUILTIN.visible(), Command("debug", "x", "/debug", "local", hidden=True, handler=noop)])
-    assert len(hidden.matches(ctx, "/")) == 25 and hidden.get("/debug") is not None
+    assert len(hidden.matches(ctx, "/")) == 27 and hidden.get("/debug") is not None
     assert [tuple(h) for h in BUILTIN.matches(ctx, "/q")] == [("/exit", "退出 MossCode（别名 /quit）", "/exit")]
     assert [h.value for h in BUILTIN.matches(ctx, "/permissions ")] == [
         "/permissions default",
@@ -488,3 +490,103 @@ def test_status_names_the_catalog_entry_behind_the_model_settings(tmp_path):
     )
     report = status_report(context(Conversation(FakeProvider()), Settings((config,), "main")))
     assert "main（anthropic-messages / model-a）；窗口、输出上限来自模型目录（deepseek/deepseek-v4-flash）" in report
+
+
+async def test_rename_fork_and_filtered_resume_commands(tmp_path):
+    first = write_session(tmp_path, [user("修复认证模块 Token 刷新"), assistant("好")])
+    second = write_session(tmp_path, [user("数据库迁移脚本"), assistant("好")])
+    conv = make(tmp_path, FakeProvider())
+
+    # /rename requires an argument and works both before and after messages are sent.
+    ui = await run(context(conv), "/rename")
+    assert ui.notes == ["/rename 需要参数。用法：/rename <标题>"]
+    async for _ in conv.reply("初始问题"):
+        pass
+    original_id = conv.session_id
+    ui = await run(context(conv), "/rename 主线架构设计")
+    assert ui.notes == ["└ 已将当前会话重命名为：主线架构设计"]
+    assert "  标题    主线架构设计" in session_report(conv, conv.sessions())
+
+    # /fork copies the current session, notes how to switch back, and resumes the new branch.
+    ui = await run(context(conv), "/fork 实验缓存方案")
+    assert len(ui.calls) == 1 and ui.calls[0][0] == "resume"
+    forked_id = ui.calls[0][1]
+    assert forked_id != original_id
+    assert f"/resume {original_id}" in ui.notes[0] and "实验缓存方案" in ui.notes[0]
+    titles = {item.id: item.title for item in conv.sessions()}
+    assert titles[original_id] == "主线架构设计" and titles[forked_id] == "实验缓存方案"
+
+    # Unpersisted or empty sessions explain why /rename and /fork cannot run.
+    (tmp_path / "empty").mkdir()
+    fresh = make(tmp_path / "empty", FakeProvider())
+    ui = await run(context(fresh), "/fork")
+    assert "尚无已保存的消息" in ui.notes[0] and ui.calls == []
+    (tmp_path / "off").mkdir()
+    off = make(tmp_path / "off", FakeProvider(), persist=False)
+    assert "persist_sessions: false" in (await run(context(off), "/rename 标题")).notes[0]
+    assert "persist_sessions: false" in (await run(context(off), "/fork")).notes[0]
+
+    # /resume filters by case-insensitive substring on title or session ID, keeping exact IDs direct.
+    ui = await run(context(conv), "/resume token")
+    assert ui.calls == [("choose", "恢复会话 · 匹配“token”", 1, 0)]
+    await ui.pick(0)
+    assert ui.calls[-1] == ("resume", first.id)
+    ui = await run(context(conv), f"/resume {second.id[-4:]}")
+    assert ui.calls[0][0] == "choose" and ui.calls[0][1] == f"恢复会话 · 匹配“{second.id[-4:]}”"
+    ui = await run(context(conv), "/resume 完全不存在的关键词")
+    assert ui.notes[0].startswith("未找到会话 完全不存在的关键词。") and ui.calls == []
+
+    await conv.close()
+    await fresh.close()
+    await off.close()
+
+
+async def test_model_command_decouples_provider_and_model(tmp_path):
+    from mosscode.config import load_settings
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "default_provider: ds\n"
+        "providers:\n"
+        "  - name: ds\n"
+        "    preset: deepseek\n"
+        "    api_key: k1\n"
+        "  - name: or\n"
+        "    preset: openrouter\n"
+        "    api_key: k2\n",
+        encoding="utf-8",
+    )
+    two = load_settings(cfg_path, tmp_path)
+    conv = Conversation(FakeProvider(), registry=tools(tmp_path))
+
+    # Named provider switch keeps single-argument switch_model(name).
+    ui = await run(context(conv, two, FakeUI("ds", "deepseek-flash")), "/model or")
+    assert ui.calls == [("switch_model", "or")]
+
+    # Explicit <provider>/<model> (including gateway model names containing '/') passes (provider, model).
+    ui = await run(context(conv, two, FakeUI("ds", "deepseek-flash")), "/model ds/deepseek-reasoner")
+    assert ui.calls == [("switch_model", "ds", "deepseek-reasoner")]
+    ui = await run(context(conv, two, FakeUI("ds", "deepseek-flash")), "/model or/anthropic/claude-sonnet-5.5")
+    assert ui.calls == [("switch_model", "or", "anthropic/claude-sonnet-5.5")]
+
+    # :<model> overrides the model on the current provider even for unlisted custom model IDs.
+    ui = await run(context(conv, two, FakeUI("ds", "deepseek-flash")), "/model :deepseek-custom-ft")
+    assert ui.calls == [("switch_model", "ds", "deepseek-custom-ft")]
+
+    # Bare catalog model compatible with current provider switches model; incompatible vendor is rejected.
+    ui = await run(context(conv, two, FakeUI("ds", "deepseek-flash")), "/model deepseek-v4-flash")
+    assert ui.calls == [("switch_model", "ds", "deepseek-v4-flash")]
+    ui = await run(context(conv, two, FakeUI("ds", "deepseek-flash")), "/model claude-sonnet-5-5")
+    assert ui.notes == ["未找到提供商 claude-sonnet-5-5。可用：ds、or"] and ui.calls == []
+
+    # Single preset provider with no argument opens the sibling catalog model picker and completes ds/<model>.
+    single_path = tmp_path / "single.yaml"
+    single_path.write_text("providers:\n  - {name: ds, preset: deepseek, api_key: k1}\n", encoding="utf-8")
+    single = load_settings(single_path, tmp_path)
+    single_ctx = context(conv, single, FakeUI("ds", "deepseek-flash"))
+    completions = [h.value for h in BUILTIN.matches(single_ctx, "/model ")]
+    assert "/model ds/deepseek-reasoner" in completions and BUILTIN.takes_completion(single_ctx, "/model")
+    ui = await run(single_ctx, "/model")
+    assert len(ui.calls) == 1 and ui.calls[0][:2] == ("choose", "切换模型 · ds（对话历史保留）")
+    await ui.pick(1)
+    assert ui.calls[-1][0] == "switch_model" and ui.calls[-1][1] == "ds" and isinstance(ui.calls[-1][2], str)

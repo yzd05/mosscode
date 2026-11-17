@@ -1,8 +1,13 @@
+import ast
+import functools
+import json
 import os
 import tempfile
+import warnings
+from bisect import bisect_left
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ..credentials import placeholder_problem
 from ..images import ImageError, image_ref, load_image, sniff, store_failure
@@ -26,11 +31,30 @@ class WriteParams(Params):
     content: str
 
 
-class EditParams(Params):
-    path: str
+class EditItem(Params):
     old_text: str = Field(min_length=1)
     new_text: str
     replace_all: bool = False
+
+
+class EditParams(Params):
+    path: str
+    old_text: str = ""
+    new_text: str = ""
+    replace_all: bool = False
+    edits: list[EditItem] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> "EditParams":
+        if self.edits:
+            if self.old_text or self.new_text or self.replace_all:
+                raise ValueError("使用 edits 批量编辑时，不要同时指定顶层的 old_text、new_text 或 replace_all。")
+            return self
+        if not self.old_text:
+            raise ValueError("必须提供非空的 old_text，或非空的 edits 列表。")
+        if "new_text" not in self.model_fields_set:
+            raise ValueError("单处编辑必须提供 new_text。")
+        return self
 
 
 class FileState:
@@ -260,57 +284,292 @@ class WriteFile(FileTool):
         return await file_io(write)
 
 
+@functools.cache
+def _bash_language():
+    try:
+        import tree_sitter
+        import tree_sitter_bash
+    except ImportError:
+        return None
+    return tree_sitter.Language(tree_sitter_bash.language())
+
+
+def _first_tree_error_line(root) -> int:
+    node = root
+    while True:
+        if node.is_error or node.is_missing:
+            return node.start_point[0] + 1
+        nxt = next((child for child in node.children if child.has_error), None)
+        if nxt is None:
+            return node.start_point[0] + 1
+        node = nxt
+
+
+def _syntax_diagnostic(path: Path, text: str, name: str) -> str | None:
+    """Return a concise syntax diagnostic for edited source files, or None when valid or unsupported."""
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                ast.parse(text, filename=name)
+        except SyntaxError as exc:
+            return f"第 {exc.lineno or 1} 行：{exc.msg or 'invalid syntax'}"
+        except ValueError as exc:
+            return str(exc)
+        return None
+    if suffix == ".json":
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            return f"第 {exc.lineno} 行第 {exc.colno} 列：{exc.msg}"
+        return None
+    if suffix in {".sh", ".bash"}:
+        language = _bash_language()
+        if language is None:
+            return None
+        from tree_sitter import Parser
+
+        root = Parser(language).parse(text.encode("utf-8")).root_node
+        if root.has_error:
+            return f"第 {_first_tree_error_line(root)} 行：Shell 语法错误"
+    return None
+
+
+def _split_lf_lines(text: str) -> list[tuple[int, int, int, str, bool]]:
+    """Return (line_start, content_end, line_end, content, has_nl) for each '\\n'-delimited line."""
+    if not text:
+        return []
+    parts = text.split("\n")
+    lines: list[tuple[int, int, int, str, bool]] = []
+    offset = 0
+    last = len(parts) - 1
+    for idx, content in enumerate(parts):
+        if idx == last:
+            if content:
+                lines.append((offset, offset + len(content), offset + len(content), content, False))
+            break
+        content_end = offset + len(content)
+        lines.append((offset, content_end, content_end + 1, content, True))
+        offset = content_end + 1
+    return lines
+
+
+def _block_indent_delta(
+    work_slice: list[tuple[int, int, int, str, bool]],
+    old_lines: list[str],
+) -> tuple[str, str] | None:
+    """Constant leading whitespace delta ('+'|'-', prefix) across all non-empty lines, or None."""
+    delta: tuple[str, str] | None = None
+    for (_, _, _, w_content, _), o_content in zip(work_slice, old_lines):
+        w_clean = w_content.rstrip(" \t")
+        o_clean = o_content.rstrip(" \t")
+        if not w_clean or not o_clean:
+            if w_clean != o_clean:
+                return None
+            continue
+        w_body = w_clean.lstrip(" \t")
+        o_body = o_clean.lstrip(" \t")
+        if w_body != o_body:
+            return None
+        w_indent = w_clean[: len(w_clean) - len(w_body)]
+        o_indent = o_clean[: len(o_clean) - len(o_body)]
+        if w_indent == o_indent:
+            line_delta = ("", "")
+        elif len(w_indent) > len(o_indent) and w_indent.endswith(o_indent):
+            line_delta = ("+", w_indent[: len(w_indent) - len(o_indent)])
+        elif len(o_indent) > len(w_indent) and o_indent.endswith(w_indent):
+            line_delta = ("-", o_indent[: len(o_indent) - len(w_indent)])
+        else:
+            return None
+        if delta is None:
+            delta = line_delta
+        elif delta != line_delta:
+            return None
+    if delta is None or delta == ("", ""):
+        return None
+    return delta
+
+
+def _shift_indent(text: str, sign: str, prefix: str) -> str:
+    shifted: list[str] = []
+    for part in text.split("\n"):
+        if not part.strip(" \t"):
+            shifted.append(part)
+        elif sign == "+":
+            shifted.append(prefix + part)
+        elif part.startswith(prefix):
+            shifted.append(part[len(prefix) :])
+        else:
+            k = 0
+            while k < len(prefix) and k < len(part) and part[k] == prefix[k]:
+                k += 1
+            shifted.append(part[k:])
+    return "\n".join(shifted)
+
+
+def _fuzzy_line_match(work: str, old: str, new: str, *, replace_all: bool) -> tuple[list[tuple[int, int]], str]:
+    """Deterministic line-based fallback: first trailing whitespace, then uniform indentation offset."""
+    if not old.strip():
+        return [], new
+    old_ends_nl = old.endswith("\n")
+    old_lines = (old[:-1] if old_ends_nl else old).split("\n")
+    m = len(old_lines)
+    work_lines = _split_lf_lines(work)
+    if len(work_lines) < m:
+        return [], new
+
+    old_stripped = [line.rstrip(" \t") for line in old_lines]
+    spans: list[tuple[int, int]] = []
+    i = 0
+    limit = len(work_lines) - m
+    while i <= limit:
+        last_line = work_lines[i + m - 1]
+        if (not old_ends_nl or last_line[4]) and all(
+            work_lines[i + k][3].rstrip(" \t") == old_stripped[k] for k in range(m)
+        ):
+            spans.append((work_lines[i][0], last_line[2] if old_ends_nl else last_line[1]))
+            i += m if replace_all else 1
+        else:
+            i += 1
+    if spans or replace_all:
+        return spans, new
+
+    candidates: list[tuple[int, int, tuple[str, str]]] = []
+    for idx in range(limit + 1):
+        last_line = work_lines[idx + m - 1]
+        if old_ends_nl and not last_line[4]:
+            continue
+        delta = _block_indent_delta(work_lines[idx : idx + m], old_lines)
+        if delta is not None:
+            candidates.append((work_lines[idx][0], last_line[2] if old_ends_nl else last_line[1], delta))
+    if len(candidates) == 1:
+        span_start, span_end, (sign, prefix) = candidates[0]
+        return [(span_start, span_end)], _shift_indent(new, sign, prefix)
+    return [(s, e) for s, e, _ in candidates], new
+
+
 class EditFile(FileTool):
     name = "edit_file"
     description = (
-        "将文件中的 old_text 精确替换为 new_text，空格和换行也参与匹配。默认要求恰好匹配一处；"
-        "replace_all=true 时替换全部匹配。零次或不唯一的匹配不修改文件。编辑前必须先用 read_file 读取。"
+        "将文件中的 old_text 精确替换为 new_text，或通过 edits 一次原子应用多处顺序修改。"
+        "默认要求每处恰好匹配一次；replace_all=true 时替换全部匹配。任一处匹配为零次或不唯一时整次调用不修改文件。"
+        "编辑前必须先用 read_file 读取。"
     )
-    prompt_summary = "以唯一原文匹配精确替换一个片段"
+    prompt_summary = "以唯一原文匹配精确替换片段"
     prompt_guidelines = (
-        "局部修改优先 edit_file；编辑前读取相关原文，old_text 不包含读取输出的行号。",
+        "局部修改优先 edit_file；同一文件的多处局部修改可用 edits 一次提交。编辑前读取相关原文，old_text 不包含读取输出的行号。",
         "edit_file 的 old_text 使用足以唯一定位的最小原文上下文，避免携带大段无关内容；new_text 保留周边缩进和代码风格。重命名等需要替换全部出现位置时使用 replace_all。",
         "edit_file 匹配为零时重新读取当前文件；匹配多次时补充邻近上下文。依据返回的错误调整参数，不猜测原文或原样重复失败调用。",
     )
     params_model = EditParams
 
     @staticmethod
-    def _replace(text: str, params: EditParams) -> tuple[str, int, int, int]:
-        """New text, match count and the changed line range; nothing is written."""
-        if params.old_text == params.new_text:
+    def _replace_one(text: str, item: EditItem) -> tuple[str, int, int, int, int]:
+        """Apply a single EditItem in memory, preserving untouched line endings and dominant newline."""
+        if item.old_text == item.new_text:
             raise ToolFailure("no_change", "old_text 与 new_text 相同，无需修改；文件未修改。")
-        # The model reads CRLF files as LF lines; match in LF and write back CRLF.
-        crlf = "\r\n" in text and text.count("\r\n") == text.count("\n")
-        work, old, new = text, params.old_text, params.new_text
-        if crlf:
-            work, old, new = (value.replace("\r\n", "\n") for value in (text, old, new))
-        positions, start = [], 0
-        step = len(old) if params.replace_all else 1  # Overlaps count when one match is required.
+        has_crlf = "\r\n" in text or "\r\n" in item.old_text
+        crlf_count = text.count("\r\n")
+        lf_count = text.count("\n") - crlf_count
+        dominant_nl = "\r\n" if crlf_count > 0 and crlf_count >= lf_count else "\n"
+
+        work = text.replace("\r\n", "\n") if "\r\n" in text else text
+        old = item.old_text.replace("\r\n", "\n") if has_crlf else item.old_text
+        new = item.new_text.replace("\r\n", "\n") if has_crlf else item.new_text
+
+        spans: list[tuple[int, int]] = []
+        start = 0
+        step = len(old) if item.replace_all else 1  # Overlaps count when one match is required.
         while (position := work.find(old, start)) >= 0:
-            positions.append(position)
+            spans.append((position, position + len(old)))
             start = position + step
-        count = len(positions)
+        repl_work = new
+        if not spans:
+            spans, repl_work = _fuzzy_line_match(work, old, new, replace_all=item.replace_all)
+
+        count = len(spans)
         if count == 0:
             raise ToolFailure(
                 "match_count",
                 "原文匹配 0 次；文件未修改。请重新读取文件确认当前内容，old_text 不要包含行号。",
                 matches=0,
             )
-        if count > 1 and not params.replace_all:
+        if count > 1 and not item.replace_all:
             raise ToolFailure(
                 "match_count",
                 f"原文匹配 {count} 次，需要恰好 1 次；文件未修改。"
                 "补充邻近上下文使其唯一，或设置 replace_all=true 替换全部。",
                 matches=count,
             )
-        result = work.replace(old, new) if params.replace_all else work.replace(old, new, 1)
-        # Line range of the change in the new text; the prefix before the first match is unchanged.
-        first = work[: positions[0]].count("\n") + 1
-        last_start = positions[-1] + (len(new) - len(old)) * (count - 1)
-        last = result[:last_start].count("\n") + 1 + new.count("\n")
-        if crlf:
-            result = result.replace("\n", "\r\n")
-        return result, count, first, last
+
+        crlf_positions: list[int] = []
+        if "\r\n" in text:
+            pos = -1
+            for part in text.split("\r\n")[:-1]:
+                pos += len(part) + 1
+                crlf_positions.append(pos)
+
+        repl_orig = repl_work.replace("\n", "\r\n") if dominant_nl == "\r\n" else repl_work
+        work_chunks: list[str] = []
+        text_chunks: list[str] = []
+        w_prev = 0
+        t_prev = 0
+        w_len = 0
+        last_repl_start = 0
+        for ws, we in spans:
+            ts = ws + bisect_left(crlf_positions, ws) if crlf_positions else ws
+            te = we + bisect_left(crlf_positions, we) if crlf_positions else we
+            prefix_w = work[w_prev:ws]
+            work_chunks.append(prefix_w)
+            w_len += len(prefix_w)
+            last_repl_start = w_len
+            work_chunks.append(repl_work)
+            w_len += len(repl_work)
+            text_chunks.append(text[t_prev:ts])
+            text_chunks.append(repl_orig)
+            w_prev = we
+            t_prev = te
+        work_chunks.append(work[w_prev:])
+        text_chunks.append(text[t_prev:])
+        result_work = "".join(work_chunks)
+        result_text = "".join(text_chunks)
+        if result_text == text:
+            raise ToolFailure("no_change", "old_text 与 new_text 相同，无需修改；文件未修改。")
+
+        first = work[: spans[0][0]].count("\n") + 1
+        last = result_work[:last_repl_start].count("\n") + 1 + repl_work.count("\n")
+        old_last = work[: spans[-1][0]].count("\n") + 1 + work[spans[-1][0] : spans[-1][1]].count("\n")
+        return result_text, count, first, last, old_last
+
+    @staticmethod
+    def _replace(text: str, params: EditParams) -> tuple[str, int, int, int]:
+        """New text, match count and the changed line range; nothing is written."""
+        items = params.edits or [
+            EditItem(old_text=params.old_text, new_text=params.new_text, replace_all=params.replace_all)
+        ]
+        current = text
+        total_count = 0
+        ranges: list[tuple[int, int]] = []
+        for item in items:
+            prev_lines = current.replace("\r\n", "\n").count("\n")
+            current, count, first, last, old_last = EditFile._replace_one(current, item)
+            delta_lines = current.replace("\r\n", "\n").count("\n") - prev_lines
+            total_count += count
+            updated: list[tuple[int, int]] = []
+            for r_start, r_end in ranges:
+                if r_end < first:
+                    updated.append((r_start, r_end))
+                elif r_start > old_last:
+                    updated.append((r_start + delta_lines, r_end + delta_lines))
+                else:
+                    first = min(first, r_start)
+                    last = max(last, r_end + delta_lines)
+            updated.append((first, last))
+            ranges = updated
+        if current == text:
+            raise ToolFailure("no_change", "编辑前后文件内容相同，无需修改；文件未修改。")
+        return current, total_count, min(r[0] for r in ranges), max(r[1] for r in ranges)
 
     def approval_preview(self, params: EditParams) -> str:
         path = self.path(params.path)
@@ -319,8 +578,9 @@ class EditFile(FileTool):
         return unified_diff(text, result, self.display(path), limit=PREVIEW_LINES)
 
     async def execute(self, params: EditParams):
-        if problem := placeholder_problem(params.new_text):
-            raise ToolFailure("secret_placeholder", problem)
+        for candidate in (params.new_text, *(item.new_text for item in params.edits)):
+            if problem := placeholder_problem(candidate):
+                raise ToolFailure("secret_placeholder", problem)
 
         def edit():
             path = self.path(params.path)
@@ -332,9 +592,11 @@ class EditFile(FileTool):
             self.state.record(path)
             name = self.display(path)
             where = f"第 {first} 行" if last <= first else f"第 {first}–{last} 行"
-            return (
-                f"已修改 {name}：替换 {count} 处，{where}。",
-                {"path": str(path), "matches": count, "diff": unified_diff(text, result, name)},
-            )
+            message = f"已修改 {name}：替换 {count} 处，{where}。"
+            details = {"path": str(path), "matches": count, "diff": unified_diff(text, result, name)}
+            if diagnostic := _syntax_diagnostic(path, result, name):
+                message += f"\n注意：修改后检测到语法错误（{diagnostic}），请检查并修复。"
+                details["syntax_error"] = diagnostic
+            return message, details
 
         return await file_io(edit)

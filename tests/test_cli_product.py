@@ -443,3 +443,120 @@ def test_doctor_tools_install_method_and_home(tmp_path):
     assert doctor.install_method(str(Path("C:/Users/u/AppData/Roaming/uv/tools/mosscode"))).startswith("uv tool")
     assert [item.level for item in doctor.check_home(tmp_path)] == [doctor.OK]
     assert not list((tmp_path / ".mosscode").iterdir())  # The probe file is gone.
+
+
+def test_setup_add_appends_provider_preserves_settings_and_disambiguates_names(tmp_path):
+    path = user_config(tmp_path)
+    # Without an existing file, --add creates config.yaml normally.
+    w, _ = wizard(["1", "", "", "", ""], environ={"DEEPSEEK_API_KEY": "set"})
+    assert setup(tmp_path, w, add=True) == "ready"
+    initial = yaml.safe_load(path.read_text(encoding="utf-8"))
+    initial["auto_memory"] = False
+    path.write_text(yaml.safe_dump(initial, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    # Default setup still refuses to touch an existing file and mentions --add.
+    w_exists, out_exists = wizard([])
+    assert setup(tmp_path, w_exists) == "exists"
+    assert "moss setup --add" in out_exists[0]
+
+    # Adding another DeepSeek preset disambiguates name to deepseek-2 and preserves default_provider & auto_memory.
+    w_add, out_add = wizard(["1", "deepseek-reasoner", "", "", ""], environ={"DEEPSEEK_API_KEY": "set"})
+    assert setup(tmp_path, w_add, add=True) == "ready"
+    settings = load_settings(path, tmp_path)
+    assert settings.default_provider == "deepseek" and not settings.auto_memory
+    assert [p.name for p in settings.providers] == ["deepseek", "deepseek-2"]
+    assert settings.providers[1].model == "deepseek-reasoner"
+    assert any("deepseek-2" in str(line) for line in out_add)
+
+    # Cancelling --add leaves the existing file byte-for-byte unchanged.
+    before = path.read_bytes()
+    w_cancel, _ = wizard(["1", "", "", "", "n"], environ={"DEEPSEEK_API_KEY": "set"})
+    assert setup(tmp_path, w_cancel, add=True) == "cancelled"
+    assert path.read_bytes() == before
+
+    # Invalid existing YAML fails cleanly without overwriting it.
+    bad_home = tmp_path / "broken"
+    bad_path = user_config(bad_home)
+    bad_path.parent.mkdir(parents=True)
+    bad_path.write_text("not: [valid", encoding="utf-8")
+    w_bad, _ = wizard([])
+    assert setup(bad_home, w_bad, add=True) == "failed"
+    assert bad_path.read_text(encoding="utf-8") == "not: [valid"
+
+
+def test_doctor_ping_stays_offline_by_default_and_probes_online_with_flag(tmp_path, monkeypatch, capsys):
+    from mosscode.messages import ProviderError
+
+    secret = "sk-other-token-9876543210"
+    cfg = tmp_path / "good.yaml"
+    cfg.write_text(
+        yaml.safe_dump(
+            {
+                "default_provider": "primary",
+                "providers": [
+                    {
+                        "name": "primary",
+                        "protocol": "anthropic-messages",
+                        "model": "claude-sonnet-5-5",
+                        "api_key": secret,
+                    },
+                    {"name": "backup", "protocol": "openai-responses", "model": "gpt-5.6", "api_key": secret},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(doctor, "check_home", lambda: [])
+
+    # Default doctor makes zero provider calls.
+    monkeypatch.setattr(doctor, "create_provider", lambda config: pytest.fail("default doctor must stay offline"))
+    assert doctor.main(["--config", str(cfg)]) == 0
+    assert "模型连通性" not in capsys.readouterr().out
+
+    # --ping probes the default or --provider named provider with allow_tools=False.
+    probed = []
+
+    class ProbeProvider(FakeProvider):
+        def __init__(self, config):
+            super().__init__()
+            self.config = config
+            self.seen_allow_tools = None
+
+        async def stream(self, messages, system, tools=(), *, allow_tools=True):
+            self.seen_allow_tools = allow_tools
+            probed.append((self.config.name, self.config.model, messages[0].text, allow_tools))
+            async for event in super().stream(messages, system, tools, allow_tools=allow_tools):
+                yield event
+
+    monkeypatch.setattr(doctor, "create_provider", ProbeProvider)
+    assert doctor.main(["--config", str(cfg), "--ping"]) == 0
+    out = capsys.readouterr().out
+    assert "✓ 模型连通性：primary（claude-sonnet-5-5）响应正常（" in out and "ms）" in out
+    assert probed == [("primary", "claude-sonnet-5-5", "ping", False)]
+
+    assert doctor.main(["--config", str(cfg), "--ping", "--provider", "backup"]) == 0
+    out = capsys.readouterr().out
+    assert "✓ 模型连通性：backup（gpt-5.6）响应正常" in out
+
+    # Failing probe returns exit code 1 and redacts secrets from error output.
+    class FailingProvider(FakeProvider):
+        async def stream(self, messages, system, tools=(), *, allow_tools=True):
+            raise ProviderError(f"认证失败 {secret}")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(doctor, "create_provider", lambda config: FailingProvider())
+    assert doctor.main(["--config", str(cfg), "--ping"]) == 1
+    out = capsys.readouterr().out
+    assert "✗ 模型连通性：primary 请求失败：" in out and secret not in out
+
+    # Security boundary: an unconfirmed project .mosscode/config.yaml must NOT send a ping request.
+    proj = tmp_path / "untrusted-repo"
+    proj_cfg = proj / ".mosscode" / "config.yaml"
+    proj_cfg.parent.mkdir(parents=True)
+    proj_cfg.write_text(cfg.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(
+        doctor, "create_provider", lambda config: pytest.fail("must not probe untrusted project config")
+    )
+    items = doctor.check_ping(str(proj_cfg), cwd=proj, home=tmp_path / "home")
+    assert len(items) == 1 and items[0].level == doctor.ERROR and "尚未确认" in items[0].text

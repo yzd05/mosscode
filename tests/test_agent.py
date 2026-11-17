@@ -447,3 +447,57 @@ async def test_an_image_read_by_a_tool_reaches_the_next_request_and_follows_the_
     assert await conv.ask("再看") == "好"
     (refused,) = text_only.requests[1][0][-1].tool_results
     assert refused.code == "image_unsupported" and not refused.images
+
+
+async def test_steering_during_tool_batch_skips_subsequent_batches_immediately(tmp_path):
+    from mosscode.messages import UserInput
+
+    registry, read, write, entered, release, log = controlled(tmp_path, ["r1", "r2", "w1", "r3"])
+    provider = SequenceProvider(
+        response(
+            calls=[
+                call("read", "r1", key="r1"),
+                call("read", "r2", key="r2"),
+                call("write", "w1", key="w1"),
+                call("read", "r3", key="r3"),
+            ]
+        ),
+        response("已按新要求调整"),
+    )
+    conv = Conversation(provider, registry=registry)
+    events = []
+
+    async def consume():
+        async for e in conv.reply("开始"):
+            events.append(e)
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(asyncio.gather(entered["r1"].wait(), entered["r2"].wait()), 2)
+        conv.queue("停一下，不要写入，直接总结")
+        release["r1"].set()
+        release["r2"].set()
+        await asyncio.wait_for(task, 2)
+
+        assert not entered["w1"].is_set() and not entered["r3"].is_set()
+        assert [entry for entry in log if entry[0] == "start"] == [("start", "r1"), ("start", "r2")]
+
+        results = conv.history[2].tool_results
+        assert [r.call_id for r in results] == ["r1", "r2", "w1", "r3"]
+        assert [r.code for r in results] == [None, None, "steered", "steered"]
+        assert results[2].is_error and results[2].details == {"executed": False}
+        assert "收到用户新消息" in results[2].output
+
+        running_ids = [e.call.id for e in events if isinstance(e, ToolProgress) and e.phase == "running"]
+        finished_ids = [e.call.id for e in events if isinstance(e, ToolProgress) and e.phase == "finished"]
+        assert running_ids == ["r1", "r2"]
+        assert set(finished_ids) == {"r1", "r2", "w1", "r3"}
+        assert any(isinstance(e, UserInput) and e.texts == ("停一下，不要写入，直接总结",) for e in events)
+        assert provider.requests[1][0][-1].text == "停一下，不要写入，直接总结"
+        assert conv.history[-1].text == "已按新要求调整"
+    finally:
+        for gate in release.values():
+            gate.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

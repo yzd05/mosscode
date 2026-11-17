@@ -10,8 +10,9 @@ import getpass
 import ipaddress
 import os
 import re
+import secrets
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -94,6 +95,15 @@ def _window(value: str) -> int | None:
     return int(number) if number >= 1 and number == int(number) else None
 
 
+def _unique_name(base: str, existing: Collection[str]) -> str:
+    if base not in existing:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in existing:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
 class Wizard:
     def __init__(
         self,
@@ -124,7 +134,13 @@ class Wizard:
                 return int(answer)
             self.write(f"  请输入 1–{len(options)} 之间的数字。")
 
-    def collect(self, home: Path | None = None) -> dict | None:
+    def collect(
+        self,
+        home: Path | None = None,
+        *,
+        existing_names: Collection[str] = (),
+        default: bool = True,
+    ) -> dict | None:
         """The provider entry, or None when the user did not confirm. Raises Cancelled on Ctrl+D."""
         from .follow import SOURCES, detected
         from .presets import PRESETS
@@ -139,20 +155,29 @@ class Wizard:
         self.write("")
         kind, key, _ = choices[self.choose("选择模型服务", [label for *_, label in choices]) - 1]
         if kind == "follow":
-            return self._follow(key, home)
+            return self._follow(key, home, existing_names=existing_names, default=default)
         if kind == "preset":
-            return self._preset(PRESETS[key])
-        return self._custom()
+            return self._preset(PRESETS[key], existing_names=existing_names, default=default)
+        return self._custom(existing_names=existing_names, default=default)
 
-    def _follow(self, source: str, home: Path | None) -> dict | None:
+    def _follow(
+        self,
+        source: str,
+        home: Path | None,
+        *,
+        existing_names: Collection[str] = (),
+        default: bool = True,
+    ) -> dict | None:
         from .follow import SOURCES, resolve, settings_path
 
-        provider = {"name": source, "follow": source}
+        name = _unique_name(source, existing_names)
+        provider = {"name": name, "follow": source}
         found = resolve(provider, home, self.environ)
+        role = "默认 Provider" if default else f"追加，可用 /model {name} 切换"
         self.write("")
         self.write("将写入：")
         for line in (
-            f"名称 {source}（默认 Provider）",
+            f"名称 {name}（{role}）",
             f"跟随 {SOURCES[source]} 的设置 {settings_path(source, home, self.environ)}",
             f"现在是 {found['protocol']} / {found['model']}，"
             f"服务地址 {found.get('base_url') or '官方地址 ' + OFFICIAL[found['protocol']]}",
@@ -161,7 +186,7 @@ class Wizard:
             self.write("  " + line)
         return provider if self._confirmed() else None
 
-    def _preset(self, preset) -> dict | None:
+    def _preset(self, preset, *, existing_names: Collection[str] = (), default: bool = True) -> dict | None:
         from .catalog import lookup
 
         self.write(f"  {preset.label}：{preset.protocol} · {preset.base_url or OFFICIAL[preset.protocol]}")
@@ -172,18 +197,19 @@ class Wizard:
                 f"  模型目录中没有 {model}，按 128K 估算上下文；可以在配置中填写 context_window，"
                 "或用 catalog_model 指定目录中的条目（moss models <关键词> 查找）。"
             )
-        provider = {"name": preset.key, "preset": preset.key, "model": model}
+        name = _unique_name(preset.key, existing_names)
+        provider = {"name": name, "preset": preset.key, "model": model}
         self._credential(provider, "凭据", preset.api_key_env)
         self.write("")
         self.write("将写入：")
-        for line in summary(provider):
+        for line in summary(provider, default=default):
             self.write("  " + line)
         return provider if self._confirmed() else None
 
     def _confirmed(self) -> bool:
         return self.ask("确认写入？(Y/n)").lower() in {"", "y", "yes", "是"}
 
-    def _custom(self) -> dict | None:
+    def _custom(self, *, existing_names: Collection[str] = (), default: bool = True) -> dict | None:
         from .catalog import lookup, tokens_label
         from .config import catalog_window
 
@@ -214,17 +240,19 @@ class Wizard:
             if not answer or window is not None:
                 break
             self.write("  请输入正整数，例如 128000、200k 或 1m。")
-        name = _host_name(base_url) or NAMES[protocol]
+        host_base = _host_name(base_url)
+        raw_name = host_base or NAMES[protocol]
+        name = _unique_name(raw_name, existing_names)
         provider: dict = {"name": name, "protocol": protocol, "model": model}
         if base_url:
             provider["base_url"] = base_url
-        default = f"{name.upper().replace('-', '_')}_API_KEY" if _host_name(base_url) else KEYS[protocol]
-        self._credential(provider, "5/5 凭据", default)
+        env_default = f"{host_base.upper().replace('-', '_')}_API_KEY" if host_base else KEYS[protocol]
+        self._credential(provider, "5/5 凭据", env_default)
         if window is not None:
             provider["context_window"] = window
         self.write("")
         self.write("将写入：")
-        for line in summary(provider, known):
+        for line in summary(provider, known, default=default):
             self.write("  " + line)
         return provider if self._confirmed() else None
 
@@ -267,7 +295,7 @@ class Wizard:
             self.write("  密钥不能为空。")
 
 
-def summary(provider: dict, catalog_window: int | None = None) -> list[str]:
+def summary(provider: dict, catalog_window: int | None = None, *, default: bool = True) -> list[str]:
     """What will be written, the key itself never shown."""
     from .catalog import tokens_label
 
@@ -287,8 +315,9 @@ def summary(provider: dict, catalog_window: int | None = None) -> list[str]:
         )
         size = known(info) if info else None
         window = f"按模型目录 {tokens_label(size)}" if size else "按 128K 估算"
+    role = "默认 Provider" if default else f"追加，可用 /model {provider['name']} 切换"
     lines = [
-        f"名称 {provider['name']}（默认 Provider）" + (f"，预设 {preset.label}" if "preset" in provider else ""),
+        f"名称 {provider['name']}（{role}）" + (f"，预设 {preset.label}" if "preset" in provider else ""),
         f"协议 {provider['protocol']}",
         f"模型 {provider['model']}",
         f"服务地址 {provider.get('base_url') or '官方地址 ' + OFFICIAL[provider['protocol']]}",
@@ -314,26 +343,89 @@ def write_config(path: Path, provider: dict) -> None:
         path.chmod(0o600)
 
 
-def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: bool = True) -> str:
+def _append_config(path: Path, existing_raw: dict, provider: dict, home: Path | None) -> None:
+    """Append `provider` to `existing_raw['providers']`, validate in a sibling temp file, then replace atomically."""
+    import yaml
+
+    from .config import load_settings
+
+    updated = dict(existing_raw)
+    updated["providers"] = [*existing_raw["providers"], provider]
+    rendered = (
+        "# MossCode 配置，由 moss setup 生成。\n"
+        "# 字段说明见 config.example.yaml；追加 Provider：运行 moss setup --add，或在 providers 下再写一项。\n"
+        + yaml.safe_dump(updated, sort_keys=False, allow_unicode=True)
+    )
+    has_plaintext = any(isinstance(item, dict) and "api_key" in item for item in updated["providers"])
+    tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
+    try:
+        with tmp.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(rendered)
+        if has_plaintext and os.name != "nt":
+            tmp.chmod(0o600)
+        load_settings(tmp, home)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def setup(
+    home: Path | None = None,
+    wizard: Wizard | None = None,
+    *,
+    first_run: bool = True,
+    add: bool = False,
+) -> str:
     """One of ready, written (a credential is still to be set), exists, cancelled, failed; each is reported."""
+    import yaml
+
     from .config import ConfigError, load_settings
 
     wizard = wizard or Wizard()
     path = user_config(home)
+    existing_raw: dict | None = None
+    existing_names: set[str] = set()
     if path.exists():
-        wizard.write(f"配置已存在：{path}。setup 不会覆盖它；追加 Provider 请直接编辑这个文件。")
-        return "exists"
-    if first_run:
-        wizard.write("MossCode 还没有配置。下面创建用户级配置，之后在任何目录都能使用。")
-    wizard.write(f"将写入 {path}。按 Ctrl+C 随时退出，不写入任何文件。")
+        if not add:
+            wizard.write(
+                f"配置已存在：{path}。setup 不会覆盖它；追加 Provider 请运行 moss setup --add，或直接编辑这个文件。"
+            )
+            return "exists"
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError, UnicodeError) as exc:
+            wizard.write(f"无法读取现有配置 {path}：{exc}。请先修复后再运行 moss setup --add。")
+            return "failed"
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("providers"), list) or not loaded["providers"]:
+            wizard.write(f"现有配置 {path} 格式无效（缺少 providers 列表），无法追加。")
+            return "failed"
+        try:
+            settings = load_settings(path, home)
+        except ConfigError as exc:
+            wizard.write(f"现有配置 {path} 校验失败：{exc} 请先修复后再运行 moss setup --add。")
+            return "failed"
+        existing_raw = loaded
+        existing_names = {item.name for item in settings.providers}
+        wizard.write(
+            f"将在 {path} 中追加 Provider（已有：{'、'.join(item.name for item in settings.providers)}）。"
+            "按 Ctrl+C 随时退出，不修改文件。"
+        )
+    else:
+        if first_run:
+            wizard.write("MossCode 还没有配置。下面创建用户级配置，之后在任何目录都能使用。")
+        wizard.write(f"将写入 {path}。按 Ctrl+C 随时退出，不写入任何文件。")
     try:
-        provider = wizard.collect(home)
+        provider = wizard.collect(home, existing_names=existing_names, default=existing_raw is None)
     except (Cancelled, KeyboardInterrupt):
         wizard.write("\n已退出，没有写入文件。")
         return "cancelled"
     if provider is None:
         wizard.write("没有写入文件。")
         return "cancelled"
+    if existing_raw is not None:
+        provider["name"] = _unique_name(provider["name"], existing_names)
+        if "api_key_keyring" in provider and provider["api_key_keyring"] in existing_names:
+            provider["api_key_keyring"] = provider["name"]
     if wizard.pending_key is not None:
         from .credentials import KeyringError
 
@@ -342,20 +434,31 @@ def setup(home: Path | None = None, wizard: Wizard | None = None, *, first_run: 
         except KeyringError as exc:
             wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
             return "failed"
-    try:
-        write_config(path, provider)
-    except FileExistsError:
-        wizard.write(f"配置已存在：{path}。没有覆盖它。")
-        return "exists"
-    except OSError as exc:
-        wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
-        return "failed"
-    try:
-        load_settings(path, home)
-    except ConfigError as exc:
-        wizard.write(f"已写入 {path}，但校验失败：{exc} 请修改文件后再运行 moss。")
-        return "failed"
-    wizard.write(f"已写入 {path}。")
+    if existing_raw is not None:
+        try:
+            _append_config(path, existing_raw, provider, home)
+        except ConfigError as exc:
+            wizard.write(f"追加 Provider 校验失败：{exc} 原有配置文件未修改。")
+            return "failed"
+        except OSError as exc:
+            wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+            return "failed"
+        wizard.write(f"已向 {path} 追加 Provider {provider['name']}（可用 /model {provider['name']} 切换）。")
+    else:
+        try:
+            write_config(path, provider)
+        except FileExistsError:
+            wizard.write(f"配置已存在：{path}。没有覆盖它。")
+            return "exists"
+        except OSError as exc:
+            wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+            return "failed"
+        try:
+            load_settings(path, home)
+        except ConfigError as exc:
+            wizard.write(f"已写入 {path}，但校验失败：{exc} 请修改文件后再运行 moss。")
+            return "failed"
+        wizard.write(f"已写入 {path}。")
     variable = provider.get("api_key_env")
     if variable and not wizard.environ.get(variable):
         if os.name == "nt":
@@ -379,15 +482,16 @@ def main(argv: list[str] | None = None) -> int:
     command = argparse.ArgumentParser(
         prog="moss setup",
         description="创建用户级配置 ~/.mosscode/config.yaml：支持跟随 Claude Code / Codex、选择厂商预设或自定义配置。"
-        "已有配置时不修改它。",
+        "已有配置时不修改它；加 --add 可在已有配置中追加 Provider。",
     )
-    command.parse_args(argv)
+    command.add_argument("--add", action="store_true", help="在已有配置的 providers 中追加一项，保留原有设置")
+    args = command.parse_args(argv)
     from .launcher import is_terminal
 
     if not (is_terminal(sys.stdin) and is_terminal(sys.stdout)):
         print("moss setup 需要在终端中运行。", file=sys.stderr)
         return 2
-    result = setup(first_run=False)
+    result = setup(first_run=False, add=args.add)
     if result == "ready":
         print("运行 moss 开始使用。")
     return {"ready": 0, "written": 0, "exists": 0, "cancelled": 130, "failed": 1}[result]
