@@ -862,6 +862,7 @@ async def test_fork_session_copies_transcript_and_sidecar_without_modifying_orig
 
     forked = fork_session(saved, project, home=home)
     assert forked.id != saved.id
+    assert records(forked.transcript_path)[0]["id"] == forked.id
     assert saved.transcript_path.read_bytes() == original_bytes
     assert read_title(forked.transcript_path) == "主线方案 (分支)"
     assert (forked.directory / "images" / ref.name).read_bytes() == ref.read()

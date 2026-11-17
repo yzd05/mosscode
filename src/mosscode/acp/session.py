@@ -48,6 +48,7 @@ from ..builtin_commands import (
     hooks_report,
     mcp_report,
     memory_report,
+    resolve_model_target,
     tasks_report,
     thinking_detail,
     typed,
@@ -85,7 +86,7 @@ from ..runtime_factory import (
 )
 from ..sandbox import HOME_SECRETS, Sandbox, use_sandbox
 from ..security import inside
-from ..session import Session, SessionLocked, find_session
+from ..session import Session, SessionLocked, _clean_title, find_session, write_title
 from ..skills import ForkRequest
 from ..todo import TodoItem
 from .auth import load_session_settings, remember_settings_credentials
@@ -285,6 +286,7 @@ class AcpSession:
         self.cwd = cwd
         self.client = client
         self.settings = settings
+        self._configured_providers = settings.providers
         self.provider_config = provider_config
         self.conversation = conversation
         self.commands = commands
@@ -626,8 +628,10 @@ class AcpSession:
             return SetSessionModeResponse()
 
     async def switch_model(self, name: str, model: str | None = None) -> None:
-        """Switch the active provider, optionally cloning it with an overridden model."""
-        selected = refreshed(self.settings.select(name), home=self.options.home)
+        """Switch the active provider, optionally cloning its configured base with an overridden model."""
+        current = self.settings.select(name)
+        configured = next((item for item in self._configured_providers if item.name == current.name), current)
+        selected = refreshed(configured, home=self.options.home)
         if model is not None:
             selected = with_model(selected, model, home=self.options.home)
         selected.credential()
@@ -642,7 +646,7 @@ class AcpSession:
                 selected.budget(),
                 info=(selected.name, selected.protocol, selected.model),
             )
-        if model is not None or selected.follow:
+        if model is not None or selected.follow or current is not configured:
             providers = tuple(selected if item.name == selected.name else item for item in self.settings.providers)
             self.settings = replace(self.settings, providers=providers)
             self.conversation.provider_configs = providers
@@ -672,8 +676,14 @@ class AcpSession:
                     update=CurrentModeUpdate(current_mode_id=self.current_mode),
                 )
             elif config_id == "model":
+                target = resolve_model_target(
+                    value, self.settings.providers, self.provider_config, home=self.options.home
+                )
                 try:
-                    await self.switch_model(value)
+                    if target is not None:
+                        await self.switch_model(target[0], target[1])
+                    else:
+                        await self.switch_model(value)
                 except ConfigError as exc:
                     raise RequestError.invalid_params(
                         {"configId": config_id, "value": value, "reason": str(exc)}
@@ -983,6 +993,29 @@ class AcpSession:
         if name == "session":
             sessions = await asyncio.to_thread(self.conversation.sessions)
             await self._send_text(format_session_markdown(self.conversation, sessions))
+            return PromptResponse(stop_reason="end_turn"), "", None, None
+
+        if name == "rename":
+            session = self.conversation.session
+            if session is None or not self.conversation.persist or session.transcript_path is None:
+                await self._send_text("会话存档已关闭（`persist_sessions: false`），不能重命名会话。")
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            clean_title = _clean_title(args)
+            if not clean_title:
+                await self._send_text("`/rename` 需要参数。用法：`/rename <标题>`")
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            try:
+                await asyncio.to_thread(
+                    write_title,
+                    session,
+                    clean_title,
+                    transcript=getattr(self.conversation, "_transcript", None),
+                    cwd=self.cwd,
+                )
+            except (OSError, ValueError) as exc:
+                await self._send_text(f"无法重命名会话：{escape_markdown_inline(str(exc))}")
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            await self._send_text(f"已将当前会话重命名为：**{escape_markdown_inline(clean_title)}**。")
             return PromptResponse(stop_reason="end_turn"), "", None, None
 
         if name == "memory":

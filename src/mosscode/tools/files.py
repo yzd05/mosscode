@@ -594,7 +594,10 @@ class EditFile(FileTool):
             where = f"第 {first} 行" if last <= first else f"第 {first}–{last} 行"
             message = f"已修改 {name}：替换 {count} 处，{where}。"
             details = {"path": str(path), "matches": count, "diff": unified_diff(text, result, name)}
-            if diagnostic := _syntax_diagnostic(path, result, name):
+            diagnostic = _syntax_diagnostic(path, result, name)
+            # Only errors this edit introduced: JSONC configs, templates, files already broken or written for a
+            # newer interpreter would otherwise be "fixed" by the model on every edit.
+            if diagnostic and _syntax_diagnostic(path, text, name) is None:
                 message += f"\n注意：修改后检测到语法错误（{diagnostic}），请检查并修复。"
                 details["syntax_error"] = diagnostic
             return message, details

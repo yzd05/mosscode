@@ -213,7 +213,7 @@ STAGE_ROOM = 16  # Narrower than this beside the recent results, the stage keeps
 
 def tool_state(result: ToolResult) -> str:
     """How a call ended: stopped before or while running, failed, or succeeded."""
-    if result.code in {"cancelled", "not_executed", "plan_blocked"}:
+    if result.code in {"cancelled", "not_executed", "plan_blocked", "steered"}:
         return "stopped"
     return "error" if result.is_error else "success"
 

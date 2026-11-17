@@ -591,3 +591,13 @@ async def test_edit_file_appends_syntax_diagnostic_without_rolling_back(tmp_path
     )
     assert not sh_broken.is_error and "if true; then" in sh.read_text(encoding="utf-8")
     assert "注意：修改后检测到语法错误" in sh_broken.output and "syntax_error" in sh_broken.details
+
+    # Files that already fail strict parsing (such as JSONC with comments) do not emit false-positive warnings.
+    jsonc = tmp_path / "settings.json"
+    jsonc.write_text('// editor settings\n{"tabSize": 2}\n', encoding="utf-8")
+    await registry.execute(call("read_file", path="settings.json"))
+    jsonc_edited = await registry.execute(
+        call("edit_file", path="settings.json", old_text='"tabSize": 2', new_text='"tabSize": 4')
+    )
+    assert not jsonc_edited.is_error
+    assert "syntax_error" not in jsonc_edited.details and "语法错误" not in jsonc_edited.output

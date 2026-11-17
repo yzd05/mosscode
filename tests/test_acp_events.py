@@ -152,6 +152,22 @@ def test_event_mapper_produces_diff_and_locations_for_edit_and_write(tmp_path):
     assert write_diffs[0].old_text is None
     assert write_diffs[0].new_text == "hello\n"
 
+    # Batch edit_file(edits=[...]) produces structured diff preview and starting line on approval too.
+    batch_file = tmp_path / "batch.py"
+    batch_file.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8", newline="\n")
+    call_batch = ToolCall(
+        "c3",
+        "edit_file",
+        '{"path": "batch.py", "edits": [{"old_text": "b = 2", "new_text": "b = 20"}, {"old_text": "c = 3", "new_text": "c = 30"}]}',
+    )
+    batch_running = mapper.map_event(ToolProgress(call_batch, "running"))
+    assert batch_running[0].locations and batch_running[0].locations[0].line == 2
+    batch_req = ApprovalRequest("req-b", "c3", Operation("edit_file", "batch.py", preview="fallback"), "confirm")
+    batch_approval = mapper.approval_tool_call_update(batch_req)
+    batch_diffs = [c for c in (batch_approval.content or ()) if isinstance(c, FileEditToolCallContent)]
+    assert len(batch_diffs) == 1
+    assert batch_diffs[0].new_text == "a = 1\nb = 20\nc = 30\n"
+
 
 def test_event_mapper_oversized_file_falls_back_gracefully(tmp_path):
     big = tmp_path / "big.txt"
@@ -382,10 +398,14 @@ def test_acp_markdown_formatting_for_help_and_reports(tmp_path):
     assert "### `/eli5 [参数]`" in detail
     assert r"\<topic\>" in detail
 
-    # Terminal-only command query gives ACP-specific guidance.
+    # Terminal-only command query gives ACP-specific guidance, while /rename is available in ACP.
+    assert "`/rename <标题>`" in overview
+    assert "`/fork [标题]`" not in overview
     excluded_help = format_help_markdown(registry, "resume", catalog)
     assert "仅用于终端交互界面" in excluded_help
     assert "历史会话" in excluded_help
+    fork_help = format_help_markdown(registry, "fork", catalog)
+    assert "仅用于终端交互界面" in fork_help and "分支" in fork_help
 
     skills_md = format_skills_markdown(catalog)
     assert "### 已加载 Skill" in skills_md

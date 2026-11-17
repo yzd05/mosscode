@@ -879,7 +879,9 @@ class Conversation:
         reason = self.unavailable()
         if reason:
             raise ProviderError(reason)
-        if session_id == self.session_id and self._agent.history:
+        if session_id == self.session_id and (
+            self._agent.history or (self._transcript is not None and self._transcript._stream is not None)
+        ):
             raise ProviderError("这已是当前会话。")
         path = find_session(self._sessions_root(), session_id, home=self.sessions_home)
         if path is None:

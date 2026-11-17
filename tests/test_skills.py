@@ -406,7 +406,7 @@ def test_skill_commands_are_registered_on_a_copy(places):
     assert command.kind == "skill" and command.skill == "foo" and command.argument == "optional"
     assert command.usage == "/foo [路径]"
     ctx = CommandContext(None, None, commands)
-    hints = commands.matches(ctx, "/fo")
+    hints = commands.matches(ctx, "/foo")
     assert [(hint.value, hint.description, hint.label) for hint in hints] == [
         ("/foo", "foo 的说明 [skill]", "/foo [路径]")
     ]

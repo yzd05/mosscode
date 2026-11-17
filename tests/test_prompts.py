@@ -117,7 +117,7 @@ def test_tool_contributions_follow_enabled_definitions_and_api_guidance(tmp_path
     assert positions == sorted(positions)
     assert "当前没有可调用的工具" in build_system_prompt()
     assert "UTF-8" in next(t.description for t in definitions if t.name == "read_file")
-    assert "默认要求恰好匹配一处" in next(t.description for t in definitions if t.name == "edit_file")
+    assert "默认要求每处恰好匹配一次" in next(t.description for t in definitions if t.name == "edit_file")
 
 
 def test_custom_tool_contributions_list_without_hardcoded_builtin_names():

@@ -11,6 +11,7 @@ import ipaddress
 import os
 import re
 import secrets
+import shutil
 import sys
 from collections.abc import Callable, Collection
 from pathlib import Path
@@ -343,30 +344,75 @@ def write_config(path: Path, provider: dict) -> None:
         path.chmod(0o600)
 
 
-def _append_config(path: Path, existing_raw: dict, provider: dict, home: Path | None) -> None:
-    """Append `provider` to `existing_raw['providers']`, validate in a sibling temp file, then replace atomically."""
+def _insert_provider_text(original: str, provider: dict) -> str | None:
+    """`original` with `provider` added as the last item of its top-level block `providers:` list, or None.
+
+    Editing the text, rather than dumping the parsed YAML again, keeps the user's comments, key order and quoting.
+    """
+    import yaml
+
+    newline = "\r\n" if "\r\n" in original else "\n"
+    lines = original.splitlines()
+    start = next((i for i, line in enumerate(lines) if re.fullmatch(r"providers:\s*(#.*)?", line)), None)
+    if start is None:
+        return None
+    indent, last = None, None
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        stripped = line.lstrip(" ")
+        if not stripped or stripped.startswith("#"):
+            continue
+        depth = len(line) - len(stripped)
+        if indent is None:
+            if not stripped.startswith("- "):
+                return None  # A flow sequence or something unexpected: leave it to the fallback.
+            indent = depth
+        if depth > indent or (depth == indent and stripped.startswith("- ")):
+            last = index
+            continue
+        break
+    if indent is None or last is None:
+        return None
+    item = yaml.safe_dump([provider], sort_keys=False, allow_unicode=True).splitlines()
+    lines[last + 1 : last + 1] = [" " * indent + row for row in item]
+    return newline.join(lines) + newline
+
+
+def _prepare_append(
+    path: Path, original: str, existing_raw: dict, provider: dict, home: Path | None
+) -> tuple[Path, bool]:
+    """A validated sibling temp file holding the configuration with `provider` appended, and whether the original
+    text (comments included) was kept. The caller replaces `path` with it, or deletes it."""
     import yaml
 
     from .config import load_settings
 
-    updated = dict(existing_raw)
-    updated["providers"] = [*existing_raw["providers"], provider]
-    rendered = (
-        "# MossCode 配置，由 moss setup 生成。\n"
-        "# 字段说明见 config.example.yaml；追加 Provider：运行 moss setup --add，或在 providers 下再写一项。\n"
-        + yaml.safe_dump(updated, sort_keys=False, allow_unicode=True)
-    )
-    has_plaintext = any(isinstance(item, dict) and "api_key" in item for item in updated["providers"])
+    expected = {**existing_raw, "providers": [*existing_raw["providers"], provider]}
+    rendered = _insert_provider_text(original, provider)
+    kept = False
+    if rendered is not None:
+        try:
+            kept = yaml.safe_load(rendered) == expected
+        except yaml.YAMLError:
+            kept = False
+    if not kept:
+        rendered = (
+            "# MossCode 配置，由 moss setup 生成。\n"
+            "# 字段说明见 config.example.yaml；追加 Provider：运行 moss setup --add，或在 providers 下再写一项。\n"
+            + yaml.safe_dump(expected, sort_keys=False, allow_unicode=True)
+        )
+    has_plaintext = any(isinstance(item, dict) and "api_key" in item for item in expected["providers"])
     tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
     try:
-        with tmp.open("x", encoding="utf-8", newline="\n") as stream:
+        with tmp.open("x", encoding="utf-8", newline="") as stream:
             stream.write(rendered)
         if has_plaintext and os.name != "nt":
             tmp.chmod(0o600)
         load_settings(tmp, home)
-        os.replace(tmp, path)
-    finally:
+    except BaseException:
         tmp.unlink(missing_ok=True)
+        raise
+    return tmp, kept
 
 
 def setup(
@@ -385,6 +431,7 @@ def setup(
     path = user_config(home)
     existing_raw: dict | None = None
     existing_names: set[str] = set()
+    original = ""
     if path.exists():
         if not add:
             wizard.write(
@@ -392,7 +439,8 @@ def setup(
             )
             return "exists"
         try:
-            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+            original = path.read_text(encoding="utf-8")
+            loaded = yaml.safe_load(original)
         except (OSError, yaml.YAMLError, UnicodeError) as exc:
             wizard.write(f"无法读取现有配置 {path}：{exc}。请先修复后再运行 moss setup --add。")
             return "failed"
@@ -424,26 +472,47 @@ def setup(
         return "cancelled"
     if existing_raw is not None:
         provider["name"] = _unique_name(provider["name"], existing_names)
-        if "api_key_keyring" in provider and provider["api_key_keyring"] in existing_names:
-            provider["api_key_keyring"] = provider["name"]
-    if wizard.pending_key is not None:
-        from .credentials import KeyringError
-
+        if "api_key_keyring" in provider:
+            # Existing providers may keep their key under any entry name, not only their own provider name.
+            taken = existing_names | {
+                item["api_key_keyring"]
+                for item in existing_raw["providers"]
+                if isinstance(item, dict) and isinstance(item.get("api_key_keyring"), str)
+            }
+            provider["api_key_keyring"] = _unique_name(provider["name"], taken)
         try:
-            wizard.vault.store(provider["api_key_keyring"], wizard.pending_key)
-        except KeyringError as exc:
-            wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
-            return "failed"
-    if existing_raw is not None:
-        try:
-            _append_config(path, existing_raw, provider, home)
+            prepared, kept = _prepare_append(path, original, existing_raw, provider, home)
         except ConfigError as exc:
             wizard.write(f"追加 Provider 校验失败：{exc} 原有配置文件未修改。")
             return "failed"
         except OSError as exc:
             wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
             return "failed"
+    if wizard.pending_key is not None:
+        from .credentials import KeyringError
+
+        try:
+            wizard.vault.store(provider["api_key_keyring"], wizard.pending_key)
+        except KeyringError as exc:
+            if existing_raw is not None:
+                prepared.unlink(missing_ok=True)
+            wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
+            return "failed"
+    if existing_raw is not None:
+        backup = None
+        try:
+            if not kept:
+                # The file had to be rewritten from the parsed YAML: keep the user's version with its comments.
+                backup = path.with_name(path.name + ".bak")
+                shutil.copyfile(path, backup)
+            os.replace(prepared, path)
+        except OSError as exc:
+            prepared.unlink(missing_ok=True)
+            wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+            return "failed"
         wizard.write(f"已向 {path} 追加 Provider {provider['name']}（可用 /model {provider['name']} 切换）。")
+        if backup is not None:
+            wizard.write(f"原文件的格式无法逐行保留，已重新生成；原文件（含注释）备份在 {backup}。")
     else:
         try:
             write_config(path, provider)

@@ -35,13 +35,14 @@ _SENTENCE_END = re.compile(r"(?:[。！？；]|\.(?=\s+[A-Z\u4e00-\u9fff]))")
 _KEY_VALUE_ROW = re.compile(r"^  (\S(?:.*?\S)?)\s{2,}(.+)$")
 
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("会话与上下文", ("help", "status", "session", "clear", "compact", "memory")),
+    ("会话与上下文", ("help", "status", "session", "rename", "clear", "compact", "memory")),
     ("模式、模型与规划", ("plan", "do", "permissions", "model", "thinking", "goal", "todo")),
     ("扩展与诊断", ("mcp", "skills", "agents", "hooks", "plugins", "tasks")),
 )
 
 _EXCLUDED_HINTS: dict[str, str] = {
     "exit": "请直接关闭编辑器的会话标签页或聊天面板；ACP 服务端会随连接断开自动清理。",
+    "fork": "会话分支切换仅用于终端交互界面；在编辑器中可新建会话或通过历史面板切换。",
     "resume": "请点击编辑器聊天面板右上角的历史会话图标切换或恢复过往会话。",
     "rewind": "对话与文件回退面板仅用于终端交互界面；在编辑器中可使用 Git 或本地历史记录恢复文件。",
     "worktree": "Git 工作树交互管理命令仅用于终端界面；你仍可在不同工作树目录中直接打开新的 ACP 会话。",
@@ -291,7 +292,7 @@ def format_model_markdown(current_provider: ProviderConfig, settings: Settings) 
     lines.extend(
         [
             "",
-            "> 输入 `/model <名称>` 切换，或直接在输入框下方 **Model** 下拉菜单中选择（对话历史保留）。",
+            "> 输入 `/model <名称>` 或 `/model <名称>/<模型>` 切换，也可直接在输入框下方 **Model** 下拉菜单中选择（对话历史保留）。",
         ]
     )
     return "\n".join(lines)

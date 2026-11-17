@@ -676,6 +676,26 @@ async def test_config_options_switching_and_provider_error_codes(tmp_path):
         thought = await conn.set_config_option(config_id="thought_level", session_id=sess.session_id, value="low")
         assert next(o for o in thought.config_options if o.id == "thought_level").current_value == "low"
 
+        # /model <provider>/<model> overrides model and /model <provider> restores configured model; /rename updates title.
+        overridden = await conn.prompt(
+            session_id=sess.session_id, prompt=[TextContentBlock(text="/model p1/claude-sonnet-4-6")]
+        )
+        assert overridden.stop_reason == "end_turn"
+        assert agent.sessions[sess.session_id].provider_config.name == "p1"
+        assert agent.sessions[sess.session_id].provider_config.model == "claude-sonnet-4-6"
+        restored_model = await conn.prompt(session_id=sess.session_id, prompt=[TextContentBlock(text="/model p1")])
+        assert restored_model.stop_reason == "end_turn"
+        assert agent.sessions[sess.session_id].provider_config.model == "m1"
+
+        renamed = await conn.prompt(
+            session_id=sess.session_id, prompt=[TextContentBlock(text="/rename ACP 会话自定义标题")]
+        )
+        assert renamed.stop_reason == "end_turn"
+        listed = await conn.list_sessions(cwd=str(work))
+        assert any(
+            item.title == "ACP 会话自定义标题" and item.session_id == sess.session_id for item in listed.sessions
+        )
+
         with pytest.raises(RequestError) as auth_err:
             await conn.prompt(session_id=sess.session_id, prompt=[TextContentBlock(text="hello")])
         assert auth_err.value.code == -32000

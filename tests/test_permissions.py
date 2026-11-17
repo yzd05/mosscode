@@ -571,3 +571,20 @@ async def test_git_hooks_git_config_and_plugin_declarations_are_protected(tmp_pa
     # The rest of .git, and hook scripts kept elsewhere in the project, stay writable.
     for path in (".git/info/exclude", ".githooks/pre-commit"):
         assert not (await reg.execute(call("write_file", path=path, content="x"))).is_error
+
+
+def test_batch_edit_fallback_preview_renders_each_edit_pair(tmp_path):
+    reg = registry(tmp_path)
+    edit_tool = reg.get("edit_file")
+    params = edit_tool.validate_arguments(
+        {
+            "path": "unreadable_yet.py",
+            "edits": [
+                {"old_text": "alpha = 1", "new_text": "alpha = 2"},
+                {"old_text": "beta = 3", "new_text": "beta = 4"},
+            ],
+        }
+    )
+    op = reg.permissions.operation(edit_tool, params)
+    assert "第 1 处 原文：\nalpha = 1\n替换为：\nalpha = 2" in op.preview
+    assert "第 2 处 原文：\nbeta = 3\n替换为：\nbeta = 4" in op.preview

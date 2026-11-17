@@ -100,6 +100,7 @@ SESSION_MODES: tuple[SessionMode, ...] = (
 EXCLUDED_ACP_COMMANDS = frozenset(
     {
         "exit",
+        "fork",
         "resume",
         "rewind",
         "sandbox",
@@ -306,13 +307,11 @@ def preview_file_diff(
             1,
         )
 
-    old_part = raw_input.get("old_text")
-    new_part = raw_input.get("new_text")
-    replace_all = bool(raw_input.get("replace_all", False))
-    if old_text is None or not isinstance(old_part, str) or not isinstance(new_part, str):
+    if old_text is None:
         return None, None
     try:
-        params = EditParams(path=str(resolved), old_text=old_part, new_text=new_part, replace_all=replace_all)
+        # Validate the same shape the tool takes, so batch `edits` get a diff too.
+        params = EditParams.model_validate({**raw_input, "path": str(resolved)})
         new_text, _, first_line, _ = EditFile._replace(old_text, params)
     except Exception:
         return None, None

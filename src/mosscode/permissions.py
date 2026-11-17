@@ -527,8 +527,18 @@ class PermissionPolicy:
         if tool.name == "write_file":
             preview = f"写入 {len(args['content'])} 个字符，内容预览：\n" + safe_display(args["content"])
         elif tool.name == "edit_file":
-            preview = (
-                "原文：\n" + safe_display(args["old_text"], 400) + "\n替换为：\n" + safe_display(args["new_text"], 400)
+            # Batch edits leave the top-level texts empty; show every pair so nothing is approved unseen.
+            pairs = [(item["old_text"], item["new_text"]) for item in args.get("edits") or ()] or [
+                (args["old_text"], args["new_text"])
+            ]
+            budget = max(80, 400 // len(pairs))
+            preview = "\n".join(
+                (f"第 {index} 处 " if len(pairs) > 1 else "")
+                + "原文：\n"
+                + safe_display(old, budget)
+                + "\n替换为：\n"
+                + safe_display(new, budget)
+                for index, (old, new) in enumerate(pairs, 1)
             )
         elif tool.name in {"glob", "grep"}:
             preview = "搜索模式：" + safe_display(args["pattern"], 400)

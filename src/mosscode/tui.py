@@ -340,6 +340,8 @@ class MossCodeApp(TerminalApp[None]):
         self.commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
         self.provider_name = self._banner_provider = provider_name
         self.settings, self.model = settings, model
+        # As configured: /model <name>/<model> replaces a provider for this session, /model <name> brings it back.
+        self._configured_providers = settings.providers if settings is not None else ()
         if provider_factory is None:
             from .providers import create_provider as provider_factory
         self.provider_factory = provider_factory
@@ -1561,9 +1563,16 @@ class MossCodeApp(TerminalApp[None]):
         if config is None:
             await self._local_note(f"切换失败：未知 Provider：{name}。")
             return
+        configured = next((item for item in self._configured_providers if item.name == name), config)
         if model is not None:
+            base = configured
             try:
-                config = with_model(config, model)
+                if base.follow:
+                    base = refreshed(base)
+                    from .credentials import remember
+
+                    remember(base.api_key)
+                config = with_model(base, model)
             except ConfigError as exc:
                 await self._local_note(f"切换失败：{exc}")
                 return
@@ -1578,6 +1587,12 @@ class MossCodeApp(TerminalApp[None]):
                 self.settings = replace(self.settings, providers=providers)
                 self.conversation.provider_configs = providers
             return
+        if configured is not config:
+            # An earlier model override replaced this provider: switching to it by name means its configured model.
+            providers = tuple(configured if item.name == name else item for item in self.settings.providers)
+            self.settings = replace(self.settings, providers=providers)
+            self.conversation.provider_configs = providers
+            config = configured
         if not config.follow:
             await self._switch_model(config)
             return

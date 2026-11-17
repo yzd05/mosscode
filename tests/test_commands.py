@@ -521,6 +521,15 @@ async def test_rename_fork_and_filtered_resume_commands(tmp_path):
     fresh = make(tmp_path / "empty", FakeProvider())
     ui = await run(context(fresh), "/fork")
     assert "尚无已保存的消息" in ui.notes[0] and ui.calls == []
+    ui = await run(context(fresh), "/rename 仅命名无消息")
+    assert ui.notes == ["└ 已将当前会话重命名为：仅命名无消息"]
+    ui = await run(context(fresh), "/fork")
+    assert "尚无已保存的消息" in ui.notes[0] and ui.calls == []
+    from mosscode.messages import ProviderError
+
+    with pytest.raises(ProviderError, match="这已是当前会话"):
+        async for _ in fresh.resume(fresh.session_id):
+            pass
     (tmp_path / "off").mkdir()
     off = make(tmp_path / "off", FakeProvider(), persist=False)
     assert "persist_sessions: false" in (await run(context(off), "/rename 标题")).notes[0]

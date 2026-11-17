@@ -1070,6 +1070,39 @@ async def test_switch_model_overrides_model_enriches_catalog_and_updates_configs
         assert app.settings.select("backup").model == "o4-mini"
         assert conv._fork_provider_config("backup").model == "o4-mini"
 
+        # Switching back to a provider by name alone restores its configured model from config.yaml.
+        await app.switch_model("main")
+        await pilot.pause()
+        assert len(created) == 3
+        assert app.provider_name == "main" and app.model == "custom-old-model"
+        assert app.settings.select("main").model == "custom-old-model"
+        await app.switch_model("backup")
+        await pilot.pause()
+        assert len(created) == 4
+        assert app.provider_name == "backup" and app.model == "gpt-4.1-mini"
+
+
+async def test_steered_tool_result_renders_as_stopped_rather_than_error():
+    from mosscode.messages import ToolCall, ToolProgress, ToolResult
+    from mosscode.tui_views import ToolEntry, tool_state
+
+    call_item = ToolCall("c-steer", "edit_file", '{"path": "a.py", "old_text": "1", "new_text": "2"}')
+    res = ToolResult(
+        "c-steer",
+        "edit_file",
+        "收到用户新消息，跳过本轮剩余工具调用以优先响应。",
+        True,
+        "steered",
+        {"executed": False},
+    )
+    assert tool_state(res) == "stopped"
+    async with MossCodeApp(Conversation(FakeProvider()), "test").run_test():
+        entry = ToolEntry(ToolProgress(call_item, "running"))
+        entry.complete(res, 0.0)
+        rendered = str(entry.transcript)
+    assert rendered.startswith("! Edit(a.py)")
+    assert "未执行 · 收到用户新消息" in rendered
+
 
 def test_tui_reexports_all_extracted_tui_views_symbols():
     from mosscode import tui, tui_views

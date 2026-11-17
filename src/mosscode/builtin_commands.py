@@ -24,7 +24,7 @@ from .memory import SCOPE_LABELS
 from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
 from .reasoning import DEFAULT, LEVEL_LABELS, LEVELS, Unsupported, thinking_options
-from .session import _clean_title, fork_session, read_title, write_title
+from .session import _clean_title, count_messages, fork_session, read_title, write_title
 from .skills import ForkRequest, source_label
 from .todo import render as render_todos
 from .usage import approx_tokens, cache_hit_rate, cost_text
@@ -284,7 +284,7 @@ async def _fork_session(ctx: CommandContext, argument: str) -> None:
     if not conversation.persist or session.transcript_path is None:
         await ctx.ui.note("会话存档已关闭（persist_sessions: false），不能创建会话分支。")
         return
-    if not session.transcript_path.is_file():
+    if not session.transcript_path.is_file() or count_messages(session.transcript_path) == 0:
         await ctx.ui.note("当前会话尚无已保存的消息，请先发送消息后再使用 /fork。")
         return
     await confirm_tasks(ctx.ui, conversation, lambda: _do_fork(ctx, argument))
@@ -320,8 +320,8 @@ REWIND_TALK = (("只恢复对话", False, True),)
 REWIND_LISTED = 10
 
 
-def _first_line(text: str) -> str:
-    return next((line.strip() for line in text.splitlines() if line.strip()), "（空消息）")
+def _first_line(text: str, empty: str = "（空）") -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), empty)
 
 
 def _listed(paths) -> str:
@@ -355,7 +355,10 @@ async def _rewind(ctx: CommandContext, argument: str) -> None:
         await ctx.ui.note("当前上下文中没有可以回退的消息。")
         return
     rows = [
-        choice_row(_first_line(point.message.shown), f"· 之后改动 {point.files} 个文件" if point.files else "")
+        choice_row(
+            _first_line(point.message.shown, "（空消息）"),
+            f"· 之后改动 {point.files} 个文件" if point.files else "",
+        )
         for point in points
     ]
 
@@ -377,7 +380,7 @@ async def _rewind(ctx: CommandContext, argument: str) -> None:
             ctx.ui.refresh_status()
             await ctx.ui.note(rewind_report(rewound))
 
-        title = _first_line(point.message.shown)
+        title = _first_line(point.message.shown, "（空消息）")
         ctx.ui.choose(f"回退到“{title[:40]}”之前", [label for label, _, _ in actions] + ["取消"], 0, act)
 
     ctx.ui.choose("回退 · 选择回到哪条消息之前（最新的在最上面）", rows, 0, pick)
@@ -542,10 +545,11 @@ def _sibling_models(config, active_model: str = "", limit: int = 25) -> list[tup
     return filtered[:limit]
 
 
-def _resolve_catalog_override(argument: str, config) -> str | None:
+def _resolve_catalog_override(argument: str, config, *, home: Path | None = None) -> str | None:
     if config is None or not any(ch in argument for ch in ("/", "-", ".")):
         return None
-    info = lookup(argument, base_url=config.base_url, protocol=config.protocol)
+    catalog = load_catalog(home)
+    info = lookup(argument, base_url=config.base_url, protocol=config.protocol, catalog=catalog)
     if info is None:
         return None
     vendors = providers_for(config.base_url, config.protocol)
@@ -554,28 +558,46 @@ def _resolve_catalog_override(argument: str, config) -> str | None:
     return argument.removeprefix(f"{info.provider}/") if vendors else argument
 
 
+def resolve_model_target(
+    argument: str,
+    providers,
+    active,
+    *,
+    home: Path | None = None,
+) -> tuple[str, str | None] | None:
+    """Resolve `/model <arg>` to `(provider_name, model_override_or_none)`, or None when unknown."""
+    cleaned = argument.strip()
+    if not cleaned:
+        return None
+    if any(item.name == cleaned for item in providers):
+        return cleaned, None
+    if cleaned.startswith(":") and cleaned[1:].strip():
+        if active is not None:
+            return active.name, cleaned[1:].strip()
+        return None
+    if "/" in cleaned:
+        prefix, _, rest = cleaned.partition("/")
+        rest = rest.strip()
+        if rest and any(item.name == prefix for item in providers):
+            return prefix, rest
+    override = _resolve_catalog_override(cleaned, active, home=home)
+    if active is not None and override is not None:
+        return active.name, override
+    return None
+
+
 async def _model(ctx: CommandContext, argument: str) -> None:
     providers = _providers(ctx)
     argument = argument.strip()
     if argument:
-        if any(item.name == argument for item in providers):
-            await ctx.ui.switch_model(argument)
-            return
-        if argument.startswith(":") and argument[1:].strip():
-            active = _current_provider_config(ctx, providers)
-            if active is not None:
-                await ctx.ui.switch_model(active.name, argument[1:].strip())
-                return
-        if "/" in argument:
-            prefix, _, rest = argument.partition("/")
-            rest = rest.strip()
-            if rest and any(item.name == prefix for item in providers):
-                await ctx.ui.switch_model(prefix, rest)
-                return
         active = _current_provider_config(ctx, providers)
-        override = _resolve_catalog_override(argument, active)
-        if active is not None and override is not None:
-            await ctx.ui.switch_model(active.name, override)
+        target = resolve_model_target(argument, providers, active)
+        if target is not None:
+            name, override = target
+            if override is None:
+                await ctx.ui.switch_model(name)
+            else:
+                await ctx.ui.switch_model(name, override)
             return
         names = "、".join(item.name for item in providers) or "无"
         await ctx.ui.note(f"未找到提供商 {argument}。可用：{names}")
@@ -984,10 +1006,6 @@ def _server_names(ctx: CommandContext):
 
 
 # Skills -----------------------------------------------------------------------------------
-
-
-def _first_line(text: str) -> str:
-    return next((line.strip() for line in text.splitlines() if line.strip()), "（空）")
 
 
 def skills_report(catalog, name: str = "", active=()) -> str:

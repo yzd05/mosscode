@@ -487,6 +487,7 @@ async def ping_provider(
     client = None
     try:
         async with asyncio.timeout(timeout):
+            probe_config.credential()
             client = factory(probe_config)
             message = Message("user", (ContentBlock("text", "ping"),))
             completed = False

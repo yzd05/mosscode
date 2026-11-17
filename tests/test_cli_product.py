@@ -170,7 +170,7 @@ class NoVault:
         return "没有可用的系统凭据管理器"
 
 
-def wizard(answers, *, secret=None, environ=None):
+def wizard(answers, *, secret=None, environ=None, vault=None):
     answers, out = iter(answers), []
 
     def read(question):
@@ -185,7 +185,7 @@ def wizard(answers, *, secret=None, environ=None):
         secret=secret or (lambda question: pytest.fail("no secret asked")),
         write=out.append,
         environ=environ or {},
-        vault=NoVault(),
+        vault=vault or NoVault(),
     ), out
 
 
@@ -482,6 +482,59 @@ def test_setup_add_appends_provider_preserves_settings_and_disambiguates_names(t
     w_bad, _ = wizard([])
     assert setup(bad_home, w_bad, add=True) == "failed"
     assert bad_path.read_text(encoding="utf-8") == "not: [valid"
+
+    # Comments in block-style config.yaml are preserved, custom keyring names are disambiguated,
+    # and keyring is not touched if validation fails before writing.
+    commented_home = tmp_path / "commented"
+    commented_path = user_config(commented_home)
+    commented_path.parent.mkdir(parents=True)
+    commented_path.write_text(
+        "# 顶部个人注释\ndefault_provider: deepseek\nproviders:\n"
+        "  # 主力模型注释\n"
+        "  - name: deepseek\n    preset: deepseek\n    api_key_keyring: deepseek-2\n",
+        encoding="utf-8",
+    )
+    stored: dict[str, str] = {}
+
+    class MemVault:
+        def problem(self):
+            return None
+
+        def label(self):
+            return "测试凭据库"
+
+        def store(self, name: str, key: str) -> None:
+            stored[name] = key
+
+    w_comment, _ = wizard(
+        ["1", "deepseek-reasoner", "1", ""],
+        secret=lambda _: "sk-other-token-9876543210",
+        vault=MemVault(),
+    )
+    assert setup(commented_home, w_comment, add=True) == "ready"
+    updated_text = commented_path.read_text(encoding="utf-8")
+    assert "# 顶部个人注释" in updated_text and "# 主力模型注释" in updated_text
+    loaded = load_settings(commented_path, commented_home)
+    assert [p.name for p in loaded.providers] == ["deepseek", "deepseek-2"]
+    assert loaded.providers[1].api_key_keyring == "deepseek-2-2"
+    assert stored == {"deepseek-2-2": "sk-other-token-9876543210"}
+
+    # Validation failure before replacing config must not write a new keyring entry.
+    stored.clear()
+    import mosscode.setup as setup_mod
+
+    orig_prepare = setup_mod._prepare_append
+    setup_mod._prepare_append = lambda *a, **kw: (_ for _ in ()).throw(ConfigError("bad provider"))
+    try:
+        w_fail, _ = wizard(
+            ["1", "deepseek-reasoner", "1", ""],
+            secret=lambda _: "sk-other-token-9876543210",
+            vault=MemVault(),
+        )
+        assert setup(commented_home, w_fail, add=True) == "failed"
+        assert stored == {}
+    finally:
+        setup_mod._prepare_append = orig_prepare
 
 
 def test_doctor_ping_stays_offline_by_default_and_probes_online_with_flag(tmp_path, monkeypatch, capsys):

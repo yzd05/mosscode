@@ -460,6 +460,22 @@ def write_title(
     return clean
 
 
+def _copy_transcript_with_id(source: Path, target: Path, session_id: str) -> None:
+    """Copy a JSONL transcript while updating its leading `session` header record to `session_id`."""
+    with source.open("rb") as src, target.open("xb") as dst:
+        first = src.readline()
+        if first:
+            try:
+                header = json.loads(first)
+            except ValueError:
+                header = None
+            if isinstance(header, dict) and header.get("type") == "session":
+                header["id"] = session_id
+                first = (json.dumps(header, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+            dst.write(first)
+        shutil.copyfileobj(src, dst)
+
+
 def fork_session(session: Session, root: Path, *, home: Path | None = None, title: str = "") -> Session:
     """Copy a persisted session and its sidecar directory to a new session ID, leaving the original intact."""
     source = session.transcript_path
@@ -472,7 +488,7 @@ def fork_session(session: Session, root: Path, *, home: Path | None = None, titl
     assert target.transcript_path is not None
     target.transcript_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.copyfile(source, target.transcript_path)
+        _copy_transcript_with_id(source, target.transcript_path, target.id)
         if session.directory.is_dir():
             shutil.copytree(session.directory, target.directory, dirs_exist_ok=True)
         write_title(target, branch_title, cwd=root)
