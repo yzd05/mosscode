@@ -650,6 +650,10 @@ class AcpSession:
             providers = tuple(selected if item.name == selected.name else item for item in self.settings.providers)
             self.settings = replace(self.settings, providers=providers)
             self.conversation.provider_configs = providers
+            if model is None and selected.follow:
+                self._configured_providers = tuple(
+                    selected if item.name == selected.name else item for item in self._configured_providers
+                )
         self.provider_config = selected
 
     async def set_config_option(self, config_id: str, value: str | bool) -> SetSessionConfigOptionResponse:

@@ -1587,28 +1587,30 @@ class MossCodeApp(TerminalApp[None]):
                 self.settings = replace(self.settings, providers=providers)
                 self.conversation.provider_configs = providers
             return
-        if configured is not config:
-            # An earlier model override replaced this provider: switching to it by name means its configured model.
-            providers = tuple(configured if item.name == name else item for item in self.settings.providers)
-            self.settings = replace(self.settings, providers=providers)
-            self.conversation.provider_configs = providers
-            config = configured
-        if not config.follow:
-            await self._switch_model(config)
+        if not configured.follow:
+            if await self._switch_model(configured, force=configured is not config):
+                if configured is not config:
+                    # An earlier model override replaced this provider: switching by name restores its configured model.
+                    providers = tuple(configured if item.name == name else item for item in self.settings.providers)
+                    self.settings = replace(self.settings, providers=providers)
+                    self.conversation.provider_configs = providers
             return
         # Read again: the tool it follows may have been switched (in CC Switch, say) since MossCode started.
         try:
-            config = refreshed(config)
+            config = refreshed(configured)
         except ConfigError as exc:
             await self._local_note(f"切换失败：{exc}")
             return
         from .credentials import remember
 
         remember(config.api_key)  # A key switched to in that tool since startup is kept out of output too.
-        providers = tuple(config if item.name == name else item for item in self.settings.providers)
-        self.settings = replace(self.settings, providers=providers)
-        self.conversation.provider_configs = providers  # Skills and sub-agents that name it get this one.
-        await self._switch_model(config, again=config.name == self.provider_name)
+        if await self._switch_model(config, again=config.name == self.provider_name):
+            providers = tuple(config if item.name == name else item for item in self.settings.providers)
+            self.settings = replace(self.settings, providers=providers)
+            self.conversation.provider_configs = providers  # Skills and sub-agents that name it get this one.
+            self._configured_providers = tuple(
+                config if item.name == name else item for item in self._configured_providers
+            )
 
     async def _switch_model(self, config: ProviderConfig, *, again: bool = False, force: bool = False) -> bool:
         """again: the current provider, read again from the tool it follows."""

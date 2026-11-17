@@ -35,11 +35,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'push' }}
       matrix:
-        # The hosted ARM pool can time out before starting any test; keep full macOS coverage on Intel.
-        os: [windows-latest, ubuntu-latest, macos-26-intel]
-        python: ["3.12", "3.14"]
+        # Routine pushes run Linux + Windows on 3.12 to avoid macOS/matrix runner bursts;
+        # PRs, releases (workflow_call) and manual dispatches run the full 3-OS x 2-Python matrix.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["windows-latest", "ubuntu-latest", "macos-26-intel"]') }}
+        python: ${{ github.event_name == 'push' && fromJSON('["3.12"]') || fromJSON('["3.12", "3.14"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -65,6 +66,7 @@ jobs:
       - run: moss --version
 
   test-without-ripgrep:
+    if: github.event_name != 'push'
     name: test (ubuntu-latest, py3.12, no ripgrep)
     runs-on: ubuntu-latest
     timeout-minutes: 30
