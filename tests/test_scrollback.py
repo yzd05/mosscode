@@ -53,6 +53,7 @@ class InlineRecordingApp(MossCodeApp):
 
 async def send(app, pilot, value):
     app.query_one("#prompt", PromptArea).value = value
+    await pilot.pause()
     await pilot.press("enter")
     if app._reply_task is not None:
         await asyncio.wait_for(app._reply_task, 5)

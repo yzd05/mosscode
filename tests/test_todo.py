@@ -296,6 +296,7 @@ async def test_the_panel_above_the_prompt_follows_the_list_and_goes_after_the_ne
 
         async def send(text):
             app.query_one("#prompt", PromptArea).value = text
+            await pilot.pause()
             await pilot.press("enter")
             await app._reply_task
             await pilot.pause()

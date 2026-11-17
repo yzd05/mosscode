@@ -51,6 +51,7 @@ async def send(app, pilot, text=None):
     field = app.query_one("#prompt", PromptArea)
     if text is not None:
         field.value = text
+        await pilot.pause()
     await pilot.press("enter")
     await pilot.pause()
     await asyncio.wait_for(app._reply_task, timeout=5)

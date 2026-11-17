@@ -1407,6 +1407,7 @@ class MossCodeApp(TerminalApp[None]):
         self._hint_until = 0.0  # Short notes shown over the running status until this time.
         self._escape_at = 0.0  # The last Esc on an empty, idle prompt: a second one soon after opens /rewind.
         self._hint_choices: list[Hint] = []
+        self._hint_value = ""
         # Per @ mention hint: where the cursor goes after it, as an index into the prompt's text.
         self._mention_cursors: list[int] = []
         self._file_index: FileIndex | None = None
@@ -2082,6 +2083,7 @@ class MossCodeApp(TerminalApp[None]):
         self._status(self._status_note)
 
     def _refresh_hints(self, value: str) -> None:
+        self._hint_value = value
         hints = self.query_one("#command-hints", OptionList)
         help_line = self.query_one("#command-help", Static)
         previous = (
@@ -2178,6 +2180,11 @@ class MossCodeApp(TerminalApp[None]):
             field = self.focused
             if not isinstance(field, PromptArea) or field.id != "prompt" or field.disabled:
                 return False
+            if self._hint_value != field.value:
+                # TextArea.Changed arrives via the message queue; sync hints before Enter/Tab priority checks.
+                if field.value != self._dismissed_prompt:
+                    self._dismissed_prompt = None
+                self._refresh_hints(field.value)
             if not self._hint_choices:
                 # After Esc closed the menu, Tab still completes a unique command prefix.
                 return action == "complete_hint" and parameters != (False,) and self._unique_hint() is not None

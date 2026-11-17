@@ -94,6 +94,7 @@ async def test_project_mcp_panel_starts_servers_only_on_the_first_choice(keys, e
 async def send(app, pilot, text):
     field = app.query_one("#prompt", PromptArea)
     field.value = text
+    await pilot.pause()
     await pilot.press("enter")
     await pilot.pause()
 

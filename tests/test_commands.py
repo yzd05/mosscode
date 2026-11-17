@@ -402,6 +402,7 @@ async def test_argument_check_running_commands_and_forced_messages(tmp_path):
         await send(app, pilot, "//x 不是命令")
         assert conv.queued == ("/x 不是命令",)
         app._reply_task.cancel()
+        await asyncio.wait_for(app._reply_task, timeout=5)
         await pilot.pause()
 
 
