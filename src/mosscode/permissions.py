@@ -414,7 +414,28 @@ class PermissionPolicy:
                     "调查完成后用 exit_plan_mode 提交计划，用户批准后才能写入、编辑或执行其他命令。",
                 )
         if getattr(tool, "permission_kind", None) == "memory":
-            return Operation(tool.name, f"{args['scope']}:{args['name']}", preview=f"{args['action']} 笔记", notes=True)
+            # In read-only plan mode, writing global user-scope notes affects every future project, so ask first.
+            user_in_plan = False
+            if not typed and self.mode == "plan" and args.get("scope") == "user":
+                if args.get("action") == "delete":
+                    user_in_plan = True
+                else:
+                    from .memory import MemoryFailure, validate
+
+                    try:
+                        validate(
+                            args.get("scope"),
+                            args.get("name"),
+                            args.get("type"),
+                            args.get("description", ""),
+                            args.get("body", ""),
+                        )
+                        user_in_plan = True
+                    except MemoryFailure:
+                        # Let Memory.execute return structured validation errors without prompting first.
+                        user_in_plan = False
+            preview = f"{args['action']} 用户级笔记（跨所有项目生效）" if user_in_plan else f"{args['action']} 笔记"
+            return Operation(tool.name, f"{args['scope']}:{args['name']}", preview=preview, notes=not user_in_plan)
         if getattr(tool, "permission_kind", None) == "load_skill":
             return Operation(tool.name, args["name"], preview="加载 Skill 规程", notes=True)
         if getattr(tool, "permission_kind", None) == "agent":
@@ -586,6 +607,8 @@ class PermissionPolicy:
             return Decision("allow")
         if self.mode == "acceptEdits" and operation.tool in EDIT_TOOLS:
             return Decision("allow")
+        if self.mode == "plan" and operation.tool == "memory":
+            return Decision("ask", reason="计划模式下修改用户级记忆笔记（跨项目生效）需要确认。")
         return Decision("ask", reason="此操作没有明确的放行规则。")
 
     async def authorize(self, call_id: str, tool, params, *, gate=None, notify=None) -> Decision:

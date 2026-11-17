@@ -95,33 +95,53 @@ def conversation_text(messages: Sequence[Message], limit: int = INPUT_TOKENS) ->
     kept.reverse()
     omitted = len(blocks) - len(kept)
     lead = [f"（更早的 {omitted} 条消息超出长度上限，已省略）"] if omitted else []
-    return "\n\n".join(lead + kept)
+    text = "\n\n".join(lead + kept)
+    # Prevent untrusted or quoted text inside messages from closing the prompt's XML tag early.
+    return re.sub(r"</conversation>", r"<\/conversation>", text, flags=re.IGNORECASE)
 
 
-def notes_text(store: MemoryStore, limit: int = NOTES_TOKENS) -> tuple[str, str]:
-    """(both indexes, full text of the newest notes within the budget), read fresh from disk."""
+def _notes_snapshot(store: MemoryStore, limit: int = NOTES_TOKENS) -> tuple[str, str, set[tuple[str, str]]]:
+    """(both indexes, full text of the newest notes within budget, keys of notes omitted from full text)."""
     notes = [note for note in store.load() if not note.error]
     indexes = []
     for scope in SCOPES:
         lines = [n.index_line() for n in notes if n.scope == scope] or ["（暂无）"]
         indexes.append(f"### {SCOPE_LABELS[scope]}\n" + "\n".join(lines))
     bodies, used = [], 0
+    omitted: set[tuple[str, str]] = set()
     for note in sorted(notes, key=lambda n: (n.updated, n.name), reverse=True):
         block = f'<note scope="{note.scope}" name="{note.name}">\n{note.text().strip()}\n</note>'
         cost = estimate_text(block)
         if used + cost > limit:
-            break
+            omitted.add((note.scope, note.name))
+            continue
         bodies.append(block)
         used += cost
-    return "\n\n".join(indexes), "\n\n".join(bodies) or "（暂无）"
+    return "\n\n".join(indexes), "\n\n".join(bodies) or "（暂无）", omitted
+
+
+def notes_text(store: MemoryStore, limit: int = NOTES_TOKENS) -> tuple[str, str]:
+    """(both indexes, full text of the newest notes within the budget), read fresh from disk."""
+    indexes, bodies, _ = _notes_snapshot(store, limit)
+    return indexes, bodies
+
+
+def _extraction_request(messages: Sequence[Message], store: MemoryStore) -> tuple[str, set[tuple[str, str]]]:
+    indexes, bodies, omitted = _notes_snapshot(store)
+    omitted_note = (
+        "\n\n（索引中其余较旧的笔记因篇幅未附全文；禁止用相同的 scope 和 name 覆盖这些未附全文的笔记，以免丢失原文。）"
+        if omitted
+        else ""
+    )
+    prompt = (
+        f"{INSTRUCTIONS}\n\n## 已有笔记索引\n{indexes}\n\n## 已有笔记全文\n{bodies}{omitted_note}\n\n"
+        f"## 新对话\n<conversation>\n{conversation_text(messages)}\n</conversation>"
+    )
+    return prompt, omitted
 
 
 def extraction_prompt(messages: Sequence[Message], store: MemoryStore) -> str:
-    indexes, bodies = notes_text(store)
-    return (
-        f"{INSTRUCTIONS}\n\n## 已有笔记索引\n{indexes}\n\n## 已有笔记全文\n{bodies}\n\n"
-        f"## 新对话\n<conversation>\n{conversation_text(messages)}\n</conversation>"
-    )
+    return _extraction_request(messages, store)[0]
 
 
 def parse_operations(text: str) -> list:
@@ -192,9 +212,21 @@ class MemoryExtractor:
 
     async def _extract(self, batch: list[Message]) -> bool:
         try:
-            response = await self._ask(extraction_prompt(batch, self.store))
+            prompt, omitted = _extraction_request(batch, self.store)
+            response = await self._ask(prompt)
             operations = parse_operations(response.message.text)
-            applied, rejected = await asyncio.to_thread(self.store.apply, operations)
+            safe_ops = []
+            blind_rejected = 0
+            for operation in operations:
+                if (
+                    isinstance(operation, dict)
+                    and operation.get("op") == "save"
+                    and (operation.get("scope"), operation.get("name")) in omitted
+                ):
+                    blind_rejected += 1
+                    continue
+                safe_ops.append(operation)
+            applied, rejected = await asyncio.to_thread(self.store.apply, safe_ops)
         except asyncio.CancelledError:
             raise
         except (ProviderError, ExtractionError, OSError) as exc:
@@ -206,7 +238,7 @@ class MemoryExtractor:
         result = Extracted(
             tuple(name for op, _, name in applied if op == "save"),
             tuple(name for op, _, name in applied if op == "delete"),
-            len(rejected),
+            len(rejected) + blind_rejected,
         )
         if result.names and self.on_result is not None:
             self.on_result(result)

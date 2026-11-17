@@ -1108,3 +1108,21 @@ async def test_repeated_compaction_keeps_the_latest_correction_goal_and_checklis
     reminders = "\n".join(m.text for m in request if m.synthetic == REMINDER)
     assert "新接口测试通过" in reminders and "补充新接口的测试" in reminders
     await conv.close()
+
+
+async def test_anchored_estimate_does_not_double_count_active_skills_and_invalidates_on_tool_set_change(tmp_path):
+    from mosscode.prompts import Supplement
+    from mosscode.tools import create_default_registry
+
+    provider = SequenceProvider(response("收到", usage=Usage(input_tokens=12_000, output_tokens=300)))
+    registry = create_default_registry(tmp_path, permission_mode="plan", load_permissions=False)
+    conv = seeded(provider, [], registry=registry, auto_compact=False)
+    conv._agent.hook_context = Supplement("session-hook", "规程正文" * 3000)
+    await conv.ask("先看计划")
+    # Supplement tokens were already part of input_tokens=12_000; status estimate must not add 12K again.
+    assert conv._agent.estimate() == 12_300
+    # Leaving plan mode exposes write/edit/team tools, invalidating the smaller plan-mode anchor.
+    conv.set_mode("normal")
+    assert conv._agent.meter.anchor is None
+    assert conv._agent.estimate() > 12_300
+    await conv.close()

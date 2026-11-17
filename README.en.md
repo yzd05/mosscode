@@ -1,160 +1,248 @@
 <p align="center">
-  <img src="docs/logo.svg" alt="MossCode" width="160" />
+  <img src="docs/logo.svg" alt="MossCode" width="152" />
 </p>
 
 <h1 align="center">MossCode</h1>
 
 <p align="center">
-  <a href="https://pypi.org/project/mosscode/"><img src="https://img.shields.io/pypi/v/mosscode?style=for-the-badge&label=PyPI&color=5b7cfa&labelColor=3b3f55" alt="PyPI" /></a>
-  <img src="https://img.shields.io/badge/Python-3.12%2B-7aa2ff?style=for-the-badge&logo=python&logoColor=white&labelColor=3b3f55" alt="Python 3.12+" />
-  <img src="https://img.shields.io/badge/Windows%20%C2%B7%20Linux%20%C2%B7%20macOS-a9c1ff?style=for-the-badge&labelColor=3b3f55" alt="Windows · Linux · macOS" />
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e0e7ff?style=for-the-badge&labelColor=3b3f55" alt="MIT" /></a>
+  <b>A Production-Grade Coding Agent Harness for Terminals & ACP-Compatible IDEs</b><br />
+  <sub>Self-Healing ReAct Loop · 4-Stage Cache-Preserving Context Compaction · 4 Native OS Sandboxes · Multi-Agent Worktree Teams · ACP IDE Server</sub>
 </p>
 
 <p align="center">
-  A coding agent for the terminal. Designed after Claude Code, with permissions you control, built for long tasks.
+  <a href="https://github.com/yzd05/mosscode/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/yzd05/mosscode/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI&color=22c55e&labelColor=1e293b" alt="CI Status" /></a>
+  <img src="https://img.shields.io/badge/Python-3.12%20%7C%203.13%20%7C%203.14-5b7cfa?style=for-the-badge&logo=python&logoColor=white&labelColor=1e293b" alt="Python 3.12+" />
+  <img src="https://img.shields.io/badge/Protocols-Anthropic%20%C2%B7%20OpenAI%20%C2%B7%20ACP%20%C2%B7%20MCP-7aa2ff?style=for-the-badge&labelColor=1e293b" alt="Protocols" />
+  <img src="https://img.shields.io/badge/OS-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS-94b8ff?style=for-the-badge&labelColor=1e293b" alt="Windows · Linux · macOS" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-dbeafe?style=for-the-badge&labelColor=1e293b" alt="MIT License" /></a>
+</p>
+
+<p align="center">
+  <a href="README.md">中文</a> · <b>English</b> · <a href="docs/usage.en.md">Usage Guide</a> · <a href="docs/claude-code-patterns.md">Architecture Trade-offs (ZH)</a> · <a href="docs/reference/evaluations.md">Benchmarks (ZH)</a> · <a href="docs/reference/acp.md">IDE Integration / ACP (ZH)</a> · <a href="ROADMAP.md">Roadmap</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
 
-[中文](README.md) | English | [Usage guide](docs/usage.en.md) | [Reference (Chinese)](docs/reference/cli.md) | [Claude Code patterns](docs/claude-code-patterns.md) | [Roadmap](ROADMAP.md) | [Changelog](CHANGELOG.md) | [Contributing](CONTRIBUTING.md)
+**MossCode** is a Python-built coding agent runtime designed after **Claude Code** and **pi**. A single shared `Conversation` harness powers three surfaces simultaneously: an **inline terminal UI** (preserving native terminal scrollback and text selection), a **scriptable headless CLI (`-p`)**, and a standard **Agent Client Protocol (`moss acp`) server** for JetBrains IDEs, Zed, and other editors. Vendor-neutral across major model protocols and backed by OS-level command sandboxes, it is engineered for long-horizon software engineering tasks.
 
-MossCode is a coding assistant that works in your terminal and ACP-compatible IDEs, written in Python. It is designed after Claude Code and pi: one agent loop with local and MCP tools, four permission modes including a read-only plan mode, and three protocols: Anthropic Messages, OpenAI Responses and Chat Completions. The interface and the detailed reference documentation are in Chinese.
+### Core Engineering Highlights
 
-### Core features
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <b>⚡ Self-Healing Agent Loop</b><br />
+      Up to 4 concurrent read-only tool calls per batch; automatic retry on empty or thinking-cutoff replies; seamless auto-continuation on output truncation; repetition detection &amp; circuit breaking; autonomous <code>/goal</code> loop and deterministic <code>pre_finish</code> verification hooks.
+    </td>
+    <td width="50%" valign="top">
+      <b>🧠 4-Stage Cache-Preserving Context Pipeline</b><br />
+      Disk spill budgeting → zero-LLM old tool-result clearing → non-destructive prefix segment collapsing (preserving <code>/rewind</code> &amp; earlier cache hits) → 9-part structured summary + <code>8,000</code>-token verbatim user quote retention; append-only state reminders keep KV-cache prefixes intact.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <b>🛡️ 4 Permission Modes &amp; 4 Native OS Sandboxes</b><br />
+      <code>default</code>, <code>acceptEdits</code>, read-only <code>plan</code>, and <code>bypassPermissions</code> with <code>tree-sitter-bash</code> subcommand risk analysis; native confinement via Linux <code>bubblewrap+seccomp</code>, macOS <code>Seatbelt</code>, and Windows <code>MXC</code> / restricted tokens, paired with a loopback domain proxy and secret scrubbing.
+    </td>
+    <td width="50%" valign="top">
+      <b>🔌 3 Model Protocols &amp; Zero-Duplicate Setup</b><br />
+      First-class streaming, prompt caching, reasoning effort, vision input, and bundled LiteLLM pricing across <code>Anthropic Messages</code>, <code>OpenAI Responses</code>, and <code>Chat Completions</code>; one-step <code>follow</code> reuses existing local Claude Code or Codex credentials.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <b>🧩 Native IDE Integration (ACP 1.0)</b><br />
+      <code>moss acp</code> serves stdio JSON-RPC 2.0 out of the box for <b>JetBrains IDEs (PyCharm, IntelliJ IDEA)</b> and <b>Zed</b>, featuring isolated multi-workspace sessions, structured file diffs, live mode/model selectors, and native permission approval cards.
+    </td>
+    <td width="50%" valign="top">
+      <b>🤝 Multi-Agent &amp; Split-Pane Worktree Teams</b><br />
+      Defined sub-agents, <b>KV-cache-sharing <code>Agent Fork</code></b>, isolated Git worktrees, and parallel agent teams running in <b>Windows Terminal or tmux</b> split panes with dependency-aware topological branch merging.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <b>⏪ Message-Level Time Travel &amp; Dual-Scope Memory</b><br />
+      Crash-safe JSONL session streaming; <code>/rewind</code> rolls both workspace files and conversation state back to any prior message; hierarchical <code>AGENTS.md</code> loading plus background memory extraction with guardrails against blind overwrites.
+    </td>
+    <td width="50%" valign="top">
+      <b>🔧 Claude Code-Compatible Ecosystem</b><br />
+      Non-blocking background <code>MCP</code> discovery (stdio &amp; HTTP), Agent <code>Skills</code> (<code>SKILL.md</code> + custom script tools), 4 lifecycle <code>Hooks</code>, and user/project plugins compatible with <code>.claude-plugin</code> marketplaces.
+    </td>
+  </tr>
+</table>
 
-- **Agent loop**: many tool steps per turn, with adjacent read-only calls run concurrently; empty replies and replies cut off while thinking are retried, and replies cut off mid-text are continued automatically.
-- **Three protocols**: streaming, prompt caching, thinking effort and image input; a model catalog shipped with MossCode supplies context windows and cost estimates.
-- **Tools**: read, write, edit, commands, glob, grep, web fetch and search, the `todo_write` task list and `ask_user` questions; files must be read before they are edited, and long commands can move to the background.
-- **Permissions and sandbox**: four permission modes with layered rules and risk levels for commands; command sandboxes on Linux, macOS and Windows, with network access through a domain proxy; keys never reach the commands' environment.
-- **Long tasks**: `/goal` keeps working until a condition is met; large results go to disk; before summarizing, old tool results are cleared and then the oldest turns are collapsed; summarizing compaction has a circuit breaker.
-- **Sessions and memory**: sessions are saved as they go and resumed with `-c` or `/resume`; `/rewind` rolls files and conversation back to before any earlier message; memory notes carry across sessions.
-- **Multiple agents**: defined and forked sub-agents, background runs and git worktree isolation; agent teams work in parallel in Windows Terminal or tmux split panes.
-- **Extensions**: MCP, skills, hooks and plugins, compatible with Claude Code's plugin format.
-- **Interface**: drawn inline, keeping the terminal's own scrollback and text selection; Markdown rendered while it streams; approval and question cards take the prompt's place; light and dark terminals each get their own palette.
+### Public Benchmark Snapshot (Terminal-Bench 2.1)
+
+Head-to-head evaluation on the locked **Harbor 0.26.0 · Terminal-Bench 2.1** 12-task development baseline under identical `deepseek-flash` endpoints, official container limits, single concurrency, and zero human intervention:
+
+| Agent | Runtime Setup | End-to-End Pass Rate (12 Tasks) | Diagnostic Rate (Excl. Pre-Model Container Faults) | Unified Off-Peak Est. Cost |
+| :--- | :--- | :---: | :---: | :---: |
+| **MossCode** | Locked Harbor wheel adapter | **9 / 12 (75.0%)** | **9 / 10 (90.0%)** | **~\$0.24** (lower bound) |
+| **Terminus 2** | Harbor 0.26.0 built-in `2.0.0` | 7 / 12 (58.3%) | 7 / 11 (63.6%) | \$0.45 |
+
+> [!NOTE]
+> Results reflect a single-pass, fixed-seed 12-task development baseline (not the full 89-task leaderboard); 3 zero-token infrastructure faults (2 Debian APT 502 errors, 1 `tmux` startup failure) are retained in the end-to-end denominator. Full reproduction commands, lockfiles, and caveats are documented in [evaluations.md](docs/reference/evaluations.md).
 
 ## Install
 
-Python 3.12 or later is required. The recommended way is to install it as a standalone command with [uv](https://docs.astral.sh/uv/):
+Requires **Python 3.12+**. Install as an isolated global CLI with [uv](https://docs.astral.sh/uv/):
 
 ```bash
+# Install the latest main branch directly from GitHub (works immediately)
+uv tool install git+https://github.com/yzd05/mosscode.git
+
+# Or install a tagged release from PyPI
 uv tool install mosscode
-moss doctor     # checks the installation, PATH, configuration and helper tools; sends no request
+
+# Verify installation, PATH, credentials, sandbox backends, and helper tools (offline)
+moss doctor
 ```
 
-This installs two identical commands, `moss` and `mosscode`. PATH warnings, upgrading and uninstalling, notes for each platform, containers and the command sandbox: [installation details](docs/usage.en.md#installation-details). Installing from source: [contributing](CONTRIBUTING.md).
+This installs both `moss` and `mosscode`. Platform notes, upgrading/uninstalling, container usage, and OS sandbox setup: [installation details](docs/usage.en.md#installation-details). Source installation: [contributing](CONTRIBUTING.md).
 
 ## Configure
 
-On first run, `moss` starts an interactive setup wizard that writes `~/.mosscode/config.yaml` and opens the interface; `moss setup` runs the same wizard at any time. If Claude Code or Codex is already configured locally (including via CC Switch or Magpie), choose "follow" to reuse its endpoint, model and key without duplicating credentials; built-in presets cover DeepSeek, Kimi, GLM, Qwen, OpenRouter, Anthropic and OpenAI. Credentials go to the system credential store by default, and the configuration only stores their name.
+Running `moss` for the first time launches an interactive setup wizard (`moss setup` re-runs it anytime):
 
-When editing by hand, a minimal provider looks like this; [config.example.yaml](config.example.yaml) documents every field:
+| Onboarding Path | Best For | Experience |
+| :--- | :--- | :--- |
+| **Follow (`follow`)** | Existing local Claude Code or Codex setups (incl. CC Switch / Magpie) | Zero duplicate entry—reuses endpoint, model, and key; `/model` re-syncs live |
+| **Vendor Presets (`preset`)** | DeepSeek, Kimi, GLM, Qwen, OpenRouter, Anthropic, OpenAI | Pre-fills protocol, base URL, default model, and env var name automatically |
+| **System Keyring** | Windows Credential Manager / macOS Keychain / Linux Secret Service | `moss key set <name>` stores keys encrypted; `config.yaml` never holds plaintext secrets |
+
+Minimal `~/.mosscode/config.yaml` when editing by hand (all fields in [config.example.yaml](config.example.yaml)):
 
 ```yaml
 providers:
-  - name: claude
-    protocol: anthropic-messages      # or openai-responses, openai-chat-completions
-    model: replace-with-service-model
-    api_key_env: ANTHROPIC_API_KEY    # an environment variable; or api_key_keyring (a name saved with moss key set)
+  - name: deepseek
+    preset: deepseek                  # or explicit protocol: anthropic-messages / openai-responses / openai-chat-completions
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY     # env var name; or api_key_keyring for system keyring entries
 ```
 
-Project configuration, common options, and the files for permissions, MCP, skills, hooks, sub-agents and plugins: [usage guide](docs/usage.en.md#configuration).
+Project-level trust gates, permission rules, MCP, skills, hooks, sub-agents, and plugins: [usage guide](docs/usage.en.md#configuration).
 
 ## Use
 
-### Quick start
+### Five Entry Modes
 
 ```bash
-moss                                        # start the interface in the current directory
-moss "explain this project's entry point"   # start and send this message
-moss -c                                     # resume this project's latest session
-moss -p "list the modules under src"        # headless: run one task and exit
-moss acp                                    # start the ACP server (stdio JSON-RPC for IDEs)
+moss                                        # start the inline terminal UI (native scrollback preserved)
+moss "explain this repository's architecture" # launch the TUI and send the prompt immediately
+moss -c                                     # resume the latest session in this workspace
+moss -p "run tests and summarize failures"  # headless mode (supports text / json / stream-json)
+moss acp                                    # start the ACP server (stdio JSON-RPC 2.0 for IDEs)
 ```
 
-Describe the task in plain language and the model picks the tools; writing files or running commands asks for your confirmation according to the permission mode.
+<details>
+<summary><b>✨ Connect MossCode in PyCharm / IntelliJ IDEA / Zed via ACP (Click to expand)</b></summary>
 
-### Common commands
+<br />
 
-- `/help`: commands and keys.
-- `/model`, `/thinking`: switch model and thinking effort.
-- `/plan task`: investigate read-only and submit a plan that runs once approved; Shift+Tab cycles permission modes.
-- `/goal condition`: set a completion condition, checked after every turn; work continues until it is met.
-- `/compact`, `/clear`: compact the context; start a new session.
-- `/resume`, `/rewind`: resume a session; roll files and conversation back to an earlier message.
-- `/status`: model, permission mode, context, usage and estimated cost.
-- `/mcp`, `/skills`, `/hooks`, `/agents`, `/plugins`: inspect extensions.
-- `/tasks`, `/team`: background tasks and agent teams.
-- `@file` attaches a file's content, `!command` runs a command without the model, Esc cancels the running task.
+Point JetBrains AI Chat (`~/.jetbrains/acp.json`) or Zed (`settings.json`) to `moss acp` to run MossCode natively inside your IDE sidebar (details in [acp.md](docs/reference/acp.md)):
 
-All keys and commands, permission modes, web tools and headless mode: [usage guide](docs/usage.en.md#keys-and-commands).
+```json
+{
+  "agent_servers": {
+    "MossCode": {
+      "command": "moss",
+      "args": ["acp"]
+    }
+  }
+}
+```
+
+</details>
+
+### Interactive Commands & Shortcuts
+
+| Category | Commands & Keys | Purpose |
+| :--- | :--- | :--- |
+| **Sessions & Time Travel** | `/resume` · `/rewind` (or `Esc Esc`) · `/clear` | Resume prior sessions; roll **both files and conversation** back to an earlier message; start fresh |
+| **Planning & Long Tasks** | `/plan <task>` · `Shift+Tab` · `/goal <condition>` | Read-only investigation & plan approval; cycle permission modes; run autonomously until goal is met |
+| **Context & Diagnostics** | `/compact [focus]` · `/status` · `/todo` · `/memory` | Targeted context compaction; inspect tokens, cache hit rate & cost; inspect checklist & memory notes |
+| **Models & Confinement** | `/model` · `/thinking` · `/permissions` · `/sandbox` | Switch provider/model or reasoning effort mid-session; inspect or toggle permissions & OS sandbox |
+| **Multi-Agent & Ecosystem** | `/tasks` · `/team` · `/mcp` · `/skills` · `/plugins` | Manage background tasks/sub-agents, split-pane teams, MCP servers, skills, and plugins |
+| **Prompt Powerups** | `@file#L10-20` · `!cmd` / `!!cmd` · `Alt+V` · `Ctrl+B` | Inline file/line references; direct shell escape; paste clipboard images; background a running command |
+
+Full keybindings, permission syntax, and headless automation: [usage guide](docs/usage.en.md#keys-and-commands).
 
 ## Architecture
 
+### System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Entry["Surfaces"]
+        CLI["launcher.py / cli.py<br/>Zero-SDK lazy CLI entry"]
+        TUI["tui.py + windows_inline.py<br/>Native scrollback inline UI & streaming Markdown"]
+        Headless["-p Headless<br/>text / json / stream-json"]
+        ACP["acp/<br/>IDE JSON-RPC 2.0 server"]
+    end
+
+    subgraph Core["Core Harness"]
+        Conv["conversation.py<br/>Session lifecycle & context assembly"]
+        Loop["agent.py (AgentLoop)<br/>Concurrent reads · Empty/cut recovery · Loop breaker · pre_finish"]
+        Prov["providers.py + catalog.py<br/>Anthropic / OpenAI Responses / Chat & cache breakpoints"]
+    end
+
+    subgraph State["Context & Persistence"]
+        Budget["tool_budget.py + context.py<br/>Spill budgets & usage-anchored meter"]
+        Comp["compaction.py<br/>Result clearing → Segment collapse → Structured summary"]
+        Sess["session.py + checkpoints.py<br/>Live JSONL transcript & file checkpoints"]
+        Mem["memory*.py<br/>Dual-scope index & guarded background extraction"]
+    end
+
+    subgraph Exec["Execution, Security & Ecosystem"]
+        Tools["tools/<br/>Read/Write/Edit · Shell · Search · Web · Todo · AskUser"]
+        Sec["permissions.py + sandbox/<br/>4 modes · AST command risk · 4 native OS sandboxes & proxy"]
+        Ext["mcp_client.py · skills/ · hooks/ · plugins.py<br/>MCP · Skills · Hooks · Claude-compatible plugins"]
+        Multi["agents/ + worktree/ + teams/<br/>Defined & KV-sharing Fork · Git worktrees · Split-pane teams"]
+    end
+
+    CLI --> TUI & Headless & ACP
+    TUI & Headless & ACP --> Conv
+    Conv --> Loop
+    Loop --> Prov & State & Exec
 ```
-launcher.py ──► cli.py ──► tui.py (Textual interface) or -p (headless)
-            └──► acp/ (ACP IDE JSON-RPC server)
-                   └──► conversation.py (context and MCP start-up, public interface)
-                          └──► agent.py (agent loop)
-                           ├──► compaction.py, context.py (context estimates and compaction)
-                           ├──► session.py (session files and resuming), memory*.py (memory notes)
-                           ├──► providers.py (three protocols, retries, cache markers)
-                           ├──► prompts.py (system prompt, environment, mode reminders)
-                           └──► tools/ (registration, validation, approval, execution)
-                                  ├──► permissions.py, security.py (modes, rules, command risk)
-                                  ├──► mcp_client.py, mcp_config.py (MCP)
-                                  ├──► skills/, tools/skill.py (skills and their tools)
-                                  ├──► hooks/ (lifecycle hooks, tool-call interception)
-                                  └──► agents/, tools/agent.py (sub-agents and background tasks)
-                                         ├──► worktree/ (git worktree isolation)
-                                         └──► teams/, tools/team.py (agent teams)
+
+### 4-Stage Cache-Preserving Context Pipeline
+
+```mermaid
+flowchart LR
+    L1["1. Ingestion Budget<br/>Spill >12.5K results to disk<br/>Fair-share >50K parallel reads"] --> S1["2. Zero-LLM Result Clearing<br/>Replace old large tool outputs (≤50%)<br/>Every conversation word kept"]
+    S1 -->|"Still over threshold"| S2["3. Incremental Segment Collapse<br/>Summarize oldest turns in view only (≤60%)<br/>History, /rewind & prior cache preserved"]
+    S2 -->|"Still over threshold"| S3["4. Structured Summary + Quotes<br/>9-section summary + ≤8K user quotes<br/>Overflow rescue & circuit breaker"]
 ```
-
-One task works like this:
-
-1. The agent loop requests the model with the stable system prompt, the history and this request's environment, and passes the streamed events to the interface.
-2. Tool calls in the reply are validated, approved and run. Up to four adjacent read-only calls run at once.
-3. The plain-text results go back into the history, and the model is requested again.
-4. This repeats until a reply calls no tools or a stop condition is reached (cancel, turn limit, repeated unknown tools, and so on).
-
-The interface and `-p` share `Conversation`. From Python, call `Conversation.ask()` repeatedly to keep a multi-turn history, then `await conversation.close()`.
 
 <details>
-<summary>What each module does</summary>
+<summary><b>Module Responsibility Reference (Click to expand)</b></summary>
+
+<br />
 
 | Module | Responsibility |
-| --- | --- |
-| `agent.py` | Agent loop: requests, tool runs, queued messages, stop conditions, plan mode, when to compact |
-| `context.py`, `compaction.py`, `tool_budget.py` | Context estimates and thresholds, summary compaction, storing large results on disk |
-| `session.py`, `serialization.py`, `paths.py` | Session files, replay and repair, locks, cleanup; project keys |
-| `memory.py`, `memory_extract.py`, `tools/memory.py` | Memory notes, background extraction, the memory tool |
-| `providers.py` | Anthropic Messages, OpenAI Responses and Chat Completions adapters, retries before the first event, cache breakpoints |
-| `prompts.py` | Fixed prompt modules, tool list, `<environment>` and `<system-reminder>`, AGENTS.md, git snapshot |
-| `tools/` | Tools such as `files.py`, `search.py`, `process.py`, `plan.py`; `execution.py` batches and runs calls concurrently; `base.py` registration and execution boundary |
-| `permissions.py`, `security.py` | Modes, layered rules, approval requests, read-only command list, dangerous-command levels, project path checks |
-| `mcp_client.py`, `mcp_config.py` | MCP configuration, background connection and discovery, tool adapters |
-| `skills/`, `tools/skill.py` | Skill discovery and overrides, `load_skill` and script tools; built-in skills |
-| `hooks/` | Hook files and trust, conditions, actions, per-event execution and logs |
-| `agents/`, `tools/agent.py` | Sub-agent definitions, defined and forked runs, background tasks and notifications |
-| `worktree/` | Git worktree naming, creation, initialisation, change checks, safe removal, cleanup |
-| `teams/`, `tools/team.py`, `coordinator.py` | Agent teams: storage and locks, mailboxes, shared tasks, member turns, merging, pane back ends; coordinator mode |
-| `tui.py`, `appearance.py`, `scrollback.py` | Interface, commands and suggestions, native scrollback |
-| `acp/` | Agent Client Protocol (ACP) server for IDEs (Zed, JetBrains, etc.), multi-workspace session isolation and permission bridging |
-| `launcher.py`, `cli.py` | Entry point; `--version` and subcommands load neither the interface nor the SDKs |
-| `config.py`, `setup.py`, `doctor.py` | Configuration, `moss setup` and `moss doctor` |
-| `credentials.py`, `key_command.py` | System credential store (`moss key`), masking keys in child environments and output |
-| `plugins.py`, `plugin_command.py` | Plugin records and loading; `moss plugin` install, marketplaces, updates and removal |
+| :--- | :--- |
+| `agent.py` | Agent loop: requests, batched tool execution, queued steering, stop conditions, plan mode, `pre_finish` checks, compaction timing |
+| `context.py`, `compaction.py`, `tool_budget.py` | Usage-anchored incremental token estimation, 4-stage compaction pipeline, disk spill & parallel read budgets |
+| `session.py`, `serialization.py`, `checkpoints.py` | Crash-safe JSONL transcripts, replay/repair, file snapshots and `/rewind` rollback |
+| `memory.py`, `memory_extract.py`, `tools/memory.py` | User/project memory notes, overwrite-guarded background extraction, cache-preserving invalidation reminders |
+| `providers.py`, `catalog.py` | Anthropic Messages, OpenAI Responses, and Chat Completions adapters, retries, prompt cache markers, bundled model catalog |
+| `prompts.py` | Stable modular system prompt, tool catalog, `<environment>` and append-only `<system-reminder>`, hierarchical `AGENTS.md` |
+| `tools/` | File ops, foreground/background shell, ripgrep/pathspec search, SSRF-guarded web fetch/search, `todo_write`, `ask_user` |
+| `permissions.py`, `security.py`, `sandbox/` | 4 permission modes, layered rules, `tree-sitter-bash` risk classification, Bubblewrap / Seatbelt / MXC / restricted-token sandboxes & proxy |
+| `mcp_client.py`, `skills/`, `hooks/`, `plugins.py` | Background MCP discovery, Agent Skills & script tools, lifecycle Hooks, Claude-compatible plugin manager |
+| `agents/`, `worktree/`, `teams/`, `coordinator.py` | Defined & prefix-sharing `Fork` sub-agents, Git worktree isolation, split-pane teams with mailboxes & topological merge |
+| `tui.py`, `windows_inline.py`, `scrollback.py` | Native-scrollback inline TUI, Windows console driver, block-settled streaming Markdown, adaptive dark/light palettes |
+| `acp/` | Agent Client Protocol 1.0 server, isolated multi-workspace sessions, `session/load` replay, slash commands & permission bridging |
+| `launcher.py`, `cli.py`, `setup.py`, `doctor.py` | Fast zero-SDK CLI entry, argument routing, interactive setup wizard, and offline cross-platform diagnostics |
 
 </details>
 
 ### Documentation
 
-- [Usage guide](docs/usage.en.md): installation details, options, keys, commands, permission modes, headless mode
-- [Reference documentation](docs/reference/cli.md) (Chinese): the full description of current behaviour, starting with the [command line](docs/reference/cli.md) and the [terminal interface](docs/reference/interface.md)
-- [Claude Code patterns](docs/claude-code-patterns.md) (Chinese): Claude Code's design and MossCode's choices, topic by topic
-- [Roadmap](ROADMAP.md) (Chinese): what is done and what comes next
-- [Changelog](CHANGELOG.md) (Chinese): changes by version
-- [Contributing](CONTRIBUTING.md), [development notes](AGENTS.md), [security policy](SECURITY.md)
+- [Usage guide](docs/usage.en.md): installation details, configuration options, keys, commands, permission modes, headless mode
+- [Claude Code patterns](docs/claude-code-patterns.md) (Chinese): 18 side-by-side design trade-offs between Claude Code and MossCode
+- [Reference documentation](docs/reference/cli.md) (Chinese): complete specification of [CLI](docs/reference/cli.md), [TUI](docs/reference/interface.md), [ACP IDE server](docs/reference/acp.md), [context](docs/reference/context.md), [sandbox](docs/reference/sandbox.md), [teams](docs/reference/teams.md), and [benchmarks](docs/reference/evaluations.md)
+- [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Development notes](AGENTS.md) · [Security policy](SECURITY.md)
 
 ### Development
 

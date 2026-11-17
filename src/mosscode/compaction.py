@@ -14,7 +14,7 @@ from pathlib import Path
 from .context import ContextBudget, estimate_message, estimate_messages, estimate_text
 from .images import ImageRef
 from .limits import stream
-from .messages import Collapse, Completed, ContentBlock, Message, ProviderError, ToolResult
+from .messages import NOTIFICATION, Collapse, Completed, ContentBlock, Message, ProviderError, ToolResult
 from .session import Session
 
 KEEP_TOKENS = 10_000
@@ -385,13 +385,16 @@ def project(history: Sequence[Message], collapses: Sequence[Collapse]) -> list[M
     return [collapse.summary for collapse in collapses] + list(history[collapses[-1].end :])
 
 
+TURN_STARTS = (None, "goal", NOTIFICATION)
+
+
 def collapse_end(
     history: Sequence[Message], collapses: Sequence[Collapse], cut: int, estimate: int, target: int
 ) -> int | None:
     """Where a new collapse would end: the fewest whole turns after the last collapse that bring the estimate to
     target. None when that reaches into the kept tail (cut, an index into the projection) or the limit is reached.
 
-    A range always ends right before a message the user typed, so what follows a summary is a turn's start.
+    A range always ends right before a turn-starting user message (typed, /goal continuation, or task notification).
     """
     if len(collapses) >= COLLAPSE_LIMIT:
         return None
@@ -400,8 +403,8 @@ def collapse_end(
     freed = 0
     for end in range(start + 1, limit + 1):
         freed += estimate_message(history[end - 1])
-        typed = history[end].role == "user" and history[end].synthetic is None
-        if not typed or _only_boundary(history[start:end]) or estimate - freed + COLLAPSE_SUMMARY > target:
+        turn_start = history[end].role == "user" and history[end].synthetic in TURN_STARTS
+        if not turn_start or _only_boundary(history[start:end]) or estimate - freed + COLLAPSE_SUMMARY > target:
             continue
         # The summary carries the user's words in the range verbatim, up to QUOTE_TOKENS.
         quotes, _ = fit_quotes(collect_quotes(history[start:end]))

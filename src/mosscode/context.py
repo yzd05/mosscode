@@ -81,24 +81,37 @@ class ContextBudget:
 
 
 class ContextMeter:
-    """Size of the next request: last reported input + output, plus an estimate of what came after."""
+    """Size of the next request: last reported input + output, plus an estimate of what changed after."""
 
     def __init__(self):
         self.anchor: int | None = None
         self.anchor_length = 0
+        self.anchor_extra = 0
 
-    def record(self, usage: Usage, history_length: int) -> None:
+    def record(self, usage: Usage, history_length: int, extra_tokens: int = 0) -> None:
         if usage.input_tokens is None:
             self.anchor = None
+            self.anchor_extra = 0
             return
         self.anchor = usage.input_tokens + (usage.output_tokens or 0)
         self.anchor_length = history_length
+        self.anchor_extra = extra_tokens
 
     def invalidate(self) -> None:
         self.anchor = None
+        self.anchor_extra = 0
 
-    def estimate(self, history: Sequence[Message], extra: str = "", fixed: Callable[[], str] = lambda: "") -> int:
+    def estimate(
+        self,
+        history: Sequence[Message],
+        extra: str = "",
+        fixed: Callable[[], str] = lambda: "",
+        *,
+        extra_tokens: int | None = None,
+    ) -> int:
+        current_extra = estimate_text(extra) if extra_tokens is None else extra_tokens
         if self.anchor is not None and self.anchor_length <= len(history):
-            return self.anchor + estimate_messages(history[self.anchor_length :]) + estimate_text(extra)
+            delta_extra = current_extra - self.anchor_extra
+            return max(0, self.anchor + estimate_messages(history[self.anchor_length :]) + delta_extra)
         # No usable anchor: count the whole request, including system prompt and tool definitions.
-        return estimate_text(fixed()) + estimate_messages(history) + estimate_text(extra)
+        return estimate_text(fixed()) + estimate_messages(history) + current_extra

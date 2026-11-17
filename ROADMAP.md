@@ -16,7 +16,9 @@ MossCode 已经做了什么、接下来做什么，以及为什么这样排。�
 | 会话 | 实时存档与恢复；检查点与 `/rewind` | [会话存档与恢复](docs/reference/sessions.md) |
 | 长任务 | `todo_write`、`ask_user`、`/goal`；后台命令、Ctrl+B 转入后台 | [任务清单](docs/reference/tools.md#任务清单)、[目标](docs/reference/commands.md#目标) |
 | 多 Agent | 定义式与 Fork 子 Agent、后台运行、git 工作树隔离、Agent 团队与分屏窗格 | [子 Agent](docs/reference/subagents.md)、[Agent 团队](docs/reference/teams.md) |
-| 扩展 | MCP、Skill、Hook、插件（兼容 Claude Code 的插件格式） | [Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[插件](docs/reference/plugins.md) |
+| 扩展 | MCP、Skill、Hook（含 `pre_finish` 确定性验收）、插件（兼容 Claude Code 的插件格式） | [Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[插件](docs/reference/plugins.md) |
+| IDE 接入 | Agent Client Protocol (ACP) 服务端（`moss acp`），支持 JetBrains、Zed 等编辑器多目录会话隔离与审批桥接 | [ACP 编辑器集成](docs/reference/acp.md) |
+| 评估与预算 | 锁定 Harbor / Terminal-Bench 2.1 评测适配器与冻结基线、受控回归套件、版本对照与 `run_budget` 共享额度 | [评估与版本对照](docs/reference/evaluations.md) |
 | 界面 | 内联显示与原生滚动历史；流式 Markdown；审批和提问面板替换输入框；运行状态行显示最近工具的成败；浅色与深色配色 | [终端界面](docs/reference/interface.md) |
 | 平台与发布 | Windows、Linux、macOS 三平台 CI；PyPI 发布；`moss doctor`、`moss setup` | [命令行](docs/reference/cli.md) |
 

@@ -238,3 +238,24 @@ def test_forks_see_collapsed_turns_as_their_summaries():
     conv = seeded(SequenceProvider(), history)
     conv._agent.collapses = [summary(4)]
     assert conv._fork_history("full") == [summary(4).summary, *history[4:]]
+
+
+def test_collapse_recognizes_goal_and_notification_turn_boundaries():
+    from mosscode.messages import NOTIFICATION
+
+    goal_turns = [
+        Message("user", (ContentBlock("text", f"goal-{i}"),), synthetic="goal" if i else None)
+        if idx % 2 == 0
+        else text("assistant", f"work-{i} " + BLOCK * 2)
+        for i in range(8)
+        for idx in (0, 1)
+    ]
+    assert collapse_end(goal_turns, [], 11, 32_000, 16_200) == 10
+    notif_turns = [
+        Message("user", (ContentBlock("text", f"note-{i}"),), synthetic=NOTIFICATION if i else None)
+        if idx % 2 == 0
+        else text("assistant", f"work-{i} " + BLOCK * 2)
+        for i in range(8)
+        for idx in (0, 1)
+    ]
+    assert collapse_end(notif_turns, [], 11, 32_000, 16_200) == 10

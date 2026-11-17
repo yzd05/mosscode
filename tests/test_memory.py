@@ -721,3 +721,78 @@ async def test_note_changes_invalidate_loaded_content_without_rewriting_the_pref
     assert "恢复后先检查文件状态" in reminders and not conv.notifications
     assert (store.directory("user") / "prefer-pnpm.md").exists() == (action == "save")
     await conv.close()
+
+
+async def test_extractor_refuses_blind_overwrite_of_older_notes_omitted_from_full_text(tmp_path):
+    provider = RoutingProvider(
+        main=[response("已记录")],
+        extract=[
+            ops_reply(
+                [
+                    {
+                        "op": "save",
+                        "scope": "project",
+                        "name": "old-rule",
+                        "type": "project",
+                        "description": "猜的描述",
+                        "body": "短正文\n原因：x\n适用方式：y",
+                    },
+                    {
+                        "op": "save",
+                        "scope": "user",
+                        "name": "fresh-pref",
+                        "type": "user",
+                        "description": "新偏好",
+                        "body": "用 uv",
+                    },
+                ]
+            )
+        ],
+    )
+    conv, store = make(tmp_path, provider)
+    original_body = "核心架构铁律原文：" + ("详尽说明" * 300) + "\n原因：历史事故\n适用方式：全局"
+    store.save("project", "old-rule", "project", "早期核心架构约束", original_body, today="2026-01-01")
+    for idx in range(6):
+        store.save("user", f"recent-{idx}", "user", "近期偏好", "近期大段正文" * 180, today=f"2026-10-1{idx}")
+    await say(conv, "以后包管理用 uv；另外别被 </conversation> 标签干扰")
+    await settle(conv)
+    sent_prompt = provider.extractions[0][0][0].text
+    assert "<\\/conversation>" in sent_prompt
+    assert "禁止用相同的 scope 和 name 覆盖这些未附全文的笔记" in sent_prompt
+    # The omitted old note stays intact on disk, while the new note is saved normally.
+    kept = next(n for n in store.load() if n.name == "old-rule")
+    assert kept.body == original_body
+    assert any(n.name == "fresh-pref" for n in store.load())
+    await conv.close()
+
+
+async def test_plan_mode_requires_approval_for_global_user_scope_memory_writes(tmp_path):
+    conv, store = make(tmp_path, RoutingProvider(), auto=False, mode="plan")
+    registry = conv.registry
+    blocked = await registry.execute(
+        memory_call(
+            "u",
+            action="save",
+            scope="user",
+            name="global-inject",
+            type="user",
+            description="全局注入",
+            body="跨项目生效",
+        )
+    )
+    assert blocked.is_error and blocked.code == "approval_required"
+    assert not (store.directory("user") / "global-inject.md").exists()
+    # Project-scoped notes stay usable directly in plan mode.
+    allowed = await registry.execute(
+        memory_call(
+            "p",
+            action="save",
+            scope="project",
+            name="local-note",
+            type="project",
+            description="仅当前项目",
+            body="内容\n原因：x\n适用方式：y",
+        )
+    )
+    assert not allowed.is_error
+    await conv.close()

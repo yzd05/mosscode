@@ -25,7 +25,7 @@ from .compaction import (
     project,
     released_reads,
 )
-from .context import ContextBudget, ContextMeter, estimate_message, estimate_messages
+from .context import ContextBudget, ContextMeter, estimate_message, estimate_messages, estimate_text
 from .credentials import redact, redact_value
 from .images import ImageRef
 from .limits import RunBudget, stream
@@ -292,6 +292,8 @@ class AgentLoop:
         self.session = None
         self.auto_compact = True
         self.meter = ContextMeter()
+        self._anchored_tools: tuple[str, ...] | None = None
+        self._last_env_tokens = 0
         self.compact_failures = 0
         self.compactions = 0
         # Requests replace the oldest part of the history with these summaries; the history keeps every message.
@@ -380,10 +382,15 @@ class AgentLoop:
                 raise ProviderError("当前会话未启用工具，不能进入计划模式。")
             return
         policy = self.registry.permissions
+        before = policy.mode
         if mode == "plan":
             policy.set_mode("plan")
         elif policy.mode == "plan":
             policy.set_mode(policy.resume_mode)
+        if policy.mode != before:
+            # Entering or leaving plan mode swaps the exposed tool set, so the usage anchor is stale.
+            self.meter.invalidate()
+            self._anchored_tools = None
 
     def clear(self):
         if self.busy:
@@ -394,6 +401,8 @@ class AgentLoop:
         # A fresh context has not seen the mode rules yet.
         self._announced = "normal"
         self.meter.invalidate()
+        self._anchored_tools = None
+        self._last_env_tokens = 0
         self.compact_failures = 0
         self.collapses, self.collapse_failures = [], 0
         self._gap, self._repeat, self._sent = None, None, {}
@@ -411,6 +420,8 @@ class AgentLoop:
             self.budget = budget
         # Another model reports usage differently; start from a full estimate and a fresh breaker.
         self.meter.invalidate()
+        self._anchored_tools = None
+        self._last_env_tokens = 0
         self.compact_failures = 0
         # Signed/opaque blocks are valid only for the model that produced them.
         self.history = [replace(m, protocol=None, native=()) for m in self.history]
@@ -473,11 +484,29 @@ class AgentLoop:
         """Messages at the start of the history that requests replace with summaries."""
         return self.collapses[-1].end if self.collapses else 0
 
-    def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
+    def _supplements_text(self) -> str:
         active = self._active()
-        env_text += active.render() if active else ""
-        env_text += self.hook_context.render() if self.hook_context else ""
-        return self.meter.estimate(self.projected() + list(extra), env_text, self._fixed_text)
+        text = active.render() if active else ""
+        text += self.hook_context.render() if self.hook_context else ""
+        return text
+
+    def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
+        tool_names = tuple(d.name for d in self._definitions())
+        if self.meter.anchor is not None and self._anchored_tools is not None and tool_names != self._anchored_tools:
+            # Tool definitions changed since the anchored request (e.g. plan exit or background MCP discovery).
+            self.meter.invalidate()
+            self._anchored_tools = None
+        supplements_tokens = estimate_text(self._supplements_text())
+        env_tokens = (
+            self._last_env_tokens
+            if self.meter.anchor is not None and not env_text and self._last_env_tokens
+            else estimate_text(env_text)
+        )
+        return self.meter.estimate(
+            self.projected() + list(extra),
+            fixed=self._fixed_text,
+            extra_tokens=env_tokens + supplements_tokens,
+        )
 
     def _clear(self, cut: int, estimate: int) -> ResultsCleared | None:
         """Older tool results become notes when that alone brings the context far enough down.
@@ -784,7 +813,13 @@ class AgentLoop:
                     self._sent, committed = standing, True
                 self._append(deepcopy(final.message))
                 self._usage(final.usage)
-                self.meter.record(final.usage, len(self.history) - self._collapsed + len(self.collapses))
+                self._last_env_tokens = estimate_text(env.text)
+                self._anchored_tools = tuple(d.name for d in self._definitions())
+                self.meter.record(
+                    final.usage,
+                    len(self.history) - self._collapsed + len(self.collapses),
+                    self._last_env_tokens + estimate_text(self._supplements_text()),
+                )
                 truncated = final.stop_reason == "max_tokens"
                 if not calls:
                     last_round, repeats = "", 0
