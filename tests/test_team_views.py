@@ -212,7 +212,7 @@ def test_take_only_the_kinds_asked_and_the_model_cannot_answer(tmp_path):
     store.create()
     store.modify(lambda team: team.members.append(Member("bob", "general")))
     access = TeamAccess(store, LEAD)
-    access.send("bob", "text", "继续", "s")
+    access.send("bob", "shutdown_request", reason="等一下")
     access.send("bob", "permission_response", runtime=True, request_id="r1", choice="once")
     with pytest.raises(TeamError):  # RUNTIME_ONLY: never from the model.
         access.send("bob", "permission_response", request_id="r1", choice="once")
@@ -220,7 +220,7 @@ def test_take_only_the_kinds_asked_and_the_model_cannot_answer(tmp_path):
         TeamAccess(store, "bob").send(LEAD, "permission_response", runtime=True, request_id="r1", choice="once")
     taken = store.mailbox.take("bob", {"permission_response"})
     assert [(m.type, m.extra) for m in taken] == [("permission_response", {"request_id": "r1", "choice": "once"})]
-    assert [m.type for m in store.mailbox.read_unread("bob")] == ["text"]
+    assert [m.type for m in store.mailbox.read_unread("bob")] == ["shutdown_request"]
 
 
 def test_record_round_trip():
@@ -254,13 +254,13 @@ async def test_member_takes_the_leads_answer(tmp_path):
     await process.settle()
     assert [item["id"] for item in store.load().member("bob").approvals] == ["r1"]
     access = TeamAccess(store, LEAD)
-    access.send("bob", "text", "别的消息", "s")
+    access.send("bob", "shutdown_request", reason="别的消息")
     access.send("bob", "permission_response", runtime=True, request_id="r1", choice="once")
     assert await asyncio.wait_for(future, 2) == "once"
     await until(lambda: settled)
     await process.settle()
     assert settled == [("r1", "once")] and store.load().member("bob").approvals == []
-    assert [m.type for m in store.mailbox.read_unread("bob")] == ["text"]  # Only the answer was taken.
+    assert [m.type for m in store.mailbox.read_unread("bob")] == ["shutdown_request"]  # Only the answer was taken.
     # Answered in its own window: out of the record at once, nothing from the lead.
     second = ApprovalRequest("r2", "c2", Operation("execute_command", "npm run lint"), "需要确认", ("once", "deny"))
     policy.hold(second)

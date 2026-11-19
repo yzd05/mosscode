@@ -1,20 +1,20 @@
 # Agent 团队
 
-主 Agent 作为 Team Lead（固定名称 `lead`）组建团队：成员是长期存在的 Agent，各自在独立的 git 工作树中工作，通过共享任务和邮箱协作。Lead 在用户确认后把成员的分支合并到主目录当前的分支。团队保存在用户目录中，跨重启保留。
+主 Agent 作为 Team Lead（固定名称 `lead`）组建团队：成员是长期存在的 Agent，各自在独立的 git 工作树中工作，通过单真源追加式黑板（`board.jsonl`）、共享任务和信号邮箱协作。Lead 在用户确认后把成员的分支合并到主目录当前的分支。团队保存在用户目录中，跨重启保留。
 
-团队只在交互界面中可用，而且需要开启工具和子 Agent（有 Agent 目录）。`-p` 无界面模式没有团队工具：合并确认和成员审批都要用户回答。
+团队在终端 TUI 和 ACP 编辑器集成（`in-process` 模式）中可用，而且需要开启工具和子 Agent（有 Agent 目录）。`-p` 无界面模式没有团队工具：合并确认和成员审批都要用户回答。
 
 ## 何时使用
 
-适合能拆成几块、可以并行、彼此独立的多文件改动。一处小改动、一个问题或只需要调查时，直接做，或用[子 Agent](subagents.md)。每个成员都是一份完整的模型调用成本。
+适合能拆成几块、文件集合互不重叠的多文件改动。一处小改动、一个问题或只需要调查时，直接做，或用[子 Agent](subagents.md)。每个成员都是一份完整的模型调用成本。
 
-典型流程（Lead 的系统提示词中有同样的说明）：
+典型流程（Lead 的系统提示词中有同样的说明，配合 `/swarm <任务>` 可一键启用）：
 
 1. `team_create` 建团队；
-2. `team_task_create` 建好任务，用 `blocked_by` 写明依赖；
-3. `team_spawn` 创建成员，至多 4 个，在 prompt 中写清负责的任务、背景、范围和“完成后提交改动”；
-4. 等待：成员的消息、空闲通知和新就绪的任务以 `<team-update>` 自动送达 Lead，不需要轮询；
-5. 全部完成后，用 `team_merge` 按依赖顺序逐个合并，每次都要用户确认；
+2. `team_task_create` 建好任务，用 `blocked_by` 写明依赖，确保各实施成员负责的文件集合严格不重叠；
+3. `team_spawn` 并发创建成员（同时最多 `team_max_members` 个活跃成员，默认 6），包括各工作树 `worker`、合流 `integrator` 以及只读审查员 `verifier`（`role: "verifier"`）；
+4. 成员在黑板上通过 `post_board` 配合 `@integrator`、`@verifier` 和 `#seq` 编号直接点对点接力（用 `read_board(seqs=[...])` 按需查阅原文），期间不打扰 Lead（零 Lead 中转 Token），全部通过后再点名 `@lead`；
+5. Lead 收到 `<team-update>` 后，用 `team_merge` 按依赖顺序逐个合并，每次都要用户确认，最后发一条不带 `@` 的 `[done] <摘要>` 收尾；
 6. 向用户汇报每个成员做了什么、合并了哪些分支、还剩什么问题。
 
 ## 存储
@@ -23,35 +23,48 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `config.json` | 版本、团队名、描述、项目路径、Lead 持有者（进程号、会话、接管时间）和成员列表 |
+| `config.json` | 版本、团队名、描述、项目路径、Lead 持有者（进程号、会话、接管时间）、黑板游标（`lead_board_cursor`）、乒乓跳数（`peer_hops`）、收尾序号（`done_seq`）和成员列表 |
+| `board.jsonl` | 追加式单真源黑板：单调递增 `#seq` 编号、作者、正文、摘要、`@mentions`、`#refs` 引用与类型（`brief`、`post`、`direct`、`watchdog`、`done`） |
 | `tasks.json` | 共享任务 |
-| `mailbox/<名称>.json` | 每个参与者（包括 `lead`）一个邮箱 |
+| `mailbox/<名称>.json` | 控制信号邮箱（仅存放计划审批、停止请求与响应、窗格审批答复和空闲通知，不双写协作正文） |
 | `transcripts/<成员>.jsonl` | 成员的对话记录，格式与会话记录相同，包括压缩记录 |
 
-每个成员的记录有：定义名、模型、后端及选择原因、状态（`running` 一轮进行中 / `idle` 等待消息 / `stopped` 不在运行）、是否需要计划审批、权限模式、工作树、窗格成员的进程号与心跳、最近的工具调用、最初的任务说明和累计用量。
+每个成员的记录有：定义名、角色（`worker`、`integrator` 或只读 `verifier`）、模型、后端及选择原因、状态（`running` 一轮进行中 / `idle` 等待消息 / `stopped` 不在运行）、黑板游标（`board_cursor`）、是否需要计划审批、权限模式、工作树、窗格成员的进程号与心跳、最近的工具调用、最初的任务说明和累计用量。
 
-团队名和成员名：小写字母、数字和 `-`，1–32 个字符，以字母或数字开头；成员名不能是 `lead` 或 `*`。不合法时报 `invalid_name`，不自动改名。
+团队名和成员名：小写字母、数字和 `-`，1–32 个字符，以字母或数字开头；成员名不能是 `lead`、`all`、`watchdog` 或 `*`。不合法时报 `invalid_name`，不自动改名。
 
 所有文件的修改都在锁内进行（`<文件>.lock` 上的操作系统锁，最多等待 5 秒），先写临时文件再替换。持有锁的进程退出或崩溃时由系统释放锁；留在目录中的 `.lock` 文件本身不代表被占用。读到损坏的邮箱或 `tasks.json` 时，原文件改名为 `<文件>.corrupt-<时间>` 保留，按空文件继续并提示；`config.json` 损坏时不替换（`team_corrupt`），以免丢失成员名单。
 
-一个团队同一时刻只由一个 Lead 进程持有。`team_create` 遇到同名团队时打开它：持有者仍在运行时报 `team_held`，否则接管。每个团队最多 `team_max_members` 个成员（默认 4），已停止的成员也占名额，只有删除团队才释放。
+一个团队同一时刻只由一个 Lead 进程持有。`team_create` 遇到同名团队时打开它：持有者仍在运行时报 `team_held`，否则接管。每个团队同一时刻最多 `team_max_members` 个活跃成员（`running` 与 `idle` 合计，默认 6，可配置 1–16）；已停止（`stopped`）的成员不再占用活跃槽位，槽位已满时新建或唤醒恢复成员报 `too_many_members`。
 
 ## 工具
 
-Lead 从启动起就有九个团队工具，工具列表在会话内不变：
+Lead 从启动起就有十一个团队工具：
 
 | 工具 | 作用 |
 | --- | --- |
 | `team_create` | 新建或打开团队，设为当前团队 |
-| `team_spawn` | 创建成员并开始它的第一轮：`name`、`agent_type`（默认 `general`）、`prompt`、`require_plan_approval`、`isolation`（`worktree` 默认 / `none`） |
+| `team_spawn` | 创建成员并把初始任务说明记入黑板 `#seq` 后启动第一轮：`name`、`agent_type`（默认 `general`）、`role`（`worker` 默认 / `integrator` 合流员 / `verifier` 只读审查员）、`prompt`、`require_plan_approval`、`isolation`（`worker` 与 `integrator` 默认 `worktree`，`verifier` 默认 `none`） |
 | `team_merge` | 把成员分支合并到主目录当前分支，见“合并” |
 | `team_delete` | 删除当前团队；不带 `force` 时遇到运行中的成员拒绝 |
 | `team_task_create`、`team_task_get`、`team_task_list`、`team_task_update` | 共享任务 |
-| `send_message` | 发消息：`to` 为成员名或 `*`（广播给全部成员，不含 Lead） |
+| `post_board` | 向 `board.jsonl` 追加黑板条目（支持 `@<成员>`、`@all`、`@lead` 点名唤醒、`#seq` 引用和 `[done]` 结束标记） |
+| `read_board` | 读取黑板条目：支持 `since` 增量拉取或 `seqs=[...]` 按编号精确查阅原文 |
+| `send_message` | 发送文本（单真源写入 `board.jsonl` 并点名目标）或控制消息（`plan_approval_response`、`shutdown_request` 等写入 `mailbox/`） |
 
 没有当前团队时，除 `team_create` 外都报 `no_team`。团队工具不需要审批。
 
-成员的工具是它的 Agent 定义允许的工具，加上 `send_message`（可以发给 `lead`、其他成员或 `*`）和四个任务工具；需要计划审批的成员另有成员版本的 `exit_plan_mode`。成员不能建团队、创建成员或子 Agent、合并，也不能跨团队发消息，没有 `ask_user`（有问题用 `send_message` 问 Lead）。普通子 Agent 看不到团队工具；Fork 照旧提供这些工具（保持缓存前缀），但调用时拒绝。
+成员的工具是它的 Agent 定义允许的工具，加上 `post_board`、`read_board`、`send_message` 和四个任务工具；需要计划审批的成员另有成员版本的 `exit_plan_mode`。当 `role: "verifier"` 时，运行时在工具层硬性移除 `write_file` 和 `edit_file`（即便 `agent_type` 为 `general` 也不能写改文件），保留读取、搜索、命令、黑板和任务工具，并在团队附录中注入只读对抗审查指令（若 `isolation: "none"` 在主目录执行非只读命令，仍受会话权限档位与审批约束）。成员不能建团队、创建成员或子 Agent、合并，也不能跨团队发消息，没有 `ask_user`。普通子 Agent 看不到团队工具；Fork 照旧提供这些工具（保持缓存前缀），但调用时拒绝。
+
+## 黑板与点对点接力
+
+`board.jsonl` 是团队协作正文的唯一真源（避免黑板与邮箱双写分裂）：
+
+- **单调编号与按需查阅**：`team_spawn` 的初始任务说明（`kind: "brief"`）、`post_board`（`kind: "post"` 或 `"done"`）和 `send_message(type="text")`（`kind: "direct"`）都追加到 `board.jsonl`，分配从 `1` 开始的 `#seq`。成员交接时只需引用 `#3` 等编号，下游成员用 `read_board(seqs=[3])` 直接读取原文，无需 Lead 居中转述。
+- **代码块感知的 `@` 点名解析**：解析 `@<成员>`、`@all`、`@lead` 前会先剥离围栏代码块（` ```…``` `）与行内反引号（`` `…` ``），因此代码里的 `@dataclass`、`@pytest.mark` 或 `` `@alice` `` 绝不会误唤醒成员；未知的 `@param` 等名称自动忽略。
+- **零 Lead Token 点对点接力**：成员一轮中用 `post_board` 点名了其他成员（如 `@integrator` 或 `@verifier`）且未点名 `@lead` 时，目标成员立即被唤醒（若原已 `stopped` 且有空余槽位会自动恢复），而当前成员本轮结束时**不向 Lead 发送空闲通知**，让 `author -> @integrator -> @verifier -> @lead` 流水线在后台安静推进，直到有人显式 `@lead` 或整条链路停下。
+- **12 跳乒乓熔断（`MAX_PEER_HOPS = 12`）**：连续不经 Lead 的成员间点对点接力每跳计数加 1（Lead 发言或任一任务变为 `completed` 时清零）。达到 12 跳时自动抑制继续互唤，在黑板追加一条 `watchdog` 熔断记录并唤醒 `lead` 介入裁决，防止无限返工死循环。
+- **零 Token 停滞看门狗（Stall Watchdog）**：纯 Python 确定性状态机，不消耗模型 Token。若存在空闲成员尚有未读黑板 `@` 点名则立即补唤醒；若尚未收到 `[done]`、所有成员与 Lead 均空闲超过 15 秒且任务板上仍有未完成任务（`pending` 或 `in_progress`），按 `(最新 #seq, 未完成任务集合)` 去重，对同一停滞状态仅在黑板记录一次 `[stall]` 并通知 `lead`，避免空闲会话反复刷屏。Lead 发送以 `[done]` 开头的黑板消息后，看门狗静默收尾。
 
 ## 共享任务
 
@@ -63,24 +76,24 @@ Lead 从启动起就有九个团队工具，工具列表在会话内不变：
 
 ## 消息
 
-消息字段：`id`、`from`、`type`、`body`（不超过 20000 字）、`summary`、`timestamp`、`read`，协议消息的额外字段直接放在消息中。
+协作文本统一存储在 `board.jsonl` 中，每个参与者的 `mailbox/<名称>.json` 仅传输运行时控制帧：
 
-| 类型 | 谁发 | 说明 |
-| --- | --- | --- |
-| `text` | 任何人 | 必须有不超过 80 字的 `summary`；只有它可以广播 |
-| `plan_approval_request` | 运行时代成员发 | `request_id`、`plan` |
-| `plan_approval_response` | 只有 Lead | `request_id`、`approve`、`feedback` |
-| `shutdown_request` | 只有 Lead | `reason` |
-| `shutdown_response` | 成员 | `request_id`、`approve`、`reason` |
-| `idle_notification` | 运行时代成员发 | `reason`（`completed` / `failed` / `interrupted`）、完成的任务、最后回复的前 300 字 |
+| 类型 | 存储通道 | 谁发 | 说明 |
+| --- | --- | --- | --- |
+| `text` | `board.jsonl` | 任何人 | 单真源写入黑板并分配 `#seq`（`send_message` 需提供不超过 80 字的 `summary`，`to` 为成员名、`lead` 或 `*`） |
+| `plan_approval_request` | `mailbox/` | 运行时代成员发 | `request_id`、`plan` |
+| `plan_approval_response` | `mailbox/` | 只有 Lead | `request_id`、`approve`、`feedback` |
+| `shutdown_request` | `mailbox/` | 只有 Lead | `reason` |
+| `shutdown_response` | `mailbox/` | 成员 | `request_id`、`approve`、`reason` |
+| `idle_notification` | `mailbox/` | 运行时代成员发 | `reason`（`completed` / `failed` / `interrupted`）、完成的任务、最后回复的前 300 字（纯成员间黑板接力时不打扰 Lead） |
 
-每个邮箱保留全部未读消息和最近 100 条已读消息；未读超过 500 条时发送报 `mailbox_full`。
+每个邮箱保留全部未读控制消息和最近 100 条已读控制消息；未读超过 500 条时发送报 `mailbox_full`。
 
-Lead 收到的消息合成一条 `<team-update>` 通知：Lead 空闲时开始一个通知轮，忙时在下一个迭代边界并入。界面为每条更新显示一行，例如“团队 auth：alice → lead：<摘要>”。`/clear` 和 `/resume` 不停止团队；之后 Lead 的第一条消息前注入一次 `<team-context>`（团队、成员状态和任务概况）。
+Lead 收到的未读黑板 `@lead` 条目与控制消息合成一条 `<team-update>` 通知：Lead 空闲时开始一个通知轮（ACP 中若当前在 `session/prompt` 外则排队到下一轮请求开始时处理），忙时在下一个迭代边界并入。`/clear` 和 `/resume` 不停止团队；之后 Lead 的第一条消息前注入一次 `<team-context>`（团队、成员状态和任务概况）。
 
 ## 成员的运行
 
-成员的一轮：取出全部未读消息，合并为一条 `<incoming-messages>` 用户消息；运行到这一轮结束；向 Lead 发空闲通知，然后等待下一条消息。一轮进行中收到的消息留到下一轮一起读。第一轮的消息是 `team_spawn` 的 prompt。
+成员的一轮：从 `board.jsonl`（按自己的 `board_cursor` 取出新 `@` 提及）和 `mailbox/` 取出未读控制消息，合并为一条 `<incoming-messages>` 用户消息；运行到这一轮结束；若本轮已通过黑板点名其他成员接力则直接进入空闲等待，否则向 Lead 发空闲通知。一轮进行中新到达的黑板提及和消息留到下一轮一起读取，游标原子推进不丢消息。第一轮的输入是 `team_spawn` 写入黑板 `#seq` 的初始任务说明。
 
 成员的对话按子 Agent 定义构建：定义的系统提示词加上团队附录（“你是团队 X 的成员 Y”、文字回复没人看得到要用 `send_message`、工作流程、工作树和主分支、怎样解决合并冲突、怎样答复停止请求）。工作区工具以工作树为根重新创建，不带 MCP 和 Skill 脚本工具；开启自动压缩。一轮失败（提供商错误、达到最大轮数）时空闲通知的 `reason` 为 `failed`，成员仍可接收消息。
 
@@ -121,6 +134,7 @@ Lead 收到的消息合成一条 `<team-update>` 通知：Lead 空闲时开始�
 - **停止一个成员**：`/team stop <成员>` 或 Lead 的 `shutdown_request`。成员在这一轮结束后答复并停止，也可以答复不同意；10 秒内没有停止时 `/team stop` 强制停止。
 - **重新打开**：`team_create` 打开已有团队时，进程号存活且心跳不超过 15 秒的窗格成员继续工作，其他成员一律标为 `stopped`。
 - **恢复**：Lead 向已停止的成员发消息时，按当前的 `teammate_mode` 重新选择后端（结果中注明，可能与上次不同），从对话记录重建对话，复用原工作树，再投递消息开始一轮。记录损坏、工作树丢失或后端失败时报 `revive_failed`，消息仍在邮箱中，下次恢复时会读到。
+- **异常退出与崩溃回收**：窗格成员进程意外退出或进程内成员运行异常终止时，运行时自动将该成员名下所有 `in_progress` 状态的共享任务重置回 `pending`（清空 `owner`，保留 `completed` 任务不变），在 `board.jsonl` 追加一条 `watchdog` 记录，并向 `lead` 发送 `<team-update>` 以便重新指派。
 - **切换团队**：当前团队有运行中的成员时拒绝（`team_busy`）；否则停止原团队的进程内成员，窗格成员继续存活，然后切换。
 
 ## 后端
@@ -171,19 +185,19 @@ tmux 后端没有在本机人工验证（本机没有 tmux），只有命令行�
 
 ## 协调者模式
 
-协调者模式让 Lead 只负责调查、拆分、派发和验证，实施交给成员。同时满足两个条件时开启：
+协调者模式让 Lead 只负责调查、无重叠切分、派发编组、验收与合并，所有代码改动交给成员完成。有两种启用方式：
 
-- 配置 `coordinator_mode: true`；
-- 环境变量 `MOSSCODE_COORDINATOR_MODE` 为 `1`、`true` 或 `yes`（不区分大小写）。
+1. **会话内动态开关（推荐）**：在 TUI 或 ACP 中输入 `/swarm on` 开启，或输入 `/swarm <任务>` 自动开启并立即把任务提交给 Lead；随时可用 `/swarm off` 关闭并恢复完整工具。
+2. **启动默认开启**：同时满足配置 `coordinator_mode: true` 与环境变量 `MOSSCODE_COORDINATOR_MODE` 为 `1`、`true` 或 `yes`（不区分大小写）；只满足一个时不开启并给出提示。
 
-只满足一个时不开启，启动时提示缺少的那一个。它在启动时决定，会话内不变，没有命令可以切换。`-p` 中忽略并提示“协调者模式只用于交互界面”；没有工具或没有 Agent 目录时同样忽略并提示。
+`-p` 无界面模式中不启用协调者模式（`/swarm` 只用于具备团队运行时的 TUI 或 ACP 交互会话）；没有工具或没有 Agent 目录时同样不启用。
 
 开启后：
 
-- Lead 不再有 `write_file`、`edit_file`、MCP 工具和 Skill 脚本工具（MCP 服务器照常连接，工具留给成员和子 Agent）；保留读工具、`execute_command`、团队工具、`agent`、`task_output`、`task_stop`、`load_skill`、`memory` 和 `exit_plan_mode`。模型若仍调用被去掉的工具，返回 `coordinator_withheld`。
-- 成员和子 Agent 的工具不受影响，照常可以写文件。
-- 系统提示词增加“协调者模式”一节，分四个阶段：调查（读代码或派只读子 Agent）、综合（拆任务、写依赖）、实施（创建成员并派发，之后不要自己动手）、验证（让成员或子 Agent 运行测试，合并后自己可以运行只读的检查）。
-- 状态栏的权限档位后显示 `[协调]`；`/status` 有一行“角色  协调者模式（配置与环境变量均已开启）”。
+- Lead 动态隐藏 `write_file`、`edit_file`、MCP 工具和 Skill 脚本工具（MCP 服务器照常连接，工具留给成员和子 Agent）；保留读工具、`execute_command`、团队与黑板工具、`agent`、`task_output`、`task_stop`、`load_skill`、`memory` 和 `exit_plan_mode`。模型若仍调用被隐藏的工具，返回 `coordinator_withheld`。`/swarm off` 关闭时立即恢复上述工具并重锚上下文计量器（`ContextMeter`）。
+- 成员（`role: "worker"`）和子 Agent 的工具不受影响，照常可以写文件；`role: "verifier"` 的审查成员始终硬性只读。
+- 系统提示词注入黑板 Swarm 四步规程：调查与严格不重叠文件切分 → 一键建队与 `worker` + `integrator` + `verifier` 黄金编组 → 黑板 `#seq` 点对点接力 → `@lead` 验收后按序 `team_merge`、只读检查并以 `[done]` 收尾。
+- 状态栏的权限档位后显示 `[协调]`；`/status` 的“角色”行标明协调者模式状态。
 
 这是角色约束，不是安全边界：`execute_command` 仍然能写文件，权限规则照常适用。
 
@@ -191,12 +205,15 @@ tmux 后端没有在本机人工验证（本机没有 tmux），只有命令行�
 
 | 命令 | 作用 |
 | --- | --- |
-| `/team` | 列出本项目的团队：成员数、各状态人数、是否为当前团队、持有者 |
-| `/team <名称>` | 团队详情：每个成员的状态、后端及原因、工作树和分支、最近的工具调用、用量、未读消息数；任务列表 |
+| `/swarm [status]` | 查看当前 Swarm 协调模式开关、活跃成员上限、当前团队进度及最近黑板 `#seq` 条目 |
+| `/swarm on` / `/swarm off` | 在当前会话动态开启或关闭协调者模式（即使最初由配置开启也可 `/swarm off` 关闭） |
+| `/swarm <任务>` | 开启协调者模式（直到手动 `/swarm off` 前跨轮保持），并立即提交任务 |
+| `/team` | 列出本项目的团队：成员数、各状态人数、是否为当前团队、持有者及当前团队黑板摘要 |
+| `/team <名称>` | 团队详情：每个成员的状态、后端及原因、工作树和分支、最近工具调用、用量；共享任务列表；最近黑板 `#seq · author: summary` 记录 |
 | `/team stop <成员>` | 请当前团队的成员在这一轮结束后停止，10 秒后强制停止 |
 | `/team delete <名称>` | 确认后停止全部成员，删除已合并且干净的工作树（其他的保留并列出）和团队目录；被另一个存活的 Lead 持有时拒绝 |
 
-`/team`、`/team <名称>`、`/team stop` 在 Lead 运行时也能使用；`/team delete` 等这一轮结束。
+`/swarm`（不带参数或 `status`）、`/team`、`/team <名称>`、`/team stop` 在 Lead 运行时也能使用；`/swarm on|off|<任务>` 与 `/team delete` 等这一轮结束。ACP 会话同样在 `available_commands` 中提供 `/swarm` 与 `/team`。
 
 有当前团队时，状态栏显示“团队 <名称> 运行 N / 空闲 M”。成员的创建、空闲、停止、恢复和失败各显示一行说明，写明后端。
 
@@ -225,8 +242,8 @@ Ctrl+T 展开面板并让它获得焦点，输入框中的草稿保留。展开�
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `teammate_mode` | `auto` | `auto` / `in-process` / `windows-terminal` / `tmux`，见“后端” |
-| `team_max_members` | `4` | 每个团队的成员上限，1–8 |
-| `coordinator_mode` | `false` | 协调者模式的配置开关，还需要环境变量 `MOSSCODE_COORDINATOR_MODE` |
+| `team_max_members` | `6` | 每个团队同时活跃（`running` + `idle`）的成员上限，1–16 |
+| `coordinator_mode` | `false` | 启动默认开启协调者模式的配置开关（还需环境变量 `MOSSCODE_COORDINATOR_MODE`）；未配置时仍可在会话内用 `/swarm` 动态开关 |
 
 取值不合法时启动报错。
 

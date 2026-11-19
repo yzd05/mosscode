@@ -1,49 +1,43 @@
 # MossCode
 
-运行在终端与编辑器里的 AI coding agent：读写与批量修改文件、运行命令、搜索代码，按权限档位与系统沙箱约束执行。支持 Anthropic Messages、OpenAI Responses 和 Chat Completions 三种协议，可接入 MCP 工具、Skill、生命周期 Hook、子 Agent、Git 工作树与 Agent 团队。
+面向终端与编辑器的开源 AI Coding Agent：理解本地代码库、导航与修改文件、运行命令、检索代码并驱动完整的开发测试流程。支持 Anthropic Messages、OpenAI Responses 和 Chat Completions 三种协议，可接入完整 MCP、Skills、Hooks、子 Agent 与 Git 工作树团队。
 
 ## 安装
 
-需要 Python 3.12 或更高版本。推荐用 [uv](https://docs.astral.sh/uv/) 或 [pipx](https://pipx.pypa.io/) 安装成独立的命令：
+需要 Python 3.12 或更高版本。推荐用 [uv](https://docs.astral.sh/uv/) 或 [pipx](https://pipx.pypa.io/) 安装：
 
-```
+```bash
 uv tool install mosscode
 ```
 
 或
 
-```
+```bash
 pipx install mosscode
 ```
 
-升级用 `uv tool upgrade mosscode`（或 `pipx upgrade mosscode`）。安装后得到 `moss` 和 `mosscode` 两个相同的命令。
+升级使用 `uv tool upgrade mosscode`（或 `pipx upgrade mosscode`）。安装后提供 `moss` 和 `mosscode` 两个等价命令。
 
-## 第一次运行
+## 快速开始
 
-```
-moss
-```
-
-找不到配置时，`moss` 进入配置引导：可直接跟随本机已配好的 Claude Code 或 Codex 设置，或从 DeepSeek、Kimi、GLM、通义千问、OpenRouter、Anthropic、OpenAI 预设中选择，写入 `~/.mosscode/config.yaml` 后进入界面；之后可用 `moss setup --add` 追加更多 Provider。凭据默认保存在系统凭据管理器中（`moss key set`），也可以放在环境变量中。`moss doctor` 离线检查安装、配置和依赖工具，加 `--ping` 可向模型发送最小探针验证连通性。
-
-```
-moss "解释这个项目的入口"          # 启动后立即发送
-moss -c                            # 恢复本项目最近的会话
-moss -p "列出 src 下的模块"        # 无界面模式，运行一个任务后退出
-moss --sandbox                     # 开启原生命令沙箱运行
-moss acp                           # 启动 ACP 服务，接入 Zed、JetBrains IDE 等编辑器
+```bash
+moss                               # 启动终端交互界面（首次运行进入配置引导）
+moss "梳理这个项目的核心模块"        # 启动并立即发送任务
+moss -c                            # 恢复当前目录最近的会话
+moss --sandbox                     # 开启系统级命令沙箱运行
+moss -p "运行测试并总结失败原因"     # 无界面模式（支持 text / json / stream-json）
+moss acp                           # 启动 ACP 服务，接入 PyCharm / IntelliJ / Zed
 ```
 
-## 功能
+首次运行可直接跟随本机已有的 Claude Code / Codex 配置，或选用主流模型预设（DeepSeek、Kimi、GLM、通义千问、OpenRouter、Anthropic、OpenAI），可用 `moss setup --add` 追加配置，`moss doctor --ping` 检查环境与模型连通性。
 
-- 本地工具与编辑容错：读、写、支持多处原子替换与缩进/行尾容错的 `edit_file`（附语法诊断）、命令、glob、grep；相邻只读调用并发执行，运行中排队新消息自动跳过未开始的批次优先响应。
-- 权限与原生命令沙箱：四个权限档位与三层规则、危险命令 AST 级风险分级确认、只读计划模式；支持系统级命令沙箱（Windows MXC / 受限令牌、Linux bubblewrap、macOS Seatbelt）与按域名授权的回环网络代理。
-- 编辑器与扩展生态：内置 Agent Client Protocol (`moss acp`) 服务端；支持 MCP 外部工具、兼容 Agent Skills 与 Claude Code 插件格式的 Skill / 插件系统、生命周期与完成前验收 Hook（`pre_finish`）。
-- 长任务与多 Agent：任务清单 `todo_write`、交互式提问 `ask_user`、自主目标循环 `/goal`、前台超时自动转后台命令、子 Agent、Git 工作树隔离和分屏 Agent 团队。
-- 上下文与会话管理：以服务端用量为锚的上下文估算、工具结果清理、旧对话折叠与自动压缩；会话实时存档、关键词恢复（`/resume`）、分支派生（`/fork`）、自定义重命名（`/rename`）、检查点回退（`/rewind`）与跨会话记忆笔记。
-- 终端内联体验：保留终端原生滚动历史与文本选择，`@` 引用文件、`!` 直接执行命令、剪贴板/拖拽图片输入，`Ctrl+O` 随时展开思考过程与完整工具输出。
+## 核心功能
 
-支持 Windows、Linux 和 macOS。搜索优先使用 PATH 中的 [ripgrep](https://github.com/BurntSushi/ripgrep)，没有时退回内置实现。
+- **三端统一接入**：保留终端原生滚屏与文字选择的内联界面、脚本与 CI 无界面模式（`-p`），以及编辑器 ACP 服务端（`moss acp`）。
+- **代码结构导航与可靠编辑**：支持全仓代码结构地图（`repo_map`）、文件符号大纲与按符号读取、多处原子替换与语法检查、全文检索、`@文件` 引用、图片输入与 `!命令` 直跑。
+- **长程任务与多 Agent 协作**：提供只读规划（`/plan`）、目标驱动执行（`/goal`）、定时巡检（`/loop`）、后台命令与任务管理、子 Agent 及独立 Git 工作树团队协作（`/swarm`）。
+- **会话管理与长期记忆**：支持长对话自动上下文减压、会话分支（`/fork`）、检查点文件与对话回退（`/rewind`），以及跨工作树共享的用户/项目记忆检索。
+- **开放扩展与安全边界**：支持完整 MCP（工具、资源、`@server:uri` 与提示词命令）、Skills、生命周期 Hooks 与插件管理；内置四档权限、分层规则、高危命令拦截及 Windows / Linux / macOS 原生命令沙箱。
 
 ## 文档
 

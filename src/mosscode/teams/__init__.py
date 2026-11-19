@@ -12,14 +12,18 @@ from typing import Literal
 from ..paths import project_dir
 from ..worktree.meta import process_alive
 from ..worktree.names import RESERVED
+from .blackboard import Blackboard, BoardPost
 from .board import TaskBoard
 from .lock import TeamError, atomic_write, file_lock, now, read_text
 from .mailbox import BROADCAST, LEAD, Mailbox
 
 __all__ = [
     "BROADCAST",
+    "Blackboard",
+    "BoardPost",
     "LEAD",
     "Member",
+    "ROLES",
     "Team",
     "TeamError",
     "TeamStore",
@@ -28,6 +32,9 @@ __all__ = [
     "validate_member_name",
     "validate_team_name",
 ]
+
+ROLES = ("worker", "integrator", "verifier")
+MemberRole = Literal["worker", "integrator", "verifier"]
 
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 VERSION = 1
@@ -46,8 +53,11 @@ def validate_team_name(name: str) -> str | None:
     return _validate(name, "团队名")
 
 
+RESERVED_MEMBER_NAMES = frozenset({LEAD, BROADCAST, "all", "watchdog"})
+
+
 def validate_member_name(name: str) -> str | None:
-    if name in {LEAD, BROADCAST}:
+    if name in RESERVED_MEMBER_NAMES:
         return f"成员名不能是 {name}"
     return _validate(name, "成员名")
 
@@ -80,6 +90,8 @@ class Member:
     last_tool: str = ""  # Written by a pane member while it runs.
     window: str = ""  # The Windows Terminal team window its tab is in.
     approvals: list = field(default_factory=list)  # A pane member's requests waiting for an answer.
+    role: MemberRole = "worker"
+    board_cursor: int = 0
 
     def agent_id(self, team: str) -> str:
         return f"{self.name}@{team}"
@@ -87,7 +99,12 @@ class Member:
     @classmethod
     def from_dict(cls, data: dict) -> Member:
         known = {item.name for item in fields(cls)}
-        return cls(**{key: value for key, value in data.items() if key in known})
+        cleaned = {key: value for key, value in data.items() if key in known}
+        if cleaned.get("role") not in ROLES:
+            cleaned.pop("role", None)
+        if "board_cursor" in cleaned:
+            cleaned["board_cursor"] = int(cleaned["board_cursor"] or 0)
+        return cls(**cleaned)
 
 
 @dataclass
@@ -98,6 +115,9 @@ class Team:
     lead: dict | None = None  # {"pid", "session", "since"} of the process holding it.
     members: list[Member] = field(default_factory=list)
     project: str = ""  # The main project directory; a pane member loads its rules and agents there.
+    lead_board_cursor: int = 0
+    peer_hops: int = 0
+    done_seq: int = 0
 
     def member(self, name: str) -> Member | None:
         return next((member for member in self.members if member.name == name), None)
@@ -122,6 +142,9 @@ class Team:
             lead=data.get("lead") or None,
             members=members,
             project=str(data.get("project", "")),
+            lead_board_cursor=int(data.get("lead_board_cursor", 0) or 0),
+            peer_hops=int(data.get("peer_hops", 0) or 0),
+            done_seq=int(data.get("done_seq", 0) or 0),
         )
 
 
@@ -130,7 +153,7 @@ def _valid(data) -> bool:
 
 
 class TeamStore:
-    """One team directory: config.json, tasks.json, mailbox/, transcripts/."""
+    """One team directory: config.json, tasks.json, board.jsonl, mailbox/, transcripts/."""
 
     def __init__(self, directory: Path, on_notice: Callable[[str], None] | None = None):
         self.directory = directory
@@ -139,6 +162,7 @@ class TeamStore:
         self.config = directory / "config.json"
         self.mailbox = Mailbox(directory / "mailbox", on_notice)
         self.board = TaskBoard(directory / "tasks.json", on_notice)
+        self.blackboard = Blackboard(directory / "board.jsonl", on_notice)
         self.transcripts = directory / "transcripts"
 
     @classmethod

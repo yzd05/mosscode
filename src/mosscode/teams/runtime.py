@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from ..messages import ProviderError, UsageTotals
 from ..permissions import ApprovalRequest
 from ..worktree.meta import process_alive
-from . import LEAD, Member, TeamError, TeamStore, list_teams, teams_root, validate_member_name
+from . import LEAD, ROLES, BoardPost, Member, TeamError, TeamStore, list_teams, teams_root, validate_member_name
 from .backends import (
     IN_PROCESS,
     IN_PROCESS_REASON,
@@ -33,12 +33,23 @@ from .backends import (
 from .board import STATUS_LABELS
 from .lock import now
 from .mailbox import Message
-from .member import POLL, MemberPolicy, MemberRunner, TeamAccess, addendum, approval_from_record, task_listing
+from .member import (
+    POLL,
+    MemberPolicy,
+    MemberRunner,
+    PostResult,
+    TeamAccess,
+    addendum,
+    approval_from_record,
+    task_listing,
+)
+from .watchdog import DEFAULT_STALL_AFTER, MAX_PEER_HOPS, SwarmWatchdog
 
 if TYPE_CHECKING:
     from ..conversation import Conversation
 
-MAX_MEMBERS = 4
+MAX_MEMBERS = 6
+VERIFIER_BAN = frozenset({"write_file", "edit_file"})
 BODY_PREVIEW = 4000  # Characters of a message body in a team update.
 REASON = IN_PROCESS_REASON
 BACKEND_LABELS = LABELS
@@ -47,10 +58,10 @@ STOP_WAIT = 10.0  # Seconds a member has to stop after a shutdown_request.
 IDLE_STATES = {"failed": "失败", "interrupted": "被用户中断"}  # idle_notification reasons.
 LEAD_GUIDE = """## Agent 团队
 
-你可以作为 lead 组建团队：成员是长期存在的 Agent，各自在独立的 git 工作树中工作，通过消息和共享任务协作。
+你可以作为 lead 组建团队：成员是长期存在的 Agent，各自在独立的 git 工作树中工作，通过黑板（post_board / read_board）、消息和共享任务协作。
 - 何时使用：用户的任务能拆成几块可以并行、彼此独立的多文件改动时。一处小改动、一个问题或只需要调查时不要建团队，直接做或用子 Agent。
-- 做法：team_create 建团队；先用 team_task_create 建好任务并写明依赖（blocked_by），再用 team_spawn 创建成员（至多 {max_members} 个），在 prompt 中写清它负责的任务、背景、范围和完成后要提交改动。
-- 创建后不要轮询、不要反复查看任务列表：成员的消息、空闲通知和新就绪的任务会作为 <team-update> 自动送达。需要时用 send_message 回复或指派。
+- 做法：team_create 建团队；先用 team_task_create 建好任务并写明依赖（blocked_by），再用 team_spawn 创建成员（至多 {max_members} 个活跃成员，可指定 role 为 worker、integrator 或只读审查员 verifier），在 prompt 中写清它负责的任务、背景、范围和完成后要提交改动。
+- 黑板定序接力：成员可通过 post_board 点名同级成员（如 @integrator、@verifier）并引用 #seq 直接交接，全部通过后再点名 @lead；创建后不要轮询，点名 @lead 的黑板条目、空闲通知和巡检提示会作为 <team-update> 自动送达。
 - 全部成员完成后，用 team_merge 按任务依赖的顺序逐个合并它们的分支；每次合并都要用户确认。
 - 合并冲突时：让该成员在它的工作树中合入主分支、解决冲突并提交，再 team_merge。主目录有未提交的改动、或用户拒绝合并时，停下来问用户，不要自己清理或重试。
 - 最后向用户汇报：每个成员做了什么、合并了哪些分支、还剩什么问题。"""
@@ -70,9 +81,17 @@ def remove_tree(path: Path) -> None:
             time.sleep(0.05)
 
 
-def render_update(team: str, messages: list[Message], ready: list[str]) -> str:
-    """One notification for everything that arrived in the lead's mailbox."""
+def render_update(team: str, messages: list[Message], ready: list[str], board_posts: Sequence[BoardPost] = ()) -> str:
+    """One notification for everything that arrived in the lead's mailbox and blackboard."""
     lines = [f"<team-update>\n团队 {team}："]
+    for post in board_posts:
+        body = post.body
+        if len(body) > BODY_PREVIEW:
+            body = body[:BODY_PREVIEW] + f"\n（正文共 {len(post.body)} 字，已截断）"
+        if post.kind == "watchdog":
+            lines.append(f"[黑板 #{post.seq} · 系统巡检] 摘要：{post.summary}\n{body}")
+        else:
+            lines.append(f"[黑板 #{post.seq} · {post.author}] 摘要：{post.summary}\n{body}")
     for message in messages:
         extra, sender = message.extra, message.sender
         if message.type == "text":
@@ -100,7 +119,10 @@ def render_update(team: str, messages: list[Message], ready: list[str]) -> str:
             lines.append(f"[{sender} · {message.type}] {message.body}")
     if ready:
         lines.append("现在就绪的任务：" + "、".join(ready) + "。")
-    return "\n".join(lines) + "\n</team-update>\n以上是团队的最新消息；需要时用 send_message 回复成员，不要轮询。"
+    return (
+        "\n".join(lines)
+        + "\n</team-update>\n以上是团队的最新消息；需要时用 post_board 或 send_message 回复成员，不要轮询。"
+    )
 
 
 def note_for(message: Message) -> str:
@@ -162,6 +184,7 @@ class PaneRunner:
         self.on_request: Callable[[dict], None] | None = None
         self.on_settled: Callable[[str, bool], None] | None = None  # (request id, the member ended)
         self.asked: set[str] = set()
+        self.crashed: bool = False
         self.job: asyncio.Task | None = None
 
     def wake(self) -> None:
@@ -188,11 +211,19 @@ class PaneRunner:
                     continue
                 member = team.member(self.name)
                 if member is None or member.status == "stopped" or (member.pid and member.pid != self.pid):
+                    if member is not None and member.error:
+                        self.crashed = True
                     return
                 self.last_tool = member.last_tool if member.status == "running" else ""
                 self._approvals(member.approvals)
                 if member.status != self.status:
                     self._report(member.status)
+            try:
+                member = (await asyncio.to_thread(self.store.load)).member(self.name)
+            except TeamError:
+                member = None
+            if member is not None and member.status != "stopped":
+                self.crashed = True
         finally:
             self._approvals([], ended=True)
             self._report("stopped")
@@ -238,29 +269,37 @@ async def build_runner(
     in-process members with it; a pane member's process builds itself with it (session_mode from its record)."""
     from ..agent import AgentLoop, add_usage
     from ..agents.runtime import GLOBAL_BAN, SubagentLog, effective_mode
+    from ..permissions import stricter
     from ..prompts import git_snapshot
-    from ..tools.team import member_tools
+    from ..tools.team import TEAM_TOOLS, member_tools
     from ..usage import price_of
 
     main = conversation._agent
     parent = main.registry.permissions
     access = TeamAccess(store, member.name, wake)
     session_mode = session_mode or (lambda: parent.mode)
+    is_verifier = member.role == "verifier"
+    compute_mode = (
+        (lambda m: stricter(effective_mode(agent, m), m)) if is_verifier else (lambda m: effective_mode(agent, m))
+    )
     runner = MemberRunner(
         access,
         member.name,
-        agent_mode=lambda mode: effective_mode(agent, mode),
+        role=member.role,
+        agent_mode=compute_mode,
         session_mode=session_mode,
         require_plan_approval=member.require_plan_approval,
         on_approval=on_approval,
         poll=poll,
     )
+    runner._cursor = member.board_cursor
     provider, budget, owned = conversation.subagents._provider(agent.model, f"成员 {member.name} ")
-    mode = "plan" if member.require_plan_approval else effective_mode(agent, session_mode())
+    mode = "plan" if member.require_plan_approval else compute_mode(session_mode())
     policy = MemberPolicy(parent, mode, interactive=parent.interactive, label=f"成员 {member.name}", root=root)
     base = root or parent.root
     extra = member_tools(base, access, runner)
-    keep = lambda name: name not in GLOBAL_BAN and agent.allows(name)  # noqa: E731
+    banned = GLOBAL_BAN | TEAM_TOOLS | (VERIFIER_BAN if is_verifier else frozenset())
+    keep = lambda name: name not in banned and agent.allows(name)  # noqa: E731
     if root is None:
         # Members run alongside the user's turns, so /rewind leaves their files alone.
         registry = main.registry.for_agent(
@@ -286,10 +325,18 @@ async def build_runner(
     # Its background commands end with it (MemberRunner.close) and notify nobody.
     registry.task_id = runner.owner = f"member:{member.name}"
     runner.commands = registry.commands
-    system = agent.prompt + "\n\n" + addendum(store.name, member.name, member.worktree)
+    system = agent.prompt + "\n\n" + addendum(store.name, member.name, member.worktree, member.role)
     turns = min(agent.max_turns or main.max_iterations, main.max_iterations)
     loop = AgentLoop(provider, system, registry, max_iterations=turns, unknown_limit=main.unknown_limit)
-    loop.instructions, loop.git = conversation.project_instructions, git
+    loop.instructions = "\n\n".join(
+        part
+        for part in (
+            conversation.project_instructions,
+            getattr(conversation, "memory_instructions", ""),
+        )
+        if part
+    )
+    loop.git = git
     loop.budget, loop.auto_compact, loop.session = budget, main.auto_compact, main.session
     loop.context_collapse = main.context_collapse
 
@@ -349,6 +396,7 @@ class TeamRuntime:
         home: Path | None = None,
         max_members: int = MAX_MEMBERS,
         poll: float = POLL,
+        stall_after: float = DEFAULT_STALL_AFTER,
         teammate_mode: str = IN_PROCESS,
         launch: dict | None = None,
     ):
@@ -356,6 +404,7 @@ class TeamRuntime:
         self.home = home
         self.max_members = max_members
         self.poll = poll
+        self.watchdog = SwarmWatchdog(stall_after=stall_after)
         # Where members run, and what a pane member needs to load the same configuration.
         self.teammate_mode = teammate_mode
         self.launch = dict(launch or {})  # {"config": path, "provider": name, "digest": project file content}
@@ -385,6 +434,25 @@ class TeamRuntime:
         self._writes: set[asyncio.Task] = set()
         self._write_lock = asyncio.Lock()  # Status writes land in the order they happened.
         self._merge_lock = asyncio.Lock()  # One team_merge at a time, from the first check to the merge.
+        self._deliver_lock = asyncio.Lock()  # Serializes Lead mailbox/blackboard delivery.
+        self._lead_cursor = 0
+        self._shutdown_requested: set[str] = set()
+        self._revives: dict[str, asyncio.Task] = {}
+        self._revive_lock = asyncio.Lock()
+
+    @property
+    def stall_after(self) -> float:
+        return self.watchdog.stall_after
+
+    @stall_after.setter
+    def stall_after(self, value: float) -> None:
+        self.watchdog.stall_after = value
+        self._lead_wake.set()
+
+    def _active_count(self, team) -> int:
+        active = {member.name for member in team.members if member.status in {"running", "idle"}}
+        active |= {name for name, runner in self.runners.items() if runner.status in {"running", "idle"}}
+        return len(active)
 
     def guide(self) -> str:
         """The fixed team section of the lead's system prompt."""
@@ -422,6 +490,63 @@ class TeamRuntime:
         elif name in self.runners:
             self.runners[name].wake()
 
+    def _peer_wake(self, name: str) -> None:
+        if name == LEAD:
+            self._lead_wake.set()
+            return
+        if name in self.runners:
+            self.runners[name].wake()
+            return
+        store = self.current
+        if store is None or name in self._shutdown_requested:
+            return
+        existing = self._revives.get(name)
+        if existing is not None and not existing.done():
+            return
+        try:
+            job = asyncio.get_running_loop().create_task(self._revive_for_peer(store, name))
+        except RuntimeError:
+            return
+        self._revives[name] = job
+        self._writes.add(job)
+        job.add_done_callback(self._writes.discard)
+
+    async def _revive_for_peer(self, store: TeamStore, name: str) -> None:
+        try:
+            async with self._revive_lock:
+                if self.current is not store or name in self.runners or name in self._shutdown_requested:
+                    return
+                try:
+                    team = await asyncio.to_thread(store.load)
+                except TeamError:
+                    return
+                if team.member(name) is None or team.peer_hops >= MAX_PEER_HOPS:
+                    return
+                try:
+                    await self._revive(store, name)
+                except TeamError as exc:
+                    summary = f"自动恢复成员 {name} 失败：{exc.code}"
+                    body = (
+                        f"[revive-failed] 同级成员点名了已停止的 @{name}，但自动恢复失败（{exc.message}）。"
+                        f"请 @lead 释放活跃成员槽位或手动处理。"
+                    )
+                    try:
+                        await asyncio.to_thread(
+                            store.blackboard.append,
+                            "watchdog",
+                            body,
+                            summary,
+                            kind="watchdog",
+                            explicit_mentions=(LEAD,),
+                        )
+                        await self._flush_lead(store)
+                    except (TeamError, RuntimeError):
+                        pass
+        finally:
+            current_task = asyncio.current_task()
+            if self._revives.get(name) is current_task:
+                self._revives.pop(name, None)
+
     # Teams ----------------------------------------------------------------------------------------
 
     async def create(self, name: str, description: str = "") -> tuple[str, dict]:
@@ -457,6 +582,9 @@ class TeamRuntime:
 
             team = await asyncio.to_thread(store.modify, refresh)
         self.current = store
+        self._lead_cursor = team.lead_board_cursor
+        self._shutdown_requested.clear()
+        self.watchdog.reset()
         for member in live:
             self._attach(store, member)
         self._start_watching()
@@ -483,6 +611,7 @@ class TeamRuntime:
         away from keep running (keep_panes) and are found again when the team is reopened."""
         if self.current is None:
             return
+        await self._stop_watching()
         await self._stop_members(keep_panes=keep_panes)
         try:
             await asyncio.to_thread(self.current.release, os.getpid())
@@ -490,6 +619,7 @@ class TeamRuntime:
             pass
         self.current = None
         self.plan_requests.clear()
+        self._shutdown_requested.clear()
 
     async def _stop_members(self, *, keep_panes: bool = False) -> None:
         runners, self.runners = list(self.runners.values()), {}
@@ -525,12 +655,21 @@ class TeamRuntime:
         if self._watcher is None or self._watcher.done():
             self._watcher = asyncio.get_running_loop().create_task(self._watch())
 
-    async def close(self) -> None:
-        """Ask every member to stop, wait up to stop_wait in all, cancel the rest; the team stays."""
+    async def _stop_watching(self) -> None:
         if self._watcher is not None:
             self._watcher.cancel()
             await asyncio.gather(self._watcher, return_exceptions=True)
             self._watcher = None
+        if self._revives:
+            pending_revives = list(self._revives.values())
+            self._revives.clear()
+            for job in pending_revives:
+                job.cancel()
+            await asyncio.gather(*pending_revives, return_exceptions=True)
+
+    async def close(self) -> None:
+        """Ask every member to stop, wait up to stop_wait in all, cancel the rest; the team stays."""
+        await self._stop_watching()
         for job in list(self._stops):
             job.cancel()
         await asyncio.gather(*self._stops, return_exceptions=True)
@@ -538,6 +677,7 @@ class TeamRuntime:
         if store is not None and runners:
             access = TeamAccess(store, LEAD)
             for runner in runners:
+                self._shutdown_requested.add(runner.name)
                 try:
                     await asyncio.to_thread(access.send, runner.name, "shutdown_request", reason="Lead 正在退出")
                     runner.wake()
@@ -616,15 +756,52 @@ class TeamRuntime:
                 pass
 
     async def _ended(self, store: TeamStore, runner: MemberRunner | PaneRunner) -> None:
-        """A member stopped by itself after its shutdown_response (a pane member: its process ended)."""
+        """A member stopped by itself after its shutdown_response, or died unexpectedly (crash recovery)."""
         if self.runners.get(runner.name) is not runner:
             return  # Stopped by the runtime, which cleans up itself.
         del self.runners[runner.name]
         self.plan_requests.pop(runner.name, None)
+        requested_stop = runner.name in self._shutdown_requested
+        self._shutdown_requested.discard(runner.name)
         await runner.close()
         if isinstance(runner, PaneRunner):  # It may have died without saying so.
             await self._mark_stopped(store, runner.name, pid=runner.pid)
+            crashed = runner.crashed
+        else:
+            job_failed = runner.job is not None and not runner.job.cancelled() and runner.job.exception() is not None
+            crashed = (not requested_stop and runner.shutdown is not True) or job_failed
         await self._release(store, [runner.name])
+
+        recovered = []
+        if crashed or not requested_stop:
+            try:
+                recovered = await asyncio.to_thread(store.board.recover_member, runner.name)
+            except (TeamError, RuntimeError):
+                recovered = []
+        if crashed or recovered:
+            task_ids = [task.id for task in recovered]
+            if task_ids:
+                summary = f"成员 {runner.name} 异常退出，已回收任务 {'、'.join(task_ids)}"
+                body = (
+                    f"[crash] 成员 {runner.name}（{label_of(runner)}）意外终止；"
+                    f"进行中的任务 {'、'.join(task_ids)} 已重置为 pending（未指派）。请 @lead 重新指派或恢复成员。"
+                )
+            else:
+                summary = f"成员 {runner.name} 异常退出"
+                body = f"[crash] 成员 {runner.name}（{label_of(runner)}）意外终止。请 @lead 检查团队状态。"
+            try:
+                await asyncio.to_thread(
+                    store.blackboard.append,
+                    "watchdog",
+                    body,
+                    summary,
+                    kind="watchdog",
+                    explicit_mentions=(LEAD,),
+                )
+                await self._flush_lead(store)
+            except (TeamError, RuntimeError):
+                pass
+
         self._note(f"成员 {runner.name} 已停止（{label_of(runner)}）")
         self._changed()
 
@@ -668,6 +845,7 @@ class TeamRuntime:
         runner = self.runners.get(name)
         if runner is None:
             return f"成员 {name} 已经停止。"
+        self._shutdown_requested.add(name)
         await access.asend(name, "shutdown_request", reason="用户用 /team stop 停止")
         job = asyncio.get_running_loop().create_task(self._stop_later(store, runner))
         self._stops.add(job)
@@ -703,13 +881,11 @@ class TeamRuntime:
                 )
             for job in list(self._stops):
                 job.cancel()
+            await self._stop_watching()
             await self._stop_members()
-            if self._watcher is not None:
-                self._watcher.cancel()
-                await asyncio.gather(self._watcher, return_exceptions=True)
-                self._watcher = None
             self.current = None
             self.plan_requests.clear()
+            self._shutdown_requested.clear()
         else:
             store = TeamStore.at(self.root, name, self.notices.append)
             if not await asyncio.to_thread(store.exists):
@@ -810,6 +986,7 @@ class TeamRuntime:
             usage = member.usage or {}
             try:
                 unread = store.mailbox.unread_count(member.name)
+                unread += len(store.blackboard.unread_for(member.name, member.board_cursor)[0])
             except TeamError:
                 unread = 0
             lines.append(
@@ -895,8 +1072,9 @@ class TeamRuntime:
         agent_type: str,
         prompt: str,
         *,
+        role: str = "worker",
         require_plan_approval: bool = False,
-        isolation: str = "worktree",
+        isolation: str = "auto",
     ) -> tuple[str, dict]:
         from ..agents import FORK
 
@@ -905,11 +1083,15 @@ class TeamRuntime:
         problem = validate_member_name(name)
         if problem:
             raise TeamError("invalid_name", f"成员名 {name} 不可用：{problem}。")
+        if role not in ROLES:
+            raise TeamError("invalid_role", f"成员角色只能是 {'、'.join(ROLES)}。")
+        if isolation == "auto":
+            isolation = "none" if role == "verifier" else "worktree"
         team = await asyncio.to_thread(store.load)
         if team.member(name) is not None:
             raise TeamError("member_exists", f"团队 {team.name} 已有成员 {name}。")
-        if len(team.members) >= self.max_members:
-            raise TeamError("too_many_members", f"一个团队最多 {self.max_members} 个成员（team_max_members）。")
+        if self._active_count(team) >= self.max_members:
+            raise TeamError("too_many_members", f"一个团队最多 {self.max_members} 个活跃成员（team_max_members）。")
         catalog = self.conversation.subagents.catalog
         kind = agent_type.strip() or "general"
         agent = catalog.get(kind) if kind != FORK else None
@@ -960,27 +1142,49 @@ class TeamRuntime:
             worktree=worktree,
             transcript=f"transcripts/{name}.jsonl",
             prompt=prompt,
+            role=role,  # type: ignore[arg-type]
         )
         if not pane:
             runner = await self._runner(store, member, agent, root, relative)
-        await asyncio.to_thread(store.modify, lambda team: team.members.append(member))
-        await asyncio.to_thread(store.mailbox.send, name, Message(LEAD, "text", prompt, "初始任务"))
+
+        def register_member() -> BoardPost:
+            post = store.blackboard.append(
+                LEAD,
+                prompt,
+                "初始任务",
+                kind="brief",
+                explicit_mentions=(name,),
+                valid_members=(*team.names(), name),
+            )
+            member.board_cursor = post.seq
+            store.modify(lambda current: current.members.append(member))
+            return post
+
+        brief_post = await asyncio.to_thread(register_member)
+        self._shutdown_requested.discard(name)
+        self.watchdog.touch()
         if pane:
             runner = await self._launch(store, member, choice, root)
+        else:
+            runner.initial_post = brief_post
+            runner._cursor = brief_post.seq
         self._own(store, runner)
         self.runners[name] = runner
         runner.start()
         runner.wake()
         place = f"工作树 {worktree['path']}，分支 {worktree['branch']}" if worktree else "在主项目目录中工作"
+        role_note = f"，角色 {role}" if role != "worker" else ""
         plan = "；以计划模式开始，提交的计划会出现在团队更新中，由你审批" if require_plan_approval else ""
         self._note(f"成员 {name} 已创建（{agent.name}，{BACKEND_LABELS[choice.backend]}{self._window(store, choice)}）")
         self._changed()
         return (
-            f"已创建成员 {name}（{agent.name}，后端：{choice.backend}（{choice.reason}）），{place}{plan}。"
-            "它完成一轮后你会收到 <team-update>；在此之前不要轮询。"
+            f"已创建成员 {name}（{agent.name}{role_note}，后端：{choice.backend}（{choice.reason}），黑板 #{brief_post.seq}），"
+            f"{place}{plan}。它完成或点名 @lead 后你会收到 <team-update>；在此之前不要轮询。"
         ), {
             "team": team.name,
             "member": name,
+            "role": role,
+            "seq": brief_post.seq,
             "backend": choice.backend,
             "backend_reason": choice.reason,
             "worktree": worktree["branch"] if worktree else None,
@@ -1086,7 +1290,7 @@ class TeamRuntime:
             agent,
             root,
             relative,
-            wake=self.wake,
+            wake=self._peer_wake,
             on_approval=lambda request: self._approval(request, member.name),
             poll=self.poll,
         )
@@ -1175,7 +1379,7 @@ class TeamRuntime:
             async with self._write_lock:
                 try:
                     await asyncio.to_thread(store.modify, change)
-                except TeamError:
+                except (TeamError, RuntimeError):
                     pass
 
         self._track(write())
@@ -1201,6 +1405,30 @@ class TeamRuntime:
 
     # Messages -------------------------------------------------------------------------------------
 
+    async def post_board(self, body: str, summary: str = "") -> tuple[PostResult, list[str]]:
+        """Lead appends to board.jsonl and wakes or revives any @mentioned members."""
+        access = self.access()
+        store = self.current
+        outcome = await access.apost_board(body, summary)
+        self.watchdog.touch()
+        revived, failures = [], []
+        for name in outcome.wake_targets:
+            if name == LEAD or name in self.runners:
+                continue
+            try:
+                await self._revive(store, name)
+                revived.append(name)
+            except TeamError as exc:
+                if exc.code == "too_many_members":
+                    raise
+                failures.append(f"{name}：{exc.message}")
+        if failures:
+            raise TeamError(
+                "revive_failed",
+                f"黑板 #{outcome.post.seq} 已写入，下次恢复时仍会读到；恢复失败——" + "；".join(failures),
+            )
+        return outcome, revived
+
     async def send(self, to: str, kind: str, body: str = "", summary: str = "", **extra) -> list[str]:
         return (await self.message(to, kind, body, summary, **extra))[0]
 
@@ -1208,7 +1436,7 @@ class TeamRuntime:
         self, to: str, kind: str, body: str = "", summary: str = "", **extra
     ) -> tuple[list[str], list[str]]:
         """For the lead, a plan answer must name the member's open request. A stopped
-        recipient is revived after the message is in its mailbox. (targets, revived)."""
+        recipient is revived after the message is recorded. (targets, revived)."""
         access = self.access()
         if kind == "plan_approval_response":
             open_request = self.plan_requests.get(to)
@@ -1218,11 +1446,14 @@ class TeamRuntime:
                     f"{to} 没有 request_id 为 {extra.get('request_id')} 的待审批计划"
                     + (f"（待审批的是 {open_request}）。" if open_request else "。"),
                 )
-        if kind == "shutdown_request" and to not in self.runners:
-            await asyncio.to_thread(access.recipients, to, kind)  # unknown_member first.
-            raise TeamError("member_stopped", f"成员 {to} 已经停止，不需要停止请求。")
+        if kind == "shutdown_request":
+            if to not in self.runners:
+                await asyncio.to_thread(access.recipients, to, kind)  # unknown_member first.
+                raise TeamError("member_stopped", f"成员 {to} 已经停止，不需要停止请求。")
+            self._shutdown_requested.add(to)
         store = self.current
         targets = await access.asend(to, kind, body, summary, **extra)
+        self.watchdog.touch()
         if kind == "plan_approval_response":
             self.plan_requests.pop(to, None)
             verdict = "批准" if extra.get("approve") else "拒绝"
@@ -1235,9 +1466,12 @@ class TeamRuntime:
                 await self._revive(store, name)
                 revived.append(name)
             except TeamError as exc:
+                if exc.code == "too_many_members":
+                    raise
                 failures.append(f"{name}：{exc.message}")
         if failures:
-            raise TeamError("revive_failed", "消息已写入邮箱，下次恢复时仍会读到；恢复失败——" + "；".join(failures))
+            where = "黑板" if kind == "text" else "邮箱"
+            raise TeamError("revive_failed", f"消息已写入{where}，下次恢复时仍会读到；恢复失败——" + "；".join(failures))
         return targets, revived
 
     async def _revive(self, store: TeamStore, name: str) -> None:
@@ -1249,6 +1483,11 @@ class TeamRuntime:
         member = team.member(name)
         if member is None:
             raise TeamError("revive_failed", "没有这个成员的记录。")
+        if self._active_count(team) >= self.max_members:
+            raise TeamError(
+                "too_many_members",
+                f"一个团队最多 {self.max_members} 个活跃成员（team_max_members），当前无法恢复 {name}。",
+            )
         agent = self.conversation.subagents.catalog.get(member.agent_type) if member.agent_type != FORK else None
         if agent is None:
             raise TeamError("revive_failed", f"Agent 定义 {member.agent_type} 已不存在。")
@@ -1278,6 +1517,7 @@ class TeamRuntime:
             await asyncio.to_thread(store.mailbox.discard_unread, name, {"shutdown_request"})
         except TeamError:
             pass
+        self._shutdown_requested.discard(name)
         if choice.backend == IN_PROCESS:
             try:
                 runner = await self._runner(store, member, agent, root, relative)
@@ -1286,6 +1526,11 @@ class TeamRuntime:
                     await manager.mark_in_use(member.worktree["flat"], "")
                 raise TeamError("revive_failed", str(exc)) from None
             restore_member(runner, member, history)
+            if not history and member.prompt and member.board_cursor > 0:
+                posts, _ = await asyncio.to_thread(store.blackboard.read_seqs, [member.board_cursor])
+                if posts:
+                    runner.initial_post = posts[0]
+                    runner._cursor = member.board_cursor
             if member.backend != IN_PROCESS:
 
                 def moved(team):
@@ -1312,10 +1557,11 @@ class TeamRuntime:
         self._changed()
 
     async def _watch(self) -> None:
-        """Read the lead's mailbox when woken or every poll; hand it to the conversation."""
+        """Read the lead's mailbox & blackboard mentions and run the 0-token stall watchdog."""
         while True:
+            interval = min(self.poll, max(0.01, self.watchdog.stall_after / 2))
             try:
-                await asyncio.wait_for(self._lead_wake.wait(), self.poll)
+                await asyncio.wait_for(self._lead_wake.wait(), interval)
             except TimeoutError:
                 pass
             self._lead_wake.clear()
@@ -1323,12 +1569,50 @@ class TeamRuntime:
             if store is None:
                 continue
             await self._sync_mode(store)
+            await self._run_watchdog(store)
+            await self._flush_lead(store)
+
+    async def _run_watchdog(self, store: TeamStore) -> None:
+        states = {name: runner.status for name, runner in self.runners.items()}
+        lead_busy = bool(getattr(self.conversation._agent, "busy", False))
+        has_pending = bool(self.conversation._agent.notifications)
+        action = await asyncio.to_thread(
+            self.watchdog.check,
+            store,
+            runner_states=states,
+            lead_busy=lead_busy,
+            has_pending_notifications=has_pending,
+        )
+        for member_name in action.wake_members:
+            self.wake(member_name)
+
+    async def _flush_lead(self, store: TeamStore) -> None:
+        async with self._deliver_lock:
+            if self.current is not store:
+                return
+
+            def poll_lead():
+                messages = store.mailbox.read_unread(LEAD)
+                team = store.load()
+                cursor = max(self._lead_cursor, team.lead_board_cursor)
+                posts, head_seq = store.blackboard.unread_for(LEAD, cursor)
+                self._lead_cursor = max(cursor, head_seq)
+                if posts:
+                    new_cursor = posts[-1].seq
+
+                    def advance(current):
+                        if current.lead_board_cursor < new_cursor:
+                            current.lead_board_cursor = new_cursor
+
+                    store.modify(advance)
+                return messages, posts
+
             try:
-                messages = await asyncio.to_thread(store.mailbox.read_unread, LEAD)
+                messages, board_posts = await asyncio.to_thread(poll_lead)
             except TeamError:
-                continue
-            if messages:
-                await self._deliver(store, messages)
+                return
+            if messages or board_posts:
+                await self._deliver(store, messages, board_posts)
 
     def revived_with(self, name: str) -> str:
         return self._revived.get(name, "")
@@ -1350,7 +1634,7 @@ class TeamRuntime:
         except TeamError:
             pass
 
-    async def _deliver(self, store: TeamStore, messages: list[Message]) -> None:
+    async def _deliver(self, store: TeamStore, messages: list[Message], board_posts: Sequence[BoardPost] = ()) -> None:
         ready = []
         if any(m.type == "idle_notification" and m.extra.get("completed_tasks") for m in messages):
             from .board import is_ready
@@ -1368,6 +1652,11 @@ class TeamRuntime:
                 for task in tasks  # Made ready by these.
                 if task.status == "pending" and done & set(task.blocked_by) and is_ready(task, index)
             ]
+        for post in board_posts:
+            if post.kind == "watchdog":
+                self._note(f"团队 {store.name}：巡检 #{post.seq}：{post.summary}")
+            else:
+                self._note(f"团队 {store.name}：{post.author} → lead（#{post.seq}）：{post.summary}")
         for message in messages:
             if message.type == "plan_approval_request":
                 self.plan_requests[message.sender] = str(message.extra.get("request_id", ""))
@@ -1376,5 +1665,6 @@ class TeamRuntime:
                 note += f"（{label_of(self.runners.get(message.sender))}）"
             self._note(f"团队 {store.name}：" + note)
         conversation = self.conversation
-        conversation._agent.notifications.append(render_update(store.name, messages, ready))
+        self.watchdog.touch()
+        conversation._agent.notifications.append(render_update(store.name, messages, ready, board_posts))
         conversation._tasks_ready()

@@ -712,7 +712,7 @@ async def test_load_skill_failures(tmp_path, places):
     write_skill(project_skills, "manual", "disable-model-invocation: true\n")
     write_skill(project_skills, "docs", "allowed_tools: [mcp__docs__search]\n")
     write_skill(project_skills, "big", body="x" * 30000)
-    write_skill(project_skills, "huge", body="y" * 15000)
+    write_skill(project_skills, "huge", body=" ".join(["$ARGUMENTS"] * 20))
     _, conversation = scripted(tmp_path, places)
     for name, code, text in (
         ("api-chek", "skill_unknown", "相近的名称：api-check"),
@@ -724,7 +724,7 @@ async def test_load_skill_failures(tmp_path, places):
         assert exc.value.code == code and text in str(exc.value)
     conversation._load_skill("big", "")
     with pytest.raises(ToolFailure) as exc:
-        conversation._load_skill("huge", "")
+        conversation._load_skill("huge", "y" * 3500)
     assert exc.value.code == "skill_too_large" and conversation.active_skills == ("big",)
     conversation._load_skill("big", "")  # Refreshing itself does not count twice.
     await conversation.close()
@@ -841,9 +841,13 @@ async def test_active_skills_sit_in_the_prefix_for_every_protocol(index):
     else:
         content = payload["input"] if protocol == "openai-responses" else payload["messages"]
         texts = [item["content"] for item in content]
-        start = 0 if protocol == "openai-responses" else 1
-        assert texts[start].startswith("<environment>") and texts[start + 1].startswith("<active-skills>")
-        assert texts[start + 2] == "问题" and texts[-1].startswith("<system-reminder>")
+        if protocol == "openai-responses":
+            assert texts[0].startswith("<environment>") and texts[1].startswith("<active-skills>")
+            assert texts[2] == "问题" and texts[-1].startswith("<system-reminder>")
+        else:
+            assert [item["role"] for item in content] == ["system", "system", "system", "user"]
+            assert texts[1].startswith("<environment>") and texts[2].startswith("<active-skills>")
+            assert texts[3].startswith("问题\n\n<system-reminder>")
 
 
 # Skill tools ---------------------------------------------------------------------------

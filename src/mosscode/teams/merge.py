@@ -64,9 +64,9 @@ def current_branch(top: Path) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def unmerged(top: Path, branch: str) -> int:
-    """Commits of branch that HEAD does not have; 0 when the branch is gone."""
-    done = _git(["rev-list", "--count", f"HEAD..refs/heads/{branch}"], top)
+def unmerged(top: Path, branch: str, *, into: str = "HEAD") -> int:
+    """Commits of branch that `into` does not have; 0 when the branch is gone."""
+    done = _git(["rev-list", "--count", f"{into}..refs/heads/{branch}"], top)
     try:
         return int(done.stdout.strip() or "0") if done.returncode == 0 else 0
     except ValueError:
@@ -121,7 +121,7 @@ def check(manager: WorktreeManager, store: TeamStore, name: str, busy: bool) -> 
     count = unmerged(top, meta.branch)
     if count == 0:
         raise TeamError("nothing_to_merge", f"成员 {name} 的分支 {meta.branch} 没有 {target} 中没有的提交。")
-    _check_order(top, store, team, name)
+    _check_order(top, store, team, name, meta.branch)
     log = _git(["log", "--oneline", "--no-decorate", f"-{COMMIT_LIMIT}", f"HEAD..refs/heads/{meta.branch}"], top)
     stat = _git(["diff", "--stat", f"HEAD...refs/heads/{meta.branch}"], top)
     return MergePlan(
@@ -136,8 +136,10 @@ def check(manager: WorktreeManager, store: TeamStore, name: str, busy: bool) -> 
     )
 
 
-def _check_order(top: Path, store: TeamStore, team, name: str) -> None:
+def _check_order(top: Path, store: TeamStore, team, name: str, member_branch: str = "") -> None:
     """What this member finished waits on another member's work still outside HEAD."""
+    member = team.member(name)
+    is_integrator = member is not None and getattr(member, "role", "worker") == "integrator"
     tasks = {task.id: task for task in store.board.list()}
     for task in tasks.values():
         if task.owner != name or task.status != "completed":
@@ -149,7 +151,14 @@ def _check_order(top: Path, store: TeamStore, team, name: str) -> None:
             record = team.member(other.owner)
             if record is None or not record.worktree:
                 continue
-            if unmerged(top, record.worktree["branch"]):
+            dep_branch = record.worktree["branch"]
+            if unmerged(top, dep_branch):
+                if (
+                    is_integrator
+                    and member_branch
+                    and unmerged(top, dep_branch, into=f"refs/heads/{member_branch}") == 0
+                ):
+                    continue
                 raise TeamError(
                     "merge_order",
                     f"先合并 {other.owner}：任务 {task.id} 依赖它的任务 {dep}，而它的分支还有未合并的提交。",

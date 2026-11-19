@@ -116,6 +116,7 @@ TOOL_KIND_MAP: dict[str, ToolKind] = {
     "memory": "read",
     "glob": "search",
     "grep": "search",
+    "repo_map": "search",
     "web_search": "search",
     "web_fetch": "fetch",
     "execute_command": "execute",
@@ -135,6 +136,8 @@ TOOL_KIND_MAP: dict[str, ToolKind] = {
     "team_task_list": "other",
     "team_task_update": "other",
     "send_message": "other",
+    "post_board": "other",
+    "read_board": "read",
 }
 
 SessionUpdateItem = (
@@ -190,7 +193,14 @@ def tool_title(name: str, raw_input: dict[str, Any], cwd: Path, *, source: str =
     rel = display_path(cwd, resolved) if resolved is not None else (str(path_val) if path_val else "")
 
     if name == "read_file":
-        base = f"读取 {rel}" if rel else "读取文件"
+        symbol = raw_input.get("symbol")
+        if raw_input.get("outline") is True:
+            base = f"读取大纲 {rel}".strip() if rel else "读取文件大纲"
+        elif isinstance(symbol, str) and symbol.strip():
+            sym = symbol.strip()
+            base = f"读取符号 {rel} · {sym}" if rel else f"读取符号 {sym}"
+        else:
+            base = f"读取 {rel}" if rel else "读取文件"
     elif name == "write_file":
         base = f"写入 {rel}" if rel else "写入文件"
     elif name == "edit_file":
@@ -201,6 +211,15 @@ def tool_title(name: str, raw_input: dict[str, Any], cwd: Path, *, source: str =
     elif name == "grep":
         pattern = raw_input.get("pattern", "")
         base = f"搜索内容 {pattern}".strip()
+    elif name == "repo_map":
+        parts = [f"生成代码地图 {rel or '.'}"]
+        query = raw_input.get("query")
+        if isinstance(query, str) and query.strip():
+            parts.append(query.strip()[:60])
+        focus = raw_input.get("focus_files")
+        if isinstance(focus, list) and focus:
+            parts.append(f"聚焦 {len(focus)} 个文件")
+        base = " · ".join(parts)
     elif name == "execute_command":
         desc = raw_input.get("description") or raw_input.get("command") or ""
         short = str(desc).strip().splitlines()[0][:80] if desc else ""
@@ -229,6 +248,19 @@ def tool_title(name: str, raw_input: dict[str, Any], cwd: Path, *, source: str =
     elif name == "load_skill":
         skill = raw_input.get("name", "")
         base = f"加载 Skill {skill}".strip()
+    elif name == "post_board":
+        summary = raw_input.get("summary") or raw_input.get("body") or ""
+        short = str(summary).strip().splitlines()[0][:60] if summary else ""
+        base = f"发布黑板 {short}".strip() if short else "发布团队黑板"
+    elif name == "read_board":
+        seqs = raw_input.get("seqs")
+        if isinstance(seqs, list) and seqs:
+            shown = " ".join(f"#{item}" for item in seqs[:8])
+            base = f"读取黑板 {shown}"
+        elif raw_input.get("since") is not None:
+            base = f"读取黑板 since #{raw_input['since']}"
+        else:
+            base = "读取团队黑板"
     elif name.startswith(("mcp__", "skill__")):
         parts = name.split("__", 2)
         base = f"{parts[1]}/{parts[2]}" if len(parts) == 3 else name
@@ -245,10 +277,10 @@ def tool_locations(
     details: dict[str, Any] | None = None,
     line: int | None = None,
 ) -> list[ToolCallLocation] | None:
-    if name not in {"read_file", "write_file", "edit_file", "glob", "grep"}:
+    if name not in {"read_file", "write_file", "edit_file", "glob", "grep", "repo_map"}:
         return None
     raw_path = (details or {}).get("path") or raw_input.get("path")
-    if name in {"glob", "grep"} and (not isinstance(raw_path, str) or not raw_path.strip()):
+    if name in {"glob", "grep", "repo_map"} and (not isinstance(raw_path, str) or not raw_path.strip()):
         return [ToolCallLocation(path=str(cwd))]
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
@@ -785,7 +817,11 @@ class AcpEventMapper:
             content_items.append(ContentToolCallContent(content=TextContentBlock(text=redact(op.preview))))
 
         locations = None if op.network else tool_locations(op.tool, raw_input, self.cwd, line=line)
-        if locations is None and not op.network and op.tool in {"read_file", "write_file", "edit_file", "glob", "grep"}:
+        if (
+            locations is None
+            and not op.network
+            and op.tool in {"read_file", "write_file", "edit_file", "glob", "grep", "repo_map"}
+        ):
             if op.target:
                 resolved = resolve_session_path(self.cwd, op.target)
                 if resolved is not None:

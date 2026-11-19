@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 import yaml
@@ -45,13 +46,15 @@ ALIASES = {
     "Shell": "execute_command",
     "Glob": "glob",
     "Grep": "grep",
+    "RepoMap": "repo_map",
     "WebFetch": "web_fetch",
     "WebSearch": "web_search",
 }
-TOOL_NAMES = set(ALIASES.values())
+MCP_RESOURCE_TOOLS = {"list_mcp_resources", "read_mcp_resource"}
+TOOL_NAMES = set(ALIASES.values()) | MCP_RESOURCE_TOOLS
 WEB_TOOLS = {"web_fetch", "web_search"}  # Rules name a domain (web_fetch) or nothing (web_search).
 DOMAIN = "domain:"
-READ_TOOLS = {"read_file", "glob", "grep"}  # May read outside the project after approval.
+READ_TOOLS = {"read_file", "glob", "grep", "repo_map"}  # May read outside the project after approval.
 # Permission, MCP, hook and plugin files under a project root: the user's to edit, never the model's.
 PROTECTED_FILES = (
     ".mosscode/permissions.yaml",
@@ -69,7 +72,10 @@ EDIT_TOOLS = {"write_file", "edit_file"}
 
 
 def is_mcp_tool(name: str) -> bool:
-    return bool(re.fullmatch(r"mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+", name)) and len(name) <= 64
+    if len(name) > 64 or not name.startswith("mcp__"):
+        return False
+    server, separator, tool = name[len("mcp__") :].partition("__")
+    return bool(separator and re.fullmatch(r"[A-Za-z0-9_-]+", server) and re.fullmatch(r"[A-Za-z0-9_-]+", tool))
 
 
 def is_skill_tool(name: str) -> bool:
@@ -202,6 +208,162 @@ def normalized(value: str) -> str:
     return value or "."
 
 
+def _collapse_uri_path(path: str, *, has_authority: bool) -> str:
+    norm = path.replace("\\", "/")
+    if not norm:
+        return ""
+    leading_slash = norm.startswith("/")
+    trailing_slash = norm.endswith("/") and len(norm) > 1
+    segments: list[str] = []
+    for seg in norm.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if segments:
+                segments.pop()
+            continue
+        segments.append(seg)
+    joined = "/".join(segments)
+    if leading_slash or (has_authority and joined):
+        joined = "/" + joined
+    if trailing_slash and joined and not joined.endswith("/"):
+        joined += "/"
+    return joined
+
+
+def _lowercase_netloc(netloc: str) -> str:
+    if "@" in netloc:
+        userinfo, _, hostport = netloc.rpartition("@")
+        return f"{userinfo}@{hostport.lower()}"
+    return netloc.lower()
+
+
+def _rfc3986_normalize_uri(uri: str) -> str:
+    """Normalize URI scheme/authority case and collapse RFC 3986 dot-segments while preserving file:///."""
+    cleaned = uri.strip()
+    if not cleaned or ":" not in cleaned:
+        return cleaned
+    parts = urlsplit(cleaned)
+    if not parts.scheme:
+        return cleaned
+    scheme = parts.scheme.lower()
+    rest_after_scheme = cleaned[len(parts.scheme) + 1 :]
+    has_double_slash = rest_after_scheme.startswith("//")
+    netloc = _lowercase_netloc(parts.netloc)
+    collapsed_path = _collapse_uri_path(parts.path, has_authority=bool(netloc))
+    if has_double_slash and not netloc and collapsed_path and not collapsed_path.startswith("/"):
+        collapsed_path = "/" + collapsed_path
+    prefix = f"{scheme}://{netloc}" if has_double_slash else f"{scheme}:"
+    rebuilt = f"{prefix}{collapsed_path}"
+    if parts.query:
+        rebuilt += f"?{parts.query}"
+    if parts.fragment:
+        rebuilt += f"#{parts.fragment}"
+    return rebuilt
+
+
+_STANDARD_NETLOC_SCHEMES = frozenset({"http", "https", "ws", "wss", "ftp"})
+
+
+def _scheme_path_collapse_uri(uri: str) -> str:
+    """Collapse dot-segments across the entire post-`scheme://` path for custom MCP URI schemes."""
+    cleaned = uri.strip()
+    if "://" not in cleaned:
+        return cleaned
+    parts = urlsplit(cleaned)
+    scheme = parts.scheme.lower()
+    if not scheme or scheme in _STANDARD_NETLOC_SCHEMES or scheme == "file":
+        return _rfc3986_normalize_uri(cleaned)
+    combined = f"{parts.netloc}{parts.path}".replace("\\", "/")
+    segments: list[str] = []
+    for seg in combined.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if segments:
+                segments.pop()
+            continue
+        segments.append(seg)
+    rebuilt = f"{scheme}://{'/'.join(segments)}"
+    if combined.endswith("/") and segments:
+        rebuilt += "/"
+    if parts.query:
+        rebuilt += f"?{parts.query}"
+    if parts.fragment:
+        rebuilt += f"#{parts.fragment}"
+    return rebuilt
+
+
+def _fully_unquote(value: str, max_passes: int = 3) -> str:
+    current = value
+    for _ in range(max_passes):
+        nxt = unquote(current)
+        if nxt == current:
+            break
+        current = nxt
+    return current
+
+
+def _try_anyurl(uri: str) -> str:
+    try:
+        from pydantic import AnyUrl
+
+        return str(AnyUrl(uri))
+    except Exception:
+        return ""
+
+
+def normalize_mcp_uri(uri: str) -> str:
+    """Canonicalize an MCP resource URI (whitespace, scheme/authority case, and dot-segments)."""
+    cleaned = uri.strip()
+    if not cleaned or cleaned == "*" or "{" in cleaned:
+        return cleaned
+    any_str = _try_anyurl(cleaned)
+    return _rfc3986_normalize_uri(any_str or cleaned)
+
+
+def mcp_uri_candidates(uri: str) -> tuple[str, ...]:
+    """All canonical and percent-decoded forms of `uri` so per-URI deny rules cannot be bypassed."""
+    raw = uri
+    stripped = raw.strip()
+    seen: list[str] = []
+
+    def _add(val: str) -> None:
+        if val and val not in seen:
+            seen.append(val)
+
+    def _add_variants(val: str) -> None:
+        if not val:
+            return
+        _add(val)
+        rfc = _rfc3986_normalize_uri(val)
+        _add(rfc)
+        flat = _scheme_path_collapse_uri(val)
+        _add(flat)
+        _add(_rfc3986_normalize_uri(flat))
+        _add(_scheme_path_collapse_uri(rfc))
+
+    _add(stripped)
+    _add(raw)
+    if not stripped or stripped == "*":
+        return tuple(seen)
+
+    _add_variants(stripped)
+    unquoted = _fully_unquote(stripped)
+    _add_variants(unquoted)
+
+    any_str = _try_anyurl(stripped)
+    if any_str:
+        _add_variants(any_str)
+        _add_variants(_fully_unquote(any_str))
+
+    for candidate in tuple(seen):
+        if candidate.lower().startswith("file:"):
+            _add(candidate.casefold())
+
+    return tuple(seen)
+
+
 @dataclass(frozen=True)
 class Rule:
     tool: str
@@ -213,9 +375,32 @@ class Rule:
 
     def matches(self, operation: Operation) -> bool:
         if self.server is not None:
-            return bool(operation.server) and operation.server == self.server
+            return bool(operation.server) and operation.server.strip() == self.server
         if self.tool != operation.tool or (self.cwd is not None and self.cwd != operation.cwd):
             return False
+        if operation.tool in MCP_RESOURCE_TOOLS:
+            if ":" in operation.target:
+                srv, _, raw_uri = operation.target.partition(":")
+                srv = srv.strip()
+                if self.action == "deny":
+                    candidates = tuple(f"{srv}:{u}" for u in mcp_uri_candidates(raw_uri))
+                    if self.exact:
+                        return self.pattern in candidates
+                    return any(fnmatch.fnmatchcase(c, self.pattern) for c in candidates)
+                unquoted_raw = _fully_unquote(raw_uri.strip()).replace("\\", "/")
+                canon_uri = normalize_mcp_uri(_scheme_path_collapse_uri(unquoted_raw))
+                canon = f"{srv}:{canon_uri}"
+                return (self.pattern == canon) if self.exact else fnmatch.fnmatchcase(canon, self.pattern)
+            srv_only = operation.target.strip()
+            if self.exact:
+                return self.pattern == srv_only
+            if fnmatch.fnmatchcase(srv_only, self.pattern):
+                return True
+            return (
+                operation.tool == "read_mcp_resource"
+                and bool(srv_only)
+                and fnmatch.fnmatchcase(srv_only + ":", self.pattern)
+            )
         if self.exact:
             if operation.tool != "execute_command" and not is_json_tool(operation.tool) and os.name == "nt":
                 return self.pattern.casefold() == operation.target.casefold()
@@ -259,15 +444,21 @@ def parse_rule(value, action: str) -> Rule:
         return mcp_rule(text, action)
     if isinstance(text, str) and is_skill_tool(text) and not exact and cwd is None:
         return Rule(text, "*", action)  # A skill tool with any arguments.
+    if isinstance(text, str) and ALIASES.get(text, text) in MCP_RESOURCE_TOOLS and not exact and cwd is None:
+        return Rule(ALIASES.get(text, text), "*", action)
     if isinstance(text, str) and ALIASES.get(text, text) in WEB_TOOLS and not exact and cwd is None:
         tool = ALIASES.get(text, text)
         return Rule(tool, DOMAIN + "*" if tool == "web_fetch" else "*", action)  # Every domain / every search.
-    match = re.fullmatch(r"([A-Za-z_][A-Za-z_0-9]*)\((.*)\)", text, re.DOTALL) if isinstance(text, str) else None
+    match = re.fullmatch(r"([A-Za-z_][A-Za-z_0-9-]*)\((.*)\)", text, re.DOTALL) if isinstance(text, str) else None
     if not match or not match[2] or "\0" in match[2]:
         raise PermissionConfigError("规则格式需为 Tool(pattern)，模式不能为空。")
     tool = ALIASES.get(match[1], match[1])
     if tool not in TOOL_NAMES and not is_json_tool(tool):
         raise PermissionConfigError(f"未知权限工具名：{match[1]}。")
+    if tool in MCP_RESOURCE_TOOLS:
+        if cwd is not None:
+            raise PermissionConfigError("cwd 仅用于命令规则，且必须为项目相对路径。")
+        return Rule(tool, match[2], action, exact)
     if tool in WEB_TOOLS:
         if tool == "web_search":
             raise PermissionConfigError("WebSearch 规则不带参数，写作 WebSearch。")
@@ -414,28 +605,37 @@ class PermissionPolicy:
                     "调查完成后用 exit_plan_mode 提交计划，用户批准后才能写入、编辑或执行其他命令。",
                 )
         if getattr(tool, "permission_kind", None) == "memory":
+            action = str(args.get("action") or "")
+            scope = args.get("scope")
+            if action in {"read", "search", "list"}:
+                detail = args.get("name") or args.get("query") or "*"
+                target = f"{scope or 'all'}:{detail}"
+                return Operation(tool.name, target, preview=f"{action} 笔记", notes=True)
             # In read-only plan mode, writing global user-scope notes affects every future project, so ask first.
             user_in_plan = False
-            if not typed and self.mode == "plan" and args.get("scope") == "user":
-                if args.get("action") == "delete":
+            if not typed and self.mode == "plan" and scope == "user":
+                if action == "delete" and args.get("name"):
                     user_in_plan = True
-                else:
+                elif action == "save":
                     from .memory import MemoryFailure, validate
 
                     try:
                         validate(
-                            args.get("scope"),
+                            scope,
                             args.get("name"),
                             args.get("type"),
                             args.get("description", ""),
                             args.get("body", ""),
+                            pinned=args.get("pinned"),
                         )
                         user_in_plan = True
                     except MemoryFailure:
                         # Let Memory.execute return structured validation errors without prompting first.
                         user_in_plan = False
-            preview = f"{args['action']} 用户级笔记（跨所有项目生效）" if user_in_plan else f"{args['action']} 笔记"
-            return Operation(tool.name, f"{args['scope']}:{args['name']}", preview=preview, notes=not user_in_plan)
+            preview = f"{action} 用户级笔记（跨所有项目生效）" if user_in_plan else f"{action} 笔记"
+            return Operation(
+                tool.name, f"{scope or ''}:{args.get('name') or ''}", preview=preview, notes=not user_in_plan
+            )
         if getattr(tool, "permission_kind", None) == "load_skill":
             return Operation(tool.name, args["name"], preview="加载 Skill 规程", notes=True)
         if getattr(tool, "permission_kind", None) == "agent":
@@ -462,6 +662,19 @@ class PermissionPolicy:
                 target,
                 preview="外部 MCP 调用；本地路径限制不约束 Server 的实际访问。",
                 server=getattr(tool, "server_name", ""),
+            )
+        if getattr(tool, "permission_kind", None) == "mcp_resource":
+            server = str(args.get("server") or "").strip()
+            raw_uri = str(args.get("uri") or "").strip()
+            shown_uri = normalize_mcp_uri(raw_uri) if raw_uri else ""
+            target = f"{server}:{raw_uri}" if raw_uri else server
+            return Operation(
+                tool.name,
+                target,
+                preview=f"读取 MCP Server {server} 的资源 {safe_display(shown_uri, 300)}"
+                if raw_uri
+                else "列出 MCP 资源",
+                server=server,
             )
         if tool.name == "web_fetch":
             url, host = web_target(args["url"])  # Local addresses are refused here, before any approval.
@@ -544,8 +757,22 @@ class PermissionPolicy:
             preview = "搜索模式：" + safe_display(args["pattern"], 400)
             if args.get("glob"):
                 preview += "\n文件筛选：" + safe_display(args["glob"], 200)
+        elif tool.name == "repo_map":
+            parts = []
+            if args.get("query"):
+                parts.append("查询：" + safe_display(str(args["query"]), 200))
+            focus = args.get("focus_files") or ()
+            if focus:
+                parts.append("聚焦文件：" + safe_display("、".join(str(item) for item in focus[:10]), 300))
+            parts.append(f"预算：{args.get('max_tokens', 2000)} Token")
+            preview = "\n".join(parts)
         elif tool.name == "read_file":
-            preview = f"从第 {args['offset']} 行读取，最多 {args['limit']} 行。"
+            if args.get("outline"):
+                preview = "读取 AST 符号大纲。"
+            elif args.get("symbol"):
+                preview = "读取符号：" + safe_display(str(args["symbol"]), 200)
+            else:
+                preview = f"从第 {args.get('offset', 1)} 行读取，最多 {args.get('limit', 2000)} 行。"
         if tool.name == "grep" and args.get("output_mode"):
             preview += f"\n输出方式：{args['output_mode']}"
         if outside:
@@ -676,7 +903,12 @@ class PermissionPolicy:
                 if latest.action == "deny":
                     return latest
                 rule = Rule(operation.tool, operation.target, "allow", True, operation.cwd)
-                if operation.server or operation.skill:
+                if operation.tool in MCP_RESOURCE_TOOLS:
+                    pattern = (
+                        f"{operation.server}:*" if operation.tool == "read_mcp_resource" and operation.server else "*"
+                    )
+                    rule = Rule(operation.tool, pattern, "allow")
+                elif operation.server or operation.skill:
                     rule = Rule(operation.tool, "*", "allow")  # MCP and skill grants cover the tool, any arguments.
                 if operation.tool == "web_fetch":
                     rule = Rule(operation.tool, DOMAIN + operation.target, "allow")  # The domain, any page.
@@ -885,6 +1117,8 @@ class PermissionPolicy:
                 entry["cwd"] = rule.cwd
         elif is_json_tool(rule.tool):
             entry = rule.tool  # Whole-tool MCP or skill grant, Claude Code style.
+        elif rule.tool in MCP_RESOURCE_TOOLS:
+            entry = rule.tool if rule.pattern == "*" else f"{rule.tool}({rule.pattern})"
         elif rule.tool == "web_fetch":
             entry = f"WebFetch({rule.pattern})"
         elif rule.tool == "web_search":

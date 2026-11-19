@@ -23,10 +23,12 @@ from ..messages import (
 )
 from ..permissions import safe_display
 from ..serialization import message_from_json
+from .blackboard import BoardPost
 from .member import TYPE_LABELS
 
-# render_incoming's head of each message: "[来自 lead · 消息 · id=m-1] 摘要：…".
+# render_incoming's head of each message: "[来自 lead · 消息 · id=m-1] 摘要：…" or "[黑板 #1 · lead] 摘要：…".
 HEAD = re.compile(r"^\[来自 (\S+) · (.+?) · id=[^\]]*\]\s*(.*)$")
+BOARD_HEAD = re.compile(r"^\[黑板 #(\d+) · (\S+)\]\s*(.*)$")
 COMPACTED = "（较早的对话已压缩）"
 
 
@@ -54,13 +56,20 @@ def _incoming(text: str) -> list[Text]:
     lines, rows = text.splitlines(), []
     for index, line in enumerate(lines):
         match = HEAD.match(line)
-        if match is None:
+        board = BOARD_HEAD.match(line) if match is None else None
+        if match is not None:
+            sender, label, rest = match.groups()
+        elif board is not None:
+            seq, sender, rest = board.groups()
+            label = f"黑板 #{seq}"
+        else:
             continue
-        sender, label, rest = match.groups()
         rest = rest.removeprefix("摘要：").strip()
         if not rest:  # The body starts on the next line.
             rest = next((item.strip() for item in lines[index + 1 :] if item.strip()), "")
-            rest = "" if HEAD.match(rest) or rest.startswith("</incoming") else rest
+            rest = "" if HEAD.match(rest) or BOARD_HEAD.match(rest) or rest.startswith("</incoming") else rest
+        if board is not None and rest == "初始任务":
+            label = "消息"
         rows.append(incoming_line(sender, label, rest))
     return rows
 
@@ -133,14 +142,21 @@ class Feed:
     def event(self, event) -> list[Text]:
         """A member's own window, as its turn runs."""
         if isinstance(event, list):  # The messages of a new turn.
-            return self.flush() + [
-                incoming_line(
-                    message.sender,
-                    TYPE_LABELS.get(message.type, message.type),
-                    message.summary or (message.body.strip().splitlines() or [""])[0],
-                )
-                for message in event
-            ]
+            rendered: list[Text] = []
+            for item in event:
+                if isinstance(item, BoardPost):
+                    label = "消息" if item.summary == "初始任务" else f"黑板 #{item.seq}"
+                    summary = item.summary or (item.body.strip().splitlines() or [""])[0]
+                    rendered.append(incoming_line(item.author, label, summary))
+                else:
+                    rendered.append(
+                        incoming_line(
+                            item.sender,
+                            TYPE_LABELS.get(item.type, item.type),
+                            item.summary or (item.body.strip().splitlines() or [""])[0],
+                        )
+                    )
+            return self.flush() + rendered
         if isinstance(event, ToolProgress):
             if event.phase == "running":
                 self.waiting[event.call.id] = event.call

@@ -16,6 +16,7 @@ from .conversation import Conversation
 from .hooks import HookEngine
 from .mcp_client import MCPManager
 from .mcp_config import MCPConfigError, MCPSettings, ProjectMCP, ServerConfig, load_mcp_settings, project_mcp
+from .mcp_surface import register_mcp_resource_tools
 from .memory import MemoryStore
 from .permissions import PermissionPolicy
 from .plugins import Installed, project_plugins, with_project
@@ -337,6 +338,7 @@ def assemble_workspace_extensions(
         merge_mcp_notices=merge_mcp_notices,
         untrusted_hint=untrusted_mcp_hint,
     )
+    register_mcp_resource_tools(registry, mcp_manager)
     hooks, hook_notices = build_hook_engine(
         root,
         registry,
@@ -414,6 +416,7 @@ def build_conversation(
     if team_launch is not None:
         extra_kwargs["team_launch"] = team_launch
 
+    register_mcp_resource_tools(registry, mcp_manager)
     return conversation_cls(
         active_provider,
         settings.system_prompt,

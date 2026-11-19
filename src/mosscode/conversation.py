@@ -2,6 +2,7 @@
 
 import asyncio
 import difflib
+import json
 from collections.abc import Mapping
 from contextlib import aclosing
 from copy import deepcopy
@@ -11,9 +12,9 @@ from pathlib import Path
 from .agent import DEFAULT_MAX_ITERATIONS, AgentLoop, Provider
 from .agents import AgentCatalog
 from .agents.runtime import AUTO_BACKGROUND, GLOBAL_BAN, MAX_BACKGROUND, SubAgents
-from .checkpoints import Checkpoints, Restoration
+from .checkpoints import Checkpoints, Restoration, parse_active_skills
 from .config import ProviderConfig
-from .context import ContextBudget, estimate_text
+from .context import ContextBudget, ContextSnapshot, estimate_text
 from .goal import (
     DEFAULT_MAX_TURNS,
     FAILURE_LIMIT,
@@ -26,8 +27,9 @@ from .goal import (
     evaluate,
     goal_reminder,
 )
-from .images import ImageRef, ProcessedImage, image_ref
+from .images import ImageRef, ProcessedImage, image_ref, with_alt
 from .limits import RunBudget
+from .mcp_surface import register_mcp_resource_tools
 from .memory import INDEX_TOKENS, MemoryStore
 from .memory_extract import MemoryExtractor
 from .mentions import attach
@@ -72,12 +74,102 @@ from .session import (
     skill_record,
     todo_record,
 )
-from .skills import ACTIVE_LIMIT, LOAD_SKILL, ForkRequest, SkillCatalog, SkillDef, missing_tools
+from .skills import ACTIVE_LIMIT, LOAD_SKILL, ForkRequest, SkillCatalog, SkillDef, SkillError, missing_tools
 from .tools.agent import AgentTool, TaskOutput, TaskStop
 from .tools.base import ToolFailure, ToolRegistry
 from .tools.memory import Memory
 from .tools.skill import LoadSkill, SkillTool
 from .user_command import CommandRun, command_message, run_user_command
+
+
+def _checkpoint_payload(snapshot) -> dict:
+    record = checkpoint_record(snapshot.message, snapshot.path, snapshot.blob, snapshot.too_large)
+    if snapshot.active_skills:
+        record["active_skills"] = [list(item) for item in snapshot.active_skills]
+    return record
+
+
+def _replay_skill_state(
+    path: Path,
+) -> tuple[dict[str, tuple[tuple[str, str], ...]], tuple[tuple[str, str, bool], ...] | None]:
+    """Reconstruct per-message skill snapshots and post-rewind/unload effective skills from a transcript."""
+    pinned: dict[str, str] = {}
+    lru: dict[str, None] = {}
+    inline_used: list[tuple[str, str]] = []
+    skill_marks: dict[str, tuple[tuple[str, str], ...]] = {}
+    lru_marks: dict[str, tuple[str, ...]] = {}
+    inline_marks: dict[str, int] = {}
+    mutated = False
+    try:
+        with path.open("rb") as stream:
+            for raw in stream:
+                if not raw.strip():
+                    continue
+                try:
+                    record = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                kind = record.get("type")
+                if kind == "message":
+                    msg = record.get("message")
+                    if (
+                        isinstance(msg, dict)
+                        and msg.get("role") == "user"
+                        and msg.get("synthetic") is None
+                        and isinstance(msg.get("id"), str)
+                    ):
+                        msg_id = msg["id"]
+                        skill_marks[msg_id] = tuple(pinned.items())
+                        lru_marks[msg_id] = tuple(lru)
+                        inline_marks[msg_id] = len(inline_used)
+                elif kind == "checkpoint" and isinstance(record.get("message"), str) and "active_skills" in record:
+                    parsed = parse_active_skills(record.get("active_skills"))
+                    skill_marks.setdefault(record["message"], parsed)
+                    lru_marks.setdefault(record["message"], tuple(name for name, _ in parsed))
+                elif kind == "skill":
+                    name, arguments, is_pinned = record.get("name"), record.get("arguments", ""), record.get("pinned")
+                    if isinstance(name, str) and name and isinstance(arguments, str) and isinstance(is_pinned, bool):
+                        if is_pinned:
+                            if name in pinned:
+                                mutated = True
+                            pinned[name] = arguments
+                            lru.pop(name, None)
+                            lru[name] = None
+                        else:
+                            inline_used.append((name, arguments))
+                elif kind == "skill_unload":
+                    name = record.get("name")
+                    if isinstance(name, str) and name:
+                        mutated = True
+                        pinned.pop(name, None)
+                        lru.pop(name, None)
+                elif kind == "rewind":
+                    msg_id = record.get("message")
+                    if isinstance(msg_id, str) and msg_id in skill_marks:
+                        mutated = True
+                        pinned = dict(skill_marks[msg_id])
+                        saved_lru = lru_marks.get(msg_id, tuple(pinned))
+                        lru = {name: None for name in saved_lru if name in pinned}
+                        for name in pinned:
+                            lru.setdefault(name, None)
+                        inline_used = inline_used[: inline_marks.get(msg_id, len(inline_used))]
+    except OSError:
+        return {}, None
+    if not mutated:
+        return skill_marks, None
+    recency_tail = (
+        tuple((name, pinned[name], True) for name in lru if name in pinned) if tuple(lru) != tuple(pinned) else ()
+    )
+    effective = tuple(
+        [
+            *((name, args, False) for name, args in inline_used),
+            *((name, args, True) for name, args in pinned.items()),
+            *recency_tail,
+        ]
+    )
+    return skill_marks, effective
 
 
 @dataclass(frozen=True)
@@ -148,7 +240,7 @@ class Conversation:
         worktree_links=(),
         worktree_stale_hours: float = 24.0,
         teams: bool = False,
-        team_max_members: int = 4,
+        team_max_members: int | None = 6,
         teammate_mode: str = "in-process",
         team_launch: dict | None = None,
         coordinator: bool = False,
@@ -164,8 +256,12 @@ class Conversation:
         self.hooks = hooks
         self._session_started = False
         self.mcp_manager = mcp_manager
+        register_mcp_resource_tools(self.registry, self.mcp_manager)
         self.skills = skills if skills is not None else SkillCatalog()  # Empty without a scan.
         self._skill_tools: dict[str, tuple[str, ...]] = {}  # Skill name -> its tools registered here.
+        self._inline_skill_dirs: set[Path] = set()
+        self._skill_marks: dict[str, tuple[tuple[str, str], ...]] = {}
+        self._inline_tool_marks: dict[str, tuple[str, ...]] = {}
         # A fork skill's model names one of these; the factory builds it (create_provider by default).
         self.provider_configs, self.provider_factory = tuple(provider_configs), provider_factory
         # Project files and git are product-level context; None keeps the core hermetic.
@@ -233,7 +329,8 @@ class Conversation:
         self.subagents = SubAgents(
             self, agents, auto_background=agent_auto_background, max_background=agent_max_background
         )
-        self._agent.finish_deferred = lambda: bool(self.tasks.running())
+        self.loops = None
+        self._agent.finish_deferred = lambda: any(getattr(t, "loop", None) is None for t in self.tasks.running())
         self.agents_enabled = agents is not None
         if hooks is not None:
             hooks.agent_runner = self.subagents.hook_agent
@@ -262,27 +359,32 @@ class Conversation:
         self.teams = None
         self._team_context_due = False  # After /clear or /resume, once before the next message.
         if teams and self.registry is not None and self.agents_enabled:
-            from .teams.runtime import TeamRuntime
+            from .teams.runtime import MAX_MEMBERS, TeamRuntime
             from .tools.team import lead_tools
 
+            resolved_max_members = MAX_MEMBERS if team_max_members is None else team_max_members
             self.teams = TeamRuntime(
-                self, home=sessions_home, max_members=team_max_members, teammate_mode=teammate_mode, launch=team_launch
+                self,
+                home=sessions_home,
+                max_members=resolved_max_members,
+                teammate_mode=teammate_mode,
+                launch=team_launch,
             )
             for tool in lead_tools(self.registry.permissions.root, self.teams):
                 if self.registry.get(tool.name) is None:
                     self.registry.register(tool)
             self._agent.team_guide = self.teams.guide()
-        # Decided at startup (the CLI checks both switches), fixed for the session.
+        # Decided at startup from config + env, and toggleable dynamically via /swarm.
         self.coordinator = False
+        self._coordinator_configured = False
         if coordinator:
-            from .coordinator import NO_AGENTS, SECTION, withheld
+            from .coordinator import NO_AGENTS
 
             if self.teams is None:
                 self._notices.append(NO_AGENTS)
             else:
-                self.coordinator = True
-                self.registry.withheld = withheld
-                self._agent.team_guide += "\n\n" + SECTION
+                self._coordinator_configured = True
+                self.set_coordinator_mode(True)
 
     def _use_session(self, session) -> None:
         if self._transcript is not None:
@@ -301,12 +403,15 @@ class Conversation:
     def _use_checkpoints(self, session) -> None:
         """This session's file snapshots for /rewind; sub-agent copies of the file tools share them."""
         self.checkpoints = None
+        self._skill_marks = {}
+        self._inline_tool_marks = {}
         if self.registry is not None and session is not None:
             self.checkpoints = Checkpoints(
                 self.registry.permissions.root,
                 session,
-                record=lambda s: self._record(checkpoint_record(s.message, s.path, s.blob, s.too_large)),
+                record=lambda s: self._record(_checkpoint_payload(s)),
                 on_notice=lambda text: self._raised.append(text),  # From a tool thread: joins the next events.
+                skills=lambda: self._agent.active_skills.snapshot(),
             )
         self._agent.checkpoints = self.checkpoints
         if self.registry is not None:
@@ -316,6 +421,22 @@ class Conversation:
                     tool.checkpoints = self.checkpoints
 
     def _record(self, record: dict) -> None:
+        if record.get("type") == "message":
+            msg = record.get("message")
+            if isinstance(msg, dict) and msg.get("role") == "user" and not msg.get("synthetic") and msg.get("id"):
+                msg_id = msg["id"]
+                self._skill_marks.setdefault(msg_id, self._agent.active_skills.snapshot())
+                active_names = set(self._agent.active_skills.names)
+                cmd_skill = ""
+                cmd = msg.get("command")
+                if isinstance(cmd, str) and cmd.startswith("/"):
+                    first_word = cmd[1:].split(" ", 1)[0]
+                    if self.skills.get(first_word) is not None:
+                        cmd_skill = first_word
+                inline_tools = tuple(
+                    name for name in self._skill_tools if name not in active_names and name != cmd_skill
+                )
+                self._inline_tool_marks.setdefault(msg_id, inline_tools)
         if self._transcript is not None:
             notice = self._transcript.append(record)
             if notice:
@@ -396,6 +517,7 @@ class Conversation:
             and event.phase == "finished"
             and event.call.name == "memory"
             and not event.result.is_error
+            and event.result.details.get("action", "save") in {"save", "delete"}
         ):
             self._memory_changed((event.result.details["name"],))
         if isinstance(event, CompactFinished) and self._cut is not None:
@@ -428,6 +550,10 @@ class Conversation:
         return self._agent.busy
 
     @property
+    def busy(self) -> bool:
+        return self._agent.busy
+
+    @property
     def mode(self):
         return self._agent.mode
 
@@ -451,11 +577,18 @@ class Conversation:
     def auto_compact_paused(self) -> bool:
         return self._agent.auto_paused
 
+    def _environment(self) -> Supplement:
+        return self._agent._environment()
+
     def context_estimate(self) -> int | None:
         """Approximate size of the next request; None until the first usage report."""
         if self._agent.meter.anchor is None and not self._agent.history:
             return None
-        return self._agent.estimate()
+        return self._agent.estimate(env_text=self._environment().render())
+
+    def context_snapshot(self) -> ContextSnapshot:
+        """Current context token count and its attribution ('reported', 'mixed', or 'estimated')."""
+        return self._agent.context_snapshot(env_text=self._environment().render())
 
     def context_ratio(self) -> float | None:
         estimate = self.context_estimate()
@@ -496,7 +629,7 @@ class Conversation:
         if code:
             if self.checkpoints is None:
                 raise ProviderError("当前会话没有文件检查点。")
-            running = self.tasks.background()
+            running = [t for t in self.tasks.background() if getattr(t, "loop", None) is None]
             if running:
                 raise ProviderError(
                     f"有 {len(running)} 个后台任务正在运行，恢复代码前请等待它们结束，或用 /tasks 停止。"
@@ -504,8 +637,14 @@ class Conversation:
             restoration = await asyncio.to_thread(self.checkpoints.restore, message_id)
         message, kept = None, None
         if conversation:
+            target_skills = self.checkpoints.skills_before(message_id) if self.checkpoints is not None else None
+            if target_skills is None:
+                target_skills = self._skill_marks.get(message_id)
+            inline_tools = self._inline_tool_marks.get(message_id, ())
             message = deepcopy(history[index])
             self._agent.truncate(index, message_id)
+            if target_skills is not None:
+                self._restore_skill_snapshot(target_skills, inline_tools)
             self._cursor, self._cut = min(self._cursor, index), None
             kept = index
         elif restoration is not None:
@@ -529,10 +668,14 @@ class Conversation:
         texts, self._agent.pending, self._agent.pending_images = tuple(self._agent.pending), [], {}
         return texts
 
-    def _image_refs(self, images: Mapping[str, ProcessedImage] | None, text: str) -> dict[str, ImageRef]:
+    def _image_refs(self, images: Mapping[str, ProcessedImage | ImageRef] | None, text: str) -> dict[str, ImageRef]:
         """Stored in the session when the message is sent, and only those whose placeholder is still in text."""
         store = self.registry if self.registry is not None else self.session
-        return {mark: image_ref(image, mark, store) for mark, image in (images or {}).items() if mark in text}
+        return {
+            mark: (with_alt(image, mark) if isinstance(image, ImageRef) else image_ref(image, mark, store))
+            for mark, image in (images or {}).items()
+            if mark in text
+        }
 
     @property
     def queued(self) -> tuple[str, ...]:
@@ -545,10 +688,31 @@ class Conversation:
         root = self.context_root or Path.cwd()
         self._use_session(Session.new(root, home=self.sessions_home))
 
+    def attach_loops(self, *, is_busy, trigger, **kwargs):
+        """Attach a session-scoped LoopScheduler when loop_schedule is available."""
+        try:
+            from .loop_schedule import LoopScheduler
+        except ImportError:
+            self.loops = None
+            return None
+        self.loops = LoopScheduler(self.tasks, is_busy=is_busy, trigger=trigger, **kwargs)
+        return self.loops
+
+    async def _reset_loops(self) -> None:
+        if self.loops is not None and callable(getattr(self.loops, "stop", None)):
+            res = self.loops.stop("all")
+            if hasattr(res, "__await__"):
+                await res
+
+    async def _close_loops(self) -> None:
+        if self.loops is not None:
+            await self.loops.close()
+
     async def clear(self, *, keep_session: bool = False) -> tuple[str, ...]:
         """New session: empty model context and usage; permissions and MCP stay."""
         if self._busy:
             raise ProviderError("当前任务正在运行，不能清空会话。")
+        await self._reset_loops()
         await self.tasks.reset()  # Tasks belong to the session.
         self.clear_goal()  # Recorded in the session being left.
         self.last_goal = None
@@ -627,6 +791,50 @@ class Conversation:
             raise ProviderError("当前会话未启用工具。")
         self.registry.permissions.set_mode(mode)
 
+    @property
+    def coordinator_mode(self) -> bool:
+        return self.coordinator
+
+    def set_coordinator_mode(self, enabled: bool) -> bool:
+        """Toggle session-level coordinator mode dynamically; returns True when state changed."""
+        if self._busy:
+            raise ProviderError("当前任务正在运行，不能切换协调者模式。")
+        target = bool(enabled)
+        if target and self.teams is None:
+            from .coordinator import SWARM_UNAVAILABLE
+
+            raise ProviderError(SWARM_UNAVAILABLE)
+        if target == self.coordinator:
+            return False
+        from .coordinator import SECTION, withheld
+
+        self.coordinator = target
+        if not target:
+            self._coordinator_configured = False
+        if self.registry is not None:
+            self.registry.withheld = withheld if target else None
+        if self.teams is not None:
+            base = self.teams.guide()
+            self._agent.team_guide = base + "\n\n" + SECTION if target else base
+        self._agent.meter.invalidate()
+        self._agent._reset_anchor_meta()
+        return True
+
+    async def run_swarm_turn(
+        self,
+        prompt: str,
+        *,
+        images: Mapping[str, ProcessedImage] | None = None,
+    ):
+        """Enable coordinator mode for this session and run a /swarm task turn."""
+        cleaned = prompt.strip()
+        if not cleaned:
+            raise ProviderError("/swarm 需要任务说明，或使用 /swarm [status|on|off]。")
+        self.set_coordinator_mode(True)
+        async with aclosing(self.reply(cleaned, command=f"/swarm {cleaned}", images=images)) as stream:
+            async for event in stream:
+                yield event
+
     # Skills ---------------------------------------------------------------------------------
 
     @property
@@ -640,7 +848,7 @@ class Conversation:
         section, notice = self.skills.catalog_section()
         self._agent.skill_catalog = section
         if section and self.registry.get(LOAD_SKILL) is None:
-            self.registry.register(LoadSkill(self.registry.permissions.root, self._load_skill))
+            self.registry.register(LoadSkill(self.registry.permissions.root, self._load_skill, self._unload_skill_tool))
         elif not section and self.registry.get(LOAD_SKILL) is not None:
             self.registry.unregister(LOAD_SKILL)
         return [notice] if notice else []
@@ -649,14 +857,28 @@ class Conversation:
         """The tools it lists must be registered now."""
         return missing_tools(skill, self.registry.names() if self.registry is not None else ())
 
-    def _use_skill_dir(self, skill: SkillDef) -> None:
+    def _use_skill_dir(self, skill: SkillDef, *, inline: bool = False) -> None:
         """Its files can be read without approval once it is in use."""
         if self.registry is None:
             return
-        policy = self.registry.permissions
         directory = skill.directory.resolve()
+        if inline:
+            self._inline_skill_dirs.add(directory)
+        policy = self.registry.permissions
         if directory not in policy.skill_dirs:
             policy.skill_dirs += (directory,)
+
+    def _sync_skill_dirs(self) -> None:
+        if self.registry is None:
+            return
+        dirs: list[Path] = []
+        for directory in (
+            *self._inline_skill_dirs,
+            *(item.skill.directory.resolve() for item in self._agent.active_skills.items()),
+        ):
+            if directory not in dirs:
+                dirs.append(directory)
+        self.registry.permissions.skill_dirs = tuple(dirs)
 
     def _register_skill_tools(self, skill: SkillDef) -> None:
         """The version just read replaces whatever this skill registered before."""
@@ -671,6 +893,7 @@ class Conversation:
 
     def _drop_skills(self) -> None:
         """/clear and resume: no skill is in use any more."""
+        self._inline_skill_dirs.clear()
         if self.registry is not None:
             self.registry.permissions.skill_dirs = ()
         for name in list(self._skill_tools):
@@ -680,6 +903,70 @@ class Conversation:
         for full_name in self._skill_tools.pop(name, ()):
             if self.registry is not None:
                 self.registry.unregister(full_name)
+
+    def _unload_skill_state(self, name: str) -> bool:
+        removed_active = self._agent.active_skills.remove(name)
+        had_tools = name in self._skill_tools
+        self._remove_skill_tools(name)
+        self._sync_skill_dirs()
+        return removed_active or had_tools
+
+    def unload_skill(self, name: str) -> bool:
+        """Unload an active skill and unregister its exclusive tools while idle."""
+        if self._busy:
+            raise ProviderError("当前任务正在运行，不能卸载 Skill。")
+        removed = self._unload_skill_state(name)
+        if removed:
+            self._record({"type": "skill_unload", "name": name})
+        return removed
+
+    def _unload_skill_tool(self, name: str) -> tuple[str, dict]:
+        removed = self._unload_skill_state(name)
+        if removed:
+            self._record({"type": "skill_unload", "name": name})
+            return f"已卸载 Skill {name}，规程与专属工具已移除，下一次请求起生效。", {"skill": name, "unloaded": True}
+        if self.skills.get(name) is None:
+            visible = [item.name for item in self.skills.skills.values() if item.model_invocable]
+            close = difflib.get_close_matches(name, visible, n=3, cutoff=0.5)
+            hint = f"相近的名称：{'、'.join(close)}。" if close else f"可加载：{'、'.join(visible) or '无'}。"
+            raise ToolFailure("skill_unknown", f"没有名为 {name} 的 Skill。{hint}")
+        return f"Skill {name} 当前未激活，无需卸载。", {"skill": name, "unloaded": False}
+
+    def _restore_skill_snapshot(
+        self,
+        snapshot: tuple[tuple[str, str], ...],
+        inline_tools: tuple[str, ...] = (),
+    ) -> None:
+        """Restore <active-skills> and dynamic skill__* tools to a checkpoint snapshot."""
+        active = self._agent.active_skills
+        before_skills = active.snapshot()
+        before_tools = dict(self._skill_tools)
+        active.clear()
+        for name, arguments in snapshot:
+            if self.skills.get(name) is None:
+                continue
+            skill, notice = self.skills.fresh(name)
+            if notice:
+                self._raised.append(notice)
+            if not skill.model_invocable:
+                continue
+            try:
+                active.fit_and_activate(skill, arguments, skill.render(arguments), ACTIVE_LIMIT)
+            except SkillError:
+                continue
+        keep_tools = set(active.names) | set(inline_tools)
+        for name in list(self._skill_tools):
+            if name not in keep_tools:
+                self._remove_skill_tools(name)
+        for item in active.items():
+            self._register_skill_tools(item.skill)
+        self._inline_skill_dirs = {
+            skill.directory.resolve() for name in inline_tools if (skill := self.skills.get(name)) is not None
+        }
+        self._sync_skill_dirs()
+        if active.snapshot() != before_skills or self._skill_tools != before_tools:
+            self._agent.meter.invalidate()
+            self._agent._reset_anchor_meta()
 
     def prepare_skill(self, name: str, arguments: str = "") -> tuple[SkillDef, str, tuple[str, ...]]:
         """Read the skill again and check its tools; returns the skill, the request and notices.
@@ -695,7 +982,7 @@ class Conversation:
                 f"Skill {name} 未运行：工具不可用：{'、'.join(missing)}。"
                 "MCP 工具需要对应的 Server 已连接（/mcp 查看）。"
             )
-        self._use_skill_dir(skill)
+        self._use_skill_dir(skill, inline=True)
         if skill.mode == "fork":
             if skill.model and self._fork_provider_config(skill.model) is None and not self._is_current(skill.model):
                 names = "、".join(config.name for config in self.provider_configs) or "无"
@@ -705,8 +992,10 @@ class Conversation:
         self._record(skill_record(name, arguments, False))
         return skill, skill.render(arguments), (notice,) if notice else ()
 
-    def _load_skill(self, name: str, arguments: str) -> tuple[str, dict]:
+    def _load_skill(self, name: str, arguments: str = "", *, unload: bool = False) -> tuple[str, dict]:
         """The load_skill tool; failures are tool errors and the run goes on."""
+        if unload:
+            return self._unload_skill_tool(name)
         visible = [item.name for item in self.skills.skills.values() if item.model_invocable]
         if self.skills.get(name) is None:
             close = difflib.get_close_matches(name, visible, n=3, cutoff=0.5)
@@ -720,27 +1009,36 @@ class Conversation:
             raise ToolFailure("skill_unavailable", f"Skill {name} 需要的工具当前不可用：{'、'.join(missing)}。")
         text = skill.render(arguments)
         active = self._agent.active_skills
-        if active.size(without=name) + len(text) > ACTIVE_LIMIT:
+        refreshed = name in active
+        try:
+            evicted = active.fit_and_activate(skill, arguments, text, ACTIVE_LIMIT)
+        except SkillError:
             raise ToolFailure(
                 "skill_too_large",
-                f"已加载的 Skill 规程合计将超过 {ACTIVE_LIMIT} 个字符，未加载 {name}。"
-                "可以请用户 /clear 后再加载，或直接按已加载的规程继续。",
-            )
-        refreshed = name in active
-        active.activate(skill, arguments, text)
-        self._use_skill_dir(skill)
+                f"Skill {name} 展开后的规程超过 {ACTIVE_LIMIT} 个字符上限，未加载。"
+                "请精简参数或缩短 SKILL.md 内容后再试。",
+            ) from None
+        for dropped in evicted:
+            self._remove_skill_tools(dropped)
+            self._record({"type": "skill_unload", "name": dropped})
         self._register_skill_tools(skill)
+        self._sync_skill_dirs()
         self._record(skill_record(name, arguments, True))
         if notice:
             self._raised.append(notice)
         lines = [f"已{'刷新' if refreshed else '加载'} Skill {name}，规程已放入 <active-skills>，下一次请求起生效。"]
+        if evicted:
+            lines.append(f"已按最近最少使用顺序自动卸载：{'、'.join(evicted)}。")
         if skill.tools:
             lines.append("新增专属工具：" + "、".join(tool.full_name for tool in skill.tools))
         if skill.mode == "fork":
             lines.append(f"此 Skill 设计为独立运行，需要隔离上下文时请用户输入 /{name}。")
         if notice:
             lines.append(notice)
-        return "\n".join(lines), {"skill": name, "arguments": arguments, "refreshed": refreshed}
+        details: dict[str, object] = {"skill": name, "arguments": arguments, "refreshed": refreshed}
+        if evicted:
+            details["evicted"] = list(evicted)
+        return "\n".join(lines), details
 
     def use_skills(self, catalog: SkillCatalog) -> tuple[str, ...]:
         """The catalog after /skills reload; removed skills leave the active list and take their tools."""
@@ -754,6 +1052,7 @@ class Conversation:
                 self._remove_skill_tools(name)
             else:
                 self._register_skill_tools(skill)
+        self._sync_skill_dirs()
         return tuple(self._offer_skills())
 
     def _restore_skills(self, records: tuple[tuple[str, str, bool], ...]) -> list[str]:
@@ -776,12 +1075,26 @@ class Conversation:
                 text = skill.render(pinned[name])
                 if not skill.model_invocable:
                     lost.append(f"{name}（已不能由模型加载，规程未放回）")
-                elif active.size(without=name) + len(text) > ACTIVE_LIMIT:
-                    lost.append(f"{name}（规程合计超过 {ACTIVE_LIMIT} 个字符，未放回）")
                 else:
-                    active.activate(skill, pinned[name], text)
-            self._use_skill_dir(skill)
-            self._register_skill_tools(skill)
+                    try:
+                        evicted = active.fit_and_activate(skill, pinned[name], text, ACTIVE_LIMIT)
+                    except SkillError:
+                        lost.append(f"{name}（规程超过 {ACTIVE_LIMIT} 个字符，未放回）")
+                    else:
+                        for dropped in evicted:
+                            self._remove_skill_tools(dropped)
+                        self._register_skill_tools(skill)
+                        self._use_skill_dir(skill)
+                        continue
+                self._use_skill_dir(skill, inline=True)
+                self._register_skill_tools(skill)
+            else:
+                self._use_skill_dir(skill, inline=True)
+                self._register_skill_tools(skill)
+        for name, _, is_pinned in records:
+            if is_pinned and name in active:
+                active.touch(name)
+        self._sync_skill_dirs()
         if lost:
             notices.append("未恢复的 Skill：" + "、".join(lost) + "。")
         return notices
@@ -840,6 +1153,7 @@ class Conversation:
         from .agents.tasks import CANCEL_WAIT
 
         count = await self.tasks.cancel_all(CANCEL_WAIT if wait is None else wait)
+        await self._reset_loops()
         self._agent.notifications = []
         return count
 
@@ -900,6 +1214,7 @@ class Conversation:
         except OSError as exc:
             transcript.close()
             raise ProviderError(f"无法读取会话存档：{exc.strerror or exc}") from None
+        await self._reset_loops()
         await self.tasks.reset()  # Their end records go to the session being left.
         await self._session_end("resume")
         if self._transcript is not None:
@@ -912,9 +1227,11 @@ class Conversation:
             # Approvals belong to the run that granted them, never to a restored transcript.
             self.registry.permissions.session.clear()
         self._transcript = transcript
+        skill_marks, effective_skills = await asyncio.to_thread(_replay_skill_state, path)
         self._use_checkpoints(session)
+        self._skill_marks = dict(skill_marks)
         if self.checkpoints is not None:
-            self.checkpoints.load(restored.snapshots, restored.marks)
+            self.checkpoints.load(restored.snapshots, restored.marks, skill_marks)
         self._agent.restore(restored.history, gap_reminder(restored.last_time), restored.collapses)
         if self.registry is not None:
             self.registry.todos.restore(restored.todos)
@@ -930,7 +1247,7 @@ class Conversation:
             async with self._start_lock:
                 self._context_loaded = True
                 notices = await self._load_context()
-        notices.extend(self._restore_skills(restored.skills))
+        notices.extend(self._restore_skills(effective_skills if effective_skills is not None else restored.skills))
         if restored.skipped:
             notices.append(f"跳过了 {restored.skipped} 行无法读取的记录。")
         if restored.lost_images:
@@ -1042,6 +1359,7 @@ class Conversation:
                 await asyncio.gather(self._worktree_cleanup, return_exceptions=True)
             if self.teams is not None:
                 await self.teams.close()
+            await self._close_loops()
             await self.tasks.cancel_all()
             if self.hooks is not None:
                 try:
@@ -1118,7 +1436,7 @@ class Conversation:
         refs = await asyncio.to_thread(self._image_refs, images, prompt) if images else None
         attached = None
         if not fork and synthetic is None and self.registry is not None and "@" in prompt:
-            attached = await attach(prompt, self.registry)
+            attached = await attach(prompt, self.registry, mcp_manager=self.mcp_manager)
             if attached is not None:
                 yield FilesAttached(attached.entries)
         run = (
@@ -1229,7 +1547,7 @@ class Conversation:
         }
         if reason != "completed":
             return self.pause_goal(stops.get(reason, "本轮没有正常结束"))
-        if self.tasks.running():
+        if any(getattr(t, "loop", None) is None for t in self.tasks.running()):
             # Their notification starts a turn of its own; the goal is judged after that one.
             return GoalStep("deferred")
         provider = self.goal_provider or self.memory_provider or self.provider

@@ -1008,9 +1008,13 @@ async def test_prefix_and_request_positions_for_every_protocol(index):
     else:
         content = payload["input"] if protocol == "openai-responses" else payload["messages"]
         texts = [item["content"] for item in content]
-        start = 0 if protocol == "openai-responses" else 1
-        assert texts[start + 1].startswith("<hook-context>") and texts[start + 2] == "问题"
-        assert texts[-1].startswith("<hook-notification>")
+        if protocol == "openai-responses":
+            assert texts[1].startswith("<hook-context>") and texts[2] == "问题"
+            assert texts[-1].startswith("<hook-notification>")
+        else:
+            assert [item["role"] for item in content] == ["system", "system", "system", "user"]
+            assert texts[2].startswith("<hook-context>")
+            assert texts[3].startswith("问题\n\n<hook-notification>")
 
 
 # Event timing -------------------------------------------------------------------------------

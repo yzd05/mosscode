@@ -165,6 +165,11 @@ class MemberProcess:
             session_mode=self._session_mode,
         )
         restore_member(runner, member, history)
+        if not history and member.prompt and member.board_cursor > 0:
+            posts, _ = await asyncio.to_thread(self.store.blackboard.read_seqs, [member.board_cursor])
+            if posts:
+                runner.initial_post = posts[0]
+                runner._cursor = member.board_cursor
         runner.on_status = self._status
         runner.on_event = self._event
         self.runner = runner
@@ -287,12 +292,13 @@ class MemberProcess:
         return 0
 
 
-def member_conversation(settings, config, project: Path, *, interactive: bool):
+def member_conversation(settings, config, project: Path, *, interactive: bool, home: Path | None = None):
     """Like the CLI's, without teams, MCP or memory extraction; hooks as in -p."""
     from ..agents import AgentCatalog
     from ..conversation import Conversation
     from ..hooks import HookEngine
     from ..providers import create_provider
+    from ..runtime_factory import build_memory_options
     from ..session import Session
     from ..tools import create_default_registry
 
@@ -301,7 +307,8 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
     )
     registry.permissions.interactive = interactive
     tool = registry.get("execute_command")
-    hooks = HookEngine(project, shell=getattr(tool, "shell", None), enabled=True, trust_project=False)
+    hooks = HookEngine(project, home=home, shell=getattr(tool, "shell", None), enabled=True, trust_project=False)
+    extra_home = {"instructions_home": home, "sessions_home": home} if home is not None else {}
     conversation = Conversation(
         create_provider(config),
         settings.system_prompt,
@@ -309,7 +316,7 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
         max_iterations=settings.max_iterations,
         context_root=project,
         budget=config.budget(),
-        session=Session.new(project),
+        session=Session.new(project, home=home),
         auto_compact=settings.auto_compact,
         context_collapse=settings.context_collapse,
         persist=False,
@@ -317,9 +324,11 @@ def member_conversation(settings, config, project: Path, *, interactive: bool):
         provider_factory=create_provider,
         provider_info=(config.name, config.protocol, config.model),
         hooks=hooks,
-        agents=AgentCatalog.load(project, claude=settings.claude_directories),
+        agents=AgentCatalog.load(project, home, claude=settings.claude_directories),
         worktree_links=settings.worktree_links,
         worktree_stale_hours=0,
+        **extra_home,
+        **build_memory_options(settings, project, home=home, auto_memory=False, provider_factory=create_provider),
     )
     conversation._session_started = True  # A member is not a new session of the user's (no session_start hooks).
     return conversation
@@ -383,10 +392,14 @@ def run_member(
 def _print_event(event) -> None:
     """Without a terminal (tests, logs): one line per message batch, tool call and reply."""
     from ..messages import Completed, ToolProgress
+    from .blackboard import BoardPost
 
     if isinstance(event, list):
         for message in event:
-            print(f"[{message.sender} · {message.type}] {message.summary or message.body[:80]}", flush=True)
+            if isinstance(message, BoardPost):
+                print(f"[#{message.seq} · {message.author}] {message.summary or message.body[:80]}", flush=True)
+            else:
+                print(f"[{message.sender} · {message.type}] {message.summary or message.body[:80]}", flush=True)
     elif isinstance(event, ToolProgress) and event.phase == "running":
         print(f"● {event.call.name}", flush=True)
     elif isinstance(event, Completed) and event.message.text:

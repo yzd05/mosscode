@@ -32,7 +32,9 @@ QUOTE = "\n\n▸ "  # Prefix of each verbatim user quote block in a boundary mes
 CLIPPED = " …（较长，原文见记录文件）"
 NOTHING = "没有可压缩的内容：对话中只有最近一轮。"
 # Results the model can get again: files are read again, the rest is stored in the session directory.
-CLEARABLE = frozenset({"read_file", "grep", "glob", "execute_command", "web_fetch", "web_search", "task_output"})
+CLEARABLE = frozenset(
+    {"read_file", "grep", "glob", "repo_map", "execute_command", "web_fetch", "web_search", "task_output"}
+)
 CLEAR_MINIMUM = 300  # Tokens: a smaller result saves too little once the note replaces it.
 CLEAR_TARGET = 0.5  # Of the auto threshold: clearing alone is enough when the context ends up under it.
 CLEAR_NOTE = 100  # Tokens a note is assumed to cost when sizing up what clearing would free.
@@ -130,14 +132,18 @@ def clearable_tokens(history: Sequence[Message], cut: int, start: int = 0) -> in
     return sum(max(size - CLEAR_NOTE, 0) for size in sizes)
 
 
-def _is_read(result: ToolResult) -> bool:
+def _is_file_read(result: ToolResult) -> bool:
     return result.name == "read_file" and not result.is_error and "path" in result.details
+
+
+def _is_read(result: ToolResult) -> bool:
+    return _is_file_read(result) and not result.details.get("outline")
 
 
 def _cleared(result: ToolResult, session: Session | None) -> ToolResult | None:
     """The note that replaces a result, or None when its content could not be kept anywhere."""
     lead = f"（较早的工具结果已清理以节省上下文，原有约 {estimate_text(result.output)} Token。"
-    if _is_read(result):
+    if _is_file_read(result):
         note = f"{lead}需要其中的内容时重新读取这个文件，不要凭记忆补写。）"
         return replace(result, output=note, details={**result.details, "cleared": True})
     path = result.details.get("persisted")
@@ -222,7 +228,8 @@ def render(message: Message, shrink: bool = False) -> str:
         return "[之前的压缩摘要]\n" + message.text.strip()
     if message.role == "user":
         content = (_image(b.image) if b.image is not None else b.text for b in message.content if b.kind != "thinking")
-        return "[用户]\n" + "".join(content)
+        tag = "[定时巡检]" if message.synthetic == "loop" else "[用户]"
+        return f"{tag}\n" + "".join(content)
     if message.role == "assistant":
         parts = ["[助手]\n" + message.text] if message.text.strip() else []
         parts += [f"[工具调用] {call.name} {call.arguments}" for call in message.tool_calls]
@@ -385,7 +392,7 @@ def project(history: Sequence[Message], collapses: Sequence[Collapse]) -> list[M
     return [collapse.summary for collapse in collapses] + list(history[collapses[-1].end :])
 
 
-TURN_STARTS = (None, "goal", NOTIFICATION)
+TURN_STARTS = (None, "goal", "loop", NOTIFICATION)
 
 
 def collapse_end(

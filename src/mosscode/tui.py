@@ -14,7 +14,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static, TextArea
 
-from .agents.tasks import Announcer
+from .agents.tasks import STATUS_LABELS, Announcer
 from .appearance import (
     BRAND_COLOR,
     COMMAND_HIGHLIGHT_COLOR,
@@ -48,6 +48,7 @@ from .coordinator import BADGE as COORDINATOR_BADGE
 from .follow import SOURCES as FOLLOWED
 from .goal import GOAL, GoalStep, elapsed_text
 from .images import ImageError, ProcessedImage, load_image
+from .mcp_surface import mcp_mention_candidates, register_mcp_prompts, register_mcp_prompts_from_manager
 from .member_ui import PANEL_HELP, STOP_CONFIRM, VIEW_MESSAGES, VIEW_SHARE, MemberList, MemberPanel, MemberView
 from .mentions import FileIndex, partial_mention, quoted
 from .messages import (
@@ -338,6 +339,8 @@ class MossCodeApp(TerminalApp[None]):
         self._hooks_confirmed = False  # Asked once at startup, before session_start.
         # A table of this run's own: skill commands are added here and replaced by /skills reload.
         self.commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
+        if conversation.mcp_manager is not None:
+            register_mcp_prompts_from_manager(self.commands, conversation.mcp_manager)
         self.provider_name = self._banner_provider = provider_name
         self.settings, self.model = settings, model
         # As configured: /model <name>/<model> replaces a provider for this session, /model <name> brings it back.
@@ -404,6 +407,10 @@ class MossCodeApp(TerminalApp[None]):
         self._view_lock = asyncio.Lock()
         self._show_details = False  # Ctrl+O expands thinking blocks and full tool outputs/diffs.
         self._last_turn_entries: list[ChatEntry | ToolEntry] = []
+        if getattr(self.conversation, "loops", None) is None and callable(
+            getattr(self.conversation, "attach_loops", None)
+        ):
+            self.conversation.attach_loops(is_busy=self._is_loop_busy, trigger=self._trigger_loop)
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="chat"):
@@ -461,6 +468,10 @@ class MossCodeApp(TerminalApp[None]):
         self.conversation.on_memory = self._on_memory
         self.conversation.on_tasks = self._schedule_notify
         self.conversation.tasks.on_change = self._on_task_change
+        subagents = getattr(self.conversation, "subagents", None)
+        if subagents is not None:
+            subagents.on_approval = self._member_approval
+            subagents.on_approval_settled = self._withdraw_approval
         teams = getattr(self.conversation, "teams", None)
         if teams is not None:  # Members ask and report while the lead runs or waits.
             teams.on_approval = self._member_approval
@@ -529,11 +540,27 @@ class MossCodeApp(TerminalApp[None]):
             self._resume = None
             await open_sessions(self._command_context())
 
+    def _refresh_mcp_hints(self) -> None:
+        if self._closing or not self.query("#prompt"):
+            return
+        value = self.query_one("#prompt", PromptArea).text
+        if value.lstrip().startswith("/") or "@" in value:
+            self._refresh_hints(value)
+
     def _on_mcp_update(self, status) -> None:
         if self._closing:
             return
         if status.state == "ready":
-            pass  # Like Claude Code: only problems are announced; /mcp lists connected servers.
+            # Like Claude Code: only problems are announced; /mcp lists connected servers.
+            skipped: list[str] = []
+            added = register_mcp_prompts(self.commands, status, self.conversation.mcp_manager, skipped=skipped)
+            if added:
+                self.call_later(self._refresh_mcp_hints)
+            for note in skipped:
+                if self._task_running:
+                    self._mcp_notices.append(note)
+                else:
+                    self.call_later(self._local_note, "└ " + note)
         elif self._task_running:
             # Keep the running reply contiguous; report once the task ends.
             self._mcp_notices.append(status.notice())
@@ -565,13 +592,86 @@ class MossCodeApp(TerminalApp[None]):
     def _on_task_change(self, task) -> None:
         if self._closing:
             return
-        self._announce(task)
+        loop_info = getattr(task, "loop", None)
+        if loop_info is not None:
+            if task.status != "running" and not getattr(task, "stopped", False) and task.id not in self._announce.ended:
+                self._announce.ended.add(task.id)
+                reason = f"（{loop_info.end_reason}）" if getattr(loop_info, "end_reason", "") else ""
+                self._task_note(f"定时巡检 {task.id} {STATUS_LABELS.get(task.status, task.status)}{reason}")
+        else:
+            self._announce(task)
         row = self._agent_rows.get(task.call_id) if task.call_id else None
         if row is not None:
             row.subagent = task
             row.progress(task)
         if not self._generating:
             self._status(self._status_note)
+
+    def _is_loop_busy(self) -> bool:
+        return bool(
+            self._closing
+            or self._generating
+            or self._task_running
+            or self.conversation.busy
+            or self._approval_request is not None
+            or self._question is not None
+            or (self.conversation.goal is not None and self.conversation.goal.active)
+            or self.conversation.notifications
+        )
+
+    def _notify_loops_idle(self) -> None:
+        if self._closing:
+            return
+        loops = getattr(self.conversation, "loops", None)
+        if loops is not None and not self._is_loop_busy():
+            loops.notify_idle()
+
+    async def _await_loop_reply(self, task, reply_task: asyncio.Task | None) -> None:
+        if reply_task is None or reply_task.done():
+            return
+        try:
+            await asyncio.shield(reply_task)
+        except asyncio.CancelledError:
+            job = getattr(task, "job", None)
+            if getattr(task, "stopped", False) or self._closing or (job is not None and job.cancelling()):
+                raise
+        except Exception:
+            pass
+
+    async def _trigger_loop(self, task, prompt: str) -> None:
+        if self._closing:
+            return
+        before = self._reply_task
+        runs = getattr(getattr(task, "loop", None), "runs", 1)
+        first = next((line.strip() for line in prompt.splitlines() if line.strip()), prompt.strip())
+        await self._local_note(f"⏰ 定时巡检 {task.id}（第 {runs} 次）：{first[:100]}", PARAMETER_COLOR)
+        if prompt.lstrip().startswith("/"):
+            parsed = parse_input(prompt, self.commands)
+            if parsed.kind == "unknown":
+                await self._local_note(unknown_note(parsed, self.commands), OPERATION_COLOR)
+                self._status(self._status_note)
+                return
+            if parsed.kind == "command":
+                try:
+                    await dispatch(self._command_context(), parsed)
+                except ProviderError as exc:
+                    await self._local_note(f"! {exc}", OPERATION_COLOR)
+                self._status(self._status_note)
+                if self._reply_task is not before:
+                    await self._await_loop_reply(task, self._reply_task)
+                return
+        try:
+            from .loop_schedule import LOOP_SYNTHETIC, format_loop_prompt
+
+            rendered = format_loop_prompt(task)
+            synthetic = LOOP_SYNTHETIC
+        except ImportError:
+            rendered = f"[定时任务 {task.id} · 第 {runs} 次]\n{prompt}"
+            synthetic = "loop"
+        await self.submit(rendered, synthetic=synthetic)
+        self._status(self._status_note)
+        if self._reply_task is not before:
+            await self._await_loop_reply(task, self._reply_task)
 
     def _task_note(self, text: str) -> None:
         """Like memory notes, a running task's output stays contiguous."""
@@ -821,7 +921,7 @@ class MossCodeApp(TerminalApp[None]):
         else:
             color = MODE_COLORS.get(mode)
             text.append(MODE_BADGES[mode], style=f"bold {color}" if color else "bold")
-            if getattr(self.conversation, "coordinator", False):
+            if getattr(self.conversation, "coordinator_mode", getattr(self.conversation, "coordinator", False)):
                 text.append(" " + COORDINATOR_BADGE, style=f"bold {OPERATION_COLOR}")
             if badge := sandbox_badge():
                 text.append(" · ", style=muted)
@@ -862,9 +962,17 @@ class MossCodeApp(TerminalApp[None]):
         if queued:
             text.append(f" · 已排队 {queued} 条", style=OPERATION_COLOR)
         tasks = self.conversation.tasks
-        background = len(tasks.background())
+        loops = getattr(self.conversation, "loops", None)
+        active_loops = (
+            loops.active()
+            if loops is not None and callable(getattr(loops, "active", None))
+            else [t for t in tasks.running() if getattr(t, "loop", None) is not None]
+        )
+        background = len([t for t in tasks.background() if getattr(t, "loop", None) is None])
         if background:
             text.append(f" · 后台任务 {background}", style=OPERATION_COLOR)
+        if active_loops:
+            text.append(f" · 定时 {len(active_loops)}", style=TOOL_SUCCESS_COLOR)
         commands = getattr(self.conversation, "commands", None)
         if any(not task.background and task.origin == "agent" for task in tasks.running()) or (
             commands is not None and commands.foreground_count()
@@ -919,6 +1027,10 @@ class MossCodeApp(TerminalApp[None]):
         if not self.is_running:
             return  # Textual stops running before it unmounts the screen widgets.
         self._paint_activity()  # Keeps the spinner turning in stages that have nothing else to refresh.
+        loops = getattr(self.conversation, "loops", None)
+        if loops is not None and any(getattr(t.loop, "pending_fire", False) for t in loops.active()):
+            # A turn's end can race the reply task's completion; the ticker retries a coalesced wakeup.
+            self._notify_loops_idle()
         if self._approval_request is not None and not self._waiting(self._approval_request):
             # Withdrawn without an answer, e.g. a sandboxed command ended while asking to connect.
             self._hide_approval()
@@ -1093,7 +1205,7 @@ class MossCodeApp(TerminalApp[None]):
         self.call_later(self._fit_chat)
 
     def _mention_hints(self, value: str) -> tuple[list[Hint], list[int]]:
-        """Files and directories for the @ mention being typed before the cursor."""
+        """Files, directories and MCP resources for the @ mention being typed before the cursor."""
         field = self.query_one("#prompt", PromptArea)
         if "@" not in value or value != field.text or value.lstrip().startswith("!"):
             return [], []  # A ! command's @ is the shell's.
@@ -1103,20 +1215,34 @@ class MossCodeApp(TerminalApp[None]):
         if typed is None:
             return [], []
         index = self._mention_index()
-        if index is None:
-            return [], []
         start, query = typed
-        if query in index.paths and not query.endswith("/"):
+        if index is not None and query in index.paths and not query.endswith("/"):
             return [], []  # Already a whole file's path: nothing left to choose.
         if before[start + 1 : start + 2] == '"' and after[:1] == '"':
             after = after[1:]  # The closing quote of the mention being replaced.
+        file_candidates = index.candidates(query) if index is not None else []
+        permissions = self.conversation.registry.permissions if self.conversation.registry is not None else None
+        mcp_candidates = mcp_mention_candidates(
+            self.conversation.mcp_manager,
+            query,
+            permissions=permissions,
+            limit=max(0, 12 - len(file_candidates)) if not query else 12,
+        )
+        if not file_candidates and not mcp_candidates:
+            return [], []
+        items: list[tuple[str, str, bool]] = []
+        if ":" in query:
+            items.extend(mcp_candidates)
+            items.extend((p, "目录" if p.endswith("/") else "", p.endswith("/")) for p in file_candidates)
+        else:
+            items.extend((p, "目录" if p.endswith("/") else "", p.endswith("/")) for p in file_candidates)
+            items.extend(mcp_candidates)
         hints, cursors = [], []
-        for path in index.candidates(query):
-            directory = path.endswith("/")
-            inserted = "@" + quoted(path) + ("" if directory or after[:1].isspace() else " ")
-            hints.append(Hint(before[:start] + inserted + after, "目录" if directory else "", path))
-            # Inside a quoted directory the cursor stays before the quote, so its entries come next.
-            cursors.append(start + len(inserted) - (1 if directory and inserted.endswith('"') else 0))
+        for path, desc, keep_open in items[:12]:
+            inserted = "@" + quoted(path) + ("" if keep_open or after[:1].isspace() else " ")
+            hints.append(Hint(before[:start] + inserted + after, desc, path))
+            # Inside a quoted directory or server prefix the cursor stays before the quote, so its entries come next.
+            cursors.append(start + len(inserted) - (1 if keep_open and inserted.endswith('"') else 0))
         return hints, cursors
 
     def _mention_index(self) -> FileIndex | None:
@@ -1323,6 +1449,7 @@ class MossCodeApp(TerminalApp[None]):
                 self._refresh_queue()
                 self._refresh_context()
                 self._status("")
+                self.call_later(self._notify_loops_idle)
 
     @staticmethod
     def _note(text: str, style: str | None = None) -> Static:
@@ -1400,6 +1527,7 @@ class MossCodeApp(TerminalApp[None]):
                 self._refresh_queue()
                 self._refresh_context()
                 self._status("")
+                self.call_later(self._notify_loops_idle)
 
     async def _clear_screen(self) -> None:
         """Like Claude Code's /clear: wipe the screen and scrollback, then start again from the banner."""
@@ -1472,6 +1600,7 @@ class MossCodeApp(TerminalApp[None]):
                 self._refresh_queue()
                 self._refresh_context()
                 self._status("")
+                self.call_later(self._notify_loops_idle)
                 if startup:
                     self._resume = None
                     self._startup_task = asyncio.create_task(self._initialize())
@@ -1510,15 +1639,26 @@ class MossCodeApp(TerminalApp[None]):
     async def note(self, text: str, style: str | None = None) -> None:
         await self._local_note(text, style)
 
-    async def submit(self, prompt: str, *, command: str | None = None, fork=None, synthetic: str | None = None) -> None:
+    async def submit(
+        self,
+        prompt: str,
+        *,
+        command: str | None = None,
+        fork=None,
+        synthetic: str | None = None,
+        images: dict | None = None,
+    ) -> None:
         if synthetic is not None and self._task_running:
             return  # A resumed goal continues when the running turn ends.
-        await self._start_request(prompt, show_user=False, command=command, fork=fork, synthetic=synthetic)
+        await self._start_request(
+            prompt, show_user=False, command=command, fork=fork, images=images, synthetic=synthetic
+        )
 
     def refresh_status(self) -> None:
         self._usage = self.conversation.total_usage
         self._refresh_context()
         self._status("")
+        self.call_later(self._notify_loops_idle)
 
     async def clear_screen(self) -> None:
         await self._clear_screen()
@@ -1705,6 +1845,7 @@ class MossCodeApp(TerminalApp[None]):
             "edit_file": "修改文件",
             "glob": "查找文件",
             "grep": "搜索内容",
+            "repo_map": "生成代码地图",
             "exit_plan_mode": "审阅计划",
             "execute_command": shell_name(shell_label(self.conversation.registry)),
         }
@@ -1875,6 +2016,7 @@ class MossCodeApp(TerminalApp[None]):
         self._status(self._status_note if self._generating else "")
         self._tick()
         self.call_later(self._fit_chat)
+        self.call_later(self._notify_loops_idle)
 
     def _hide_approval(self) -> None:
         """The next request still waiting stays or comes up (a member's outlives the lead's turn)."""
@@ -1898,18 +2040,24 @@ class MossCodeApp(TerminalApp[None]):
             # The prompt stays usable while the task runs, e.g. to queue a correction.
             self._focus_home()
             self._show_members()
+            self.call_later(self._notify_loops_idle)
         self.call_later(self._fit_chat)
 
     def _withdraw_approval(self, request_id: str) -> None:
-        """A pane member's request answered in its window, or no longer asked."""
+        """A pane member's or background sub-agent's request answered elsewhere or cancelled."""
         if self._closing:
             return
+        self._approval_queue = [item for item in self._approval_queue if item.id != request_id]
+        if not self.query("#approval-panel"):
+            if self._approval_request is not None and self._approval_request.id == request_id:
+                self._approval_request = None
+            return
         if self._approval_request is not None and self._approval_request.id == request_id:
-            self._hide_approval()  # Its future is cancelled: the next one still waiting comes up.
+            self._approval_request = None
+            self._hide_approval()  # The next one still waiting comes up.
             if self._approval_request is None and not self._generating:
                 self._status("")
         else:
-            self._approval_queue = [item for item in self._approval_queue if item.id != request_id]
             self._status(self._status_note)
             self._show_members()
 
@@ -2115,6 +2263,7 @@ class MossCodeApp(TerminalApp[None]):
                 notices, self._mcp_notices = self._mcp_notices, []
                 for notice in notices:
                     await self._local_note("└ " + notice)
+                self.call_later(self._notify_loops_idle)
 
     async def _start_goal_check(self) -> None:
         """After a turn while a goal is set: judge it, then continue, end or pause."""
@@ -2152,6 +2301,8 @@ class MossCodeApp(TerminalApp[None]):
             self._refresh_queue()
         elif step.action == "continue" and not self.conversation.notifications:
             self.call_later(self._start_request, step.prompt, show_user=False, synthetic=GOAL)
+        else:
+            self.call_later(self._notify_loops_idle)
 
     # Team members -------------------------------------------------------
 

@@ -8,20 +8,22 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import aclosing
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, fields
 from typing import TYPE_CHECKING
 
 from ..messages import Completed, ProviderError, RunStopped, ToolProgress
 from ..permissions import ALL_CHOICES, ApprovalRequest, Decision, Operation, PolicyView
+from .blackboard import BoardPost, partition_mentions
 from .board import STATUS_LABELS, TeamTask, blocks, is_ready
 from .lock import TeamError
-from .mailbox import BROADCAST, LEAD, RUNTIME_ONLY, Message
+from .mailbox import BROADCAST, LEAD, RUNTIME_ONLY, Message, check
+from .watchdog import MAX_PEER_HOPS, escalate_peer_handoff, reset_peer_hops, try_peer_handoff
 
 if TYPE_CHECKING:
     from ..agent import AgentLoop
-    from . import TeamStore
+    from . import Team, TeamStore
 
 POLL = 0.5  # Seconds between mailbox reads when nothing woke the reader.
 SUMMARY = 300  # Characters of the last reply in an idle notification.
@@ -36,17 +38,47 @@ TYPE_LABELS = {
 }
 
 
-def addendum(team: str, name: str, worktree: dict | None) -> str:
-    """Fixed text, only the names differ."""
+@dataclass(frozen=True)
+class PostResult:
+    post: BoardPost
+    wake_targets: tuple[str, ...]
+    peer_targets: tuple[str, ...]
+    mentioned_lead: bool
+    unknown_mentions: tuple[str, ...] = ()
+    breaker_post: BoardPost | None = None
+
+
+def addendum(team: str, name: str, worktree: dict | None, role: str = "worker") -> str:
+    """Fixed text, only the names and role differ."""
     lines = [
         f"<team-member>\n你是团队 {team} 的成员 {name}，Lead 的名称是 {LEAD}。",
-        "- 你的文字回复不会被任何人看到：汇报、提问、交付结果都必须用 send_message（通常发给 lead）。",
-        "- 工作流程：team_task_list 查看任务 → 领取就绪的任务（team_task_update 把 owner 设为自己、status 设为 in_progress）"
-        "→ 完成 → git commit 提交改动 → 把任务设为 completed → send_message 向 lead 汇报结果。",
-        "- 每次收到的消息都在 <incoming-messages> 中；处理完就结束这一轮，等待下一条消息，不要空等或轮询。",
-        "- 收到 shutdown_request 时，结束手头的工作，用 send_message（type: shutdown_response，request_id 为该请求的 id，"
-        "approve: true）回复；确有未完成的工作时可以 approve: false 并说明理由。",
+        "- 你的文字回复不会被任何人看到：团队协作使用 post_board（在黑板追加 #seq 条目并用 @成员名 或 @lead 点名唤醒）"
+        "或 send_message；点对点交接给同级成员（如 @integrator、@verifier）时不要同时点名 @lead。",
+        "- 黑板定序与按需查阅：收到的黑板条目带有 [黑板 #seq · 作者] 标头；交接时引用 #seq 编号（如 #1），"
+        "需要查看原始需求或上下文时调用 read_board（传 seqs 或 since）。代码块与反引号内的 @提及 不会唤醒成员。",
     ]
+    if role == "verifier":
+        lines.append(
+            "- 你是只读审查员（verifier），没有文件写入/编辑工具；运行测试与审查 diff，"
+            "发现问题用 post_board 点名 @integrator 或对应作者返工并引用 #seq，全部通过后再点名 @lead。"
+        )
+    else:
+        if role == "integrator":
+            lines.append(
+                "- 你是合流员（integrator）：汇总并合流各作者提交、解决冲突并运行验证后，"
+                "用 post_board 点名 @verifier 审查并附上 #seq；收到审查返工意见时修复后再点名 @verifier。"
+            )
+        lines.append(
+            "- 工作流程：team_task_list 查看任务 → 领取就绪的任务（team_task_update 把 owner 设为自己、status 设为 in_progress）"
+            "→ 完成 → git commit 提交改动 → 把任务设为 completed → 用 post_board（点名下游成员或 @lead）或 send_message 汇报结果。"
+        )
+    lines.extend(
+        [
+            "- 每次收到的消息都在 <incoming-messages> 中；处理完就结束这一轮，等待下一条消息，不要空等或轮询。",
+            "- 收到 shutdown_request 时，结束手头的工作，用 send_message（type: shutdown_response，request_id 为该请求的 id，"
+            "approve: true）回复；确有未完成的工作时可以 approve: false 并说明理由。",
+        ]
+    )
     if worktree:
         main = worktree.get("main") or "<主分支>"
         lines.append(
@@ -55,7 +87,11 @@ def addendum(team: str, name: str, worktree: dict | None) -> str:
             f"git merge {main}，解决冲突后提交。"
         )
     else:
-        lines.append("- 你在主项目目录中工作，与其他人共用文件；只改分配给你的文件。")
+        lines.append(
+            "- 你在主项目目录中工作，与其他人共用文件；只改分配给你的文件。"
+            if role != "verifier"
+            else "- 你在主项目目录中执行只读审查与验证。"
+        )
     return "\n".join(lines) + "\n</team-member>"
 
 
@@ -109,7 +145,7 @@ def task_detail(task: TeamTask, tasks: list[TeamTask]) -> str:
 
 
 class TeamAccess:
-    """What one participant (the lead or a member) does in a team: messages and shared tasks.
+    """What one participant (the lead or a member) does in a team: blackboard, control RPC and shared tasks.
 
     Methods are blocking file work; callers run them in a thread and then call wake() on the event loop.
     """
@@ -118,6 +154,7 @@ class TeamAccess:
         self.store = store
         self.actor = actor
         self._wake = wake
+        self._last_breaker: BoardPost | None = None
 
     @property
     def team(self) -> str:
@@ -147,20 +184,100 @@ class TeamAccess:
             raise TeamError("unknown_member", f"团队 {self.team} 中没有成员 {to}；成员：{'、'.join(names) or '无'}。")
         return [to]
 
+    def post_board(self, body: str, summary: str = "") -> PostResult:
+        """Append a collaboration post to board.jsonl (sole source of truth for team text)."""
+        participants = self.participants()
+        resolved, unknown = partition_mentions(body, participants, author=self.actor)
+        mentioned_lead = LEAD in resolved and self.actor != LEAD
+        if BROADCAST in resolved:
+            peer_targets = tuple(name for name in participants if name != self.actor)
+        else:
+            peer_targets = tuple(name for name in resolved if name not in {LEAD, self.actor})
+
+        is_done_body = body.lstrip().lower().startswith("[done]")
+        hops, tripped = (0, False)
+        if self.actor == LEAD:
+            reset_peer_hops(self.store)
+        elif peer_targets and not mentioned_lead and not is_done_body:
+            hops, tripped = try_peer_handoff(self.store)
+
+        post = self.store.blackboard.append(self.actor, body, summary, valid_members=participants)
+        if post.kind == "done":
+
+            def mark_done(current: Team) -> None:
+                if current.done_seq == 0:
+                    current.done_seq = post.seq
+
+            self.store.modify(mark_done)
+
+        breaker_post: BoardPost | None = None
+        if self.actor == LEAD:
+            wake_targets = peer_targets
+        elif peer_targets and not mentioned_lead and not is_done_body:
+            if tripped:
+                breaker_post = escalate_peer_handoff(self.store, self.actor, peer_targets, post.seq, hops=hops)
+                wake_targets = (LEAD,)
+            else:
+                wake_targets = peer_targets
+        else:
+            wake_targets = (*peer_targets, *((LEAD,) if mentioned_lead else ()))
+
+        return PostResult(
+            post=post,
+            wake_targets=wake_targets,
+            peer_targets=peer_targets,
+            mentioned_lead=mentioned_lead,
+            unknown_mentions=unknown,
+            breaker_post=breaker_post,
+        )
+
+    async def apost_board(self, body: str, summary: str = "") -> PostResult:
+        outcome = await asyncio.to_thread(self.post_board, body, summary)
+        self.wake(outcome.wake_targets)
+        return outcome
+
     def send(
         self, to: str, kind: str, body: str = "", summary: str = "", *, runtime: bool = False, **extra
     ) -> list[str]:
-        """The model never sends idle notifications or plan requests itself (runtime=False)."""
+        """Route text messages to board.jsonl (kind='direct'); control frames stay on mailbox."""
         if kind in RUNTIME_ONLY and not runtime:
             raise TeamError("invalid_message", f"{kind} 由系统自动发送，不能手动发送。")
         targets = self.recipients(to, kind)
+        self._last_breaker = None
+        if kind == "text":
+            check(Message(self.actor, kind, body, summary, extra=dict(extra)))
+            participants = self.participants()
+            explicit = (BROADCAST,) if to == BROADCAST else tuple(targets)
+            peer_targets = tuple(target for target in targets if target != LEAD)
+            hops, tripped = (0, False)
+            if self.actor == LEAD:
+                reset_peer_hops(self.store)
+            elif peer_targets and LEAD not in targets:
+                hops, tripped = try_peer_handoff(self.store)
+            post = self.store.blackboard.append(
+                self.actor,
+                body,
+                summary,
+                kind="direct",
+                explicit_mentions=explicit,
+                valid_members=participants,
+            )
+            if tripped:
+                self._last_breaker = escalate_peer_handoff(self.store, self.actor, peer_targets, post.seq, hops=hops)
+            return targets
+
+        if self.actor == LEAD and kind == "plan_approval_response":
+            reset_peer_hops(self.store)
         for target in targets:
             self.store.mailbox.send(target, Message(self.actor, kind, body, summary, extra=dict(extra)))
         return targets
 
     async def asend(self, to: str, kind: str, body: str = "", summary: str = "", **extra) -> list[str]:
         targets = await asyncio.to_thread(self.send, to, kind, body, summary, **extra)
-        self.wake(targets)
+        if self._last_breaker is not None:
+            self.wake([LEAD])
+        else:
+            self.wake(targets)
         return targets
 
     # Shared tasks -----------------------------------------------------------------------
@@ -171,27 +288,34 @@ class TeamAccess:
         )
 
     def task_update(self, task_id: str, **changes):
-        return self.store.board.update(task_id, actor=self.actor, participants=self.participants(), **changes)
+        updated = self.store.board.update(task_id, actor=self.actor, participants=self.participants(), **changes)
+        if updated.task.status == "completed":
+            reset_peer_hops(self.store)
+        return updated
 
 
-def render_incoming(messages: list[Message]) -> str:
-    """One user message for every unread message of a turn."""
+def render_incoming(messages: Sequence[Message | BoardPost]) -> str:
+    """One user message for every unread control message and blackboard mention of a turn."""
     parts = []
-    for message in messages:
-        head = f"[来自 {message.sender} · {TYPE_LABELS.get(message.type, message.type)} · id={message.id}]"
-        extra = message.extra
-        if message.type == "text":
-            parts.append(f"{head} 摘要：{message.summary}\n{message.body}")
-        elif message.type == "plan_approval_response":
+    for item in messages:
+        if isinstance(item, BoardPost):
+            head = f"[黑板 #{item.seq} · {item.author}]"
+            parts.append(f"{head} 摘要：{item.summary}\n{item.body}")
+            continue
+        head = f"[来自 {item.sender} · {TYPE_LABELS.get(item.type, item.type)} · id={item.id}]"
+        extra = item.extra
+        if item.type == "text":
+            parts.append(f"{head} 摘要：{item.summary}\n{item.body}")
+        elif item.type == "plan_approval_response":
             verdict = "已批准" if extra.get("approve") else "被拒绝"
             parts.append(
                 f"{head} 你的计划（request_id={extra.get('request_id')}）{verdict}。"
                 + (f"\n反馈：{extra.get('feedback')}" if extra.get("feedback") else "")
             )
-        elif message.type == "shutdown_request":
+        elif item.type == "shutdown_request":
             parts.append(f"{head} Lead 请求你停止。理由：{extra.get('reason') or '无'}")
         else:
-            parts.append(f"{head}\n{message.body}")
+            parts.append(f"{head}\n{item.body}")
     return "<incoming-messages>\n" + "\n\n".join(parts) + "\n</incoming-messages>"
 
 
@@ -222,13 +346,14 @@ def approval_from_record(item, source: str) -> ApprovalRequest | None:
 
 
 class MemberRunner:
-    """Read the mailbox, run a turn, tell the lead, wait; until stopped."""
+    """Read control mailbox & blackboard mentions, run a turn, hand off or report, wait; until stopped."""
 
     def __init__(
         self,
         access: TeamAccess,
         name: str,
         *,
+        role: str = "worker",
         agent_mode: Callable[[str], str],
         session_mode: Callable[[], str],
         require_plan_approval: bool = False,
@@ -237,7 +362,7 @@ class MemberRunner:
         poll: float = POLL,
         on_event: Callable[[object], None] | None = None,
     ):
-        self.access, self.name = access, name
+        self.access, self.name, self.role = access, name, role
         self.loop: AgentLoop | None = None  # Set once the tools that need this runner exist.
         self.owned = False  # The loop's provider is closed when the member stops.
         self.commands, self.owner = None, ""  # Its background commands, stopped when it closes.
@@ -257,6 +382,11 @@ class MemberRunner:
         self.job: asyncio.Task | None = None
         self._run: asyncio.Task | None = None  # The model run of the current turn (Esc stops it).
         self._interrupted = False
+        self.initial_post: BoardPost | None = None  # Turn-1 brief post when board_cursor already equals its seq.
+        self._cursor = 0
+        self._turn_woke_peers = False
+        self._turn_mentioned_lead = False
+        self._turn_breaker_tripped = False
 
     @property
     def policy(self):
@@ -264,6 +394,16 @@ class MemberRunner:
 
     def wake(self) -> None:
         self.wakeup.set()
+
+    def record_handoff(self, *, peers: Sequence[str], mentioned_lead: bool, breaker_tripped: bool = False) -> None:
+        """Track whether this turn handed work to peer(s) without waking Lead."""
+        if breaker_tripped:
+            self._turn_breaker_tripped = True
+            return
+        if peers:
+            self._turn_woke_peers = True
+        if mentioned_lead:
+            self._turn_mentioned_lead = True
 
     def interrupt(self) -> bool:
         """End the current turn early; the member still reports and goes idle."""
@@ -297,19 +437,51 @@ class MemberRunner:
         if self.on_status is not None:
             self.on_status(status, fields)
 
+    def _read_inputs(self) -> list[Message | BoardPost]:
+        store = self.access.store
+        messages = store.mailbox.read_unread(self.name)
+        # An answer to an approval already settled in the member's own window; not for the model.
+        messages = [message for message in messages if message.type != "permission_response"]
+        board_posts: list[BoardPost] = []
+        if self.initial_post is not None:
+            board_posts.append(self.initial_post)
+            self._cursor = max(self._cursor, self.initial_post.seq)
+            self.initial_post = None
+        try:
+            team = store.load()
+        except TeamError:
+            return [*messages, *board_posts]
+        member = team.member(self.name)
+        if member is None:
+            return [*messages, *board_posts]
+        if team.peer_hops < MAX_PEER_HOPS:
+            cursor = max(self._cursor, member.board_cursor)
+            unread, head_seq = store.blackboard.unread_for(self.name, cursor)
+            self._cursor = max(cursor, head_seq)
+            if unread:
+                new_cursor = unread[-1].seq
+
+                def advance(current: Team) -> None:
+                    record = current.member(self.name)
+                    if record is not None and record.board_cursor < new_cursor:
+                        record.board_cursor = new_cursor
+
+                store.modify(advance)
+                board_posts.extend(unread)
+        return [*messages, *board_posts]
+
     async def serve(self) -> None:
         try:
             while self.shutdown is not True:
-                try:
-                    await asyncio.wait_for(self.wakeup.wait(), self.poll)
-                except TimeoutError:
-                    pass
+                if self.initial_post is None:
+                    try:
+                        await asyncio.wait_for(self.wakeup.wait(), self.poll)
+                    except TimeoutError:
+                        pass
                 self.wakeup.clear()
-                messages = await asyncio.to_thread(self.access.store.mailbox.read_unread, self.name)
-                # An answer to an approval already settled in the member's own window; not for the model.
-                messages = [message for message in messages if message.type != "permission_response"]
-                if messages:
-                    await self.turn(messages)
+                items = await asyncio.to_thread(self._read_inputs)
+                if items:
+                    await self.turn(items)
         finally:
             self._status("stopped")
 
@@ -320,7 +492,7 @@ class MemberRunner:
         self.awaiting = request_id
         return request_id
 
-    def _absorb(self, messages: list[Message]) -> None:
+    def _absorb(self, messages: Sequence[Message]) -> None:
         """Answers to this member's plan change its state before the turn starts."""
         for message in messages:
             if message.type != "plan_approval_response" or message.extra.get("request_id") != self.awaiting:
@@ -335,6 +507,18 @@ class MemberRunner:
         except TeamError:
             return set()
         return {task.id for task in tasks if task.owner == self.name and task.status == "completed"}
+
+    def _has_incomplete_upstream(self) -> bool:
+        try:
+            tasks = self.access.store.board.list()
+        except TeamError:
+            return False
+        return any(
+            task.status != "completed"
+            and task.owner != self.name
+            and not (task.status == "pending" and task.blocked_by)
+            for task in tasks
+        )
 
     async def _consume(self, prompt: str):
         final, stopped = "", None
@@ -356,9 +540,13 @@ class MemberRunner:
                     stopped = event
         return final, stopped
 
-    async def turn(self, messages: list[Message]) -> None:
-        self._absorb(messages)
-        request = next((m for m in messages if m.type == "shutdown_request"), None)
+    async def turn(self, messages: Sequence[Message | BoardPost]) -> None:
+        self._turn_woke_peers = False
+        self._turn_mentioned_lead = False
+        self._turn_breaker_tripped = False
+        control = [item for item in messages if isinstance(item, Message)]
+        self._absorb(control)
+        request = next((m for m in control if m.type == "shutdown_request"), None)
         if request is not None:
             self.shutdown = None  # Its shutdown_response this turn decides.
         mode = member_mode(
@@ -366,7 +554,7 @@ class MemberRunner:
         )
         prompt = render_incoming(messages)
         if self.on_event is not None:
-            self.on_event(messages)
+            self.on_event(list(messages))
         if self.approved and mode == "plan":
             prompt += "\n（会话当前处于计划模式，你仍只能做只读调查；等用户退出计划模式后再动手。）"
         self.policy.set_mode(mode)
@@ -400,8 +588,25 @@ class MemberRunner:
                 self.access.wake([LEAD])
             except TeamError:
                 pass
-        # The plan request itself tells the lead; a member that stops says so in its shutdown_response.
-        if (self.awaiting is None or failure) and self.shutdown is not True:
+        woke_peers_only = self._turn_woke_peers and not self._turn_mentioned_lead
+        is_brief_turn = bool(messages) and all(isinstance(m, BoardPost) and m.kind == "brief" for m in messages)
+        waiting_upstream = (
+            self.role == "integrator"
+            and not is_brief_turn
+            and not self._turn_mentioned_lead
+            and not self._turn_woke_peers
+            and await asyncio.to_thread(self._has_incomplete_upstream)
+        )
+        role_quiet = (
+            self.role in {"integrator", "verifier"}
+            and not done
+            and (is_brief_turn or self._turn_mentioned_lead or waiting_upstream)
+        )
+        suppress_idle = (not failure and not interrupted) and (
+            woke_peers_only or role_quiet or self._turn_breaker_tripped
+        )
+        # Peer-only handoffs pass the baton directly without waking Lead; plans and shutdowns have their own replies.
+        if (self.awaiting is None or failure) and self.shutdown is not True and not suppress_idle:
             reason = "interrupted" if interrupted else "failed" if failure else "completed"
             summary = (failure or final.strip())[:SUMMARY]
             try:

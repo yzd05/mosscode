@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/mosscode/"><img src="https://img.shields.io/pypi/v/mosscode?style=flat-square&label=PyPI&color=006dad" alt="PyPI" /></a>
   <a href="https://github.com/yzd05/mosscode/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/yzd05/mosscode/ci.yml?branch=main&style=flat-square&label=CI" alt="CI" /></a>
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776ab?style=flat-square" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-64748b?style=flat-square" alt="Platform" />
@@ -13,34 +14,39 @@
 
 [中文](README.md) | English
 
-MossCode is an open-source coding agent that lives in your terminal, understands your local codebase, reads and edits files, runs commands, searches code, and handles Git workflows through natural language. Its design draws on Claude Code and Pi.
+MossCode is an open-source AI coding agent for terminals and IDEs. It understands local repositories, navigates and edits code, runs commands, and drives end-to-end development and testing workflows through natural language.
 
-Use MossCode interactively in the [inline terminal UI](docs/reference/interface.md) (keeping native scrollback and text selection), automate it in scripts and CI with [`-p` headless mode](docs/usage.en.md#headless-mode), or connect it to PyCharm, IntelliJ IDEA, and Zed over [ACP](docs/reference/acp.md).
+- **Three Unified Interfaces**: Work interactively in the [inline terminal UI](docs/reference/interface.md) (preserving native scrollback and text selection), run scripts and CI pipelines in [`-p` headless mode](docs/usage.en.md#headless-mode), or connect PyCharm, IntelliJ IDEA, and Zed via the [ACP server](docs/reference/acp.md).
+- **Code Navigation & Reliable Editing**: Repository-wide structural code maps (`repo_map`), symbol outline and per-symbol reading, atomic multi-edit with syntax diagnostics, fast search, `@file` mentions, image input, and `!cmd` shell shortcuts (see [tools](docs/reference/tools.md)).
+- **Long-Horizon Tasks & Multi-Agent Workflows**: Read-only planning (`/plan`), goal-driven execution (`/goal`), recurring checks (`/loop`), background tasks, [sub-agents](docs/reference/subagents.md), and Git-worktree [`/swarm` collaboration](docs/reference/teams.md).
+- **Session Rollback & Persistent Memory**: Automatic context management for long sessions, [session branching and file/chat rollback](docs/reference/sessions.md) (`/fork`, `/rewind`), and searchable user/project [memory notes](docs/reference/memory.md) shared across worktrees.
+- **Multi-Protocol Models & Extensions**: Built-in adapters for Anthropic Messages, OpenAI Responses, and Chat Completions ([providers](docs/reference/providers.md)); full [MCP](docs/reference/mcp.md) support (tools, resources, `@server:uri`, and prompt commands), [Skills](docs/reference/skills.md), [Hooks](docs/reference/hooks.md), and [plugins](docs/reference/plugins.md).
+- **Layered Permissions & Native Sandboxing**: Four [permission modes](docs/reference/permissions.md), layered allow/deny rules, risky-command guards, and native OS [command sandboxes](docs/reference/sandbox.md) on Windows, Linux, and macOS with domain-level network control.
 
-It supports Anthropic Messages, OpenAI Responses, and Chat Completions; provides four [permission modes](docs/reference/permissions.md) and native [command sandboxes](docs/reference/sandbox.md) on Linux, macOS, and Windows; manages long sessions with cache-preserving [context compaction](docs/reference/context.md), [session rollback](docs/reference/sessions.md), and [memory notes](docs/reference/memory.md); and extends via [MCP](docs/reference/mcp.md), [Skills](docs/reference/skills.md), [Hooks](docs/reference/hooks.md), [sub-agents](docs/reference/subagents.md), [worktree teams](docs/reference/teams.md), and Claude Code-compatible [plugins](docs/reference/plugins.md). See the [usage guide](docs/usage.en.md) and [Claude Code comparison](docs/claude-code-patterns.md) (Chinese) for details.
+See the [usage guide](docs/usage.en.md) for full instructions.
 
 ## Install
 
-Requires Python 3.12 or newer. Install with [uv](https://docs.astral.sh/uv/):
+Requires Python 3.12 or newer. Install from PyPI with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install git+https://github.com/yzd05/mosscode.git
+uv tool install mosscode
 ```
 
-Tagged releases can also be installed from PyPI with `uv tool install mosscode`. Start MossCode in any project directory:
+To install the latest development snapshot directly from GitHub: `uv tool install git+https://github.com/yzd05/mosscode.git`. Start MossCode inside any project directory:
 
 ```bash
 cd /path/to/project
 moss
 ```
 
-Run `moss doctor` to check installation, PATH, configuration, and sandbox backends offline. Upgrading, uninstalling, and platform notes: [installation details](docs/usage.en.md#installation-details).
+Run `moss doctor` (or `moss doctor --ping`) to verify installation, configuration, and model connectivity. Upgrading, uninstalling, and platform notes: [installation details](docs/usage.en.md#installation-details).
 
 ## Configure
 
-Running `moss` for the first time launches an interactive setup wizard (`moss setup` runs it again anytime). If Claude Code or Codex is already configured locally, select **follow** to reuse its endpoint, model, and API key. Built-in presets cover DeepSeek, Kimi, GLM, Qwen, OpenRouter, Anthropic, and OpenAI, storing credentials in the system keyring by default (`moss key set`).
+Running `moss` for the first time opens an interactive setup wizard (`moss setup --add` appends more providers later). You can follow an existing local Claude Code or Codex setup, or pick a built-in preset for DeepSeek, Kimi, GLM, Qwen, OpenRouter, Anthropic, or OpenAI, storing API keys in the system keyring by default (`moss key set`).
 
-Minimal `~/.mosscode/config.yaml` when editing by hand (see [config.example.yaml](config.example.yaml) and [configuration](docs/usage.en.md#configuration) for all options):
+Minimal `~/.mosscode/config.yaml` when configuring by hand (see [config.example.yaml](config.example.yaml) and [configuration](docs/usage.en.md#configuration)):
 
 ```yaml
 providers:
@@ -56,39 +62,18 @@ Command-line entry points:
 
 ```bash
 moss                                        # interactive terminal UI
-moss "explain this project's entry point"   # start and send a prompt immediately
+moss "summarize the core modules"           # start and send a prompt immediately
 moss -c                                     # resume the latest session in this directory
+moss --sandbox                              # run with native OS command sandboxing
 moss -p "run tests and summarize failures"  # headless mode (text / json / stream-json)
-moss acp                                    # ACP server (stdio JSON-RPC for IDEs)
+moss acp                                    # ACP server for JetBrains IDEs and Zed
 ```
 
-Type `/help` inside MossCode for commands and shortcuts, including `/plan` (read-only investigation and plan approval), `/model` and `/thinking` (switch model and reasoning effort), `/rewind` (roll back files and conversation), `/goal` (continue across turns until a condition is met), `@file` (attach file contents), and `!cmd` (run a shell command directly). See [keys and commands](docs/usage.en.md#keys-and-commands) and [ACP integration](docs/reference/acp.md) (Chinese).
+Type `/help` inside MossCode for all commands and keybindings, including `/plan` (read-only planning), `/swarm` (multi-agent collaboration), `/goal` (run until a condition is met), `/loop` (recurring checks), `/rewind` (roll back files and conversation), `/model` and `/thinking` (switch model and reasoning effort), `@file` (attach files or MCP resources), and `!cmd` (run shell commands directly). See [keys and commands](docs/usage.en.md#keys-and-commands).
 
 ## Architecture
 
-Source code lives in `src/mosscode/`. `launcher.py` provides a fast CLI entry point without importing the UI or model SDKs. The terminal UI (`tui.py`), `-p`, and `acp/` share `Conversation` (`conversation.py`), while `AgentLoop` (`agent.py`) coordinates `providers.py` and `tools/` for model streaming, permission checks, sandboxing, and tool execution.
-
-<details>
-<summary>Main modules</summary>
-
-| Module | Responsibility |
-| :--- | :--- |
-| `launcher.py`, `cli.py`, `runtime_factory.py` | CLI entry point, argument parsing, shared runtime assembly |
-| `conversation.py` | Session lifecycle, project instructions, MCP startup, public API |
-| `agent.py` | Agent loop: model requests, concurrent read-only batches, stop conditions, compaction |
-| `context.py`, `compaction.py`, `tool_budget.py` | Token estimation, tool-output clearing, turn collapsing, summary compaction, disk spill |
-| `session.py`, `checkpoints.py` | Live JSONL session files, file snapshots, and `/rewind` rollback |
-| `memory.py`, `memory_extract.py` | User and project memory notes, index generation, background extraction |
-| `providers.py`, `catalog.py` | Protocol adapters, retries, prompt cache markers, model pricing catalog |
-| `prompts.py` | System prompt sections, environment block, mode reminders, `AGENTS.md` loader |
-| `tools/` | Built-in tools, parameter validation, concurrent scheduling |
-| `permissions.py`, `security.py`, `sandbox/` | Permission modes and rules, command risk analysis, OS sandboxes, domain proxy |
-| `mcp_client.py`, `skills/`, `hooks/`, `plugins.py` | MCP client, skills and script tools, lifecycle hooks, plugin manager |
-| `agents/`, `worktree/`, `teams/` | Sub-agent runtime, Git worktrees, split-pane teams, branch merging |
-| `tui.py`, `tui_views.py`, `windows_inline.py`, `scrollback.py` | Inline Textual UI, widgets/views, Windows console driver, streaming Markdown, native scrollback |
-| `acp/` | ACP server for editors, multi-directory session isolation, permission bridging |
-
-</details>
+Source code lives in `src/mosscode/`. The terminal UI (`tui.py`), headless CLI (`cli.py`), and IDE server (`acp/`) share a single session and agent core (`conversation.py`, `agent.py`), coordinating model protocol adapters (`providers.py`), tools and repository indexing (`tools/`, `repomap.py`), permissions and OS sandboxes (`permissions.py`, `sandbox/`), extensions (`mcp_client.py`, `skills/`, `hooks/`), and sub-agents/worktree teams (`agents/`, `teams/`, `worktree/`).
 
 Run and test from source:
 

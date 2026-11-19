@@ -101,7 +101,7 @@ def conversation_text(messages: Sequence[Message], limit: int = INPUT_TOKENS) ->
 
 
 def _notes_snapshot(store: MemoryStore, limit: int = NOTES_TOKENS) -> tuple[str, str, set[tuple[str, str]]]:
-    """(both indexes, full text of the newest notes within budget, keys of notes omitted from full text)."""
+    """(both indexes, full text of pinned/newest notes within budget, keys of notes omitted from full text)."""
     notes = [note for note in store.load() if not note.error]
     indexes = []
     for scope in SCOPES:
@@ -109,7 +109,9 @@ def _notes_snapshot(store: MemoryStore, limit: int = NOTES_TOKENS) -> tuple[str,
         indexes.append(f"### {SCOPE_LABELS[scope]}\n" + "\n".join(lines))
     bodies, used = [], 0
     omitted: set[tuple[str, str]] = set()
-    for note in sorted(notes, key=lambda n: (n.updated, n.name), reverse=True):
+    ordered = sorted(notes, key=lambda n: n.name)
+    ordered.sort(key=lambda n: (n.pinned, n.updated), reverse=True)
+    for note in ordered:
         block = f'<note scope="{note.scope}" name="{note.name}">\n{note.text().strip()}\n</note>'
         cost = estimate_text(block)
         if used + cost > limit:
@@ -225,6 +227,8 @@ class MemoryExtractor:
                 ):
                     blind_rejected += 1
                     continue
+                if isinstance(operation, dict) and operation.get("op") == "save" and operation.get("pinned") is False:
+                    operation = {key: val for key, val in operation.items() if key != "pinned"}
                 safe_ops.append(operation)
             applied, rejected = await asyncio.to_thread(self.store.apply, safe_ops)
         except asyncio.CancelledError:

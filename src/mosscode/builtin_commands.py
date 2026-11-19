@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from .config import catalog_window
 from .follow import SOURCES as FOLLOWED
 from .goal import GOAL, MAX_CONDITION, continue_prompt, elapsed_text
 from .hooks.config import SOURCE_LABELS as HOOK_SOURCES
+from .mcp_surface import describe_mcp_status, format_mcp_capabilities, overview_capability_lines
 from .memory import SCOPE_LABELS
 from .messages import ProviderError
 from .permissions import MODE_BADGES, MODE_LABELS, MODES
@@ -58,7 +60,10 @@ async def dispatch(ctx: CommandContext, parsed: Parsed) -> None:
     if problem:
         await ctx.ui.note(problem)
     elif command.kind == "prompt":
-        await ctx.ui.submit(command.expand(argument), command=typed(command, argument))
+        if command.handler is not None:
+            await command.handler(ctx, argument)
+        else:
+            await ctx.ui.submit(command.expand(argument), command=typed(command, argument))
     elif command.kind == "skill":
         await run_skill(ctx, command, argument)
     else:
@@ -843,14 +848,29 @@ def _model_line(ctx: CommandContext) -> str:
 
 def _context_line(conversation) -> str:
     usage = conversation.total_usage
-    estimate = conversation.context_estimate() if usage.requests else None
-    if estimate is None:
+    snapshot_fn = getattr(conversation, "context_snapshot", None)
+    if not usage.requests and not getattr(conversation, "history", ()):
         return "尚未发送请求"
+    snapshot = snapshot_fn() if snapshot_fn is not None else None
+    if snapshot is None:
+        estimate = conversation.context_estimate() if usage.requests else None
+        if estimate is None:
+            return "尚未发送请求"
+        tokens, source, anchored, delta = estimate, "estimated", None, 0
+    else:
+        tokens = snapshot.tokens
+        source = snapshot.source
+        anchored = getattr(snapshot, "anchored_tokens", None)
+        delta = getattr(snapshot, "delta_tokens", 0)
     budget = conversation.budget
-    line = (
-        f"约 {estimate:,} / {budget.effective:,} Token（{round(100 * estimate / budget.effective)}%），"
-        f"自动压缩阈值 {budget.auto_threshold:,}；已压缩 {conversation.compactions} 次"
-    )
+    pct = round(100 * tokens / budget.effective)
+    if source == "reported":
+        head = f"{tokens:,} / {budget.effective:,} Token（{pct}%，服务端返回）"
+    elif source == "mixed" and anchored is not None:
+        head = f"约 {tokens:,} / {budget.effective:,} Token（{pct}%，服务端 {anchored:,} + 估算 {delta:+,}）"
+    else:
+        head = f"约 {tokens:,} / {budget.effective:,} Token（{pct}%，估算）"
+    line = f"{head}，自动压缩阈值 {budget.auto_threshold:,}；已压缩 {conversation.compactions} 次"
     return line + ("；窗口未知，按 128K 估算" if not budget.configured else "")
 
 
@@ -926,10 +946,14 @@ def status_report(ctx: CommandContext) -> str:
         rows.append(("已激活 Skill", "、".join(conversation.active_skills)))
     if registry is not None and getattr(conversation, "agents_enabled", False):
         rows.append(("子 Agent", agents_line(conversation)))
-    if getattr(conversation, "coordinator", False):
-        from .coordinator import STATUS
+    active_loops = [t for t in conversation.tasks.running() if getattr(t, "loop", None) is not None]
+    if active_loops:
+        rows.append(("定时巡检", f"{len(active_loops)} 个运行中（/loop、/tasks 查看）"))
+    if getattr(conversation, "coordinator_mode", getattr(conversation, "coordinator", False)):
+        from .coordinator import DYNAMIC_STATUS, STATUS
 
-        rows.append(("角色", STATUS))
+        role_status = STATUS if getattr(conversation, "_coordinator_configured", False) else DYNAMIC_STATUS
+        rows.append(("角色", role_status))
     width = max(12, *(cell_len(label) + 2 for label, _ in rows))
     return "状态\n" + "\n".join(f"  {label}{' ' * (width - cell_len(label))}{value}" for label, value in rows)
 
@@ -969,7 +993,7 @@ def mcp_report(conversation, name: str = "") -> str:
         status = next((item for item in statuses if item.name == name), None)
         if status is None:
             return f"未找到 MCP Server {name}。已配置：" + ("、".join(item.name for item in statuses) or "无")
-        lines = [f"MCP {status.name}（{status.type}）· {status.describe()}"]
+        lines = [f"MCP {status.name}（{status.type}）· {describe_mcp_status(status)}"]
         for tool in status.tools:
             summary = (
                 tool.description.removeprefix(f"MCP Server {tool.server_name} 的工具 {tool.remote_name}。")
@@ -980,15 +1004,19 @@ def mcp_report(conversation, name: str = "") -> str:
             lines.append(
                 f"  {tool.name}" + ("  [只读]" if tool.read_only else "") + (f"  {summary[:80]}" if summary else "")
             )
-        if status.state in {"ready", "closed"} and not status.tools:
+        extra_lines = format_mcp_capabilities(status)
+        lines.extend(extra_lines)
+        if status.state in {"ready", "closed"} and not status.tools and not extra_lines:
             lines.append("  （Server 没有提供工具）")
         return "\n".join(lines)
     marks = {"ready": "●", "connecting": "○", "new": "○"}
     lines = [f"MCP Server（{len(statuses)}）"]
     width = max((len(item.name) for item in statuses), default=0)
-    lines.extend(
-        f"{marks.get(item.state, '×')} {item.name.ljust(width)}  {item.type:<5}  {item.describe()}" for item in statuses
-    )
+    for item in statuses:
+        lines.append(
+            f"{marks.get(item.state, '×')} {item.name.ljust(width)}  {item.type:<5}  {describe_mcp_status(item)}"
+        )
+        lines.extend(overview_capability_lines(item))
     lines.extend("! " + notice for notice in manager.notices)
     lines.append("/mcp 名称 查看工具；修改配置后重新启动生效，不自动重连。")
     return "\n".join(lines)
@@ -1051,13 +1079,33 @@ def skills_report(catalog, name: str = "", active=()) -> str:
     noted = [name for name, skill in catalog.skills.items() if skill.warnings]
     if noted:
         lines.append(f"{'、'.join(noted)} 有不符合 Agent Skills 规范的写法，不影响使用；/skills 名称 查看。")
-    lines.append("输入 /<名称> 调用；/skills 名称 查看详情；/skills reload 重新扫描。")
+    lines.append("输入 /<名称> 调用；/skills 名称 查看详情；/skills unload 名称 卸载；/skills reload 重新扫描。")
     return "\n".join(lines)
 
 
 async def _skills(ctx: CommandContext, argument: str) -> None:
-    if argument != "reload":
-        await ctx.ui.note(skills_report(ctx.conversation.skills, argument, ctx.conversation.active_skills))
+    cleaned = argument.strip()
+    action, _, rest = cleaned.partition(" ")
+    if action == "unload":
+        target = rest.strip()
+        if not target or " " in target:
+            await ctx.ui.note("用法：/skills unload <名称>")
+            return
+        try:
+            removed = ctx.conversation.unload_skill(target)
+        except ProviderError as exc:
+            await ctx.ui.note(str(exc))
+            return
+        if removed:
+            ctx.ui.refresh_status()
+            await ctx.ui.note(f"└ 已卸载 Skill {target}。")
+        elif ctx.conversation.skills.get(target) is not None:
+            await ctx.ui.note(f"Skill {target} 当前未激活。")
+        else:
+            await ctx.ui.note(f"未找到已激活的 Skill {target}。")
+        return
+    if cleaned != "reload":
+        await ctx.ui.note(skills_report(ctx.conversation.skills, cleaned, ctx.conversation.active_skills))
         return
     old = ctx.conversation.skills
     catalog = await asyncio.to_thread(old.reload)
@@ -1076,9 +1124,11 @@ async def _skills(ctx: CommandContext, argument: str) -> None:
 
 
 def _skill_names(ctx: CommandContext):
+    active = getattr(ctx.conversation, "active_skills", ())
     return [
         ("reload", "重新扫描 Skill 目录"),
         *((skill.name, skill.description) for skill in ctx.conversation.skills.skills.values()),
+        *((f"unload {name}", "卸载已激活的 Skill") for name in active),
     ]
 
 
@@ -1270,7 +1320,7 @@ def _hook_names(ctx: CommandContext):
 
 def agents_line(conversation) -> str:
     catalog, tasks = conversation.agents, conversation.tasks
-    running = tasks.background()
+    running = [t for t in tasks.background() if getattr(t, "loop", None) is None]
     line = f"{len(catalog.agents)} 个定义" + (f"（{len(catalog.problems)} 个有问题）" if catalog.problems else "")
     line += f"，后台任务 {len(running)} 个运行中" if running else "，没有运行中的后台任务"
     return line + "（/agents、/tasks 查看）"
@@ -1417,10 +1467,12 @@ def tasks_report(conversation, task_id: str = "") -> str:
         task = tasks.get(task_id)
         if task is None:
             return f"没有任务 {task_id}。输入 /tasks 查看本会话的任务。"
+        if getattr(task, "loop", None) is not None:
+            return _loop_task_report(task)
         if task.command is not None:
             return _command_report(task)
         rows = [
-            ("来源", ORIGIN_LABELS[task.origin]),
+            ("来源", ORIGIN_LABELS.get(task.origin, task.origin)),
             ("类型", task.agent_type),
             ("标签", task.description),
             ("状态", STATUS_LABELS[task.status] + ("（后台）" if task.background else "（前台）")),
@@ -1446,7 +1498,13 @@ def tasks_report(conversation, task_id: str = "") -> str:
     lines = [f"任务（{len(tasks.tasks)}）"]
     for task in tasks.tasks.values():
         place = "后台" if task.background else "前台"
-        if task.command is not None:  # A command has no tokens; its output size instead.
+        loop_info = getattr(task, "loop", None)
+        if loop_info is not None:
+            wait_note = (
+                " · 等待空闲触发" if task.status == "running" and getattr(loop_info, "pending_fire", False) else ""
+            )
+            amount = f"每 {loop_info.interval_text} · 已运行 {loop_info.runs}/{loop_info.max_runs} 次{wait_note}"
+        elif task.command is not None:  # A command has no tokens; its output size instead.
             from .tools.background import size_text
 
             amount = f"输出 {size_text(task.command.log.size)}"
@@ -1456,6 +1514,42 @@ def tasks_report(conversation, task_id: str = "") -> str:
             f"  {task.id:<4} {STATUS_LABELS[task.status]}  {place}  {task.label}  {task.elapsed:.0f} 秒  {amount}"
         )
     lines.append("/tasks <id> 查看详情；/tasks stop <id> 停止。")
+    return "\n".join(lines)
+
+
+def _loop_task_report(task) -> str:
+    from time import monotonic
+
+    info = task.loop
+    status_label = STATUS_LABELS.get(task.status, task.status)
+    if task.status == "running":
+        if getattr(info, "pending_fire", False):
+            next_text = "等待空闲触发"
+        elif getattr(info, "next_fire", None) is not None:
+            next_text = f"{elapsed_text(max(0.0, info.next_fire - monotonic()))} 后"
+        else:
+            next_text = "排队中"
+    else:
+        next_text = getattr(info, "end_reason", "") or (
+            "已手动停止" if getattr(task, "stopped", False) else status_label
+        )
+    rows = [
+        ("来源", ORIGIN_LABELS.get(task.origin, "/loop 定时")),
+        ("类型", "定时巡检"),
+        ("间隔", f"每 {info.interval_text}"),
+        ("状态", status_label),
+        ("已运行", f"{info.runs}/{info.max_runs} 次"),
+        ("下次触发" if task.status == "running" else "结束原因", next_text),
+        ("已持续", f"{task.elapsed:.0f} 秒"),
+    ]
+    lines = [f"任务 {task.id}", *(f"  {label}{' ' * (10 - cell_len(label))}{value}" for label, value in rows)]
+    lines.append("  巡检内容")
+    lines.extend("    " + line for line in _preview(info.prompt, 6, 600))
+    if task.result:
+        lines.append("  结果")
+        lines.extend("    " + line for line in _preview(task.result, 6, 600))
+    if task.status == "running":
+        lines.append(f"/loop stop {task.id} 或 /tasks stop {task.id} 停止。")
     return "\n".join(lines)
 
 
@@ -1599,6 +1693,171 @@ async def _goal(ctx: CommandContext, argument: str) -> None:
     await ctx.ui.submit(argument, command=f"/goal {argument}")
 
 
+# Loop --------------------------------------------------------------------------------
+
+LOOP_HEADLESS_NOTICE = "定时巡检 /loop 仅在交互会话（TUI 或 ACP）中可用。"
+LOOP_DETAILS = (
+    "用法：\n"
+    "  /loop [间隔] <提示词>   启动定时巡检（默认 5m，支持 s/m/h/d 及中文单位，或末尾 every 5m、--max-runs N）\n"
+    "  /loop [list]            查看当前会话活跃与已结束的定时巡检\n"
+    "  /loop stop <id|all>     停止指定或全部运行中的定时巡检"
+)
+
+
+def loop_report(conversation) -> str:
+    """Render active and finished /loop schedules for `/loop` and `/loop list`."""
+    from time import monotonic
+
+    loops = getattr(conversation, "loops", None)
+    if loops is not None and callable(getattr(loops, "all_loops", None)):
+        items = list(loops.all_loops())
+    else:
+        tasks = getattr(conversation, "tasks", None)
+        items = [t for t in (tasks.tasks.values() if tasks is not None else ()) if getattr(t, "loop", None) is not None]
+    if not items:
+        return "当前没有定时巡检任务。用法：/loop [间隔] <提示词>（默认 5m，例如 /loop 5m 检查构建 或 /loop 10m /test）"
+    lines = [f"定时巡检（{len(items)}）"]
+    now = monotonic()
+    for task in items:
+        info = task.loop
+        status_label = STATUS_LABELS.get(task.status, task.status)
+        if task.status == "running":
+            if getattr(info, "pending_fire", False):
+                timing = "等待空闲触发"
+            elif getattr(info, "next_fire", None) is not None:
+                timing = f"下次触发 {elapsed_text(max(0.0, info.next_fire - now))} 后"
+            else:
+                timing = "排队中"
+        else:
+            timing = getattr(info, "end_reason", "") or (
+                "已手动停止" if getattr(task, "stopped", False) else status_label
+            )
+        preview = _first_line(info.prompt)[:80]
+        lines.append(
+            f"  {task.id:<4} {status_label}  每 {info.interval_text} · 已运行 {info.runs}/{info.max_runs} 次"
+            f" · {timing} · {preview}"
+        )
+    lines.append("/loop [间隔] <提示词> 新建；/loop stop <id|all> 停止；/tasks <id> 查看详情。")
+    return "\n".join(lines)
+
+
+def _ensure_loops(ctx: CommandContext):
+    """Return the session's LoopScheduler, lazily attaching one for interactive contexts when available."""
+    if (
+        ctx.ui is None
+        or getattr(ctx.ui, "headless", False)
+        or getattr(ctx.conversation, "headless", False)
+        or not callable(getattr(ctx.ui, "submit", None))
+    ):
+        return None
+    loops = getattr(ctx.conversation, "loops", None)
+    if loops is not None:
+        return loops
+    attach = getattr(ctx.conversation, "attach_loops", None)
+    if not callable(attach):
+        return None
+
+    async def _default_trigger(task, prompt: str) -> None:
+        from .commands import parse_input, unknown_note
+        from .loop_schedule import LOOP_SYNTHETIC, format_loop_prompt
+
+        runs = getattr(getattr(task, "loop", None), "runs", 1)
+        await ctx.ui.note(f"⏰ 定时巡检 {task.id}（第 {runs} 次）：{_first_line(prompt)[:100]}")
+        if prompt.lstrip().startswith("/"):
+            parsed = parse_input(prompt, ctx.registry)
+            if parsed.kind == "unknown":
+                await ctx.ui.note(unknown_note(parsed, ctx.registry))
+                return
+            if parsed.kind == "command":
+                await dispatch(ctx, parsed)
+                return
+        await ctx.ui.submit(format_loop_prompt(task), synthetic=LOOP_SYNTHETIC)
+
+    return attach(
+        is_busy=lambda: bool(
+            ctx.conversation.busy or (ctx.conversation.goal is not None and ctx.conversation.goal.active)
+        ),
+        trigger=_default_trigger,
+    )
+
+
+async def _loop(ctx: CommandContext, argument: str) -> None:
+    loops = _ensure_loops(ctx)
+    if loops is None:
+        if ctx.ui is not None:
+            await ctx.ui.note(LOOP_HEADLESS_NOTICE)
+        return
+    try:
+        from .loop_schedule import parse_loop_args
+    except ImportError:
+        await ctx.ui.note(LOOP_HEADLESS_NOTICE)
+        return
+    try:
+        parsed = parse_loop_args(argument)
+    except ValueError as exc:
+        await ctx.ui.note(f"└ {exc}")
+        return
+    if parsed.action == "list":
+        await ctx.ui.note(loop_report(ctx.conversation))
+        return
+    if parsed.action == "stop":
+        res = loops.stop(parsed.target)
+        stopped = await res if inspect.isawaitable(res) else res
+        if parsed.target.lower() == "all":
+            if stopped:
+                ids = "、".join(t.id for t in stopped)
+                await ctx.ui.note(f"└ 已停止 {len(stopped)} 个定时巡检（{ids}）。")
+            else:
+                await ctx.ui.note("└ 当前没有运行中的定时巡检。")
+        elif stopped:
+            target_task = stopped[0]
+            preview = (
+                _first_line(target_task.loop.prompt)[:60]
+                if getattr(target_task, "loop", None) is not None
+                else target_task.description
+            )
+            await ctx.ui.note(f"└ 已停止定时巡检 {target_task.id}（{preview}）。")
+        else:
+            existing = ctx.conversation.tasks.get(parsed.target)
+            if existing is None or getattr(existing, "loop", None) is None:
+                await ctx.ui.note(f"└ 没有定时巡检任务 {parsed.target}。输入 /loop list 查看。")
+            else:
+                await ctx.ui.note(
+                    f"└ 定时巡检 {parsed.target} 已结束（{STATUS_LABELS.get(existing.status, existing.status)}），无需停止。"
+                )
+        ctx.ui.refresh_status()
+        return
+    try:
+        res = loops.schedule(parsed.interval, parsed.interval_text, parsed.prompt, max_runs=parsed.max_runs)
+        task = await res if inspect.isawaitable(res) else res
+    except (ValueError, ProviderError) as exc:
+        await ctx.ui.note(f"└ {exc}")
+        return
+    ctx.ui.refresh_status()
+    shown_prompt = _first_line(parsed.prompt)[:80]
+    await ctx.ui.note(
+        f"└ 已启动定时巡检 {task.id}（每 {parsed.interval_text}，最多 {parsed.max_runs} 次）："
+        f"{shown_prompt}；可用 /tasks 或 /loop stop {task.id} 停止。"
+    )
+
+
+def _loop_names(ctx: CommandContext):
+    choices = [
+        ("list", "查看当前会话的定时巡检计划"),
+        ("stop all", "停止全部运行中的定时巡检"),
+        ("5m ", "每 5 分钟巡检一次"),
+        ("30s ", "每 30 秒巡检一次"),
+        ("30m ", "每 30 分钟巡检一次"),
+    ]
+    tasks = getattr(ctx.conversation, "tasks", None)
+    if tasks is not None:
+        for task in tasks.running():
+            info = getattr(task, "loop", None)
+            if info is not None:
+                choices.append((f"stop {task.id}", f"停止 · 每 {info.interval_text} · {_first_line(info.prompt)[:40]}"))
+    return choices
+
+
 # Worktrees ---------------------------------------------------------------------------
 
 WORKTREE_USAGE = (
@@ -1718,17 +1977,216 @@ def _worktree_reads(argument: str) -> bool:
     return argument.strip() in ("", "list")
 
 
-# Teams -------------------------------------------------------------------------------
+# Teams & Swarm -----------------------------------------------------------------------
 
 TEAM_USAGE = "用法：/team · /team <名称> · /team stop <成员> · /team delete <名称>"
 TEAM_DETAILS = (
     "子命令：\n"
-    "  /team                 列出本项目的团队：成员数、各状态人数、当前团队和持有者\n"
-    "  /team <名称>          团队详情：成员状态、后端、工作树、最近工具调用、用量、未读消息和任务\n"
+    "  /team                 列出本项目的团队：成员数、各状态人数、当前团队、持有者和最近黑板记录\n"
+    "  /team <名称>          团队详情：成员状态、后端、工作树、最近工具调用、用量、任务和黑板记录\n"
     "  /team stop <成员>     请当前团队的成员在这一轮结束后停止，超时强制停止\n"
     "  /team delete <名称>   确认后停止成员、删除已合并且干净的工作树和团队目录"
 )
 DELETE_OPTIONS = ("删除团队", "取消")
+
+SWARM_USAGE = "用法：/swarm [status|on|off|<任务>]"
+SWARM_DETAILS = (
+    "子命令：\n"
+    "  /swarm [status]       查看当前 Swarm 协调模式状态、当前团队与黑板摘要\n"
+    "  /swarm on             在本会话开启协调者模式（Lead 只做规划、派发、验收与合并）\n"
+    "  /swarm off            在本会话关闭协调者模式，恢复 Lead 的完整工具\n"
+    "  /swarm <任务>         开启协调者模式并立即提交多 Agent 团队任务"
+)
+
+
+def _recent_board_posts(store, limit: int = 5) -> tuple[list[tuple[int, str, str]], int]:
+    """Read recent `(seq, author, summary)` entries and `head_seq` from `store.blackboard` or `board.jsonl`."""
+    if store is None:
+        return [], 0
+    board = getattr(store, "blackboard", None)
+    if board is not None and callable(getattr(board, "read_since", None)):
+        try:
+            posts, head = board.read_since(0, limit=max(limit, 50))
+            if head > len(posts) and head > limit:
+                posts, head = board.read_since(max(0, head - limit), limit=limit)
+            rows = []
+            for item in list(posts)[-limit:]:
+                seq = int(getattr(item, "seq", 0))
+                author = str(getattr(item, "author", "") or "?")
+                summary = str(getattr(item, "summary", "") or "").strip()
+                if not summary:
+                    summary = _first_line(str(getattr(item, "body", "") or ""), "")
+                rows.append((seq, author, summary[:100]))
+            return rows, int(head)
+        except Exception:
+            return [], 0
+    directory = getattr(store, "directory", None)
+    path = Path(directory) / "board.jsonl" if directory is not None else None
+    if path is None or not path.is_file():
+        return [], 0
+    import json
+
+    parsed: list[tuple[int, str, str]] = []
+    head_seq = 0
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            seq = int(raw.get("seq") or 0)
+            if seq <= 0:
+                continue
+            head_seq = max(head_seq, seq)
+            author = str(raw.get("author") or "?")
+            summary = str(raw.get("summary") or "").strip() or _first_line(str(raw.get("body") or ""), "")
+            parsed.append((seq, author, summary[:100]))
+    except OSError:
+        return [], 0
+    return parsed[-limit:], head_seq
+
+
+def _board_block(store, *, heading: str = "黑板", limit: int = 5) -> str:
+    posts, head = _recent_board_posts(store, limit=limit)
+    if not posts or head <= 0:
+        return ""
+    lines = [f"{heading}（共 {head} 条，最新 #{head}）"]
+    for seq, author, summary in posts:
+        lines.append(f"  #{seq} · {author}: {summary or '（无摘要）'}")
+    return "\n".join(lines)
+
+
+def team_report(conversation, name: str = "") -> str:
+    """Overview or one team's detail, enriched with recent `board.jsonl` entries when present."""
+    runtime = getattr(conversation, "teams", None)
+    if runtime is None:
+        return "当前会话不支持团队。"
+    cleaned = name.strip()
+    if cleaned:
+        base = runtime.detail(cleaned)
+        store = (
+            runtime.current
+            if runtime.current is not None and runtime.current.name == cleaned
+            else next((item for item in runtime.teams() if item.name == cleaned), None)
+        )
+        block = _board_block(store, limit=8)
+        if block and f"#{_recent_board_posts(store, limit=1)[1]}" not in base:
+            return base + "\n" + block
+        return base
+    base = runtime.overview()
+    store = runtime.current
+    if store is None:
+        stores = runtime.teams()
+        if len(stores) == 1:
+            store = stores[0]
+    if store is not None:
+        block = _board_block(store, heading=f"黑板（{store.name}）", limit=5)
+        if block and f"#{_recent_board_posts(store, limit=1)[1]}" not in base:
+            return base + "\n" + block
+    return base
+
+
+def swarm_report(conversation) -> str:
+    """Current Swarm / coordinator mode status and active team summary."""
+    from .coordinator import SWARM_UNAVAILABLE
+
+    runtime = getattr(conversation, "teams", None)
+    if runtime is None:
+        return f"Swarm 协调模式：不可用（{SWARM_UNAVAILABLE}）"
+    active = getattr(conversation, "coordinator_mode", getattr(conversation, "coordinator", False))
+    state = (
+        "已开启（Lead 只负责规划、派发、验收与合并；可用 /swarm off 关闭）"
+        if active
+        else "未开启（可用 /swarm on 开启，或 /swarm <任务> 开启并立即派发）"
+    )
+    lines = [
+        f"Swarm 协调模式：{state}",
+        f"  活跃成员上限  {runtime.max_members} 个（后端模式：{runtime.teammate_mode}）",
+    ]
+    store = runtime.current
+    if store is None:
+        existing = runtime.teams()
+        hint = f"（本项目已有 {len(existing)} 个历史团队，输入 /team 查看）" if existing else ""
+        lines.append(f"  当前团队      无{hint}")
+    else:
+        running, idle = runtime.counts()
+        try:
+            team = store.load()
+            total_members = len(team.members)
+        except Exception:
+            total_members = running + idle
+        try:
+            tasks = store.board.list()
+            done_count = sum(1 for item in tasks if item.status == "completed")
+            task_summary = f"{done_count}/{len(tasks)} 已完成"
+        except Exception:
+            task_summary = "无"
+        posts, head = _recent_board_posts(store, limit=5)
+        lines.append(
+            f"  当前团队      {store.name}（成员 {total_members}：运行 {running} / 空闲 {idle} · 任务 {task_summary}）"
+        )
+        lines.append(f"  黑板消息      共 {head} 条" + (f"（最新 #{head}）" if head else ""))
+        for seq, author, summary in posts:
+            lines.append(f"    #{seq} · {author}: {summary or '（无摘要）'}")
+    lines.append(SWARM_USAGE)
+    return "\n".join(lines)
+
+
+async def _swarm(ctx: CommandContext, argument: str) -> None:
+    from .coordinator import SWARM_OFF_NOTE, SWARM_ON_NOTE
+
+    cleaned = argument.strip()
+    lower = cleaned.lower()
+    if not cleaned or lower == "status":
+        await ctx.ui.note(await asyncio.to_thread(swarm_report, ctx.conversation))
+        return
+    if lower == "on":
+        try:
+            changed = ctx.conversation.set_coordinator_mode(True)
+        except ProviderError as exc:
+            await ctx.ui.note(f"└ {exc}")
+            return
+        ctx.ui.refresh_status()
+        if changed:
+            await ctx.ui.note(f"└ {SWARM_ON_NOTE}。")
+        else:
+            await ctx.ui.note("└ Swarm 协调模式已经处于开启状态（可用 /swarm off 关闭）。")
+        return
+    if lower == "off":
+        try:
+            changed = ctx.conversation.set_coordinator_mode(False)
+        except ProviderError as exc:
+            await ctx.ui.note(f"└ {exc}")
+            return
+        ctx.ui.refresh_status()
+        await ctx.ui.note(f"└ {SWARM_OFF_NOTE}" if changed else "└ Swarm 协调模式当前未开启。")
+        return
+    try:
+        changed = ctx.conversation.set_coordinator_mode(True)
+    except ProviderError as exc:
+        await ctx.ui.note(f"└ {exc}")
+        return
+    ctx.ui.refresh_status()
+    if changed:
+        await ctx.ui.note(f"└ {SWARM_ON_NOTE}。")
+    await ctx.ui.submit(cleaned, command=f"/swarm {cleaned}")
+
+
+def _swarm_names(ctx: CommandContext):
+    return [
+        ("status", "查看 Swarm 协调状态与黑板摘要"),
+        ("on", "开启本会话 Swarm 协调模式"),
+        ("off", "关闭本会话 Swarm 协调模式"),
+    ]
+
+
+def _swarm_reads(argument: str) -> bool:
+    """Viewing status is safe while a turn runs; toggling or submitting a task waits."""
+    return argument.strip().lower() in ("", "status")
 
 
 async def _team(ctx: CommandContext, argument: str) -> None:
@@ -1741,7 +2199,7 @@ async def _team(ctx: CommandContext, argument: str) -> None:
     words = argument.split()
     try:
         if not words:
-            await ctx.ui.note(await asyncio.to_thread(runtime.overview))
+            await ctx.ui.note(await asyncio.to_thread(team_report, ctx.conversation))
         elif words[0] == "stop" and len(words) == 2:
             await ctx.ui.note("└ " + await runtime.stop_member(words[1]))
             ctx.ui.refresh_status()
@@ -1765,14 +2223,14 @@ async def _team(ctx: CommandContext, argument: str) -> None:
                 await ctx.ui.note("已取消，团队保留。")
 
             ctx.ui.choose(
-                f"删除团队 {name}？会停止它的成员，删除已合并且干净的工作树和团队目录（任务、邮箱、对话记录）。",
+                f"删除团队 {name}？会停止它的成员，删除已合并且干净的工作树和团队目录（任务、黑板、邮箱、对话记录）。",
                 DELETE_OPTIONS,
                 1,
                 picked,
                 cancelled,
             )
         elif len(words) == 1 and words[0] not in ("stop", "delete"):
-            await ctx.ui.note(await asyncio.to_thread(runtime.detail, words[0]))
+            await ctx.ui.note(await asyncio.to_thread(team_report, ctx.conversation, words[0]))
         else:
             await ctx.ui.note(TEAM_USAGE)
     except TeamError as exc:
@@ -1945,7 +2403,7 @@ BUILTIN = CommandRegistry(
         ),
         Command(
             "skills",
-            "查看、重新扫描 Skill",
+            "查看、卸载、重新扫描 Skill",
             "/skills [名称|reload]",
             "local",
             aliases=("skill",),
@@ -1953,6 +2411,7 @@ BUILTIN = CommandRegistry(
             argument_hint="[名称|reload]",
             handler=_skills,
             complete=_skill_names,
+            details="/skills unload <名称>：卸载已激活的 Skill 及其专属工具，释放 <active-skills> 上下文",
         ),
         Command(
             "hooks",
@@ -1989,7 +2448,7 @@ BUILTIN = CommandRegistry(
         ),
         Command(
             "tasks",
-            "查看、停止本会话的子 Agent 任务",
+            "查看、停止本会话的子 Agent、后台命令与定时巡检任务",
             "/tasks [id|stop id]",
             "local",
             aliases=("task",),
@@ -2011,6 +2470,19 @@ BUILTIN = CommandRegistry(
             while_running=_goal_reads,
             details="/goal <条件>：设置目标并立即开始，每轮结束后另一次模型调用判断是否达成，未达成时自动继续\n"
             "/goal：查看目标；目标已暂停时继续\n/goal clear（stop、off）：清除目标；/clear 也会清除",
+        ),
+        Command(
+            "loop",
+            "按固定间隔在会话空闲时自动执行提示词或斜杠命令",
+            # Short enough to keep the /help column at its usual width; LOOP_DETAILS lists list/stop.
+            "/loop [5m] <提示词>",
+            "local",
+            argument="optional",
+            argument_hint="[5m] <提示词>",
+            handler=_loop,
+            complete=_loop_names,
+            while_running=True,
+            details=LOOP_DETAILS,
         ),
         Command(
             "worktree",
@@ -2036,6 +2508,18 @@ BUILTIN = CommandRegistry(
             complete=_team_names,
             while_running=_team_reads,
             details=TEAM_DETAILS,
+        ),
+        Command(
+            "swarm",
+            "开启黑板 Swarm 协调模式并派发多 Agent 团队任务",
+            "/swarm [on|off|任务]",
+            "local",
+            argument="optional",
+            argument_hint="[on|off|任务]",
+            handler=_swarm,
+            complete=_swarm_names,
+            while_running=_swarm_reads,
+            details=SWARM_DETAILS,
         ),
         Command("exit", "退出 MossCode", "/exit", "local", aliases=("quit",), handler=_exit),
     )

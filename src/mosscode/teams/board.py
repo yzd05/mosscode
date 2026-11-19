@@ -185,6 +185,24 @@ class TaskBoard:
         )
         return Updated(task, ready)
 
+    def recover_member(self, owner: str) -> list[TeamTask]:
+        """Reset a crashed member's in_progress tasks back to pending and unassigned."""
+        owner = owner.strip()
+        if not owner:
+            return []
+        recovered: list[TeamTask] = []
+        with file_lock(self.path):
+            tasks = self._load()
+            for task in tasks.values():
+                if task.owner == owner and task.status == "in_progress":
+                    task.status = "pending"
+                    task.owner = ""
+                    task.updated = now()
+                    recovered.append(task)
+            if recovered:
+                self._save(tasks)
+        return recovered
+
     @staticmethod
     def _deps(blocked_by: Iterable[str], tasks: dict[str, TeamTask]) -> list[str]:
         deps = []

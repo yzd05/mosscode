@@ -9,14 +9,15 @@ MossCode 已经做了什么、接下来做什么，以及为什么这样排。�
 | 方面 | 内容 | 文档 |
 | --- | --- | --- |
 | Agent Loop | 单循环、明确的停止条件、空回复和思考截断后自动重发、正文截断后自动续写 | [工具与 Agent Loop](docs/reference/tools.md) |
-| 模型协议 | Anthropic Messages、OpenAI Responses、Chat Completions；流式；提示缓存；思考强度；图片输入；随程序发布的模型目录与费用估算 | [模型提供商](docs/reference/providers.md) |
-| 工具 | 读、写、改、命令、glob、grep，任务清单、向用户提问、记忆、网页读取与搜索；先读后改；只读调用并发 | [工具](docs/reference/tools.md#工具) |
+| 模型协议 | Anthropic Messages、OpenAI Responses、Chat Completions（含相邻用户消息合并与尾部补充折叠以兼容 vLLM / SGLang 严格模板）；流式；提示缓存；思考强度；图片输入；随程序发布的模型目录与费用估算 | [模型提供商](docs/reference/providers.md) |
+| 工具 | 读（含 AST 符号大纲 `outline` 与按符号读取 `symbol`）、写、改、命令、glob、grep、`repo_map` 代码结构地图（Tree-sitter + Personalized PageRank），任务清单、向用户提问、记忆、网页读取与搜索；先读后改；只读调用并发 | [工具](docs/reference/tools.md#工具) |
 | 安全 | 四个权限档位与分层规则；命令风险分级；四种沙箱后端与域名代理；密钥不进入命令环境、在结果中隐藏 | [权限](docs/reference/permissions.md)、[命令沙箱](docs/reference/sandbox.md) |
-| 上下文 | 以服务用量为锚的估算；大结果存盘；压缩前先清理旧工具结果，再折叠最早的一段对话（历史不动，`/rewind` 能回到其中）；摘要压缩与熔断 | [上下文管理](docs/reference/context.md) |
-| 会话 | 实时存档、恢复与关键词筛选；会话分支（`/fork`）与重命名（`/rename`）；检查点与 `/rewind` | [会话存档与恢复](docs/reference/sessions.md) |
-| 长任务 | `todo_write`、`ask_user`、`/goal`；后台命令、Ctrl+B 转入后台 | [任务清单](docs/reference/tools.md#任务清单)、[目标](docs/reference/commands.md#目标) |
-| 多 Agent | 定义式与 Fork 子 Agent、后台运行、git 工作树隔离、Agent 团队与分屏窗格 | [子 Agent](docs/reference/subagents.md)、[Agent 团队](docs/reference/teams.md) |
-| 扩展 | MCP、Skill、Hook（含 `pre_finish` 确定性验收）、插件（兼容 Claude Code 的插件格式） | [Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[插件](docs/reference/plugins.md) |
+| 上下文 | 以服务用量为锚的估算与来源标注（区分服务端返回、服务端 + 估算、估算）；会话期锁定 `<environment>` 日期与档位前缀以保持 KV 缓存命中；大结果存盘；压缩前先清理旧工具结果，再折叠最早的一段对话（历史不动，`/rewind` 能回到其中）；摘要压缩与熔断 | [上下文管理](docs/reference/context.md) |
+| 记忆 | 用户级与项目级笔记；Git 多工作树共享仓库项目记忆；`pinned: true` 常驻笔记与项目优先淘汰；Okapi BM25 + 中文字元二元组检索（`search`、`read`、`list`、`save`、`delete`）与后台自动提取 | [记忆笔记](docs/reference/memory.md) |
+| 会话 | 实时存档、恢复与关键词筛选；会话分支（`/fork`）与重命名（`/rename`）；文件与已激活 Skill 检查点及 `/rewind` 同步回退 | [会话存档与恢复](docs/reference/sessions.md) |
+| 长任务 | `todo_write`、`ask_user`、`/goal`、`/loop` 会话内空闲定时巡检；后台命令、Ctrl+B 转入后台 | [任务清单](docs/reference/tools.md#任务清单)、[目标](docs/reference/commands.md#目标)、[定时巡检](docs/reference/commands.md#定时巡检loop) |
+| 多 Agent | 定义式与 Fork 子 Agent（支持后台审批冒泡与撤回）、git 工作树隔离；单真源黑板（`board.jsonl`）Agent 团队、`@mention`/`#seq` 点对点接力、只读 `verifier` 角色、零 Token 停滞看门狗、`/swarm` 动态协调模式与分屏窗格 | [子 Agent](docs/reference/subagents.md)、[Agent 团队](docs/reference/teams.md) |
+| 扩展 | MCP（工具、资源与模板、`@server:uri` 引用、`/mcp__…` 提示词命令、stdio `Content-Length`/JSONL 分帧自动识别）、Skill（64 KiB 激活预算、LRU 自动淘汰与按需卸载）、Hook（含 `pre_finish` 确定性验收）、插件（兼容 Claude Code 的插件格式） | [MCP](docs/reference/mcp.md)、[Skill](docs/reference/skills.md)、[Hook](docs/reference/hooks.md)、[插件](docs/reference/plugins.md) |
 | IDE 接入 | Agent Client Protocol (ACP) 服务端（`moss acp`），支持 JetBrains、Zed 等编辑器多目录会话隔离与审批桥接 | [ACP 编辑器集成](docs/reference/acp.md) |
 | 评估与预算 | 锁定 Harbor / Terminal-Bench 2.1 评测适配器与冻结基线、版本对照与 `run_budget` 共享额度 | [评估与版本对照](docs/reference/evaluations.md) |
 | 界面 | 内联显示与原生滚动历史；流式 Markdown；审批和提问面板替换输入框；运行状态行显示最近工具的成败；浅色与深色配色 | [终端界面](docs/reference/interface.md) |
@@ -26,10 +27,6 @@ MossCode 已经做了什么、接下来做什么，以及为什么这样排。�
 
 | 优先级 | 状态 | 内容 | 为什么 |
 | --- | --- | --- | --- |
-| P1 | 待做 | **MCP 资源和提示词**：`resources/list`、`resources/read`、`prompts/list`、`prompts/get` | 现在只用了 MCP 的工具，部分 Server 的主要内容是资源 |
-| P2 | 待做 | **MCP stdio 分帧自动识别**：兼容用 `Content-Length` 分帧的旧式 Server | 只影响少数不规范的 Server |
-| P2 | 待做 | **`/loop`**：每隔一段时间重发同一个提示词 | 轮询 CI、PR 评论一类任务；`/goal` 已覆盖“做到完成为止” |
-| P2 | 待做 | **上下文数字的来源标注**：区分服务返回、估算或两者相加 | 状态栏已用“约”表示含估算 |
 | P2 | 待做 | **英文参考文档** | 目前只有 README 有英文版 |
 
 ## 不打算做

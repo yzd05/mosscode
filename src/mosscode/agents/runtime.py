@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from contextlib import aclosing
 from copy import deepcopy
 from datetime import datetime
@@ -45,6 +46,8 @@ GLOBAL_BAN = frozenset(
         "team_task_list",
         "team_task_update",
         "send_message",
+        "post_board",
+        "read_board",
     }
 )
 # What an isolated sub-agent can have (create_default_registry, rooted in its worktree).
@@ -56,6 +59,7 @@ WORKSPACE_TOOLS = frozenset(
         "execute_command",
         "glob",
         "grep",
+        "repo_map",
         "exit_plan_mode",
         "web_fetch",
         "web_search",
@@ -119,9 +123,23 @@ def describe_call(call, root: Path | None = None) -> str:
         args = {}
     value, key = "", ""
     if isinstance(args, dict):
-        keys = ("pattern", "path") if call.name in {"glob", "grep"} else ("path", "pattern", "command", "name")
-        key = next((key for key in keys if args.get(key)), "")
-        value = str(args[key]) if key else ""
+        if call.name == "post_board":
+            value = str(args.get("summary") or args.get("body") or "")
+        elif call.name == "read_board":
+            seqs = args.get("seqs")
+            if isinstance(seqs, list) and seqs:
+                value = " ".join(f"#{item}" for item in seqs[:8])
+            elif args.get("since") is not None:
+                value = f"since #{args['since']}"
+        else:
+            if call.name == "repo_map":
+                keys = ("query", "path")
+            elif call.name in {"glob", "grep"}:
+                keys = ("pattern", "path")
+            else:
+                keys = ("path", "pattern", "command", "name")
+            key = next((key for key in keys if args.get(key)), "")
+            value = str(args[key]) if key else ""
     if key == "path":
         try:  # Paths inside the project read as relative, so the file name survives the width limit.
             value = str(Path(value).relative_to(root or Path.cwd()))
@@ -134,6 +152,11 @@ def describe_call(call, root: Path | None = None) -> str:
 
 
 def stats(task: Task) -> str:
+    if task.loop is not None:
+        return (
+            f"每 {task.loop.interval_text}，已运行 {task.loop.runs}/{task.loop.max_runs} 次，"
+            f"已持续 {task.elapsed:.0f} 秒"
+        )
     if task.command is not None:
         from ..tools.background import size_text
 
@@ -185,6 +208,19 @@ def unfinished(reason: str, loop: AgentLoop | None = None) -> str:
     return text + (f"\n\n{last}" if last else "")
 
 
+def _drain_parent_requests(parent, drop_ids: set[str]) -> None:
+    """Remove queued foreground requests whose task moved to the background or stopped."""
+    if not drop_ids or parent.requests.empty():
+        return
+    kept = []
+    while not parent.requests.empty():
+        item = parent.requests.get_nowait()
+        if getattr(item, "id", None) not in drop_ids:
+            kept.append(item)
+    for item in kept:
+        parent.requests.put_nowait(item)
+
+
 class SubAgents:
     def __init__(
         self,
@@ -197,9 +233,14 @@ class SubAgents:
         self.conversation = conversation
         self.catalog = catalog if catalog is not None else AgentCatalog()
         self.auto_background = auto_background
+        self.on_approval: Callable[[ApprovalRequest], None] | None = None
+        self.on_approval_settled: Callable[[str], None] | None = None
         self.tasks = TaskManager(max_background=max_background)
         self.tasks.on_finish = self._finished
+        self.tasks.on_cancel = self._settle_approvals
         self._logs: dict[str, SubagentLog] = {}
+        self._waiting_approvals: dict[str, tuple[ApprovalRequest, asyncio.Future]] = {}
+        self._bubbled_approvals: set[str] = set()
 
     @property
     def main(self) -> AgentLoop:
@@ -247,9 +288,10 @@ class SubAgents:
     def policy(self, agent: AgentDef | None, task: Task, root: Path | None = None):
         parent = self.main.registry.permissions
         label = f"子 Agent {task.label}"
+        interactive = parent.interactive and (not task.background or self.on_approval is not None)
         policy = parent.view(
             effective_mode(agent, parent.mode),
-            interactive=parent.interactive and not task.background,
+            interactive=interactive,
             label=label,
             root=root,
         )
@@ -383,7 +425,12 @@ class SubAgents:
         loop.active_skills = ActiveSkills()
         for item in main.active_skills.items():
             loop.active_skills.activate(item.skill, item.arguments, item.text)
+        for name in main.active_skills.lru_names:
+            loop.active_skills.touch(name)
+        loop.session_date = main.session_date
+        loop._env_mode = main._env_mode
         loop._announced = main._announced
+        loop._sent = dict(main._sent)
         loop.budget, loop.auto_compact, loop.session = main.budget, main.auto_compact, main.session
         loop.context_collapse = main.context_collapse
         loop.history = fork_history(main.projected())  # Collapsed turns as the main conversation sends them.
@@ -414,16 +461,124 @@ class SubAgents:
         note = hook_notification(outcome.notes)
         return f"{note.render()}\n\n{prompt}" if note else prompt
 
+    def _notify_settled(self, req_id: str) -> None:
+        if self.on_approval_settled is None:
+            return
+        try:
+            self.on_approval_settled(req_id)
+        except AssertionError:
+            raise
+        except Exception:
+            pass
+
+    def _prune_approvals(self, task: Task) -> None:
+        if not task.pending_approvals or self.main.registry is None:
+            return
+        pending = self.main.registry.permissions.pending
+        for req_id in list(task.pending_approvals):
+            entry = self._waiting_approvals.get(req_id)
+            fut = entry[1] if entry is not None else pending.get(req_id)
+            if fut is None or (fut.done() and not fut.cancelled()):
+                task.pending_approvals.discard(req_id)
+                self._waiting_approvals.pop(req_id, None)
+                self._bubbled_approvals.discard(req_id)
+
+    def _handle_approval(self, task: Task, event: ApprovalRequest) -> None:
+        parent = self.main.registry.permissions
+        self._prune_approvals(task)
+        fut = parent.pending.get(event.id)
+        if fut is None or fut.done():
+            return
+        task.pending_approvals.add(event.id)
+        self._waiting_approvals[event.id] = (event, fut)
+
+        def _on_done(done_fut: asyncio.Future, req_id: str = event.id) -> None:
+            if not done_fut.cancelled():
+                task.pending_approvals.discard(req_id)
+                self._waiting_approvals.pop(req_id, None)
+                self._bubbled_approvals.discard(req_id)
+
+        fut.add_done_callback(_on_done)
+        if task.background:
+            if self.on_approval is not None:
+                if event.id not in self._bubbled_approvals:
+                    self._bubbled_approvals.add(event.id)
+                    self.on_approval(event)
+                    self._prune_approvals(task)
+            else:
+                parent.respond(event.id, "deny")
+                self._prune_approvals(task)
+        else:
+            parent.requests.put_nowait(event)  # The main tool batch shows it.
+
+    def _settle_approvals(self, task: Task) -> None:
+        if self.main.registry is None:
+            return
+        mine = set(getattr(task.policy, "_mine", ()))
+        if not task.pending_approvals and not mine:
+            return
+        parent = self.main.registry.permissions
+        self._prune_approvals(task)
+        emitted = list(task.pending_approvals)
+        _drain_parent_requests(parent, set(emitted) | mine)
+        for req_id in emitted:
+            task.pending_approvals.discard(req_id)
+            entry = self._waiting_approvals.pop(req_id, None)
+            self._bubbled_approvals.discard(req_id)
+            fut = entry[1] if entry is not None else parent.pending.get(req_id)
+            if fut is not None and fut.done() and not fut.cancelled():
+                continue
+            parent.respond(req_id, "deny")
+            self._notify_settled(req_id)
+        for req_id in mine - set(emitted):
+            parent.respond(req_id, "deny")
+
+    def move_to_background(self, task: Task) -> None:
+        """Move a running foreground sub-agent to the background, keeping or denying pending approvals."""
+        if task.background:
+            return
+        parent = self.main.registry.permissions
+        self._prune_approvals(task)
+        can_bubble = parent.interactive and self.on_approval is not None
+        if not can_bubble:
+            emitted = list(task.pending_approvals)
+            task.to_background(interactive=False)
+            _drain_parent_requests(parent, set(emitted))
+            for req_id in emitted:
+                task.pending_approvals.discard(req_id)
+                self._waiting_approvals.pop(req_id, None)
+                self._bubbled_approvals.discard(req_id)
+                parent.respond(req_id, "deny")
+                self._notify_settled(req_id)
+        else:
+            task.to_background(interactive=True)
+            _drain_parent_requests(parent, set(task.pending_approvals))
+            for req_id in list(task.pending_approvals):
+                entry = self._waiting_approvals.get(req_id)
+                if entry is None:
+                    continue
+                request, fut = entry
+                if not fut.done() and req_id not in self._bubbled_approvals:
+                    self._bubbled_approvals.add(req_id)
+                    self.on_approval(request)
+            self._prune_approvals(task)
+        if not task.detach.is_set():
+            task.detach.set()
+        self.tasks.changed(task)
+
     async def drive(self, task: Task, loop: AgentLoop, prompt: str, *, owned: bool = False) -> str:
-        """Run to completion (no user input); approvals of a foreground sub-agent go to the parent's queue."""
+        """Run to completion (no user input); foreground approvals go to parent's queue, background to on_approval."""
         parent = self.main.registry.permissions
         final, stopped = None, None
         try:
             prompt = await self.start_hooks(task, prompt)
             async with aclosing(loop.run(prompt)) as events:
                 async for event in events:
-                    if isinstance(event, (ApprovalRequest, QuestionRequest)):
-                        parent.requests.put_nowait(event)  # The main tool batch shows it.
+                    if isinstance(event, ApprovalRequest):
+                        self._handle_approval(task, event)
+                    elif isinstance(event, QuestionRequest):
+                        if not task.background:
+                            parent.requests.put_nowait(event)
                     elif isinstance(event, ToolProgress) and event.phase == "running":
                         task.tool_calls += 1
                         task.last_tool = describe_call(event.call, task.root)
@@ -440,6 +595,7 @@ class SubAgents:
             task.status = "failed"
             return unfinished(str(exc), loop)
         finally:
+            self._settle_approvals(task)
             commands = loop.registry.commands
             if commands is not None:
                 await commands.stop_owned(task.id)
@@ -647,6 +803,7 @@ class SubAgents:
                 {job, detached}, timeout=self.auto_background or None, return_when=asyncio.FIRST_COMPLETED
             )
         except asyncio.CancelledError:
+            self._settle_approvals(task)
             job.cancel()  # Cancelling the turn cancels its foreground sub-agents.
             await asyncio.gather(job, return_exceptions=True)
             return task.result or unfinished("已取消", loop), {"task": task.id, "cancelled": True}
@@ -657,8 +814,7 @@ class SubAgents:
             if task.worktree:
                 details["worktree"] = task.worktree["outcome"]
             return job.result(), details
-        task.to_background()  # ctrl+b or the timer.
-        self.tasks.changed(task)
+        self.move_to_background(task)  # ctrl+b or the timer.
         return (
             f"已转入后台：任务 {task.id}，子 Agent {agent.name} 继续运行，完成后你会收到 <task-notification>；"
             "在此之前可以继续其他工作，不要重复做同一件事。"

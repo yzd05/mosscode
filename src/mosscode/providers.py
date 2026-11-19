@@ -649,6 +649,34 @@ class ResponsesProvider(SDKProvider):
         raise ProviderError("Responses 流在完成信号前中断，请重新发送。")
 
 
+def _merge_user_content(first: Any, second: Any, protocol: str) -> Any:
+    if isinstance(first, str) and isinstance(second, str):
+        if not first:
+            return second
+        if not second:
+            return first
+        return f"{first}\n\n{second}"
+    left = list(first) if isinstance(first, list) else ([_text(first, protocol)] if first else [])
+    right = list(second) if isinstance(second, list) else ([_text(second, protocol)] if second else [])
+    return left + right
+
+
+def _coalesce_adjacent_users(
+    entries: Sequence[dict[str, Any]], protocol: str = "openai-chat-completions"
+) -> list[dict[str, Any]]:
+    """Merge consecutive user messages so strict chat templates see alternating roles."""
+    merged: list[dict[str, Any]] = []
+    for entry in entries:
+        if merged and entry.get("role") == "user" and merged[-1].get("role") == "user":
+            merged[-1] = {
+                **merged[-1],
+                "content": _merge_user_content(merged[-1].get("content", ""), entry.get("content", ""), protocol),
+            }
+        else:
+            merged.append(dict(entry))
+    return merged
+
+
 class ChatCompletionsProvider(SDKProvider):
     async def _stream(
         self,
@@ -691,9 +719,11 @@ class ChatCompletionsProvider(SDKProvider):
                 history.append(entry)
         if prompt.stable:
             history.insert(0, {"role": "system", "content": prompt.stable})
+        trailing_role = "user" if any(item.get("role") != "system" for item in history) else "system"
         history.extend(
-            {"role": "system", "content": s.render()} for s in prompt.supplements if s.kind not in PREFIX_KINDS
+            {"role": trailing_role, "content": s.render()} for s in prompt.supplements if s.kind not in PREFIX_KINDS
         )
+        history = _coalesce_adjacent_users(history, self.config.protocol)
         options: dict[str, Any] = {
             "model": self.config.model,
             "messages": history,

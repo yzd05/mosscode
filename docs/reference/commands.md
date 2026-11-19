@@ -22,21 +22,23 @@
 | `/permissions [档位]` | `/permission` | 本地 | 查看档位说明，或切换到 default、acceptEdits、plan、bypassPermissions（见 [工具权限](permissions.md)） |
 | `/sandbox [on\|off]` | — | 本地 | 查看命令沙箱的状态、可写和禁止读取的路径、网络及最近 20 条记录；`off` 确认后在本会话关闭，`on` 重新打开（启动时未打开沙箱的会话需要用 `--sandbox` 重新启动），见 [命令沙箱](sandbox.md) |
 | `/status` | — | 本地 | 显示模型（窗口等取自模型目录时注明条目）、权限档位、思考强度（档位和当前模型实际发送的参数）、上下文估算、本会话用量和估算费用（含对话缓存命中率，压缩摘要、目标判断和记忆整理单独列出）、会话 ID、工作目录、项目指令、MCP、记忆、网络工具、已激活 Skill、Hook 的状态，以及 Agent 定义数和运行中的后台任务数 |
-| `/mcp [名称]` | — | 本地 | 列出 MCP Server 的状态；带名称时列出该 Server 的工具（见 [MCP](mcp.md)） |
+| `/mcp [名称]` | — | 本地 | 列出 MCP Server 的状态及已就绪的资源、资源模板与提示词命令；带名称时显示该 Server 的完整工具、资源、模板与提示词列表（见 [MCP](mcp.md)） |
 | `/skills [名称\|reload]` | `/skill` | 本地 | 列出 Skill；带名称时显示详情，`reload` 重新扫描（见 [Skill](skills.md#skills)） |
 | `/hooks [id\|reload]` | `/hook` | 本地 | 列出 Hook 和最近的执行记录；带 `id` 时显示详情，`reload` 重新加载并询问未确认的项目级文件（见 [Hook](hooks.md#hooks)） |
 | `/agents [名称\|reload]` | `/agent` | 本地 | 列出子 Agent 定义；带名称时显示详情（含本会话实际的权限档位和可用工具），`reload` 重新加载（见 [子 Agent](subagents.md#命令与界面)） |
 | `/plugins [名称]` | `/plugin` | 本地 | 列出已安装的插件；带名称时显示它的组件、问题和状态。安装、更新、删除在命令行中进行（见 [插件](plugins.md#plugins)） |
-| `/tasks [id\|stop id]` | `/task` | 本地 | 列出本会话的子 Agent 任务；带 `id` 时显示详情，`stop id` 停止运行中的任务 |
+| `/tasks [id\|stop id]` | `/task` | 本地 | 列出本会话的子 Agent、后台命令与 `/loop` 定时巡检任务；带 `id` 时显示详情，`stop id` 停止运行中的任务 |
 | `/todo` | — | 本地 | 显示模型用 `todo_write` 维护的完整任务清单（输入框上方的面板只显示未完成的前几项，见 [任务清单](tools.md#任务清单)） |
 | `/goal [条件\|clear]` | — | 本地 | `/goal <条件>` 设置目标并立即开始一轮，之后每轮结束都判断是否达成，未达成时自动继续；不带参数时显示目标，目标已暂停时继续；`clear`（`stop`、`off`）清除，见下文 [目标](#目标) |
+| `/loop [间隔] <提示词> \| list \| stop <id\|all>` | — | 本地 | 按固定间隔在会话空闲时自动执行提示词或斜杠命令；不带参数或 `list` 查看计划列表，`stop <id\|all>` 停止定时巡检，见下文 [定时巡检（/loop）](#定时巡检loop) |
 | `/worktree [list\|create 名称\|remove 名称 [--discard]\|clean]` | `/worktrees` | 本地 | 列出、创建、删除 MossCode 管理的 git 工作树，或清理过期的临时工作树（见 [Git 工作树](worktree.md#命令)） |
-| `/team [名称\|stop 成员\|delete 名称]` | `/teams` | 本地 | 列出本项目的 Agent 团队；带名称时显示成员和任务，`stop` 停止当前团队的一个成员，`delete` 确认后删除团队（见 [Agent 团队](teams.md#命令)） |
+| `/team [名称\|stop 成员\|delete 名称]` | `/teams` | 本地 | 列出本项目的 Agent 团队及黑板记录；带名称时显示成员、任务与最近黑板 `#seq` 条目，`stop` 停止当前团队的一个成员，`delete` 确认后删除团队（见 [Agent 团队](teams.md#命令)） |
+| `/swarm [on\|off\|任务]` | — | 本地 | 查看或动态切换本会话的 Swarm 协调者模式：不带参数或 `status` 显示当前状态、活跃团队与黑板 `#seq` 摘要；`on` 开启协调者模式；`off` 关闭协调者模式并恢复 Lead 完整工具；传入 `<任务>` 时开启协调者模式并立即提交多 Agent 团队任务（见 [协调者模式](teams.md#协调者模式)） |
 | `/exit` | `/quit` | 本地 | 退出并清理资源；有后台任务在运行时先确认 |
 
-除内置命令外，每个 Skill 是一条 `/<名称> [参数]` 命令，例如内置 Skill `/commit`、`/init`、`/review`、`/test`（见 [Skill](skills.md#内置-skill)）。补全菜单和 `/help` 中，Skill 命令的描述后面带 `[skill]`；`user-invocable: false` 的 Skill 不列出，但输入全名仍可执行。
+除内置命令外，每个 Skill 是一条 `/<名称> [参数]` 命令，例如内置 Skill `/commit`、`/init`、`/review`、`/test`（见 [Skill](skills.md#内置-skill)）。补全菜单和 `/help` 中，Skill 命令的描述后面带 `[skill]`；`user-invocable: false` 的 Skill 不列出，但输入全名仍可执行。已连接的 MCP Server 声明提示词时，还会自动注册 `/mcp__<server>__<prompt>` 命令（描述后带 `[mcp:<server>]`），支持 `key=value` 与位置参数并在消息发送前支持 `@server:uri` 引用 MCP 资源（见 [MCP 资源与提示词](mcp.md#资源与提示词)）。
 
-本地命令不请求模型，结果只显示在界面中，不进入模型上下文；`/compact` 例外，它用一次不带工具的请求生成摘要。任务运行期间只接受 `/tasks`、`/todo`、`/goal`（查看或清除）、`/status`、`/worktree`、`/worktree list` 和 `/team`（`delete` 除外）（查看或停止子 Agent 任务、查看状态，不改变正在运行的任务所依赖的状态）；输入其他命令会提示“运行中只能排队消息和使用 /tasks、/todo、/goal、/status、/worktree list，其他命令请在完成后发送”，输入保留在框中。
+本地命令不请求模型，结果只显示在界面中，不进入模型上下文；`/compact` 例外，它用一次不带工具的请求生成摘要。任务运行期间只接受 `/tasks`、`/loop`、`/todo`、`/goal`（查看或清除）、`/status`、`/worktree`、`/worktree list`、`/team`（`delete` 除外）和 `/swarm`（不带参数或 `status`）（查看或停止任务、管理定时巡检、查看状态，不改变正在运行的任务所依赖的状态）；输入其他命令会提示“运行中只能排队消息和使用 /tasks、/todo、/goal、/status、/worktree list，其他命令请在完成后发送”，输入保留在框中。
 
 ## 目标
 
@@ -50,6 +52,23 @@
 - **状态栏**：目标进行中显示“◎ 目标”和已运行时间，暂停时显示“◎ 目标已暂停”。
 - **会话记录**：设置、清除、达成和无法达成都写入会话记录（见 [会话存档与恢复](sessions.md#记录格式)）。恢复的会话有未完成的目标时，目标以暂停状态恢复，计时和轮数从零开始，等你发送消息或输入 `/goal` 后继续。
 - `-p` 不处理斜杠命令，没有目标模式。
+
+## 定时巡检（/loop）
+
+`/loop` 用于在当前交互会话中按固定周期重复执行同一条提示词或斜杠命令（例如轮询 CI 构建、关注 PR 新评论、定期运行 `/test` 或 `/review`）。
+
+- **创建与管理语法**：
+  - 前置间隔：`/loop 5m 检查 CI 是否通过`、`/loop 30s 查看构建日志`、`/loop 2h 巡检错误告警`（支持单位 `s`/`sec`/`secs`、`m`/`min`/`mins`、`h`/`hr`/`hrs`、`d`/`day`/`days` 以及中文 `秒`、`分`、`分钟`、`小时`、`天`）；
+  - 尾部间隔：`/loop check PR comments every 5m`；
+  - 省略间隔（默认 `5m`，即 5 分钟）：`/loop 检查部署进度`；
+  - 定时调用斜杠命令或 Skill：`/loop 30m /test`、`/loop 10m /review`（禁止 `/loop /loop ...` 自递归嵌套）；
+  - 自定义次数上限：可选 `--max-runs <N>`（或 `--count <N>`，范围 `1`–`1000`，默认 `100`），例如 `/loop --max-runs 10 1m 检查端口就绪`；
+  - 查看列表：`/loop` 或 `/loop list` 显示本会话活跃与已结束的定时巡检（任务 ID、状态、`每 <间隔>`、`已运行 N/M 次`、下次触发倒计时或“等待空闲触发”、提示词首行）；
+  - 停止巡检：`/loop stop <id>` 或 `/loop stop all`（支持别名 `cancel`）停止指定或全部运行中的定时巡检。
+- **仅空闲触发与不补发（Idle-Only & No Catch-Up）**：计时器到期时，若会话正处于繁忙状态（正在生成回复、执行工具或命令、等待权限审批或 `ask_user` 回答，或 `/goal` 正在自动续跑），不会打断或抢占当前轮次，而是将任务标记为 `pending_fire`（单布尔位合并：即使繁忙期间跨越多个周期也绝不积压补发，空闲恢复后只触发**一次**）。多条定时巡检同时到期时通过内部互斥锁串行触发，前一轮完成后才从当前时刻重新计算下一轮延迟，避免慢速轮次引发零间隔连环空转。
+- **非负防惊群抖动（Jitter）**：每次睡眠在设定间隔上附加 `[0, min(10% × 间隔, 30s)]` 的均匀非负随机抖动，既错开多条定时任务的触发峰值，又保证实际间隔绝不短于用户设定的最小间隔（如 `10s` 不会提前触发）。
+- **安全上限与会话生命周期**：轮询间隔下限为 `10 秒`、上限为 `7 天`，提示词最长 `4,000` 字；单会话最多同时运行 `20` 个定时巡检（独立配额，不占用后台子 Agent 的 `agent_max_background` 槽位）；每条计划默认最多运行 `100` 次、最长有效期 `7 天`，达到任一上限后自动标记完成并记录结束原因。执行 `/clear`、`/resume` 切换会话或关闭会话时，所有运行中的定时巡检全部自动取消；`-p` 无界面模式单轮即退出，不支持 `/loop`。
+- **界面、ACP 与 `/tasks` 联动**：TUI 状态栏在存在活跃计划时显示 `定时 K`，每次触发先打印 `⏰ 定时巡检 tN（第 k 次）：…`；普通提示词以合成消息（`synthetic="loop"`，附带 `[定时任务 tN · 每 … · 第 k 次]` 头标）提交，`/` 开头的提示词直接走斜杠命令分派器。ACP 编辑器会话同样暴露 `/loop`，空闲期到期的计划安全排队并在 `session/prompt` 轮次边界内执行，绝不发送非请求的 JSON-RPC 帧。所有计划同步纳入 `/tasks`（汇总行展示 `每 <间隔> · 已运行 N/M 次`，支持 `/tasks <id>` 查看详情与 `/tasks stop <id>`、`task_stop` 停止）。
 
 ## 输入如何解析
 
@@ -81,7 +100,7 @@ Skill 命令和提示词命令（`kind` 为 `prompt`，目前没有内置的此�
 
 - 输入以 `/` 开头的单行文字时，菜单按前缀列出命令，每行是用法和描述。前缀匹配到别名时，菜单显示主命令，描述后注明“（别名 /quit）”，选中后补全为主命令。
 - Tab 补全高亮项；只有一项匹配时它默认高亮。按 Esc 收起菜单后，如果输入是某个命令唯一的前缀，Tab 仍然补全。
-- 有参数候选的命令，Tab 补全命令名后追加空格，菜单换成参数候选：`/permissions` 的档位、`/model` 的提供商名与 `<当前提供商>/<模型>`、`/mcp` 的 Server 名（有连接时）、`/memory` 的笔记名、`/skills` 的 Skill 名和 `reload`、`/hooks` 的 Hook `id` 和 `reload`、`/worktree` 的子命令和 `remove <工作树名>`。
+- 有参数候选的命令，Tab 补全命令名后追加空格，菜单换成参数候选：`/permissions` 的档位、`/model` 的提供商名与 `<当前提供商>/<模型>`、`/mcp` 的 Server 名（有连接时）、`/memory` 的笔记名、`/skills` 的 Skill 名和 `reload`、`/hooks` 的 Hook `id` 和 `reload`、`/loop` 的 `list`/`stop` 与常用间隔、`/worktree` 的子命令和 `remove <工作树名>`、`/team` 的团队与成员子命令、`/swarm` 的 `status`/`on`/`off`。
 
 ## 无界面模式
 

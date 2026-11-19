@@ -1,4 +1,5 @@
 import ast
+import difflib
 import functools
 import json
 import os
@@ -25,6 +26,16 @@ class ReadParams(Params):
     path: str
     offset: int = Field(default=1, ge=1)
     limit: int = Field(default=READ_LIMIT, ge=1, le=100000)
+    outline: bool = False
+    symbol: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> "ReadParams":
+        if self.outline and self.symbol:
+            raise ValueError("不能同时指定 outline=true 和 symbol。")
+        if self.symbol and not self.symbol.strip():
+            raise ValueError("symbol 不能为空白字符串。")
+        return self
 
 
 class WriteParams(Params):
@@ -155,13 +166,16 @@ class ReadFile(FileTool):
     name = "read_file"
     description = (
         f"读取 UTF-8 文本文件。每行格式为“行号 + Tab + 原文”；offset 从 1 开始，limit 默认 {READ_LIMIT} 行。"
-        f"超过 {LINE_LIMIT} 字符的行会截断，单页还有字节上限并会提示下一页的 offset。项目目录之外的路径需要用户确认。"
+        f"超过 {LINE_LIMIT} 字符的行会截断，单页还有字节上限并会提示下一页的 offset。"
+        "支持代码符号模式：outline=true 仅提取类/函数 AST 符号大纲与 [L起-L止] 行号范围（不计入编辑前必读记录）；"
+        "symbol 指定符号名或 Class.method 精确读取该符号的代码段（计入已读记录，可直接修改）。"
+        "项目目录之外的路径需要用户确认。"
         "也能查看图片（PNG、JPEG、GIF、WebP、BMP）：图片附在结果中，offset 和 limit 不起作用。"
     )
-    prompt_summary = "读取文本文件或查看图片，文本可按行分段查看"
+    prompt_summary = "读取文本文件或查看图片，支持按行分段、AST 大纲或按符号读取"
     prompt_guidelines = (
-        "使用 read_file 查看文本原文，优先于 shell 读取；修改或覆盖已有文件前必须先用 read_file 读取，文件被外部改动后需重新读取。",
-        "read_file 输出中 Tab 之前的行号不是文件正文，不要把行号加入编辑参数。遇到截断时根据返回提示继续读取相关范围。",
+        "使用 read_file 查看文本原文，优先于 shell 读取；修改或覆盖已有文件前必须先用 read_file 读取（outline=true 仅看结构，不解锁编辑；symbol 或常规读取均可解锁编辑），文件被外部改动后需重新读取。",
+        "探索长代码文件可先用 outline=true 浏览结构，再用 symbol 或 offset/limit 精读目标片段。read_file 输出中 Tab 之前的行号不是文件正文，不要把行号加入编辑参数。遇到截断时根据返回提示继续读取相关范围。",
     )
     params_model = ReadParams
 
@@ -175,7 +189,13 @@ class ReadFile(FileTool):
             with path.open("rb") as stream:
                 head = stream.read(32)
             if sniff(head) is not None:
+                if params.outline or params.symbol:
+                    raise ToolFailure("binary_file", "目标是图片文件，不支持 outline 或 symbol 代码符号读取。")
                 return self._image(path, stamp, accepts, store)
+            if params.outline:
+                return self._read_outline(path)
+            if params.symbol:
+                return self._read_symbol(path, stamp, params)
             selected, more, size, long_lines, total = [], False, 0, 0, 0
             with path.open("r", encoding="utf-8", newline="") as stream:
                 for number, line in enumerate(stream, 1):
@@ -218,6 +238,139 @@ class ReadFile(FileTool):
             }
 
         return await file_io(read)
+
+    def _read_outline(self, path: Path):
+        from .. import repomap
+
+        text = read_text(path)
+        total_lines = line_count(text)
+        if not repomap.is_supported_file(path):
+            suffix = path.suffix or "无扩展名"
+            return (
+                f"（文件类型 {suffix} 暂不支持 AST 符号大纲，文件共 {total_lines} 行；请使用普通 read_file 按 offset/limit 读取）",
+                {"path": str(path), "outline": True, "total_lines": total_lines, "symbols": 0, "supported": False},
+            )
+        symbols, _ = repomap.parse_file_symbols(path)
+        if not symbols:
+            return (
+                f"（未提取到 AST 符号定义，文件共 {total_lines} 行；请使用普通 read_file 按 offset/limit 读取）",
+                {"path": str(path), "outline": True, "total_lines": total_lines, "symbols": 0, "supported": True},
+            )
+        footer = f"（共 {total_lines} 行，共 {len(symbols)} 个符号；修改前请用 read_file 的 symbol 或 offset/limit 读取目标代码段）"
+        lines, shown = repomap.format_file_outline(symbols, max_bytes=READ_BUDGET - 256)
+        truncated = shown < len(symbols)
+        if truncated:
+            lines.append(f"…（其余 {len(symbols) - shown} 个符号因单页预算上限已省略）")
+        lines.append(footer)
+        return "\n".join(lines), {
+            "path": str(path),
+            "outline": True,
+            "total_lines": total_lines,
+            "symbols": len(symbols),
+            "shown_symbols": shown,
+            "truncated": truncated,
+        }
+
+    def _read_symbol(self, path: Path, stamp: tuple[int, int], params: ReadParams):
+        from .. import repomap
+
+        text = read_text(path)
+        if not repomap.is_supported_file(path):
+            suffix = path.suffix or "无扩展名"
+            raise ToolFailure(
+                "unsupported_language",
+                f"文件类型 {suffix} 暂不支持按 AST 符号读取；请使用普通 read_file 按 offset/limit 读取。",
+            )
+        symbols, _ = repomap.parse_file_symbols(path)
+        target = params.symbol.strip()
+        alt_target = target.replace("::", ".")
+
+        exact_q = [s for s in symbols if s.qualified_name == target]
+        if not exact_q and alt_target != target:
+            exact_q = [s for s in symbols if s.qualified_name == alt_target]
+
+        if exact_q:
+            start_line = min(s.start_line for s in exact_q)
+            end_line = max(s.end_line for s in exact_q)
+            matched_name = exact_q[0].qualified_name
+        else:
+            by_name = [s for s in symbols if s.name == target]
+            if len(by_name) == 1:
+                start_line = by_name[0].start_line
+                end_line = by_name[0].end_line
+                matched_name = by_name[0].qualified_name
+            elif len(by_name) > 1:
+                listed = "\n".join(
+                    f"- {s.qualified_name} [L{s.start_line}-L{s.end_line}]：{s.signature}" for s in by_name[:15]
+                )
+                example = by_name[0].qualified_name
+                raise ToolFailure(
+                    "ambiguous_symbol",
+                    f"符号 {target!r} 在文件中有 {len(by_name)} 处同名定义，请指定完整限定名（例如 symbol={example!r}）：\n{listed}",
+                    candidates=[s.qualified_name for s in by_name],
+                )
+            else:
+                pool = list(dict.fromkeys([*(s.qualified_name for s in symbols), *(s.name for s in symbols)]))
+                close = difflib.get_close_matches(target, pool, n=5, cutoff=0.4)
+                for cand in pool:
+                    if len(close) >= 5:
+                        break
+                    if target.lower() in cand.lower() and cand not in close:
+                        close.append(cand)
+                if close:
+                    hint = f"相近符号：{', '.join(close)}。"
+                elif symbols:
+                    sample = ", ".join(dict.fromkeys(s.qualified_name for s in symbols[:8]))
+                    hint = f"文件中的可用符号包括：{sample}。"
+                else:
+                    hint = "该文件中未提取到 AST 符号定义，请使用普通 read_file 读取。"
+                raise ToolFailure(
+                    "symbol_not_found", f"在 {self.display(path)} 中未找到符号 {target!r}。{hint}", suggestions=close
+                )
+
+        raw_lines = text.splitlines()
+        total = len(raw_lines)
+        slice_start = max(start_line, params.offset) if "offset" in params.model_fields_set else start_line
+        slice_end = min(end_line, total)
+        selected: list[str] = []
+        more = False
+        size = 0
+        long_lines = 0
+        for number in range(slice_start, slice_end + 1):
+            if len(selected) >= params.limit:
+                more = True
+                break
+            line_text = raw_lines[number - 1]
+            if len(line_text) > LINE_LIMIT:
+                line_text = line_text[:LINE_LIMIT] + "…（本行过长，已截断）"
+                long_lines += 1
+            displayed = f"{number:>6}\t{line_text}"
+            encoded = len(displayed.encode("utf-8")) + 1
+            if size + encoded > READ_BUDGET:
+                more = True
+                break
+            selected.append(displayed)
+            size += encoded
+
+        self.state.record(path, stamp)
+        next_offset = slice_start + len(selected)
+        if not selected:
+            output = f"（offset={slice_start} 超出符号 {matched_name} 的末尾第 {end_line} 行）"
+        else:
+            output = "\n".join(selected)
+            if more:
+                output += f"\n（符号 {matched_name} 位于第 {start_line}–{end_line} 行，还有内容，请从 offset={next_offset} 继续读取）"
+        return output, {
+            "path": str(path),
+            "symbol": matched_name,
+            "start_line": start_line,
+            "end_line": end_line,
+            "lines": len(selected),
+            "total_lines": total,
+            "truncated": more,
+            "long_lines": long_lines,
+            "next_offset": next_offset if more else None,
+        }
 
     def _image(self, path: Path, stamp, accepts: bool, store):
         if not accepts:

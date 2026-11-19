@@ -6,6 +6,7 @@ from .base import ToolRegistry
 from .files import EditFile, FileState, ReadFile, WriteFile
 from .plan import ExitPlanMode
 from .process import ExecuteCommand
+from .repomap import RepoMap
 from .search import Glob, Grep
 from .shell import Shell
 from .todo import TodoWrite
@@ -39,6 +40,7 @@ def create_default_registry(
         ExecuteCommand(root, shell),
         Glob(root),
         Grep(root),
+        RepoMap(root, permissions=policy),
         ExitPlanMode(root),
         WebFetch(root),
     )

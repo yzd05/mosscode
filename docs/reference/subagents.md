@@ -70,7 +70,7 @@ max_turns: 40
 | `plan` | 只读的方案规划：探索后给出分步实现方案 | `plan` | 30 |
 | `general` | 通用，工具与主对话相同，用于过程不必留在主对话中的多步任务 | 继承会话 | 与主对话相同 |
 
-在项目或用户目录中写同名文件可以替换它们。`explore` 和 `plan` 以 plan 档位运行，也可以用 `web_fetch` 查资料，每个新的域名照常确认；在后台运行时没有被规则放行的读取返回 `approval_required`。
+在项目或用户目录中写同名文件可以替换它们。`explore` 和 `plan` 以 plan 档位运行，也可以用 `web_fetch` 查资料，每个新的域名照常确认；在 `-p` 无界面模式下后台运行时没有被规则放行的读取返回 `approval_required`，在 TUI 和 ACP 交互会话中照常弹出审批。
 
 ## agent 工具
 
@@ -164,8 +164,8 @@ max_turns: 40
 
 项目级定义随仓库而来，所以它只能收紧、不能放宽主对话的档位；用户级定义是你自己写的，可以放宽。
 
-- 前台子 Agent 的审批照常弹出，面板标题注明来源，例如“需要授权 · 写入文件 · 子 Agent general · 批量改名”。
-- 后台子 Agent 不能请求审批：需要审批的调用直接返回 `approval_required`，模型会收到“后台子 Agent 不能请求审批，可以添加允许规则或在前台运行”。前台子 Agent 正在等审批时转入后台，这次审批按拒绝处理。需要后台写文件时，可以在 `permissions.yaml` 中添加对应的 allow 规则。
+- 在交互会话（终端 TUI 与 ACP 编辑器集成）中，前台子 Agent、后台子 Agent 与 `Fork` 的审批都会冒泡到主界面审批队列（或通过 ACP `session/request_permission` 请求确认），面板标题注明来源，例如“需要授权 · 写入文件 · 子 Agent t2（fork · 补充单测）”。前台子 Agent 等待审批期间按 `Ctrl+B` 或超时自动转入后台时，未回答的审批卡片继续保留；任务完成或被 `/tasks stop`、`task_stop` 停止时，未决审批卡片自动撤下。审批中授予的“本会话允许”仅记录在该子 Agent 自己的 `PolicyView` 中，不会泄漏回主对话。
+- 在 `-p` 无界面模式（或未连接交互审批界面的运行）中，后台子 Agent 不能请求审批：需要审批的调用直接返回 `approval_required`，模型会收到“后台子 Agent 不能请求审批，可以添加允许规则或在前台运行”。需要无界面后台写文件时，可以在 `permissions.yaml` 中添加对应的 allow 规则。
 - 拒绝规则、计划模式、受保护文件、危险命令检查和 `pre_tool_use` Hook 对子 Agent 一样生效。
 - 子 Agent 不能使用 `agent`、`ask_user`、`load_skill`、`memory`、`exit_plan_mode`、`task_output`、`task_stop`：定义式的工具列表中没有它们，Fork 调用时返回 `subagent_forbidden`。
 

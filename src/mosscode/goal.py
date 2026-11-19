@@ -90,6 +90,8 @@ def _render(message: Message, shown_results: set[int]) -> str:
     if message.role == "user":
         if message.synthetic == GOAL:
             return "[目标续跑]\n" + message.text
+        if message.synthetic == "loop":
+            return "[定时巡检]\n" + _clip(message.text, RESULT_CHARS)
         if message.synthetic == CONTINUE:
             return "[回复达到输出上限，自动请模型接着写]"
         if message.synthetic == "compact":

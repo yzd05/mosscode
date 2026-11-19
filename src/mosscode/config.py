@@ -178,7 +178,7 @@ class Settings:
     goal_provider: str | None = None  # /goal's evaluator; None uses memory_provider, then the current provider.
     worktree_links: tuple[str, ...] = ()  # Paths relative to the repository linked into each worktree.
     worktree_stale_hours: float = 24.0  # Unused sub-agent worktrees older than this go; 0 never.
-    team_max_members: int = 4  # Members of one team at most (1–8).
+    team_max_members: int = 6  # Active members of one team at most (1–16).
     teammate_mode: str = "auto"  # auto / in-process / windows-terminal / tmux.
     coordinator_mode: bool = False  # Also needs MOSSCODE_COORDINATOR_MODE.
     web_search: WebSearchConfig | None = None  # None: web_search is not offered.
@@ -700,8 +700,8 @@ def load_settings(path: str | Path, home: Path | None = None) -> Settings:
     if type(stale) not in {int, float} or not 0 <= stale <= 8760:
         raise ConfigError("worktree_stale_hours 需为 0–8760 之间的小时数（0 表示不自动清理）。")
     members = raw.get("team_max_members", Settings.team_max_members)
-    if type(members) is not int or not 1 <= members <= 8:
-        raise ConfigError("team_max_members 需为 1–8 之间的整数。")
+    if type(members) is not int or not 1 <= members <= 16:
+        raise ConfigError("team_max_members 需为 1–16 之间的整数。")
     teammate_mode = raw.get("teammate_mode", Settings.teammate_mode)
     if teammate_mode not in TEAMMATE_MODES:
         raise ConfigError("teammate_mode 需为 " + "、".join(TEAMMATE_MODES) + " 之一。")

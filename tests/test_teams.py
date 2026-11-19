@@ -69,8 +69,11 @@ def test_invalid_names(name):
 
 
 def test_member_names_lead_and_star_are_reserved(tmp_path):
-    assert validate_member_name("lead") and validate_member_name("*")
+    for reserved in ("lead", "*", "all", "watchdog"):
+        assert validate_member_name(reserved)
     assert validate_team_name("lead") is None
+    assert validate_team_name("all") is None
+    assert validate_team_name("watchdog") is None
     with pytest.raises(TeamError) as caught:
         TeamStore.at(tmp_path, "Bad")
     assert caught.value.code == "invalid_name"
@@ -477,7 +480,9 @@ async def test_lead_tools_from_the_start_and_never_in_print_mode(tmp_path):
 
 
 async def test_subagents_never_see_team_tools_and_forks_are_refused(tmp_path):
-    assert TEAM_TOOLS <= GLOBAL_BAN
+    import mosscode.agents.runtime as agents_runtime
+
+    assert TEAM_TOOLS <= agents_runtime.GLOBAL_BAN and GLOBAL_BAN <= agents_runtime.GLOBAL_BAN
     seen = []
 
     def forked(messages):
@@ -539,8 +544,16 @@ async def test_ac14_ac15_spawn_in_a_worktree(tmp_path):
     assert update.startswith("<team-update>") and "alice 空闲" in update and woken
     messages, tools = script.seen["alice"][0]
     assert "实现登录" in messages[0].text and "<incoming-messages>" in messages[0].text
-    # Messages and tasks, nothing that creates or merges.
-    assert {"send_message", "team_task_create", "team_task_get", "team_task_list", "team_task_update"} <= names(tools)
+    # Blackboard, messages and tasks, nothing that creates or merges.
+    assert {
+        "post_board",
+        "read_board",
+        "send_message",
+        "team_task_create",
+        "team_task_get",
+        "team_task_list",
+        "team_task_update",
+    } <= names(tools)
     assert not {"agent", "team_spawn", "team_merge", "team_create", "team_delete"} & names(tools)
     await until(lambda: conv.teams.runners["alice"].status == "idle")
     await conv.close()
@@ -574,7 +587,7 @@ async def test_messages_during_a_turn_arrive_together(tmp_path):
     gate.set()
     await until(lambda: len(script.seen["alice"]) == 2)
     second = script.seen["alice"][1][0][-1].text
-    assert "第二件事" in second and "第三件事" in second and second.count("[来自 lead") == 2
+    assert "第二件事" in second and "第三件事" in second and second.count("[黑板 #") == 2
     await conv.close()
 
 
@@ -587,10 +600,17 @@ def test_broadcast_reaches_everyone_but_the_sender(tmp_path):
         )
     )
     assert TeamAccess(store, "alice").send("*", "text", "大家好", "问候") == ["bob", "carol"]
-    assert [m.body for m in store.mailbox.peek("bob")] == ["大家好"] == [m.body for m in store.mailbox.peek("carol")]
-    assert store.mailbox.peek("alice") == [] and store.mailbox.peek(LEAD) == []
+    assert store.mailbox.peek("bob") == [] and store.mailbox.peek("carol") == []
+    assert [p.body for p in store.blackboard.unread_for("bob", 0)[0]] == ["大家好"]
+    assert [p.body for p in store.blackboard.unread_for("carol", 0)[0]] == ["大家好"]
+    assert store.blackboard.unread_for("alice", 0)[0] == [] and store.blackboard.unread_for(LEAD, 0)[0] == []
     assert TeamAccess(store, LEAD).send("*", "text", "开工", "开工") == ["alice", "bob", "carol"]
-    assert store.mailbox.peek(LEAD) == []
+    assert [p.body for p in store.blackboard.unread_for("alice", 0)[0]] == ["开工"]
+    for invalid_summary in ("", "   ", "x" * 81):
+        with pytest.raises(TeamError) as bad_text:
+            TeamAccess(store, "alice").send("bob", "text", "正文", invalid_summary)
+        assert bad_text.value.code == "invalid_message"
+    assert store.blackboard.unread_for(LEAD, 0)[0] == []
     with pytest.raises(TeamError) as error:
         TeamAccess(store, LEAD).send("*", "shutdown_request", reason="")
     assert error.value.code == "invalid_message"
@@ -602,7 +622,11 @@ def test_broadcast_reaches_everyone_but_the_sender(tmp_path):
 async def test_fifth_member(tmp_path):
     provider, conv = team_conversation(tmp_path, Script())
     await conv.teams.create("t")
-    conv.teams.current.modify(lambda team: team.members.extend(Member(f"m{i}", "general") for i in range(4)))
+    conv.teams.current.modify(
+        lambda team: team.members.extend(
+            Member(f"m{i}", "general", status="idle") for i in range(conv.teams.max_members)
+        )
+    )
     with pytest.raises(TeamError) as error:
         await conv.teams.spawn("e", "general", "做事", isolation="none")
     assert error.value.code == "too_many_members"
@@ -988,7 +1012,11 @@ async def test_lead_guide_only_in_the_lead_prompt(tmp_path):
     provider, conv = team_conversation(tmp_path, script)
     await drain(conv.reply("你好"))
     lead_system = provider.requests[0][1].stable
-    assert "## Agent 团队" in lead_system and "team_merge" in lead_system and "至多 4 个" in lead_system
+    assert (
+        "## Agent 团队" in lead_system
+        and "team_merge" in lead_system
+        and f"至多 {conv.teams.max_members} 个" in lead_system
+    )
     await conv.teams.create("t")
     await conv.teams.spawn("alice", "general", "做事", isolation="none")
     await until(lambda: "alice" in script.seen)
@@ -1179,9 +1207,11 @@ async def test_corrupt_transcript_keeps_the_message(tmp_path):
     with pytest.raises(TeamError) as error:
         await conv2.teams.send("alice", "text", "还在吗", "问")
     assert (
-        error.value.code == "revive_failed" and "已损坏" in error.value.message and "已写入邮箱" in error.value.message
+        error.value.code == "revive_failed" and "已损坏" in error.value.message and "已写入黑板" in error.value.message
     )
-    assert [m.body for m in store.mailbox.peek("alice") if not m.read] == ["还在吗"]
+    cursor = store.load().member("alice").board_cursor
+    assert [p.body for p in store.blackboard.unread_for("alice", cursor)[0]] == ["还在吗"]
+    assert [m for m in store.mailbox.peek("alice") if m.type == "text"] == []
     assert "alice" not in conv2.teams.runners and store.load().member("alice").status == "stopped"
     await conv2.close()
 

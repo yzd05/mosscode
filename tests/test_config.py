@@ -248,3 +248,23 @@ def test_run_budget_accepts_only_nonnegative_request_and_token_limits(tmp_path, 
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ConfigError, match="run_budget"):
         load_settings(path)
+
+
+def test_team_max_members_defaults_to_six_and_validates_one_to_sixteen(tmp_path):
+    default_settings = load_settings(write_config(tmp_path))
+    assert default_settings.team_max_members == 6
+
+    for valid in (1, 6, 12, 16):
+        path = write_config(tmp_path)
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["team_max_members"] = valid
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        assert load_settings(path).team_max_members == valid
+
+    for invalid in (0, 17, -1, True, "6"):
+        path = write_config(tmp_path)
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["team_max_members"] = invalid
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        with pytest.raises(ConfigError, match="team_max_members"):
+            load_settings(path)

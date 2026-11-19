@@ -171,6 +171,7 @@ async def test_plan_is_approved_in_tui_then_writes_in_same_task(tmp_path, approv
             "read_file",
             "glob",
             "grep",
+            "repo_map",
             "execute_command",
             "exit_plan_mode",
             "web_fetch",
@@ -185,7 +186,7 @@ async def test_plan_is_approved_in_tui_then_writes_in_same_task(tmp_path, approv
             assert [r.code for r in results] == [None, None]
             assert (tmp_path / "a").read_text() == "planned"
             assert reg.permissions.mode == "acceptEdits" and conv.mode == "normal"
-            assert len(provider.requests[1][2]) == 10
+            assert len(provider.requests[1][2]) == 11
         else:
             assert results[0].code == "permission_denied" and not (tmp_path / "a").exists()
             assert conv.mode == "plan" and reg.permissions.mode == "plan"

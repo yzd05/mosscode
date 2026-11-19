@@ -972,12 +972,15 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
         "execute_command": shell_name(shell),
         "glob": "Glob",
         "grep": "Grep",
+        "repo_map": "RepoMap",
         "exit_plan_mode": "Plan",
         "todo_write": "Todo",
         "ask_user": "Ask",
         "agent": "Agent",
         "task_output": "TaskOutput",
         "task_stop": "TaskStop",
+        "post_board": "PostBoard",
+        "read_board": "ReadBoard",
     }
     arguments: dict = {}
     try:
@@ -987,7 +990,8 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
         if call.name.startswith(("mcp__", "skill__")):
             detail = json.dumps(args, ensure_ascii=False, sort_keys=True)
         elif call.name == "memory":
-            detail = f"{args.get('action', '')} {args.get('name', '')}".strip()
+            target = args.get("name") or args.get("query") or args.get("scope") or ""
+            detail = f"{args.get('action', '')} {target}".strip()
         elif call.name == "agent":
             detail = agent_detail(args, args.get("isolation") == "worktree")
         elif call.name in {"task_output", "task_stop"}:
@@ -1001,6 +1005,37 @@ def describe_call(call: ToolCall, shell: str | None = None) -> tuple[str, str, d
             todos = todos if isinstance(todos, list) else []
             done = sum(isinstance(item, dict) and item.get("status") == "completed" for item in todos)
             detail = f"已完成 {done}/{len(todos)}" if todos else "清空清单"
+        elif call.name == "post_board":
+            summary = args.get("summary")
+            body = str(args.get("body", ""))
+            detail = summary or next((line.strip() for line in body.splitlines() if line.strip()), "")
+        elif call.name == "read_board":
+            seqs = args.get("seqs")
+            if isinstance(seqs, list) and seqs:
+                detail = " ".join(f"#{item}" for item in seqs[:8])
+            elif args.get("since") is not None:
+                detail = f"since #{args['since']}"
+            else:
+                detail = f"最近 {args.get('limit', 20)} 条"
+        elif call.name == "repo_map":
+            parts = [str(args.get("path") or ".")]
+            query = str(args.get("query") or "").strip()
+            if query:
+                parts.append(query)
+            focus = args.get("focus_files")
+            if isinstance(focus, list) and focus:
+                parts.append(f"聚焦 {len(focus)} 个文件")
+            detail = " · ".join(parts)
+        elif call.name == "read_file":
+            path_val = str(args.get("path") or "")
+            symbol = args.get("symbol")
+            if args.get("outline") is True:
+                detail = f"读取大纲 {path_val}".strip()
+            elif isinstance(symbol, str) and symbol.strip():
+                sym = symbol.strip()
+                detail = f"读取符号 {path_val} · {sym}" if path_val else f"读取符号 {sym}"
+            else:
+                detail = path_val
         else:
             detail = (
                 args.get("pattern", "")
@@ -1104,6 +1139,9 @@ def resumed_rows(history, shell: str | None = None, limit: int = RESUMED_MESSAGE
             rows.append(shell_heading(ran(message)))
         elif message.synthetic == GOAL:
             rows.append(Text("◎ 继续目标", style=PARAMETER_COLOR))
+        elif message.synthetic == "loop":
+            first = next((line.strip() for line in message.text.splitlines() if line.strip()), "定时巡检")
+            rows.append(Text(f"⏰ {first}", style=PARAMETER_COLOR))
         elif message.synthetic == CONTINUE:
             rows.append(Text("↻ 回复达到输出上限，自动续写", style=PARAMETER_COLOR))
         elif message.role == "user":
@@ -1138,11 +1176,22 @@ def rewound_image(ref: ImageRef) -> ProcessedImage:
 def memory_line(details: dict) -> Text:
     """What the memory tool did, in place of the usual result summary."""
     text = Text("✎ ", style=TOOL_SUCCESS_COLOR)
+    action = details.get("action", "save")
     name = details.get("name", "")
-    if details.get("action") == "delete":
+    scope_label = SCOPE_LABELS.get(details.get("scope"), "")
+    if action == "delete":
         text.append(f"已删除笔记：{name}")
+    elif action == "read":
+        text.append(f"已读取笔记：{name}" + (f"（{scope_label}）" if scope_label else ""))
+    elif action == "search":
+        query = details.get("query") or name
+        count = details.get("count", 0)
+        text.append(f"检索记忆：{query}（{count} 条匹配）")
+    elif action == "list":
+        count = details.get("count", 0)
+        text.append(f"列出记忆笔记：共 {count} 条" + (f"（{scope_label}）" if scope_label else ""))
     else:
-        text.append(f"已记住：{name}（{SCOPE_LABELS.get(details.get('scope'), '')}）")
+        text.append(f"已记住：{name}（{scope_label}）")
     return text
 
 

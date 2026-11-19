@@ -1,7 +1,7 @@
-"""Tools-only MCP sessions, each with a task owning its SDK context lifetime.
+"""MCP sessions for tools, resources and prompts, each owning its SDK context lifetime.
 
-Discovery can run in the background: each server registers its tools as soon as
-it is ready, so a slow server never holds up the prompt or the other servers.
+Discovery can run in the background: each server registers its tools, resources and
+prompts as soon as it is ready, so a slow server never holds up the prompt or the other servers.
 """
 
 import asyncio
@@ -22,16 +22,59 @@ import anyio
 import httpx
 from jsonschema import SchemaError, validators
 from mcp import ClientSession, StdioServerParameters, types
-from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import StreamableHTTPTransport
 from mcp.shared.exceptions import McpError
 from mcp.shared.message import SessionMessage
+from pydantic import AnyUrl
 from referencing import Registry
 
 from .images import ImageError, image_ref, load_image
 from .mcp_config import MCPSettings, ServerConfig
+from .mcp_stdio import adaptive_stdio_client
 from .messages import ToolDefinition
+from .permissions import normalize_mcp_uri
 from .tools.base import IMAGES, Tool, ToolFailure, image_context
+
+MCP_TEXT_LIMIT = 65536
+RESOURCE_TRUNCATION_NOTE = "\n…（MCP 资源内容超过 64 KB，已截断）"
+PROMPT_TRUNCATION_NOTE = "\n…（MCP 提示词内容超过 64 KB，已截断）"
+
+
+@dataclass(frozen=True)
+class MCPResourceInfo:
+    server: str
+    uri: str
+    name: str
+    title: str = ""
+    description: str = ""
+    mime_type: str = ""
+    size: int | None = None
+
+
+@dataclass(frozen=True)
+class MCPResourceTemplateInfo:
+    server: str
+    uri_template: str
+    name: str
+    title: str = ""
+    description: str = ""
+    mime_type: str = ""
+
+
+@dataclass(frozen=True)
+class MCPPromptArg:
+    name: str
+    description: str = ""
+    required: bool = False
+
+
+@dataclass(frozen=True)
+class MCPPromptInfo:
+    server: str
+    name: str
+    command_name: str  # Slash command name without leading '/', matching r"[a-z][a-z0-9_-]*"
+    description: str = ""
+    arguments: tuple[MCPPromptArg, ...] = ()
 
 
 def tool_name(server: str, tool: str) -> str:
@@ -41,6 +84,95 @@ def tool_name(server: str, tool: str) -> str:
     digest = hashlib.sha256(json.dumps([server, tool]).encode()).hexdigest()[:12]
     clean = lambda value: re.sub(r"[^A-Za-z0-9_]", "_", value)
     return f"mcp__{clean(server)[:16]}__{clean(tool)[:22]}_{digest}"
+
+
+def prompt_command_name(server: str, prompt: str) -> str:
+    """Deterministic lowercase command name matching commands.NAME (r'[a-z][a-z0-9_-]*', <= 64 chars)."""
+    s, p = server.lower(), prompt.lower()
+    name = f"mcp__{s}__{p}"
+    if (
+        len(name) <= 64
+        and re.fullmatch(r"[a-z0-9_-]+", s)
+        and re.fullmatch(r"[a-z0-9_-]+", p)
+        and "__" not in s
+        and "__" not in p
+        and (server, prompt) == (s, p)
+    ):
+        return name
+    digest = hashlib.sha256(json.dumps([server, prompt]).encode()).hexdigest()[:12]
+    clean = lambda value: re.sub(r"[^a-z0-9_-]", "_", value)
+    return f"mcp__{clean(s)[:16]}__{clean(p)[:22]}_{digest}"
+
+
+def _decode_images(items: list[tuple[str, str]], accepts: bool, store) -> tuple[tuple, list[str]]:
+    """Decode (alt, base64_data) pairs into ImageRefs and one status line per image."""
+    refs, notes = [], []
+    for alt, data in items:
+        if not accepts:
+            notes.append(f"{alt}（当前模型不支持图片，已省略）")
+            continue
+        try:
+            image = load_image(base64.b64decode(data, validate=True))
+        except ImageError as exc:
+            notes.append(f"{alt}（{exc}）")
+            continue
+        except ValueError:
+            notes.append(f"{alt}（图片数据不是有效的 base64。）")
+            continue
+        refs.append(image_ref(image, alt, store))
+        notes.append(f"{alt} · 图片 · {image.describe()}")
+    return tuple(refs), notes
+
+
+def _safe_b64_len(blob: str) -> int:
+    try:
+        return len(base64.b64decode(blob, validate=True))
+    except ValueError:
+        try:
+            padded = blob.strip()
+            padded += "=" * (-len(padded) % 4)
+            return len(base64.b64decode(padded))
+        except Exception:
+            return 0
+
+
+class _TextCollector:
+    def __init__(self, limit: int, note: str):
+        self.limit = limit
+        self.note = note
+        self.parts: list[str] = []
+        self.used = 0
+        self.truncated = False
+
+    def add(self, text: str, *, sep: str = "\n") -> None:
+        if self.truncated:
+            return
+        prefix = sep if self.parts else ""
+        encoded_prefix = prefix.encode("utf-8")
+        encoded_text = text.encode("utf-8")
+        if self.used + len(encoded_prefix) + len(encoded_text) <= self.limit:
+            if self.parts and sep != "\n":
+                self.parts[-1] = self.parts[-1] + sep + text
+            else:
+                self.parts.append(text)
+            self.used += len(encoded_prefix) + len(encoded_text)
+            return
+        room = self.limit - self.used - len(encoded_prefix)
+        if room > 0:
+            clipped = encoded_text[:room].decode("utf-8", errors="ignore")
+            if clipped:
+                if self.parts and sep != "\n":
+                    self.parts[-1] = self.parts[-1] + sep + clipped
+                else:
+                    self.parts.append(clipped)
+        self.used = self.limit
+        self.truncated = True
+
+    def finish(self, empty: str = "") -> str:
+        body = "\n".join(self.parts)
+        if self.truncated:
+            return body + self.note if body else self.note.lstrip("\n")
+        return body or empty
 
 
 class ToolsHTTPTransport(StreamableHTTPTransport):
@@ -225,23 +357,29 @@ class MCPTool(Tool):
 
     def _images(self, pictures: list[str], accepts: bool, store) -> tuple[tuple, list[str]]:
         """The images to attach and a line for each: its size, or why it was left out."""
-        refs, notes = [], []
-        for number, data in enumerate(pictures, 1):
-            alt = f"{self.server_name}/{self.remote_name} 的图片 {number}"
-            if not accepts:
-                notes.append(f"{alt}（当前模型不支持图片，已省略）")
-                continue
-            try:
-                image = load_image(base64.b64decode(data, validate=True))
-            except ImageError as exc:
-                notes.append(f"{alt}（{exc}）")
-                continue
-            except ValueError:
-                notes.append(f"{alt}（图片数据不是有效的 base64。）")
-                continue
-            refs.append(image_ref(image, alt, store))
-            notes.append(f"{alt} · 图片 · {image.describe()}")
-        return tuple(refs), notes
+        items = [(f"{self.server_name}/{self.remote_name} 的图片 {n}", data) for n, data in enumerate(pictures, 1)]
+        return _decode_images(items, accepts, store)
+
+
+async def _paginate(fetch, attr: str, label: str, *, tolerate_missing: bool = False) -> list:
+    discovered, cursor, seen = [], None, set()
+    for _ in range(100):
+        try:
+            page = await fetch(cursor=cursor)
+        except McpError as exc:
+            if tolerate_missing and exc.error.code == types.METHOD_NOT_FOUND:
+                return []
+            raise
+        discovered.extend(getattr(page, attr))
+        cursor = page.nextCursor
+        if cursor is None:
+            break
+        if cursor in seen:
+            raise ValueError("重复分页游标。")
+        seen.add(cursor)
+    else:
+        raise ValueError(f"{label}分页过多。")
+    return discovered
 
 
 class ServerConnection:
@@ -254,6 +392,10 @@ class ServerConnection:
         self.ready = None
         self.state = "new"
         self.error = ""  # Safe reason shown by /mcp.
+        self.tools: tuple = ()
+        self.resources: tuple[MCPResourceInfo, ...] = ()
+        self.resource_templates: tuple[MCPResourceTemplateInfo, ...] = ()
+        self.prompts: tuple[MCPPromptInfo, ...] = ()
 
     async def start(self):
         if self.stop.is_set():
@@ -276,7 +418,7 @@ class ServerConnection:
                 if self.config.type == "stdio":
                     errlog = stack.enter_context(open(os.devnull, "w"))
                     streams = await stack.enter_async_context(
-                        stdio_client(
+                        adaptive_stdio_client(
                             StdioServerParameters(
                                 command=self.config.command,
                                 args=list(self.config.args),
@@ -302,22 +444,79 @@ class ServerConnection:
                         *streams, read_timeout_seconds=timedelta(seconds=max(self.config.timeout, self.startup_timeout))
                     )
                 )
-                await session.initialize()
-                discovered, cursor, seen = [], None, set()
-                for _ in range(100):
-                    page = await session.list_tools(cursor=cursor)
-                    discovered.extend(page.tools)
-                    cursor = page.nextCursor
-                    if cursor is None:
-                        break
-                    if cursor in seen:
-                        raise ValueError("重复分页游标。")
-                    seen.add(cursor)
-                else:
-                    raise ValueError("工具列表分页过多。")
+                init = await session.initialize()
+                caps = getattr(init, "capabilities", None)
+                has_tools_cap = caps is not None and getattr(caps, "tools", None) is not None
+                discovered = await _paginate(
+                    session.list_tools, "tools", "工具列表", tolerate_missing=not has_tools_cap
+                )
                 tools = tuple(MCPTool(self.root, self, item) for item in discovered)
                 if len({t.name for t in tools}) != len(tools):
                     raise ValueError("重复工具名。")
+
+                resources: tuple[MCPResourceInfo, ...] = ()
+                resource_templates: tuple[MCPResourceTemplateInfo, ...] = ()
+                if caps is not None and getattr(caps, "resources", None) is not None:
+                    raw_resources = await _paginate(
+                        session.list_resources, "resources", "资源列表", tolerate_missing=True
+                    )
+                    resources = tuple(
+                        MCPResourceInfo(
+                            server=self.config.name,
+                            uri=str(item.uri),
+                            name=item.name or "",
+                            title=getattr(item, "title", None) or "",
+                            description=item.description or "",
+                            mime_type=getattr(item, "mimeType", None) or "",
+                            size=getattr(item, "size", None),
+                        )
+                        for item in raw_resources
+                    )
+                    raw_templates = await _paginate(
+                        session.list_resource_templates,
+                        "resourceTemplates",
+                        "资源模板列表",
+                        tolerate_missing=True,
+                    )
+                    resource_templates = tuple(
+                        MCPResourceTemplateInfo(
+                            server=self.config.name,
+                            uri_template=str(item.uriTemplate),
+                            name=item.name or "",
+                            title=getattr(item, "title", None) or "",
+                            description=item.description or "",
+                            mime_type=getattr(item, "mimeType", None) or "",
+                        )
+                        for item in raw_templates
+                    )
+
+                prompts: tuple[MCPPromptInfo, ...] = ()
+                if caps is not None and getattr(caps, "prompts", None) is not None:
+                    raw_prompts = await _paginate(session.list_prompts, "prompts", "提示词列表", tolerate_missing=True)
+                    prompts = tuple(
+                        MCPPromptInfo(
+                            server=self.config.name,
+                            name=item.name,
+                            command_name=prompt_command_name(self.config.name, item.name),
+                            description=item.description or getattr(item, "title", None) or "",
+                            arguments=tuple(
+                                MCPPromptArg(
+                                    name=arg.name,
+                                    description=arg.description or "",
+                                    required=bool(arg.required),
+                                )
+                                for arg in (item.arguments or ())
+                            ),
+                        )
+                        for item in raw_prompts
+                    )
+                    if len({p.command_name for p in prompts}) != len(prompts):
+                        raise ValueError("重复提示词名。")
+
+                self.tools = tools
+                self.resources = resources
+                self.resource_templates = resource_templates
+                self.prompts = prompts
                 self.session, self.state = session, "ready"
                 self.ready.set_result(tools)
                 await self.stop.wait()
@@ -361,6 +560,69 @@ class ServerConnection:
             self.stop.set()
             raise ToolFailure("mcp_disconnected", "MCP 连接中断或响应不合法；可能已有外部效果，未自动重试。") from None
 
+    async def _send_read_only(self, request, result_type, label: str):
+        if self.state != "ready" or self.session is None:
+            raise ToolFailure("mcp_unavailable", "MCP Server 已不可用，当前不自动重连。", executed=False)
+        try:
+            return await self.session.send_request(
+                request,
+                result_type,
+                request_read_timeout_seconds=timedelta(seconds=self.config.timeout),
+            )
+        except asyncio.CancelledError:
+            self.stop.set()
+            self.state = "closed"
+            raise
+        except McpError as exc:
+            if exc.error.code == types.CONNECTION_CLOSED:
+                self.state = "failed"
+                self.stop.set()
+                raise ToolFailure("mcp_disconnected", f"{label}时 MCP 连接中断。") from None
+            if exc.error.code == 408:
+                self.stop.set()
+                self.state = "closed"
+                raise ToolFailure("timeout", f"{label}等待结果超时。") from None
+            if exc.error.code == -32002:
+                raise ToolFailure(
+                    "mcp_protocol_error", f"{label}失败：目标资源不存在（-32002）。", rpc_code=exc.error.code
+                ) from None
+            raise ToolFailure(
+                "mcp_protocol_error",
+                f"{label}失败：MCP Server 返回协议错误（{exc.error.code}）。",
+                rpc_code=exc.error.code,
+            ) from None
+        except Exception:
+            self.state = "failed"
+            self.stop.set()
+            raise ToolFailure("mcp_disconnected", f"{label}时 MCP 连接中断或响应不合法。") from None
+
+    async def read_resource(self, uri: str):
+        if self.state != "ready" or self.session is None:
+            raise ToolFailure("mcp_unavailable", "MCP Server 已不可用，当前不自动重连。", executed=False)
+        try:
+            canonical = normalize_mcp_uri(uri)
+            params = types.ReadResourceRequestParams(uri=AnyUrl(canonical))
+        except Exception:
+            raise ToolFailure("invalid_arguments", "MCP 资源 URI 格式不合法。", executed=False) from None
+        return await self._send_read_only(
+            types.ClientRequest(types.ReadResourceRequest(params=params)),
+            types.ReadResourceResult,
+            "读取 MCP 资源",
+        )
+
+    async def get_prompt(self, name: str, arguments: dict[str, str] | None = None):
+        if self.state != "ready" or self.session is None:
+            raise ToolFailure("mcp_unavailable", "MCP Server 已不可用，当前不自动重连。", executed=False)
+        try:
+            params = types.GetPromptRequestParams(name=name, arguments=arguments)
+        except Exception:
+            raise ToolFailure("invalid_arguments", "MCP 提示词参数不合法。", executed=False) from None
+        return await self._send_read_only(
+            types.ClientRequest(types.GetPromptRequest(params=params)),
+            types.GetPromptResult,
+            "获取 MCP 提示词",
+        )
+
     async def close(self):
         self.stop.set()
         if self.task is not None:
@@ -380,10 +642,22 @@ class ServerStatus:
     state: str  # connecting / ready / failed / skipped / closed
     detail: str = ""
     tools: tuple = ()  # MCPTool objects once ready.
+    resources: tuple[MCPResourceInfo, ...] = ()
+    resource_templates: tuple[MCPResourceTemplateInfo, ...] = ()
+    prompts: tuple[MCPPromptInfo, ...] = ()
+
+    def _extra_counts(self) -> str:
+        parts = []
+        total_res = len(self.resources) + len(self.resource_templates)
+        if total_res:
+            parts.append(f" · {total_res} 个资源")
+        if self.prompts:
+            parts.append(f" · {len(self.prompts)} 个提示词")
+        return "".join(parts)
 
     def describe(self) -> str:
         if self.state == "ready":
-            return f"已连接 · {len(self.tools)} 个工具"
+            return f"已连接 · {len(self.tools)} 个工具{self._extra_counts()}"
         return {
             "new": "未启动",
             "connecting": "连接中…",
@@ -394,7 +668,7 @@ class ServerStatus:
 
     def notice(self) -> str:
         if self.state == "ready":
-            return f"MCP {self.name} 已连接 · 注册 {len(self.tools)} 个工具。"
+            return f"MCP {self.name} 已连接 · 注册 {len(self.tools)} 个工具{self._extra_counts()}。"
         return f"MCP {self.name} {self.describe()}；可用 /mcp 查看。"
 
 
@@ -415,6 +689,15 @@ class MCPManager:
             for task, connection in zip(self._tasks, self.connections)
         )
 
+    def connection_for(self, server: str) -> ServerConnection | None:
+        for connection in self.connections:
+            if connection.config.name == server:
+                return connection
+        return None
+
+    def has_server(self, server: str) -> bool:
+        return self.connection_for(server) is not None
+
     def statuses(self) -> tuple[ServerStatus, ...]:
         result = []
         for connection in self.connections:
@@ -424,10 +707,179 @@ class MCPManager:
                 result.append(ServerStatus(config.name, config.type, "connecting" if self._tasks else "new"))
             elif outcome.state == "ready" and connection.state != "ready":
                 # Disconnected or timed out after discovery; tools now report mcp_unavailable.
-                result.append(ServerStatus(config.name, config.type, "closed", tools=outcome.tools))
+                result.append(
+                    ServerStatus(
+                        config.name,
+                        config.type,
+                        "closed",
+                        tools=outcome.tools,
+                        resources=outcome.resources,
+                        resource_templates=outcome.resource_templates,
+                        prompts=outcome.prompts,
+                    )
+                )
             else:
                 result.append(outcome)
         return tuple(result)
+
+    def _ready_statuses(self, server: str | None = None) -> list[ServerStatus]:
+        return [s for s in self.statuses() if s.state == "ready" and (server is None or s.name == server)]
+
+    def list_resources(self, server: str | None = None) -> tuple[MCPResourceInfo, ...]:
+        return tuple(item for status in self._ready_statuses(server) for item in status.resources)
+
+    def list_resource_templates(self, server: str | None = None) -> tuple[MCPResourceTemplateInfo, ...]:
+        return tuple(item for status in self._ready_statuses(server) for item in status.resource_templates)
+
+    def list_prompts(self, server: str | None = None) -> tuple[MCPPromptInfo, ...]:
+        return tuple(item for status in self._ready_statuses(server) for item in status.prompts)
+
+    def _ready_connection(self, server: str) -> ServerConnection:
+        connection = self.connection_for(server)
+        if connection is None:
+            raise ToolFailure("mcp_server_not_found", f"未配置 MCP Server：{server}。", server=server, executed=False)
+        outcome = self._outcomes.get(server)
+        if (
+            self._closed
+            or (outcome is not None and outcome.state != "ready")
+            or connection.state != "ready"
+            or connection.session is None
+        ):
+            raise ToolFailure(
+                "mcp_unavailable", f"MCP Server {server} 已不可用，当前不自动重连。", server=server, executed=False
+            )
+        return connection
+
+    async def read_resource(
+        self,
+        server: str,
+        uri: str,
+        *,
+        accepts_images: bool = False,
+        image_store=None,
+    ) -> tuple[str, tuple, dict]:
+        server = server.strip()
+        uri = uri.strip()
+        connection = self._ready_connection(server)
+        result = await connection.read_resource(uri)
+        entries: list[tuple[str, str | int]] = []
+        pictures: list[tuple[str, str]] = []
+        mime_types: list[str] = []
+        for item in result.contents:
+            item_uri = str(getattr(item, "uri", None) or uri)
+            mime = (getattr(item, "mimeType", None) or "").strip()
+            if mime:
+                mime_types.append(mime)
+            if hasattr(item, "text"):
+                entries.append(("text", item.text))
+            elif hasattr(item, "blob"):
+                if mime.lower().startswith("image/"):
+                    alt = f"{server}/{item_uri} 的图片 {len(pictures) + 1}"
+                    entries.append(("image", len(pictures)))
+                    pictures.append((alt, item.blob))
+                else:
+                    byte_len = _safe_b64_len(item.blob)
+                    entries.append(
+                        ("text", f"[二进制资源 {item_uri} · {mime or 'application/octet-stream'} · {byte_len} 字节]")
+                    )
+        refs = ()
+        image_notes: list[str] = []
+        if pictures:
+            refs, image_notes = await asyncio.to_thread(_decode_images, pictures, accepts_images, image_store)
+        collector = _TextCollector(MCP_TEXT_LIMIT, RESOURCE_TRUNCATION_NOTE)
+        for kind, value in entries:
+            collector.add(image_notes[value] if kind == "image" else value)
+        output = collector.finish("（MCP 资源内容为空）")
+        details = {
+            "server": server,
+            "uri": uri,
+            "mime_types": mime_types,
+            "truncated": collector.truncated,
+        }
+        return output, refs, details
+
+    async def get_prompt(
+        self,
+        server: str,
+        name: str,
+        arguments: dict[str, str] | None = None,
+        *,
+        accepts_images: bool = False,
+        image_store=None,
+    ) -> tuple[str, tuple]:
+        server = server.strip()
+        name = name.strip()
+        connection = self._ready_connection(server)
+        clean_args = {str(k): str(v) for k, v in arguments.items()} if arguments else None
+        result = await connection.get_prompt(name, clean_args)
+        messages = list(getattr(result, "messages", None) or ())
+        single_user = len(messages) == 1 and getattr(messages[0], "role", "user") == "user"
+        pictures: list[tuple[str, str]] = []
+        raw_messages: list[tuple[str, list[tuple[str, str | int]]]] = []
+        for msg in messages:
+            role = getattr(msg, "role", "user")
+            header = "" if single_user else ("[用户]" if role == "user" else "[助手]")
+            blocks = msg.content if isinstance(msg.content, (list, tuple)) else (msg.content,)
+            msg_entries: list[tuple[str, str | int]] = []
+            for block in blocks:
+                kind = getattr(block, "type", None)
+                if kind == "text" or (kind is None and hasattr(block, "text")):
+                    msg_entries.append(("text", block.text))
+                elif kind == "image" or hasattr(block, "data"):
+                    alt = f"{server}/{name} 的图片 {len(pictures) + 1}"
+                    msg_entries.append(("image", len(pictures)))
+                    pictures.append((alt, block.data))
+                elif kind == "resource" or hasattr(block, "resource"):
+                    res = block.resource
+                    res_uri = str(getattr(res, "uri", None) or "")
+                    res_mime = (getattr(res, "mimeType", None) or "").strip()
+                    if hasattr(res, "text"):
+                        text = f"[嵌入资源 {res_uri}]\n{res.text}" if res_uri else res.text
+                        msg_entries.append(("text", text))
+                    elif hasattr(res, "blob"):
+                        if res_mime.lower().startswith("image/"):
+                            alt = f"{server}/{name} 资源 {res_uri or len(pictures) + 1} 的图片 {len(pictures) + 1}"
+                            msg_entries.append(("image", len(pictures)))
+                            pictures.append((alt, res.blob))
+                        else:
+                            byte_len = _safe_b64_len(res.blob)
+                            label_uri = res_uri or name
+                            msg_entries.append(
+                                (
+                                    "text",
+                                    f"[二进制资源 {label_uri} · {res_mime or 'application/octet-stream'} · {byte_len} 字节]",
+                                )
+                            )
+                elif kind == "resource_link" or hasattr(block, "uri"):
+                    msg_entries.append(("text", f"[资源链接 {block.uri}]"))
+                else:
+                    msg_entries.append(("text", f"（未展示的提示词内容类型：{kind or type(block).__name__}）"))
+            raw_messages.append((header, msg_entries))
+
+        refs = ()
+        image_notes: list[str] = []
+        if pictures:
+            refs, image_notes = await asyncio.to_thread(_decode_images, pictures, accepts_images, image_store)
+
+        rendered_messages: list[str] = []
+        for header, msg_entries in raw_messages:
+            lines = [image_notes[val] if kind == "image" else val for kind, val in msg_entries]
+            body = "\n".join(lines)
+            if header:
+                rendered_messages.append(f"{header}\n{body}" if body else header)
+            elif body:
+                rendered_messages.append(body)
+
+        collector = _TextCollector(MCP_TEXT_LIMIT, PROMPT_TRUNCATION_NOTE)
+        description = (getattr(result, "description", None) or "").strip()
+        joined_body = "\n\n".join(rendered_messages)
+        if description and description != joined_body:
+            collector.add(description)
+        for index, block_text in enumerate(rendered_messages):
+            collector.add(
+                block_text, sep="\n\n" if (index > 0 or (description and description != joined_body)) else "\n"
+            )
+        return collector.finish(), refs
 
     def begin(self, registry, on_update=None) -> None:
         """Start discovery in the background; idempotent. on_update(status) runs as each server settles."""
@@ -452,7 +904,15 @@ class MCPManager:
             # Synchronous: a model request never sees half of a server's tools.
             for tool in tools:
                 registry.register(tool)
-            status = ServerStatus(config.name, config.type, "ready", tools=tools)
+            status = ServerStatus(
+                config.name,
+                config.type,
+                "ready",
+                tools=tools,
+                resources=connection.resources,
+                resource_templates=connection.resource_templates,
+                prompts=connection.prompts,
+            )
         self._outcomes[config.name] = status
         if on_update is not None:
             on_update(status)

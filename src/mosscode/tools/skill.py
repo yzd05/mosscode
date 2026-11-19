@@ -20,6 +20,7 @@ FAILURE_TAIL = 2000  # Characters of stdout and stderr kept in a failure message
 class LoadSkillParams(Params):
     name: str = Field(min_length=1, max_length=64)
     arguments: str = Field(default="", max_length=4000)
+    unload: bool = False
 
 
 class LoadSkill(Tool):
@@ -27,22 +28,33 @@ class LoadSkill(Tool):
     permission_kind = "load_skill"  # No approval; it only reads the skill's own files.
     read_only = True  # Offered in plan mode as well.
     description = (
-        "加载一个 Skill（可复用的操作规程）。系统提示的 Skill 一节列出了可加载的名称和描述；"
+        "加载或卸载一个 Skill（可复用的操作规程）。系统提示的 Skill 一节列出了可加载的名称和描述；"
         "用户的请求与某个描述相符时，先调用本工具，再按加载后的规程执行。"
         "加载后规程出现在 <active-skills> 中并在本会话中持续有效，工具结果不重复规程全文；"
-        "Skill 的专属工具（skill__ 开头）同时变为可用。arguments 是传给规程的参数，可省略。"
+        "Skill 的专属工具（skill__ 开头）同时变为可用。arguments 是传给规程的参数，可省略；"
+        "不再需要某个已加载的 Skill 时，可传 unload=true 卸载以释放上下文和专属工具。"
     )
     prompt_summary = "加载与请求相符的 Skill 规程"
     prompt_guidelines = (
-        "只加载 Skill 一节中列出的名称；已在 <active-skills> 中的 Skill 不需要再次加载，除非要换用新的参数。",
+        "只加载 Skill 一节中列出的名称；已在 <active-skills> 中的 Skill 不需要再次加载，除非要换用新的参数或传 unload=true 卸载。",
     )
     params_model = LoadSkillParams
 
-    def __init__(self, root, loader: Callable[[str, str], tuple[str, dict]]):
+    def __init__(
+        self,
+        root,
+        loader: Callable[..., tuple[str, dict]],
+        unloader: Callable[[str], tuple[str, dict]] | None = None,
+    ):
         super().__init__(root)
         self.loader = loader
+        self.unloader = unloader
 
     async def execute(self, params: LoadSkillParams):
+        if params.unload:
+            if self.unloader is not None:
+                return self.unloader(params.name)
+            return self.loader(params.name, params.arguments, unload=True)
         return self.loader(params.name, params.arguments)
 
 

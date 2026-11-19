@@ -73,7 +73,7 @@ class TaskOutput(Tool):
     read_only = True
     timeout = WAIT_LIMIT + 10
     description = (
-        "查看后台任务（子 Agent 或命令）的状态与结果；命令任务给出退出码、输出文件路径和最后 50 行输出。"
+        "查看后台任务（子 Agent、命令或 /loop 定时巡检）的状态与结果；命令任务给出退出码、输出文件路径和最后 50 行输出。"
         "wait 为等待完成的秒数（最多 300），0 表示立即返回；任务完成时你也会自动收到 <task-notification>，一般不需要轮询。"
     )
     prompt_summary = "查看后台任务的状态与结果"
@@ -87,7 +87,7 @@ class TaskOutput(Tool):
         task = self.runner.tasks.get(params.task_id.strip())
         if task is None:
             raise ToolFailure("unknown_task", f"没有任务 {params.task_id}。")
-        if task.status == "running" and params.wait and task.job is not None:
+        if task.status == "running" and params.wait and task.job is not None and task.loop is None:
             await asyncio.wait({task.job}, timeout=params.wait)
         if task.status != "running":
             self._withdraw(task.id)
@@ -99,6 +99,13 @@ class TaskOutput(Tool):
         from ..agents.tasks import STATUS_LABELS
 
         head = f"任务 {task.id}（{task.label}）：{STATUS_LABELS[task.status]}，{stats(task)}。"
+        if task.loop is not None:
+            info = task.loop
+            if task.status == "running":
+                state = "等待空闲触发。" if info.pending_fire else f"巡检内容：{info.prompt}"
+                return f"{head}\n{state}", {"task": task.id, "status": task.status, "runs": info.runs}
+            reason = f"结束原因：{info.end_reason}。" if info.end_reason else (task.result or "")
+            return f"{head}\n{reason}".strip(), {"task": task.id, "status": task.status, "runs": info.runs}
         if task.status == "running":
             last = f"最近一次工具调用：{task.last_tool}。" if task.last_tool else "尚未调用工具。"
             return f"{head}\n{last}", {"task": task.id, "status": task.status}

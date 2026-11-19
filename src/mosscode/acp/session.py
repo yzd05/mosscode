@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import os
 import re
 import sys
@@ -18,7 +19,11 @@ from urllib.request import url2pathname
 from acp import RequestError
 from acp.schema import (
     AcpMcpServer,
+    AllowedOutcome,
     AudioContentBlock,
+    AvailableCommand,
+    AvailableCommandInput,
+    AvailableCommandsUpdate,
     BlobResourceContents,
     ConfigOptionUpdate,
     CurrentModeUpdate,
@@ -28,6 +33,7 @@ from acp.schema import (
     LoadSessionResponse,
     McpServerStdio,
     NewSessionResponse,
+    PermissionOption,
     PromptResponse,
     ResourceContentBlock,
     SessionConfigOptionBoolean,
@@ -38,18 +44,26 @@ from acp.schema import (
     TextContentBlock,
     TextResourceContents,
     ToolCallProgress,
+    ToolCallUpdate,
+    UnstructuredCommandInput,
 )
 
+from ..agents.tasks import STATUS_LABELS
 from ..builtin_commands import (
     BUILTIN,
     CLEARED,
+    LOOP_HEADLESS_NOTICE,
     MODE_LABELS,
     PLAN_ENTERED,
+    TEAM_USAGE,
     hooks_report,
+    loop_report,
     mcp_report,
     memory_report,
     resolve_model_target,
+    swarm_report,
     tasks_report,
+    team_report,
     thinking_detail,
     typed,
 )
@@ -57,11 +71,19 @@ from ..command_env import use_command_env
 from ..commands import CommandRegistry, argument_problem, parse_input, unknown_note
 from ..config import ConfigError, ProviderConfig, Settings, refreshed
 from ..conversation import Conversation, Resumed
+from ..coordinator import SWARM_OFF_NOTE, SWARM_ON_NOTE
 from ..coordinator import decide as decide_coordinator
 from ..credentials import redact
 from ..goal import GOAL
 from ..images import ImageError, ProcessedImage, load_image
 from ..mcp_config import SERVER_NAME, ServerConfig
+from ..mcp_surface import (
+    PromptArgumentError,
+    expand_mcp_prompt,
+    is_mcp_prompt_command,
+    register_mcp_prompts,
+    register_mcp_prompts_from_manager,
+)
 from ..mentions import quoted
 from ..messages import NOTIFICATION, ProviderError, RunStopped, TasksNotified, ToolProgress, image_mark
 from ..permissions import MODES as PERMISSION_MODES
@@ -118,6 +140,7 @@ from .formatting import (
     format_terminal_report_markdown,
     format_thinking_markdown,
     format_todo_markdown,
+    summarize_command_description,
 )
 from .permissions import handle_approval_request, handle_question_request
 
@@ -305,11 +328,42 @@ class AcpSession:
         self._startup_notices: list[str] = []
         self._pending_approvals: set[str] = set()
         self._pending_questions: dict[str, int] = {}
+        self._bg_approval_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._deferred_approvals: list[ApprovalRequest] = []
+        self._team_notes: list[str] = []
+        self._due_loops: list[tuple[Any, str, int]] = []
+        self._loop_window_open = False
+        self._bg_wakeup = asyncio.Event()
         self._update_tasks: set[asyncio.Task[Any]] = set()
         self._last_reported_mode: str = self.current_mode
+        self._initial_commands_sent = False
+        self._slash_images: dict[str, Any] = {}
+        if self.conversation.mcp_manager is not None:
+            register_mcp_prompts_from_manager(self.commands, self.conversation.mcp_manager)
 
         if self.policy is not None:
             self.policy.interactive = True
+        self.conversation.on_tasks = self._on_background_event
+        prev_task_change = getattr(self.conversation.tasks, "on_change", None)
+
+        def _combined_task_change(task: Any) -> None:
+            if prev_task_change is not None:
+                prev_task_change(task)
+            self._on_background_event()
+
+        self.conversation.tasks.on_change = _combined_task_change
+        subagents = getattr(self.conversation, "subagents", None)
+        if subagents is not None:
+            subagents.on_approval = self._on_background_approval
+            subagents.on_approval_settled = self._withdraw_approval
+        teams = getattr(self.conversation, "teams", None)
+        if teams is not None:
+            teams.teammate_mode = "in-process"
+            teams.on_approval = self._on_background_approval
+            teams.on_withdraw = self._withdraw_approval
+            teams.on_note = self._on_team_note
+            teams.on_change = self._on_background_event
+            teams.on_update = self._on_background_event
         if self.conversation.registry is not None:
             prev_todos_hook = self.conversation.registry.todos.on_change
 
@@ -319,6 +373,7 @@ class AcpSession:
                 self._on_todos_changed(items, mark)
 
             self.conversation.registry.todos.on_change = _combined_todos_changed
+        self._ensure_loops()
 
     @contextmanager
     def _runtime_context(self):
@@ -415,7 +470,7 @@ class AcpSession:
             notices = (
                 tuple(config_notices) + components.notices + tuple(extra_notices) + tuple(sandbox.notices(resolved_cwd))
             )
-            coordinator, coord_notice = decide_coordinator(settings.coordinator_mode, {}, interactive=False)
+            coordinator, coord_notice = decide_coordinator(settings.coordinator_mode, os.environ, interactive=True)
             if coord_notice:
                 notices += (coord_notice,)
 
@@ -433,8 +488,11 @@ class AcpSession:
             initial_session = Session.new(resolved_cwd, home=options.home)
             final_id = target_id if target_id is not None else initial_session.id
 
+            acp_settings = (
+                settings if settings.teammate_mode == "in-process" else replace(settings, teammate_mode="in-process")
+            )
             conversation = build_conversation(
-                settings,
+                acp_settings,
                 provider_config,
                 root=resolved_cwd,
                 registry=components.registry,
@@ -447,7 +505,7 @@ class AcpSession:
                 notices=notices,
                 auto_memory=False,
                 enable_goal_provider=True,
-                teams=False,
+                teams=True,
                 coordinator=coordinator,
                 provider=provider,
                 goal_provider=goal_provider,
@@ -522,8 +580,222 @@ class AcpSession:
         ):
             raise RequestError(-32001, "当前会话已有正在运行的请求。", {"reason": "当前会话已有正在运行的请求。"})
 
+    def _available_commands_update(self) -> AvailableCommandsUpdate:
+        base = build_available_commands(self.commands)
+        present = {item.name for item in base.available_commands}
+        commands = list(base.available_commands)
+        team_cmd = self.commands.get("team")
+        if team_cmd is not None and not team_cmd.hidden and "team" not in present:
+            cmd_input = (
+                AvailableCommandInput(root=UnstructuredCommandInput(hint=team_cmd.argument_hint))
+                if team_cmd.argument_hint
+                else None
+            )
+            desc = summarize_command_description(team_cmd.description)
+            team_item = AvailableCommand(name=team_cmd.name, description=desc, input=cmd_input)
+            swarm_idx = next((i for i, item in enumerate(commands) if item.name == "swarm"), None)
+            if swarm_idx is not None:
+                commands.insert(swarm_idx, team_item)
+            else:
+                commands.append(team_item)
+        return AvailableCommandsUpdate(available_commands=commands)
+
+    @property
+    def _in_prompt(self) -> bool:
+        return self._active_task is not None and not self._active_task.done() and not self._closed
+
+    def _on_background_event(self, *_args: Any) -> None:
+        if not self._closed:
+            self._bg_wakeup.set()
+
+    def _on_team_note(self, text: str) -> None:
+        if self._closed or not text:
+            return
+        self._team_notes.append(text)
+        self._bg_wakeup.set()
+
+    async def _flush_team_notes(self) -> None:
+        if not self._team_notes or self._cancelled or self._closed:
+            return
+        notes, self._team_notes = self._team_notes[:], []
+        block = "\n".join(f"> {escape_markdown_inline(note)}" for note in notes)
+        await self._send_text(f"\n{block}\n")
+
+    def _on_background_approval(self, request: ApprovalRequest) -> None:
+        policy = self.policy
+        if self._closed or policy is None:
+            if policy is not None and request.id in policy.pending:
+                policy.respond(request.id, "deny")
+            return
+        if self._active_task is not None and not self._active_task.done():
+            if self._cancelled:
+                if request.id in policy.pending:
+                    policy.respond(request.id, "deny")
+                return
+            self._start_background_approval(request)
+            return
+        # Idle between prompt RPCs: queue without sending unsolicited JSON-RPC turn frames.
+        if all(item.id != request.id for item in self._deferred_approvals):
+            self._deferred_approvals.append(request)
+
+    def _flush_deferred_approvals(self) -> None:
+        if not self._deferred_approvals or self._cancelled or self._closed:
+            return
+        policy = self.policy
+        queued, self._deferred_approvals = self._deferred_approvals[:], []
+        if policy is None:
+            return
+        for request in queued:
+            if request.id in policy.pending:
+                self._start_background_approval(request)
+
+    def _start_background_approval(self, request: ApprovalRequest) -> None:
+        policy = self.policy
+        if policy is None or request.id not in policy.pending or request.id in self._bg_approval_tasks:
+            return
+        self._pending_approvals.add(request.id)
+
+        async def _run() -> None:
+            try:
+                with self._runtime_context():
+                    await handle_approval_request(
+                        self.client,
+                        self.session_id,
+                        policy,
+                        self.mapper,
+                        request,
+                    )
+                    if not self._cancelled and not self._closed and self._in_prompt:
+                        await self._sync_mode_if_changed()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                if request.id in policy.pending:
+                    policy.respond(request.id, "deny")
+                print(f"MossCode ACP：后台审批处理失败：{redact(str(exc))}", file=sys.stderr)
+            finally:
+                self._pending_approvals.discard(request.id)
+                self._bg_approval_tasks.pop(request.id, None)
+                self._bg_wakeup.set()
+
+        task = asyncio.create_task(_run())
+        self._bg_approval_tasks[request.id] = task
+
+    def _withdraw_approval(self, request_id: str) -> None:
+        self._deferred_approvals = [item for item in self._deferred_approvals if item.id != request_id]
+        self._pending_approvals.discard(request_id)
+        task = self._bg_approval_tasks.pop(request_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._bg_wakeup.set()
+
+    def _ensure_loops(self):
+        loops = getattr(self.conversation, "loops", None)
+        if loops is not None:
+            return loops
+        attach = getattr(self.conversation, "attach_loops", None)
+        if callable(attach):
+            return attach(is_busy=self._is_loop_busy, trigger=self._on_loop_trigger)
+        return None
+
+    def _is_loop_busy(self) -> bool:
+        return bool(
+            self._closed
+            or self.conversation.busy
+            or self._pending_approvals
+            or self._pending_questions
+            or (self.conversation.goal is not None and self.conversation.goal.active)
+            or (self._in_prompt and not self._loop_window_open)
+            or (bool(self._due_loops) and not self._loop_window_open)
+        )
+
+    async def _on_loop_trigger(self, task: Any, prompt: str) -> None:
+        if self._closed:
+            return
+        runs = int(getattr(getattr(task, "loop", None), "runs", 1))
+        # Queue safely when idle between session/prompt RPCs; never emit unsolicited JSON-RPC turn frames.
+        self._due_loops = [item for item in self._due_loops if item[0].id != task.id]
+        self._due_loops.append((task, prompt, runs))
+        self._bg_wakeup.set()
+
+    async def _drain_due_loops(self) -> tuple[RunStopped | None, bool]:
+        last_stopped: RunStopped | None = None
+        while self._due_loops and not self._cancelled and not self._closed:
+            task, loop_prompt, runs = self._due_loops.pop(0)
+            if getattr(task, "stopped", False) or task.status == "cancelled":
+                continue
+            first_line = next((ln.strip() for ln in loop_prompt.splitlines() if ln.strip()), loop_prompt.strip())
+            await self._send_text(
+                f"\n> ⏰ 定时巡检 `{escape_markdown_inline(task.id)}`（第 {runs} 次）："
+                f"{escape_markdown_inline(first_line[:100])}\n"
+            )
+            if loop_prompt.lstrip().startswith("/"):
+                immediate, cmd_text, cmd_label, cmd_fork = await self._handle_slash_command(loop_prompt)
+                if self._cancelled:
+                    return last_stopped, True
+                if immediate is not None or not cmd_text:
+                    continue
+                last_stopped, was_cancelled = await self._consume_reply_stream(
+                    self.conversation.reply(cmd_text, command=cmd_label, fork=cmd_fork)
+                )
+                if was_cancelled:
+                    return last_stopped, True
+                continue
+            try:
+                from ..loop_schedule import LOOP_SYNTHETIC, format_loop_prompt
+
+                rendered = format_loop_prompt(task)
+                synthetic = LOOP_SYNTHETIC
+            except ImportError:
+                rendered = f"[定时任务 {task.id} · 第 {runs} 次]\n{loop_prompt}"
+                synthetic = "loop"
+            last_stopped, was_cancelled = await self._consume_reply_stream(
+                self.conversation.reply(rendered, synthetic=synthetic)
+            )
+            if was_cancelled:
+                return last_stopped, True
+        return last_stopped, False
+
+    def _has_active_background_turn_work(self) -> bool:
+        if self._bg_approval_tasks:
+            return True
+        if any(
+            task.command is None and getattr(task, "loop", None) is None for task in self.conversation.tasks.running()
+        ):
+            return True
+        teams = getattr(self.conversation, "teams", None)
+        if teams is not None and teams.current is not None:
+            if any(
+                runner.status == "running" or getattr(getattr(runner, "wakeup", None), "is_set", lambda: False)()
+                for runner in teams.runners.values()
+            ):
+                return True
+            if getattr(teams, "_revives", None):
+                return True
+            if getattr(teams, "_lead_wake", None) is not None and teams._lead_wake.is_set():
+                return True
+        return False
+
     def _on_todos_changed(self, items: tuple[TodoItem, ...], _version: int) -> None:
         self._spawn_update(todos_to_plan_update(items))
+
+    def _on_mcp_update(self, status: Any) -> None:
+        if self._closed:
+            return
+        if status.state == "ready":
+            skipped: list[str] = []
+            added = register_mcp_prompts(self.commands, status, self.conversation.mcp_manager, skipped=skipped)
+            for note in skipped:
+                if note not in self._startup_notices:
+                    self._startup_notices.append(note)
+                    print(f"MossCode ACP: {redact(note)}", file=sys.stderr)
+            if added and self._initial_commands_sent:
+                self._spawn_update(self._available_commands_update())
+        else:
+            note = status.notice()
+            if note not in self._startup_notices:
+                self._startup_notices.append(note)
+                print(f"MossCode ACP: {redact(note)}", file=sys.stderr)
 
     async def ensure_started(self) -> None:
         if self._started:
@@ -532,18 +804,44 @@ class AcpSession:
             if self._started:
                 return
             with self._runtime_context():
-                notes = await self.conversation.start()
+                notes = await self.conversation.start(wait_mcp=False, on_mcp=self._on_mcp_update)
+                if self.conversation.mcp_manager is not None and hasattr(self.conversation.mcp_manager, "wait"):
+                    await self.conversation.mcp_manager.wait()
+            skipped: list[str] = []
+            added = register_mcp_prompts_from_manager(self.commands, self.conversation.mcp_manager, skipped=skipped)
             self._started = True
-            for note in notes:
-                self._startup_notices.append(note)
-                print(f"MossCode ACP: {redact(note)}", file=sys.stderr)
+            for note in (*notes, *skipped):
+                if note not in self._startup_notices:
+                    self._startup_notices.append(note)
+                    print(f"MossCode ACP: {redact(note)}", file=sys.stderr)
+            if added and self._initial_commands_sent:
+                self._spawn_update(self._available_commands_update())
 
     async def send_initial_updates(self) -> None:
-        """Send available slash commands after session creation."""
+        """Send available slash commands after session creation and start background MCP discovery."""
+        if self.conversation.mcp_manager is not None:
+            register_mcp_prompts_from_manager(
+                self.commands, self.conversation.mcp_manager, skipped=self._startup_notices
+            )
+        self._initial_commands_sent = True
         await self.client.session_update(
             session_id=self.session_id,
-            update=build_available_commands(self.commands),
+            update=self._available_commands_update(),
         )
+        manager = self.conversation.mcp_manager
+        if (
+            manager is not None
+            and not self._closed
+            and not self.conversation._mcp_background
+            and not getattr(manager, "_tasks", None)
+            and callable(getattr(manager, "begin", None))
+        ):
+            self.conversation._mcp_background = True
+            for note in getattr(manager, "notices", ()) or ():
+                if note not in self._startup_notices:
+                    self._startup_notices.append(note)
+            with self._runtime_context():
+                manager.begin(self.conversation.registry, self._on_mcp_update)
 
     async def load_and_replay(self, *, replay: bool = True) -> LoadSessionResponse:
         """Restore session transcript and optionally replay history notifications to the client."""
@@ -931,7 +1229,7 @@ class AcpSession:
         assert cmd is not None
         args = parsed.argument.strip()
 
-        if cmd.name in EXCLUDED_ACP_COMMANDS:
+        if cmd.name in (EXCLUDED_ACP_COMMANDS - {"team"}):
             if cmd.name == "sandbox":
                 if not args:
                     raw_sb = "\n".join(self.sandbox.report(self.cwd))
@@ -949,6 +1247,14 @@ class AcpSession:
             return PromptResponse(stop_reason="end_turn"), "", None, None
 
         if cmd.kind == "prompt":
+            if is_mcp_prompt_command(cmd):
+                try:
+                    expanded, cmd_label, mcp_images = await expand_mcp_prompt(self.conversation, cmd, parsed.argument)
+                except (PromptArgumentError, ProviderError) as exc:
+                    await self._send_text(escape_markdown_inline(str(exc)))
+                    return PromptResponse(stop_reason="end_turn"), "", None, None
+                self._slash_images = mcp_images
+                return None, _with_context(expanded), cmd_label, None
             return None, _with_context(cmd.expand(parsed.argument)), typed(cmd, parsed.argument), None
 
         if cmd.kind == "skill":
@@ -976,10 +1282,25 @@ class AcpSession:
         self, name: str, args: str
     ) -> tuple[PromptResponse | None, str, str | None, ForkRequest | None]:
         if name == "help":
-            await self._send_text(format_help_markdown(self.commands, args, self.conversation.skills))
+            target = args.strip().removeprefix("/").lower()
+            if target in {"team", "teams"}:
+                await self._send_text(
+                    "### `/team [子命令]`\n\n"
+                    "- **说明**：查看、停止、删除本项目的进程内 Agent 团队及黑板记录\n"
+                    "- **类型**：本地命令（直接返回结果，不调用模型）\n"
+                    "- **别名**：`/teams`\n"
+                    "- **用法**：`/team`、`/team <名称>`、`/team stop <成员>`、`/team delete <名称>`"
+                )
+            else:
+                help_md = format_help_markdown(self.commands, args, self.conversation.skills)
+                if not target and "`/team" not in help_md:
+                    help_md += "\n- `/team [子命令]` — 查看、停止、删除 Agent 团队（别名 `/teams`）"
+                await self._send_text(help_md)
             return PromptResponse(stop_reason="end_turn"), "", None, None
 
         if name == "clear":
+            self._team_notes.clear()
+            self._due_loops.clear()
             notices = await self.conversation.clear(keep_session=True)
             await self.client.session_update(session_id=self.session_id, update=todos_to_plan_update(()))
             if notices:
@@ -1037,6 +1358,7 @@ class AcpSession:
                 problems = self.conversation.registry.set_skills(catalog)
                 notices = self.conversation.use_skills(catalog)
                 self.commands, skipped = BUILTIN.with_skills(catalog)
+                register_mcp_prompts_from_manager(self.commands, self.conversation.mcp_manager)
                 await self.send_initial_updates()
                 lines = [f"已重新扫描 Skill：共 **`{len(catalog.skills)}`** 个。"]
                 all_issues = (*catalog.problems, *problems, *notices, *skipped)
@@ -1100,6 +1422,7 @@ class AcpSession:
                 if not task_id:
                     await self._send_text("用法：`/tasks stop <id>`")
                 elif await self.conversation.tasks.stop(task_id):
+                    self._due_loops = [item for item in self._due_loops if item[0].id != task_id]
                     await self._send_text(f"已停止任务 `{escape_markdown_inline(task_id)}`。")
                 else:
                     await self._send_text(f"任务 `{escape_markdown_inline(task_id)}` 不存在或已结束。")
@@ -1210,6 +1533,145 @@ class AcpSession:
                 await self._send_text(escape_markdown_inline(str(exc)))
                 return PromptResponse(stop_reason="end_turn"), "", None, None
 
+        if name == "loop":
+            loops = self._ensure_loops()
+            if loops is None:
+                await self._send_text(escape_markdown_inline(LOOP_HEADLESS_NOTICE))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            try:
+                from ..loop_schedule import parse_loop_args
+            except ImportError:
+                await self._send_text(escape_markdown_inline(LOOP_HEADLESS_NOTICE))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            try:
+                parsed = parse_loop_args(args)
+            except ValueError as exc:
+                await self._send_text(escape_markdown_inline(str(exc)))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            if parsed.action == "list":
+                await self._send_text(format_terminal_report_markdown(loop_report(self.conversation)))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            if parsed.action == "stop":
+                res = loops.stop(parsed.target)
+                stopped_tasks = await res if inspect.isawaitable(res) else res
+                stopped_ids = {t.id for t in stopped_tasks}
+                if stopped_ids:
+                    self._due_loops = [item for item in self._due_loops if item[0].id not in stopped_ids]
+                if parsed.target.lower() == "all":
+                    if stopped_tasks:
+                        ids = "、".join(f"`{escape_markdown_inline(t.id)}`" for t in stopped_tasks)
+                        await self._send_text(f"已停止 `{len(stopped_tasks)}` 个定时巡检（{ids}）。")
+                    else:
+                        await self._send_text("当前没有运行中的定时巡检。")
+                elif stopped_tasks:
+                    target_task = stopped_tasks[0]
+                    await self._send_text(f"已停止定时巡检 `{escape_markdown_inline(target_task.id)}`。")
+                else:
+                    existing = self.conversation.tasks.get(parsed.target)
+                    if existing is None or getattr(existing, "loop", None) is None:
+                        await self._send_text(
+                            f"没有定时巡检任务 `{escape_markdown_inline(parsed.target)}`。输入 `/loop list` 查看。"
+                        )
+                    else:
+                        state_text = STATUS_LABELS.get(existing.status, existing.status)
+                        await self._send_text(
+                            f"定时巡检 `{escape_markdown_inline(parsed.target)}` 已结束（{state_text}），无需停止。"
+                        )
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            try:
+                res = loops.schedule(parsed.interval, parsed.interval_text, parsed.prompt, max_runs=parsed.max_runs)
+                task = await res if inspect.isawaitable(res) else res
+            except (ValueError, ProviderError) as exc:
+                await self._send_text(escape_markdown_inline(str(exc)))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            first_line = next((ln.strip() for ln in parsed.prompt.splitlines() if ln.strip()), parsed.prompt.strip())
+            await self._send_text(
+                f"已启动定时巡检 `{escape_markdown_inline(task.id)}`（每 {escape_markdown_inline(parsed.interval_text)}，"
+                f"最多 `{parsed.max_runs}` 次）：{escape_markdown_inline(first_line[:80])}；"
+                f"可用 `/tasks` 或 `/loop stop {escape_markdown_inline(task.id)}` 停止。"
+            )
+            return PromptResponse(stop_reason="end_turn"), "", None, None
+
+        if name == "swarm":
+            lower = args.lower()
+            if not args or lower == "status":
+                report = await asyncio.to_thread(swarm_report, self.conversation)
+                await self._send_text(format_terminal_report_markdown(report))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            if lower == "on":
+                try:
+                    changed = self.conversation.set_coordinator_mode(True)
+                except ProviderError as exc:
+                    await self._send_text(escape_markdown_inline(str(exc)))
+                    return PromptResponse(stop_reason="end_turn"), "", None, None
+                msg = f"{SWARM_ON_NOTE}。" if changed else "Swarm 协调模式已经处于开启状态（可用 `/swarm off` 关闭）。"
+                await self._send_text(escape_markdown_inline(msg))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            if lower == "off":
+                try:
+                    changed = self.conversation.set_coordinator_mode(False)
+                except ProviderError as exc:
+                    await self._send_text(escape_markdown_inline(str(exc)))
+                    return PromptResponse(stop_reason="end_turn"), "", None, None
+                msg = SWARM_OFF_NOTE if changed else "Swarm 协调模式当前未开启。"
+                await self._send_text(escape_markdown_inline(msg))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            try:
+                changed = self.conversation.set_coordinator_mode(True)
+            except ProviderError as exc:
+                await self._send_text(escape_markdown_inline(str(exc)))
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            if changed:
+                await self._send_text(f"{escape_markdown_inline(SWARM_ON_NOTE)}。\n\n")
+            return None, args, f"/swarm {args}", None
+
+        if name == "team":
+            from ..teams import TeamError
+
+            runtime = getattr(self.conversation, "teams", None)
+            if runtime is None:
+                await self._send_text("当前会话不支持团队。")
+                return PromptResponse(stop_reason="end_turn"), "", None, None
+            words = args.split()
+            try:
+                if not words:
+                    report = await asyncio.to_thread(team_report, self.conversation)
+                    await self._send_text(format_terminal_report_markdown(report))
+                elif words[0] == "stop" and len(words) == 2:
+                    result_text = await runtime.stop_member(words[1])
+                    await self._send_text(escape_markdown_inline(result_text))
+                elif words[0] == "delete" and len(words) == 2:
+                    team_name = words[1]
+                    await asyncio.to_thread(runtime.detail, team_name)
+                    resp = await self.client.request_permission(
+                        session_id=self.session_id,
+                        tool_call=ToolCallUpdate(
+                            tool_call_id=f"team-delete-{team_name}",
+                            name="team_delete",
+                            title=f"删除团队 {team_name}（停止成员并清理已合并的干净工作树与团队目录）",
+                            kind="other",
+                            status="pending",
+                            raw_input={"team": team_name},
+                        ),
+                        options=[
+                            PermissionOption(option_id="delete", name="确认删除团队", kind="allow_once"),
+                            PermissionOption(option_id="cancel", name="取消", kind="reject_once"),
+                        ],
+                    )
+                    if isinstance(resp.outcome, AllowedOutcome) and resp.outcome.option_id == "delete":
+                        deleted_text, _ = await runtime.delete(team_name, force=True)
+                        await self._send_text(escape_markdown_inline(deleted_text))
+                    else:
+                        await self._send_text("已取消，团队保留。")
+                elif len(words) == 1 and words[0] not in {"stop", "delete"}:
+                    report = await asyncio.to_thread(team_report, self.conversation, words[0])
+                    await self._send_text(format_terminal_report_markdown(report))
+                else:
+                    await self._send_text(escape_markdown_inline(TEAM_USAGE))
+            except TeamError as exc:
+                await self._send_text(f"⚠️ {escape_markdown_inline(exc.message)}")
+            return PromptResponse(stop_reason="end_turn"), "", None, None
+
         await self._send_text(f"暂不支持在 ACP 中运行命令 `/{name}`。")
         return PromptResponse(stop_reason="end_turn"), "", None, None
 
@@ -1319,6 +1781,7 @@ class AcpSession:
                 command_label: str | None = None
                 fork_req: ForkRequest | None = None
                 text = combined_text
+                self._slash_images = {}
                 if not images and user_text.lstrip().startswith("/"):
                     immediate, text, command_label, fork_req = await self._handle_slash_command(
                         user_text, context_parts
@@ -1327,6 +1790,14 @@ class AcpSession:
                         return await self._finish_prompt(PromptResponse(stop_reason="cancelled"))
                     if immediate is not None:
                         return await self._finish_prompt(immediate)
+                merged_images: dict[str, Any] = {**images, **self._slash_images}
+                self._slash_images = {}
+                self._flush_deferred_approvals()
+                await self._flush_team_notes()
+                if self._due_loops:
+                    _, was_cancelled = await self._drain_due_loops()
+                    if was_cancelled:
+                        return await self._finish_prompt(PromptResponse(stop_reason="cancelled"))
 
                 while self.conversation.notifications:
                     pending_notes = self.conversation.take_notifications()
@@ -1342,7 +1813,7 @@ class AcpSession:
 
                 next_prompt = text
                 next_fork: ForkRequest | None = fork_req
-                next_images: dict[str, ProcessedImage] | None = images or None
+                next_images: dict[str, Any] | None = merged_images or None
                 next_command = command_label
                 next_synthetic: str | None = None
 
@@ -1359,9 +1830,48 @@ class AcpSession:
                     if was_cancelled:
                         return await self._finish_prompt(PromptResponse(stop_reason="cancelled"))
 
+                    await self._flush_team_notes()
+                    self._flush_deferred_approvals()
+
+                    while (
+                        not self._cancelled
+                        and not self.conversation.notifications
+                        and stopped is not None
+                        and stopped.reason == "completed"
+                    ):
+                        while (
+                            not self._cancelled
+                            and not self.conversation.notifications
+                            and self._has_active_background_turn_work()
+                        ):
+                            self._bg_wakeup.clear()
+                            await self._flush_team_notes()
+                            self._flush_deferred_approvals()
+                            if self.conversation.notifications or not self._has_active_background_turn_work():
+                                break
+                            try:
+                                await asyncio.wait_for(self._bg_wakeup.wait(), timeout=0.05)
+                            except TimeoutError:
+                                pass
+                        if self._cancelled or self.conversation.notifications:
+                            break
+                        teams = getattr(self.conversation, "teams", None)
+                        if teams is None or teams.current is None:
+                            break
+                        await teams.settle()
+                        if not self.conversation.notifications:
+                            await asyncio.sleep(min(getattr(teams, "poll", 0.05), 0.05))
+                        await self._flush_team_notes()
+                        self._flush_deferred_approvals()
+                        if not self._has_active_background_turn_work():
+                            break
+                    if self._cancelled:
+                        return await self._finish_prompt(PromptResponse(stop_reason="cancelled"))
+
                     if self.conversation.notifications:
                         pending_notes = self.conversation.take_notifications()
                         if pending_notes:
+                            await self._flush_team_notes()
                             for update in self.mapper.map_event(TasksNotified(pending_notes)):
                                 await self.client.session_update(session_id=self.session_id, update=update)
                             next_prompt = "\n\n".join(pending_notes)
@@ -1384,10 +1894,30 @@ class AcpSession:
                             continue
                     break
 
+                loops = getattr(self.conversation, "loops", None)
+                if (
+                    loops is not None
+                    and not self._cancelled
+                    and (self.conversation.goal is None or not self.conversation.goal.active)
+                ):
+                    self._loop_window_open = True
+                    try:
+                        loops.notify_idle()
+                        await asyncio.sleep(0)
+                    finally:
+                        self._loop_window_open = False
+                    if self._due_loops:
+                        loop_stopped, was_cancelled = await self._drain_due_loops()
+                        if was_cancelled:
+                            return await self._finish_prompt(PromptResponse(stop_reason="cancelled"))
+                        if loop_stopped is not None:
+                            stopped = loop_stopped
+
+                await self._flush_team_notes()
                 for update in self.mapper.flush_notices():
                     await self.client.session_update(session_id=self.session_id, update=update)
 
-                running = self.conversation.tasks.running()
+                running = [t for t in self.conversation.tasks.running() if getattr(t, "loop", None) is None]
                 if running:
                     await self._send_text(
                         f"\n> 当前仍有 {len(running)} 个后台任务在运行，输入框已恢复可用；"
@@ -1414,14 +1944,33 @@ class AcpSession:
                     raise RequestError.auth_required({"reason": message}) from None
                 raise RequestError.internal_error({"reason": message}) from None
             finally:
+                if self._bg_approval_tasks:
+                    policy = self.policy
+                    if policy is not None:
+                        for req_id in list(self._bg_approval_tasks):
+                            if req_id in policy.pending:
+                                policy.respond(req_id, "deny")
+                    bg_tasks = list(self._bg_approval_tasks.values())
+                    for bg_task in bg_tasks:
+                        if not bg_task.done():
+                            bg_task.cancel()
+                    await asyncio.gather(*bg_tasks, return_exceptions=True)
+                    self._bg_approval_tasks.clear()
                 if self._active_task is current_task:
                     self._active_task = None
+                loops = getattr(self.conversation, "loops", None)
+                if loops is not None and not self._closed and not self._is_loop_busy():
+                    loops.notify_idle()
 
     async def cancel(self) -> None:
         """Cancel the active prompt turn and release any pending permission futures."""
         self._cancelled = True
         policy = self.policy
         if policy is not None:
+            for req in list(self._deferred_approvals):
+                if req.id in policy.pending:
+                    policy.respond(req.id, "deny")
+            self._deferred_approvals.clear()
             for req_id in list(self._pending_approvals):
                 if req_id in policy.pending:
                     policy.respond(req_id, "deny")
@@ -1431,6 +1980,15 @@ class AcpSession:
                     policy.answer(req_id, (None,) * count)
             self._pending_questions.clear()
 
+        bg_tasks = list(self._bg_approval_tasks.values())
+        for bg_task in bg_tasks:
+            if not bg_task.done():
+                bg_task.cancel()
+        if bg_tasks:
+            await asyncio.gather(*bg_tasks, return_exceptions=True)
+        self._bg_approval_tasks.clear()
+        self._bg_wakeup.set()
+
         if self._active_task is not None and not self._active_task.done():
             self._active_task.cancel()
 
@@ -1438,6 +1996,7 @@ class AcpSession:
         if self._closed:
             return
         self._closed = True
+        self._due_loops.clear()
         if self.policy is not None:
             self.policy.interactive = False
         await self.cancel()

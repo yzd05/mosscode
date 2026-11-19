@@ -172,8 +172,10 @@ Describe the task in plain language, for example "read README.md and explain the
 | `/tasks [id\|stop id]` | Background sub-agents and commands |
 | `/worktree` | MossCode's git worktrees: list, create, remove, clean |
 | `/team` | Agent teams of this project |
+| `/swarm [on\|off\|task]` | Toggle multi-agent coordinator mode, or start a coordinated team run immediately with `task` |
 | `/todo` | The model's current task list |
 | `/goal [condition\|clear]` | Set a completion condition the session keeps working towards |
+| `/loop [interval] <prompt>` | Repeat a prompt or slash command on a schedule whenever the session is idle (`list`, `stop <id\|all>`) |
 | `/<skill> [arguments]` | Run a skill, such as the built-in `/commit`, `/init`, `/review`, `/test` |
 | `/exit` | Quit and clean up |
 

@@ -23,6 +23,7 @@ class Snapshot:
     path: str  # Relative to the workspace (with /), or absolute outside it.
     blob: str | None  # SHA-256 prefix naming the content's blob; None: the file did not exist.
     too_large: bool = False  # Over TOO_LARGE: nothing was saved and it cannot be restored.
+    active_skills: tuple[tuple[str, str], ...] = ()  # (skill_name, arguments) active when the turn started.
 
 
 @dataclass
@@ -42,6 +43,23 @@ def _reason(exc: OSError) -> str:
     return exc.strerror or str(exc) or type(exc).__name__
 
 
+def parse_active_skills(raw) -> tuple[tuple[str, str], ...]:
+    """Deserialize active_skills from a persisted record, defaulting to () on older or malformed entries."""
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    pairs: list[tuple[str, str]] = []
+    for item in raw:
+        if (
+            isinstance(item, (list, tuple))
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and item[0]
+            and isinstance(item[1], str)
+        ):
+            pairs.append((item[0], item[1]))
+    return tuple(pairs)
+
+
 class Checkpoints:
     def __init__(
         self,
@@ -50,30 +68,53 @@ class Checkpoints:
         *,
         record: Callable[[Snapshot], None] | None = None,
         on_notice: Callable[[str], None] | None = None,
+        skills: Callable[[], tuple[tuple[str, str], ...]] | None = None,
     ):
         self.root = root.resolve()
         self.session = session  # Blobs go in <session directory>/checkpoints.
         self.blobs = session.directory / "checkpoints"
         self.record = record  # Appends the snapshot to the transcript.
         self.on_notice = on_notice
+        self._skills = skills
         self.turn: str | None = None
         self.snapshots: list[Snapshot] = []
         self.marks: dict[str, int] = {}
+        self.skill_marks: dict[str, tuple[tuple[str, str], ...]] = {}
         self._seen: set[str] = set()  # Paths already saved this turn.
         self._failed = False
         self._lock = threading.Lock()  # Sub-agents write from their own tool threads.
 
-    def load(self, snapshots, marks) -> None:
+    def load(self, snapshots, marks, skill_marks=None) -> None:
         """A resumed session's checkpoints; the next typed message starts a new turn."""
         with self._lock:
             self.snapshots, self.marks = list(snapshots), dict(marks)
+            restored_skills = {s.message: s.active_skills for s in self.snapshots if s.active_skills}
+            if skill_marks:
+                restored_skills.update({k: parse_active_skills(v) for k, v in skill_marks.items()})
+            self.skill_marks = restored_skills
             self.turn, self._seen = None, set()
 
-    def begin(self, message: str) -> None:
+    def begin(self, message: str, active_skills: tuple[tuple[str, str], ...] | None = None) -> None:
+        current_skills = (
+            parse_active_skills(active_skills)
+            if active_skills is not None
+            else (tuple(self._skills()) if self._skills is not None else ())
+        )
         with self._lock:
             self.turn = message
             self.marks[message] = len(self.snapshots)
+            self.skill_marks[message] = current_skills
             self._seen = set()
+
+    def skills_before(self, message: str) -> tuple[tuple[str, str], ...] | None:
+        """Active skills recorded when `message`'s turn began, or None if not tracked."""
+        with self._lock:
+            if message in self.skill_marks:
+                return self.skill_marks[message]
+            for snapshot in self.snapshots:
+                if snapshot.message == message:
+                    return snapshot.active_skills
+            return None
 
     def _name(self, path: Path) -> str:
         try:
@@ -104,12 +145,14 @@ class Checkpoints:
 
     def _save(self, turn: str, path: Path) -> Snapshot:
         name = self._name(path)
+        with self._lock:
+            active_skills = self.skill_marks.get(turn, ())
         try:
             size = path.stat().st_size
         except FileNotFoundError:
-            return Snapshot(turn, name, None)
+            return Snapshot(turn, name, None, active_skills=active_skills)
         if size > TOO_LARGE:
-            return Snapshot(turn, name, None, too_large=True)
+            return Snapshot(turn, name, None, too_large=True, active_skills=active_skills)
         data = path.read_bytes()
         digest = hashlib.sha256(data).hexdigest()[:DIGITS]
         blob = self.blobs / digest
@@ -122,7 +165,7 @@ class Checkpoints:
                 os.replace(partial, blob)
             finally:
                 partial.unlink(missing_ok=True)
-        return Snapshot(turn, name, digest)
+        return Snapshot(turn, name, digest, active_skills=active_skills)
 
     def _fail(self, text: str) -> None:
         """The write still goes ahead; the user hears about the first failure only."""

@@ -261,6 +261,7 @@ async def test_plan_offers_only_read_tools_and_blocks_writes_and_command(tmp_pat
             "read_file",
             "glob",
             "grep",
+            "repo_map",
             "execute_command",
             "exit_plan_mode",
             "web_fetch",
@@ -274,7 +275,7 @@ async def test_plan_offers_only_read_tools_and_blocks_writes_and_command(tmp_pat
     assert rules.synthetic == REMINDER and "计划模式" in rules.text and conv.history[1] == rules
     conv.set_mode("normal")
     assert await conv.ask("执行") == "完成"
-    assert (tmp_path / "a").read_text() == "new" and len(provider.requests[-1][2]) == 10
+    assert (tmp_path / "a").read_text() == "new" and len(provider.requests[-1][2]) == 11
 
 
 async def test_unexpected_stream_error_is_safe_stop_and_keeps_completed_tools(tmp_path):

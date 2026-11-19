@@ -38,6 +38,7 @@ BUILTIN_TOOLS = frozenset(
         "execute_command",
         "glob",
         "grep",
+        "repo_map",
         "memory",
         "exit_plan_mode",
         "web_fetch",
@@ -51,6 +52,7 @@ CLAUDE_TOOLS = {
     "Bash": "execute_command",
     "Glob": "glob",
     "Grep": "grep",
+    "RepoMap": "repo_map",
     "WebFetch": "web_fetch",
     "WebSearch": "web_search",
 }
@@ -629,7 +631,7 @@ class ForkRequest:
     prompt: str
 
 
-ACTIVE_LIMIT = 40000  # Characters of pinned SOPs in all.
+ACTIVE_LIMIT = 65536  # Characters of pinned SOPs in all (aligned with 64 KiB FILE_LIMIT).
 
 
 @dataclass(frozen=True)
@@ -640,10 +642,11 @@ class ActiveSkill:
 
 
 class ActiveSkills:
-    """Skills the model loaded, in load order; loading one again refreshes it in place."""
+    """Skills the model loaded, in load order for prefix stability, with LRU eviction when over budget."""
 
     def __init__(self) -> None:
         self._items: dict[str, ActiveSkill] = {}
+        self._lru: dict[str, None] = {}
 
     def __bool__(self) -> bool:
         return bool(self._items)
@@ -655,20 +658,57 @@ class ActiveSkills:
     def names(self) -> tuple[str, ...]:
         return tuple(self._items)
 
+    @property
+    def lru_names(self) -> tuple[str, ...]:
+        return tuple(self._lru)
+
     def items(self) -> tuple[ActiveSkill, ...]:
         return tuple(self._items.values())
 
     def texts(self) -> tuple[str, ...]:
         return tuple(item.text for item in self._items.values())
 
+    def snapshot(self) -> tuple[tuple[str, str], ...]:
+        return tuple((item.skill.name, item.arguments) for item in self._items.values())
+
     def size(self, without: str = "") -> int:
         return sum(len(item.text) for name, item in self._items.items() if name != without)
 
     def activate(self, skill: SkillDef, arguments: str, text: str) -> None:
         self._items[skill.name] = ActiveSkill(skill, arguments, text)
+        self.touch(skill.name)
 
-    def remove(self, name: str) -> None:
-        self._items.pop(name, None)
+    def touch(self, name: str) -> None:
+        if name in self._items:
+            self._lru.pop(name, None)
+            self._lru[name] = None
+
+    def fit_and_activate(
+        self,
+        skill: SkillDef,
+        arguments: str,
+        text: str,
+        limit: int = ACTIVE_LIMIT,
+    ) -> tuple[str, ...]:
+        if len(text) > limit:
+            raise SkillError(f"Skill {skill.name} 展开后的规程超过 {limit} 个字符上限。")
+        evicted: list[str] = []
+        while self.size(without=skill.name) + len(text) > limit:
+            oldest = next(
+                (name for name in self._lru if name != skill.name),
+                next((name for name in self._items if name != skill.name), None),
+            )
+            if oldest is None:
+                break
+            self.remove(oldest)
+            evicted.append(oldest)
+        self.activate(skill, arguments, text)
+        return tuple(evicted)
+
+    def remove(self, name: str) -> bool:
+        self._lru.pop(name, None)
+        return self._items.pop(name, None) is not None
 
     def clear(self) -> None:
         self._items.clear()
+        self._lru.clear()

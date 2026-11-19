@@ -428,6 +428,10 @@ def active_skills(texts: Sequence[str]) -> Supplement | None:
     )
 
 
+def current_date() -> str:
+    return date.today().isoformat()
+
+
 def environment(
     root: Path,
     *,
@@ -435,9 +439,10 @@ def environment(
     permission_mode: str | None = None,
     git: dict | None = None,
     shell: str | None = None,
+    today: str | None = None,
 ) -> Supplement:
     facts = {
-        "date": date.today().isoformat(),
+        "date": today or current_date(),
         "os": platform.system(),
         "shell": shell or ("PowerShell" if os.name == "nt" else "sh"),
         "working_directory": str(root.resolve()),
@@ -452,16 +457,18 @@ def environment(
 
 
 def mode_reminder(mode: str, previous: str) -> Supplement | None:
-    """Announce a mode change once; the current mode stays visible in the environment."""
-    if mode == previous:
+    """Announce a mode change once; non-plan switches stay out of <environment> to keep the prefix cached."""
+    if mode == previous or not previous:
         return None
     if mode == "plan":
         text = (
             "已进入计划模式。只能读取文件、查找文件、搜索代码和运行只读命令（如 git status/diff/log、ls）；写入、编辑、其他命令和外部 MCP 工具不可用。"
             "调查完成后用 exit_plan_mode 提交计划，由用户批准后再执行，不要用文字询问是否开始。"
         )
-    else:
+    elif previous == "plan":
         text = "已退出计划模式，进入自动模式。按用户请求和此前计划使用工具推进任务，完成必要验证后依据实际结果汇报。"
+    else:
+        text = f"当前权限档位已切换为 {mode}。"
     return Supplement("system-reminder", text)
 
 

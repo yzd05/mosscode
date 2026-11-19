@@ -4,7 +4,19 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-18
+
+### 新增
+
+- **代码结构地图与符号级读取**：新增只读工具 `repo_map`（支持 Python、JS/TS/TSX、Go、Rust、Java、C/C++、Bash 代码结构概览，遵守 `.gitignore` 与分层权限规则）；`read_file` 新增 `outline`（查看类与函数大纲及行号区间）与 `symbol`（按符号名精准读取定义代码段）。见 [工具与 Agent Loop](docs/reference/tools.md#代码结构地图与符号读取)。
+- **会话级定时巡检（`/loop`）**：新增 `/loop [间隔] <提示词> | list | stop <id|all>` 斜杠命令，支持在会话空闲时按周期触发提示词或斜杠命令，统一接入 `/tasks` 与状态栏管理。见 [命令](docs/reference/commands.md#定时巡检loop)。
+- **多 Agent 团队升级与 `/swarm` 命令**：新增 `/swarm [status|on|off|<任务>]` 动态协调模式，支持团队共享黑板（`post_board`、`read_board`）、成员间 `@` 点对点交接、只读审查角色（`verifier`）、成员异常退出任务回收与停滞巡检（默认活跃成员上限提升至 6），并在 ACP 编辑器服务中开放团队与 `/swarm` 支持；后台子 Agent 与 `Fork` 支持向 TUI 和 ACP 主界面冒泡权限审批并在停止时自动撤卡。见 [Agent 团队](docs/reference/teams.md#黑板与点对点接力)、[子 Agent](docs/reference/subagents.md#权限)。
+- **完整 MCP 资源、提示词与分帧兼容**：新增 `list_mcp_resources`、`read_mcp_resource` 工具与 `@server:uri` 内联资源引用（支持文本与图片资源）；MCP 提示词自动注册为 `/mcp__<server>__<prompt>` 斜杠命令并在 TUI、`-p` 与 ACP 同步可用；stdio 传输自动兼容换行 JSON 与 `Content-Length` 分帧。见 [MCP 外部工具](docs/reference/mcp.md#资源与提示词)。
+- **记忆检索、Skill 管理与上下文体验增强**：`memory` 工具新增 `search`、`read`、`list` 动作与 `pinned: true` 常驻标记，支持 Git 多工作树共享仓库项目记忆；已激活 Skill 总预算提升至 64 KiB，支持自动淘汰、按需卸载（`/skills unload`）及随 `/rewind` 同步恢复；`/status` 新增上下文数字来源说明，并增强 Chat Completions 对严格推理服务端模板的兼容性。见 [记忆笔记](docs/reference/memory.md)、[Skill](docs/reference/skills.md#调用方式)、[上下文管理](docs/reference/context.md#来源标注)。
+
 ## [0.3.0] - 2026-11-17
+
+首个 GitHub 与 PyPI 公开发布版本。
 
 ### 新增
 
@@ -26,9 +38,9 @@
 - 状态栏精简为“上下文 约 X / Y（N%）”与“缓存命中 N%”，详细 Token 与费用归入 `/status`。
 - 无 `ripgrep` 时的内置搜索改用 `pathspec` 完整对齐 Git `.gitignore` 语法；Windows `atomic_write` 增加文件监听器瞬时锁重试。
 
-## [0.1.0] - 2026-11-03
+## 0.1.0 - 2026-11-03
 
-首个公开版本。
+早期私有孵化基线（未公开发包）。
 
 ### 新增
 
@@ -47,6 +59,6 @@
 - Git 工作树隔离：创建、初始化（链接与复制）、改动检查、安全删除和过期清理。
 - Agent 团队：共享任务、成员邮箱、各自的工作树、Windows Terminal 分屏或进程内运行、确认后逐个合并。
 
-[Unreleased]: https://github.com/yzd05/mosscode/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/yzd05/mosscode/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/yzd05/mosscode/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yzd05/mosscode/releases/tag/v0.3.0
-[0.1.0]: https://github.com/yzd05/mosscode/releases/tag/v0.1.0

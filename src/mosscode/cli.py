@@ -30,6 +30,12 @@ from .coordinator import decide as decide_coordinator
 from .credentials import plaintext_notice, protect
 from .launcher import is_terminal, parse_arguments
 from .mcp_config import MCPConfigError, ProjectMCP, load_mcp_settings, project_mcp
+from .mcp_surface import (
+    PromptArgumentError,
+    expand_mcp_prompt,
+    is_mcp_prompt_command,
+    register_mcp_prompts_from_manager,
+)
 from .messages import (
     STOPPED_EARLY,
     AutoContinue,
@@ -72,9 +78,15 @@ from .tools.shell import ShellNotFound
 from .tui import ConfigTrustApp, MCPTrustApp, MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
 from .usage import request_usage_text
 
+_MCP_DEFERRED = "__mcp_deferred__"
+
 
 def _headless_input(
-    text: str, commands: CommandRegistry = BUILTIN, notices: tuple[str, ...] = ()
+    text: str,
+    commands: CommandRegistry = BUILTIN,
+    notices: tuple[str, ...] = (),
+    *,
+    allow_deferred_mcp: bool = False,
 ) -> tuple[str, str | None, str | None]:
     """-p sends messages, prompt commands and skills; returns (prompt, command, skill) or exits with 2.
 
@@ -83,6 +95,8 @@ def _headless_input(
     parsed = parse_input(text, commands)
     if parsed.kind in {"empty", "message", "shell"}:  # -p speaks to the model; ! runs nothing here.
         return (parsed.text if parsed.kind == "message" else text), None, None
+    if parsed.kind == "unknown" and allow_deferred_mcp and parsed.word.lower().startswith("/mcp__"):
+        return text, _MCP_DEFERRED, None
     if parsed.kind == "unknown":
         problem = unknown_note(parsed, commands)
     elif parsed.command.kind == "local":
@@ -96,6 +110,46 @@ def _headless_input(
         raise SystemExit(2)
     if parsed.command.kind == "skill":
         return parsed.argument, typed(parsed.command, parsed.argument), parsed.command.skill
+    if is_mcp_prompt_command(parsed.command):
+        return text, _MCP_DEFERRED, None
+    return parsed.command.expand(parsed.argument), typed(parsed.command, parsed.argument), None
+
+
+async def _resolve_headless_mcp_prompt(
+    conversation: Conversation,
+    commands: CommandRegistry,
+    prompt: str,
+    command: str | None,
+    skill: str | None,
+) -> tuple[str, str | None, dict | None]:
+    """Resolve a deferred `/mcp__...` slash command once MCP discovery has settled."""
+    needs_mcp = command == _MCP_DEFERRED or (
+        command is None
+        and skill is None
+        and conversation.mcp_manager is not None
+        and prompt.lstrip().lower().startswith("/mcp__")
+    )
+    if not needs_mcp:
+        return prompt, command, None
+    parsed = parse_input(prompt, commands)
+    if parsed.kind == "unknown":
+        print(unknown_note(parsed, commands), file=sys.stderr)
+        raise SystemExit(2)
+    if parsed.kind != "command" or parsed.command is None:
+        return prompt, None, None
+    if parsed.command.kind == "local":
+        print(f"/{parsed.command.name} 只能在交互界面中使用。", file=sys.stderr)
+        raise SystemExit(2)
+    if problem := argument_problem(parsed.command, parsed.argument):
+        print(problem, file=sys.stderr)
+        raise SystemExit(2)
+    if is_mcp_prompt_command(parsed.command):
+        try:
+            expanded, label, images = await expand_mcp_prompt(conversation, parsed.command, parsed.argument)
+        except PromptArgumentError as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(2) from None
+        return expanded, label, images or None
     return parsed.command.expand(parsed.argument), typed(parsed.command, parsed.argument), None
 
 
@@ -207,9 +261,9 @@ def _task_notices(conversation: Conversation, report) -> None:
     conversation.tasks.on_change = Announcer(lambda text: report("notice", text))
 
 
-async def _turns(conversation: Conversation, prompt: str, *, command: str | None, fork):
+async def _turns(conversation: Conversation, prompt: str, *, command: str | None, fork, images: dict | None = None):
     """The task's turn, then one turn per batch of notifications until no task is left running."""
-    async with aclosing(conversation.reply(prompt, command=command, fork=fork)) as stream:
+    async with aclosing(conversation.reply(prompt, command=command, fork=fork, images=images)) as stream:
         async for event in stream:
             yield event
     tasks = conversation.tasks
@@ -247,11 +301,18 @@ async def _prompt(
     resume: str | None = None,
     command: str | None = None,
     skill: str | None = None,
+    commands: CommandRegistry | None = None,
 ) -> dict | None:
     """Run one headless task; JSON formats return the result object instead of raising."""
     if output_format == "text":
         failed = await _text_prompt(
-            conversation, prompt, show_usage=show_usage, resume=resume, command=command, skill=skill
+            conversation,
+            prompt,
+            show_usage=show_usage,
+            resume=resume,
+            command=command,
+            skill=skill,
+            commands=commands,
         )
         return {"is_error": True} if failed else None
     stream_json = output_format == "stream-json"
@@ -283,11 +344,17 @@ async def _prompt(
                 )
             await _resume(conversation, resume, report)
             notices = await conversation.start()
-            for notice in notices:
+            active_commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
+            skipped_mcp: list[str] = []
+            register_mcp_prompts_from_manager(active_commands, conversation.mcp_manager, skipped=skipped_mcp)
+            for notice in (*notices, *skipped_mcp):
                 if stream_json:
                     _emit({"type": "notice", "text": notice})
                 else:
                     print(notice, file=sys.stderr, flush=True)
+            prompt, command, prompt_images = await _resolve_headless_mcp_prompt(
+                conversation, active_commands, prompt, command, skill
+            )
             prompt, fork = _skill_prompt(conversation, skill, prompt, report)
             registry = conversation.registry
             if stream_json:
@@ -302,7 +369,9 @@ async def _prompt(
                     }
                 )
             usage = None
-            async with aclosing(_turns(conversation, prompt, command=command, fork=fork)) as stream:
+            async with aclosing(
+                _turns(conversation, prompt, command=command, fork=fork, images=prompt_images)
+            ) as stream:
                 async for event in stream:
                     if isinstance(event, UsageUpdate):
                         usage = event.usage
@@ -405,6 +474,7 @@ async def _text_prompt(
     resume: str | None = None,
     command: str | None = None,
     skill: str | None = None,
+    commands: CommandRegistry | None = None,
 ) -> bool:
     def report(kind, value):
         if kind == "compact":
@@ -421,10 +491,17 @@ async def _text_prompt(
     finish_failed = False
     try:
         await _resume(conversation, resume, report)
-        for notice in await conversation.start():
+        started_notices = await conversation.start()
+        active_commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
+        skipped_mcp: list[str] = []
+        register_mcp_prompts_from_manager(active_commands, conversation.mcp_manager, skipped=skipped_mcp)
+        for notice in (*started_notices, *skipped_mcp):
             print(notice, file=sys.stderr, flush=True)
+        prompt, command, prompt_images = await _resolve_headless_mcp_prompt(
+            conversation, active_commands, prompt, command, skill
+        )
         prompt, fork = _skill_prompt(conversation, skill, prompt, report)
-        async with aclosing(_turns(conversation, prompt, command=command, fork=fork)) as stream:
+        async with aclosing(_turns(conversation, prompt, command=command, fork=fork, images=prompt_images)) as stream:
             async for event in stream:
                 if isinstance(event, Delta) and event.kind == "text":
                     print(event.text, end="", flush=True)
@@ -606,7 +683,12 @@ def run(args: argparse.Namespace) -> None:
             builtin_commands=BUILTIN,
         )
         prompt, command, skill = (
-            _headless_input(args.prompt, commands, plugins.notices + skills.problems + skipped)
+            _headless_input(
+                args.prompt,
+                commands,
+                plugins.notices + skills.problems + skipped,
+                allow_deferred_mcp=True,
+            )
             if not interactive
             else (None, None, None)
         )
@@ -631,6 +713,13 @@ def run(args: argparse.Namespace) -> None:
             confirm=lambda proj: confirm_project_mcp(args, cwd, proj),
             mcp_loader=load_mcp_settings,
         )
+        if not interactive and command == _MCP_DEFERRED and manager is None:
+            _headless_input(
+                args.prompt,
+                commands,
+                plugins.notices + skills.problems + skipped + mcp_notices,
+                allow_deferred_mcp=False,
+            )
         prune_all()
         hooks, hook_notices = _hook_engine(args, registry, interactive=interactive, plugins=plugins.plugins)
         notices = config_notices + plugins.notices + skills.problems + skipped + hook_notices + mcp_notices
@@ -684,6 +773,7 @@ def run(args: argparse.Namespace) -> None:
                     resume=resume,
                     command=command,
                     skill=skill,
+                    commands=commands,
                 )
             )
             if result is not None and result["is_error"]:

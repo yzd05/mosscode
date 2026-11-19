@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import asdict, replace
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -25,7 +26,7 @@ from .compaction import (
     project,
     released_reads,
 )
-from .context import ContextBudget, ContextMeter, estimate_message, estimate_messages, estimate_text
+from .context import ContextBudget, ContextMeter, ContextSnapshot, estimate_message, estimate_messages, estimate_text
 from .credentials import redact, redact_value
 from .images import ImageRef
 from .limits import RunBudget, stream
@@ -67,6 +68,7 @@ from .prompts import (
     Supplement,
     active_skills,
     build_system_prompt,
+    current_date,
     environment,
     hook_notification,
     mode_reminder,
@@ -252,6 +254,11 @@ def _redacted(message: Message) -> Message:
 
 
 BREAKER = 3  # Consecutive automatic compaction failures before automatic compaction pauses.
+_REAL_DATE = date
+
+
+def _today() -> str:
+    return date.today().isoformat() if date is not _REAL_DATE else current_date()
 
 
 class AgentLoop:
@@ -276,7 +283,9 @@ class AgentLoop:
         self.agent_catalog = ""  # The sub-agent types, after the skills.
         self.team_guide = ""  # The lead's team section; never copied to forks or members.
         self.active_skills = ActiveSkills()  # Pinned SOPs, sent in the cached prefix.
-        self._announced = "normal"
+        self.session_date: str = _today()
+        self._env_mode: str | None = self.registry.permissions.mode if self.registry is not None else None
+        self._announced = self._initial_announced()
         self.history: list[Message] = []
         self.busy = False
         self.total_usage = UsageTotals()
@@ -293,6 +302,9 @@ class AgentLoop:
         self.auto_compact = True
         self.meter = ContextMeter()
         self._anchored_tools: tuple[str, ...] | None = None
+        self._anchored_fixed: str | None = None
+        self._anchored_supplements = ""
+        self._anchored_env = ""
         self._last_env_tokens = 0
         self.compact_failures = 0
         self.compactions = 0
@@ -335,6 +347,33 @@ class AgentLoop:
         self.history.append(message)
         self._commit(message_record(message))
 
+    def _reset_anchor_meta(self) -> None:
+        self._anchored_tools = None
+        self._anchored_fixed = None
+        self._anchored_supplements = ""
+        self._anchored_env = ""
+
+    def _effective_mode(self) -> str:
+        return self.registry.permissions.mode if self.registry is not None else "normal"
+
+    def _initial_announced(self) -> str:
+        current = self._effective_mode()
+        return "normal" if current == "plan" else current
+
+    def _reannounce_base(self) -> str:
+        current = self._effective_mode()
+        if current == "plan":
+            return "normal"
+        return self._env_mode or current
+
+    def _env_permission_mode(self) -> str | None:
+        if self.registry is None:
+            return None
+        current = self.registry.permissions.mode
+        if not self.history or self._env_mode is None or current == "plan" or self._env_mode == "plan":
+            self._env_mode = current
+        return self._env_mode
+
     def truncate(self, keep: int, message: str) -> None:
         """/rewind: the history before index keep. Usage stays spent; skills and the session's hook context stay."""
         if self.busy:
@@ -343,8 +382,9 @@ class AgentLoop:
         # A collapse reaching past the rewind point summarizes messages that are gone.
         self.collapses = [collapse for collapse in self.collapses if collapse.end <= keep]
         self.meter.invalidate()
+        self._reset_anchor_meta()
         self.compact_failures = 0
-        self._sent = {}  # The reminders may be among the dropped messages.
+        self._announced, self._reannounce, self._sent = self._reannounce_base(), True, {}
         if self.registry is not None:
             self.registry.forget_reads()
             self.registry.todos.rewind(keep)
@@ -390,7 +430,8 @@ class AgentLoop:
         if policy.mode != before:
             # Entering or leaving plan mode swaps the exposed tool set, so the usage anchor is stale.
             self.meter.invalidate()
-            self._anchored_tools = None
+            self._reset_anchor_meta()
+            self._env_permission_mode()
 
     def clear(self):
         if self.busy:
@@ -398,10 +439,12 @@ class AgentLoop:
         self.history, self.pending, self.notifications = [], [], []
         self.pending_images = {}
         self.total_usage = UsageTotals()
+        self.session_date = _today()
+        self._env_mode = self.registry.permissions.mode if self.registry is not None else None
         # A fresh context has not seen the mode rules yet.
-        self._announced = "normal"
+        self._announced = self._initial_announced()
         self.meter.invalidate()
-        self._anchored_tools = None
+        self._reset_anchor_meta()
         self._last_env_tokens = 0
         self.compact_failures = 0
         self.collapses, self.collapse_failures = [], 0
@@ -420,7 +463,7 @@ class AgentLoop:
             self.budget = budget
         # Another model reports usage differently; start from a full estimate and a fresh breaker.
         self.meter.invalidate()
-        self._anchored_tools = None
+        self._reset_anchor_meta()
         self._last_env_tokens = 0
         self.compact_failures = 0
         # Signed/opaque blocks are valid only for the model that produced them.
@@ -445,11 +488,16 @@ class AgentLoop:
         the one before it and the reply to it: services that cache on their own (DeepSeek) reuse only a prefix
         that an earlier request ended with. Standing reminders are repeated only when their text changes.
         """
-        mode = mode_reminder(self.mode, self._announced) if iteration == 1 or self._reannounce else None
-        self._announced, self._reannounce = self.mode, False
+        current_mode = self._effective_mode()
+        announce_mode = iteration == 1 or self._reannounce or (self._announced != "plan" and current_mode != "plan")
+        mode = mode_reminder(current_mode, self._announced) if announce_mode else None
+        self._announced, self._reannounce = current_mode, False
         gap, self._gap = self._gap, None
         repeat, self._repeat = self._repeat, None
+        today = _today()
+        date_note = Supplement("system-reminder", f"当前日期已变为 {today}。") if today != self.session_date else None
         standing = {
+            "date": date_note,
             "todo-list": todo_reminder(self.registry.todos if self.registry is not None else None),
             "goal": self.goal_note,
             "hook-notification": hook_notification((*self.turn_notes, *notes)),
@@ -490,23 +538,60 @@ class AgentLoop:
         text += self.hook_context.render() if self.hook_context else ""
         return text
 
-    def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
-        tool_names = tuple(d.name for d in self._definitions())
-        if self.meter.anchor is not None and self._anchored_tools is not None and tool_names != self._anchored_tools:
-            # Tool definitions changed since the anchored request (e.g. plan exit or background MCP discovery).
+    def _environment(self) -> Supplement:
+        definitions = self.registry.definitions() if self.registry else ()
+        root = (
+            self.registry.get(definitions[0].name).root
+            if definitions
+            else (self.registry.permissions.root if self.registry is not None else Path.cwd())
+        )
+        return environment(
+            root,
+            tools_enabled=self.registry is not None,
+            permission_mode=self._env_permission_mode(),
+            git=self.git,
+            shell=shell_label(self.registry),
+            today=self.session_date,
+        )
+
+    @staticmethod
+    def _normalize_env_text(env_text: str) -> str:
+        if env_text.startswith("<environment>\n") and env_text.endswith("\n</environment>"):
+            return env_text.removeprefix("<environment>\n").removesuffix("\n</environment>")
+        return env_text
+
+    def context_snapshot(self, extra: Sequence[Message] = (), env_text: str = "") -> ContextSnapshot:
+        definitions = self._definitions()
+        tool_names = tuple(d.name for d in definitions)
+        if self.meter.anchor is not None and (
+            (self._anchored_tools is not None and tool_names != self._anchored_tools)
+            or (self._anchored_fixed is not None and self._fixed_text() != self._anchored_fixed)
+        ):
+            # System prompt or tool definitions changed since the anchored request (e.g. plan exit or MCP discovery).
             self.meter.invalidate()
-            self._anchored_tools = None
-        supplements_tokens = estimate_text(self._supplements_text())
+            self._reset_anchor_meta()
+        supplements_text = self._supplements_text()
+        supplements_tokens = estimate_text(supplements_text)
+        normalized_env = self._normalize_env_text(env_text)
         env_tokens = (
             self._last_env_tokens
-            if self.meter.anchor is not None and not env_text and self._last_env_tokens
-            else estimate_text(env_text)
+            if self.meter.anchor is not None and not normalized_env and self._last_env_tokens
+            else estimate_text(normalized_env)
         )
-        return self.meter.estimate(
+        snapshot = self.meter.measure(
             self.projected() + list(extra),
             fixed=self._fixed_text,
             extra_tokens=env_tokens + supplements_tokens,
         )
+        if snapshot.source == "reported" and (
+            supplements_text != self._anchored_supplements
+            or (normalized_env and self._anchored_env and normalized_env != self._anchored_env)
+        ):
+            return replace(snapshot, source="mixed")
+        return snapshot
+
+    def estimate(self, extra: Sequence[Message] = (), env_text: str = "") -> int:
+        return self.context_snapshot(extra, env_text).tokens
 
     def _clear(self, cut: int, estimate: int) -> ResultsCleared | None:
         """Older tool results become notes when that alone brings the context far enough down.
@@ -527,6 +612,7 @@ class AgentLoop:
         if self.registry is not None:
             self.registry.forget_reads(done.paths)
         self.meter.invalidate()
+        self._reset_anchor_meta()
         return ResultsCleared(len(done.results), done.tokens)
 
     def _may_collapse(self) -> bool:
@@ -563,8 +649,9 @@ class AgentLoop:
         if self.registry is not None:
             self.registry.forget_reads(released_reads(self.history, start, end))
         # The mode rules and reminders may be in the collapsed part; the next request repeats them.
-        self._announced, self._reannounce, self._sent = "normal", True, {}
+        self._announced, self._reannounce, self._sent = self._reannounce_base(), True, {}
         self.meter.invalidate()
+        self._reset_anchor_meta()
         self.collapse_failures = 0
         after = estimate - estimate_messages(self.history[start:end]) + estimate_message(done.summary)
         return ContextCollapsed(end - start, estimate, after, time.monotonic() - started, done.record)
@@ -631,8 +718,9 @@ class AgentLoop:
             self.registry.forget_reads()
             self.registry.todos.rebase()
         # The mode rules and reminders may have been summarized away; the next request repeats them.
-        self._announced, self._reannounce, self._sent = "normal", True, {}
+        self._announced, self._reannounce, self._sent = self._reannounce_base(), True, {}
         self.meter.invalidate()
+        self._reset_anchor_meta()
         self.compact_failures = 0
         self.compactions += 1
         yield CompactFinished(
@@ -725,17 +813,13 @@ class AgentLoop:
             return self.history[-1].tool_results if committed and self.history[-1].role == "tool" else ()
 
         try:
-            definitions = self.registry.definitions() if self.registry else ()
-            root = self.registry.get(definitions[0].name).root if definitions else Path.cwd()
+            if not self.history:
+                self._env_permission_mode()
+                self._announced = self._initial_announced()
+                self._reannounce = False
             for iteration in range(1, self.max_iterations + 1):
-                # Rebuilt each round: approving a plan changes the mode mid-task.
-                env = environment(
-                    root,
-                    tools_enabled=self.registry is not None,
-                    permission_mode=self.registry.permissions.mode if self.registry else None,
-                    git=self.git,
-                    shell=shell_label(self.registry),
-                )
+                # Rebuilt each round: approving a plan changes the mode mid-task; non-plan flips keep the prefix stable.
+                env = self._environment()
                 yield IterationProgress(iteration, self.max_iterations, self.mode)
                 if committed and (self.pending or self.notifications):
                     last_round, repeats, self._repeat = "", 0, None
@@ -814,11 +898,14 @@ class AgentLoop:
                 self._append(deepcopy(final.message))
                 self._usage(final.usage)
                 self._last_env_tokens = estimate_text(env.text)
+                self._anchored_env = env.text
                 self._anchored_tools = tuple(d.name for d in self._definitions())
+                self._anchored_fixed = self._fixed_text()
+                self._anchored_supplements = self._supplements_text()
                 self.meter.record(
                     final.usage,
                     len(self.history) - self._collapsed + len(self.collapses),
-                    self._last_env_tokens + estimate_text(self._supplements_text()),
+                    self._last_env_tokens + estimate_text(self._anchored_supplements),
                 )
                 truncated = final.stop_reason == "max_tokens"
                 if not calls:

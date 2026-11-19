@@ -155,9 +155,11 @@ moss acp                      # 启动 ACP 服务，供 Zed、JetBrains IDE 等�
 | `/plugins`（别名 `/plugin`） | 列出已安装的插件；`/plugins 名称` 查看组件和问题。安装和管理用命令行的 `moss plugin` |
 | `/tasks`（别名 `/task`） | 列出本会话的子 Agent 任务及其状态、用时和 Token；`/tasks id` 查看详情，`/tasks stop id` 停止 |
 | `/worktree`（别名 `/worktrees`） | 列出 MossCode 管理的 git 工作树及其状态；`/worktree create 名称` 创建，`/worktree remove 名称 [--discard]` 删除，`/worktree clean` 清理过期的临时工作树 |
-| `/team`（别名 `/teams`） | 列出本项目的 Agent 团队；`/team 名称` 查看成员和任务，`/team stop 成员` 停止成员，`/team delete 名称` 删除团队 |
+| `/team`（别名 `/teams`） | 列出本项目的 Agent 团队；`/team 名称` 查看成员、任务与黑板，`/team stop 成员` 停止成员，`/team delete 名称` 删除团队 |
+| `/swarm [on\|off\|任务]` | 开启或关闭多 Agent 协调模式；带任务时直接进入协调编排并派发团队执行 |
 | `/todo` | 查看模型当前的任务清单 |
 | `/goal [条件\|clear]` | 设置完成条件，之后每轮结束自动判断、未达成就继续；不带参数查看状态，`clear` 清除，见 [目标](reference/commands.md#目标) |
+| `/loop [间隔] <提示词>` | 按固定间隔在会话空闲时重复发送提示词或斜杠命令；`/loop list` 查看，`/loop stop <id\|all>` 停止 |
 | `/<Skill 名> [参数]` | 运行 Skill，如内置的 `/commit`、`/init`（生成或补充 `AGENTS.md`）、`/review`（在独立上下文中审查未提交的改动）、`/test` |
 | `/exit`（别名 `/quit`） | 退出并清理资源 |
 

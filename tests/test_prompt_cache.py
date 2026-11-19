@@ -77,8 +77,12 @@ async def test_actual_sdk_cache_stats_and_separate_system_instructions(tmp_path,
             content = payload["input"] if protocol == "openai-responses" else payload["messages"]
             role = "developer" if protocol == "openai-responses" else "system"
             # Nothing follows the conversation: the reminder is its last message, not an instruction after it.
-            assert [m["role"] for m in content[-2:]] == ["user", "user"]
-            assert content[-2]["content"] == "用户任务" and content[-1]["content"].startswith("<system-reminder>")
+            if protocol == "openai-responses":
+                assert [m["role"] for m in content[-2:]] == ["user", "user"]
+                assert content[-2]["content"] == "用户任务" and content[-1]["content"].startswith("<system-reminder>")
+            else:
+                assert [m["role"] for m in content] == ["system", "system", "user"]
+                assert content[-1]["content"].startswith("用户任务\n\n<system-reminder>")
             assert not any(m["role"] == role and "<system-reminder>" in m["content"] for m in content)
             assert "cache_control" not in json.dumps(payload)
             stable = payload["instructions"] if protocol == "openai-responses" else content[0]["content"]

@@ -3,6 +3,7 @@
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from .messages import Message, Usage
 
@@ -80,6 +81,17 @@ class ContextBudget:
         return None
 
 
+ContextSource = Literal["reported", "mixed", "estimated"]
+
+
+@dataclass(frozen=True)
+class ContextSnapshot:
+    tokens: int
+    source: ContextSource
+    anchored_tokens: int | None = None
+    delta_tokens: int = 0
+
+
 class ContextMeter:
     """Size of the next request: last reported input + output, plus an estimate of what changed after."""
 
@@ -101,6 +113,26 @@ class ContextMeter:
         self.anchor = None
         self.anchor_extra = 0
 
+    def measure(
+        self,
+        history: Sequence[Message],
+        extra: str = "",
+        fixed: Callable[[], str] = lambda: "",
+        *,
+        extra_tokens: int | None = None,
+    ) -> ContextSnapshot:
+        current_extra = estimate_text(extra) if extra_tokens is None else extra_tokens
+        if self.anchor is not None and self.anchor_length <= len(history):
+            msg_delta = estimate_messages(history[self.anchor_length :])
+            delta_extra = current_extra - self.anchor_extra
+            delta = msg_delta + delta_extra
+            tokens = max(0, self.anchor + delta)
+            source: ContextSource = "reported" if len(history) == self.anchor_length and delta_extra == 0 else "mixed"
+            return ContextSnapshot(tokens=tokens, source=source, anchored_tokens=self.anchor, delta_tokens=delta)
+        # No usable anchor: count the whole request, including system prompt and tool definitions.
+        tokens = estimate_text(fixed()) + estimate_messages(history) + current_extra
+        return ContextSnapshot(tokens=tokens, source="estimated")
+
     def estimate(
         self,
         history: Sequence[Message],
@@ -109,9 +141,4 @@ class ContextMeter:
         *,
         extra_tokens: int | None = None,
     ) -> int:
-        current_extra = estimate_text(extra) if extra_tokens is None else extra_tokens
-        if self.anchor is not None and self.anchor_length <= len(history):
-            delta_extra = current_extra - self.anchor_extra
-            return max(0, self.anchor + estimate_messages(history[self.anchor_length :]) + delta_extra)
-        # No usable anchor: count the whole request, including system prompt and tool definitions.
-        return estimate_text(fixed()) + estimate_messages(history) + current_extra
+        return self.measure(history, extra, fixed, extra_tokens=extra_tokens).tokens

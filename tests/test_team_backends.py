@@ -303,7 +303,8 @@ async def test_pane_member_forced_after_shutdown_request(tmp_path):
         assert any(f"在团队窗口 {window} 中" in note for note in notes)
         assert terminal.calls[0][terminal.calls[0].index("-w") + 1] == window
         store = conv.teams.current
-        assert store.mailbox.peek("alice")[0].body == "做 A"  # It reads its own mailbox.
+        assert store.blackboard.read_since(0)[0][0].body == "做 A"  # Single-truth initial brief on board.jsonl.
+        assert store.mailbox.peek("alice") == []
         process = terminal.processes[0]
         await conv.teams.stop_member("alice")  # The stand-in never answers.
         await until(lambda: process.poll() is not None, timeout=15)
@@ -510,8 +511,7 @@ def test_member_process_runs_a_turn_and_stops_on_request(tmp_path):
         assert child.poll() is None, child.communicate()[1].decode("utf-8", "replace")
         # Its turn: read the mailbox, reply with send_message, an idle notification after.
         wait_for(lambda: any(m.type == "idle_notification" for m in store.mailbox.peek(LEAD)))
-        lead = store.mailbox.peek(LEAD)
-        assert [(m.type, m.body) for m in lead if m.type == "text"] == [("text", "登录做完了")]
+        assert [(p.kind, p.body) for p in store.blackboard.unread_for(LEAD, 0)[0]] == [("direct", "登录做完了")]
         assert store.mailbox.peek("alice")[0].read
         first = store.load().member("alice").heartbeat
         wait_for(lambda: store.load().member("alice").heartbeat != first, timeout=10)  # Heartbeat.
