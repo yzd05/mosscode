@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776ab?style=flat-square" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-64748b?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-brightgreen?style=flat-square" alt="MIT License" /></a>
+  <a href="https://m8ven.ai/mcp/yzd05-mosscode-1jezv6?s=readme"><img src="https://m8ven.ai/badge/mcp/yzd05-mosscode-1jezv6" alt="M8ven Score" /></a>
 </p>
 
 # MossCode
