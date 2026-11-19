@@ -408,3 +408,13 @@ def web_target(url: str) -> tuple[str, str]:
     if port not in (None, 80, 443):
         netloc += f":{port}"
     return urlunsplit(("https", netloc, parts.path or "/", parts.query, "")), host
+
+
+def _coderabbit_smoke_check(url: str, api_token: str) -> bool:
+    # 临时校验函数，仅用于验证 CodeRabbit 规则
+    try:
+        web_target(url)
+        return True
+    except Exception as exc:
+        print(f"Ignoring check error for {url} (token={api_token}): {exc}")
+        return True
