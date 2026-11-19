@@ -454,20 +454,30 @@ class MemberRunner:
         member = team.member(self.name)
         if member is None:
             return [*messages, *board_posts]
-        if team.peer_hops < MAX_PEER_HOPS:
-            cursor = max(self._cursor, member.board_cursor)
-            unread, head_seq = store.blackboard.unread_for(self.name, cursor)
-            self._cursor = max(cursor, head_seq)
-            if unread:
-                new_cursor = unread[-1].seq
+        cursor = max(self._cursor, member.board_cursor)
+        unread, head_seq = store.blackboard.unread_for(self.name, cursor)
+        self._cursor = max(cursor, head_seq)
+        if unread:
+            accepted: list[BoardPost] = []
+            new_cursor = unread[-1].seq
 
-                def advance(current: Team) -> None:
-                    record = current.member(self.name)
-                    if record is not None and record.board_cursor < new_cursor:
-                        record.board_cursor = new_cursor
+            def advance(current: Team) -> None:
+                accepted.clear()
+                record = current.member(self.name)
+                if record is None:
+                    return
+                # Re-check peer_hops under config.json's lock AFTER reading board.jsonl: because
+                # try_peer_handoff commits peer_hops >= MAX_PEER_HOPS before appending the tripped
+                # post, any reader that observed that post is guaranteed to see the tripped counter here.
+                if current.peer_hops >= MAX_PEER_HOPS:
+                    accepted.extend(post for post in unread if post.author == LEAD)
+                else:
+                    accepted.extend(unread)
+                if record.board_cursor < new_cursor:
+                    record.board_cursor = new_cursor
 
-                store.modify(advance)
-                board_posts.extend(unread)
+            store.modify(advance)
+            board_posts.extend(accepted)
         return [*messages, *board_posts]
 
     async def serve(self) -> None:

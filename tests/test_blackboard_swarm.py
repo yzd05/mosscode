@@ -468,6 +468,7 @@ async def test_ping_pong_circuit_breaker_stops_at_max_peer_hops_and_escalates_to
 
     script = Script(a=ping("b"), b=ping("a"))
     _, conv = swarm_conversation(tmp_path, script)
+    conv.teams.poll = 0.005  # High-frequency poll to stress concurrent _read_inputs vs try_peer_handoff TOCTOU.
     await conv.teams.create("loop")
     await conv.teams.spawn("a", "general", "等待", isolation="none")
     await conv.teams.spawn("b", "general", "等待", isolation="none")
