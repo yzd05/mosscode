@@ -4,10 +4,9 @@ import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from .images import ImageRef
-from .permissions import ApprovalRequest, QuestionRequest
 
 
 @dataclass(frozen=True)
@@ -325,6 +324,46 @@ class Collapse:
     record: str | None = None
 
 
+@runtime_checkable
+class InteractionRequest(Protocol):
+    """Structured user-interaction event (such as an approval or question) emitted during a run."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def call_id(self) -> str: ...
+
+    @property
+    def choices(self) -> tuple[str, ...]: ...
+
+    @property
+    def source(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class Supplement:
+    kind: str
+    text: str
+
+    def render(self) -> str:
+        return f"<{self.kind}>\n{self.text}\n</{self.kind}>"
+
+
+@dataclass(frozen=True)
+class PromptRequest:
+    stable: str
+    supplements: tuple[Supplement, ...] = ()
+
+
+def as_prompt(value: str | PromptRequest) -> PromptRequest:
+    return value if isinstance(value, PromptRequest) else PromptRequest(value)
+
+
+# Supplements that stay the same between requests and belong to the cached prefix.
+PREFIX_KINDS = frozenset({"environment", "active-skills", "hook-context"})
+
+
 StreamEvent = (
     Delta
     | Completed
@@ -334,8 +373,7 @@ StreamEvent = (
     | UsageUpdate
     | RunStopped
     | Notice
-    | ApprovalRequest
-    | QuestionRequest
+    | InteractionRequest
     | Retrying
     | ReplyRetry
     | AutoContinue

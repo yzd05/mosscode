@@ -6,7 +6,8 @@ from pathlib import Path
 import yaml
 
 from mosscode.agents import AgentCatalog
-from mosscode.messages import NOTIFICATION, ApprovalRequest, TasksNotified
+from mosscode.messages import NOTIFICATION, TasksNotified
+from mosscode.permissions import ApprovalRequest
 from mosscode.tools import create_default_registry
 from test_agent import call, response
 from test_sessions import drain, make

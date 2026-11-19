@@ -10,7 +10,19 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
-from .messages import ToolDefinition
+from .messages import (
+    PREFIX_KINDS as PREFIX_KINDS,
+)
+from .messages import (
+    PromptRequest as PromptRequest,
+)
+from .messages import (
+    Supplement,
+    ToolDefinition,
+)
+from .messages import (
+    as_prompt as as_prompt,
+)
 from .security import SecurityError, inside, resolve_path
 
 
@@ -368,27 +380,6 @@ def git_snapshot(root: Path, *, timeout: float = 3.0, max_lines: int = 30) -> di
     return {"is_repo": True, "branch": branch, "status": status or "（工作区干净）"}
 
 
-@dataclass(frozen=True)
-class Supplement:
-    kind: str
-    text: str
-
-    def render(self) -> str:
-        return f"<{self.kind}>\n{self.text}\n</{self.kind}>"
-
-
-@dataclass(frozen=True)
-class PromptRequest:
-    stable: str
-    supplements: tuple[Supplement, ...] = ()
-
-
-def as_prompt(value: str | PromptRequest) -> PromptRequest:
-    return value if isinstance(value, PromptRequest) else PromptRequest(value)
-
-
-# Supplements that stay the same between requests and belong to the cached prefix.
-PREFIX_KINDS = frozenset({"environment", "active-skills", "hook-context"})
 HOOK_TEXT_LIMIT = 8000  # Per supplement.
 
 

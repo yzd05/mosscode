@@ -10,12 +10,21 @@ from contextlib import aclosing
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from .context import ContextBudget, estimate_message, estimate_messages, estimate_text
 from .images import ImageRef
 from .limits import stream
 from .messages import NOTIFICATION, Collapse, Completed, ContentBlock, Message, ProviderError, ToolResult
-from .session import Session
+from .tool_budget import ResultStore
+
+
+@runtime_checkable
+class RecordStore(Protocol):
+    """Storage boundary for writing compaction and collapse transcript records."""
+
+    def write_record(self, text: str, name: str = "compact") -> Path: ...
+
 
 KEEP_TOKENS = 10_000
 KEEP_MESSAGES = 5
@@ -140,7 +149,7 @@ def _is_read(result: ToolResult) -> bool:
     return _is_file_read(result) and not result.details.get("outline")
 
 
-def _cleared(result: ToolResult, session: Session | None) -> ToolResult | None:
+def _cleared(result: ToolResult, session: ResultStore | None) -> ToolResult | None:
     """The note that replaces a result, or None when its content could not be kept anywhere."""
     lead = f"（较早的工具结果已清理以节省上下文，原有约 {estimate_text(result.output)} Token。"
     if _is_file_read(result):
@@ -158,7 +167,7 @@ def _cleared(result: ToolResult, session: Session | None) -> ToolResult | None:
     return replace(result, output=note, details={**result.details, "persisted": path, "cleared": True})
 
 
-def clear_results(history: Sequence[Message], cut: int, session: Session | None, start: int = 0) -> Cleared:
+def clear_results(history: Sequence[Message], cut: int, session: ResultStore | None, start: int = 0) -> Cleared:
     """The history with the larger tool results from start to cut replaced by notes; no message is added or removed.
 
     start skips collapsed messages: they are not sent, and /rewind may bring them back as they were.
@@ -321,7 +330,7 @@ async def _ask(provider, prompt: str, on_usage=None, limits=None) -> Completed:
     raise ProviderError("摘要回复在完成信号前中断。")
 
 
-def _keep_record(session: Session | None, text: str, name: str) -> Path | None:
+def _keep_record(session: RecordStore | None, text: str, name: str) -> Path | None:
     if session is None:
         return None
     try:
@@ -366,7 +375,7 @@ async def compact_history(
     history: Sequence[Message],
     budget: ContextBudget,
     *,
-    session: Session | None = None,
+    session: RecordStore | None = None,
     instructions: str = "",
     manual: bool = False,
     on_usage=None,
@@ -436,7 +445,7 @@ async def collapse_segment(
     end: int,
     budget: ContextBudget,
     *,
-    session: Session | None = None,
+    session: RecordStore | None = None,
     on_usage=None,
     limits=None,
 ) -> Collapse:
