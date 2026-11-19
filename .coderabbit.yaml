@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 version: 2
-# MossCode: README / docs 为中文，代码与注释为英文；审查意见用中文输出
-language: "zh-CN"
+# MossCode: README / docs 为中文，代码与注释为英文；开源项目，审查意见用英文输出
+language: "en-US"
 early_access: false
 
 reviews:
