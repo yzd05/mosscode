@@ -7,6 +7,7 @@ import math
 import random
 import re
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -248,7 +249,7 @@ class LoopScheduler:
         self.jitter_ratio = max(0.0, float(jitter_ratio))
         self.rng: Callable[[], float] = rng if rng is not None else random.random
         self.lifespan = float(lifespan)
-        self._idle_event = asyncio.Event()
+        self._waiters: deque[asyncio.Event] = deque()
         self._fire_lock = asyncio.Lock()
 
     def next_delay(self, interval: float) -> float:
@@ -312,11 +313,13 @@ class LoopScheduler:
         self.tasks.launch(task, lambda: self._run_loop(task))
         return task
 
+    def _wake_next(self) -> None:
+        if self._waiters:
+            self._waiters[0].set()
+
     def notify_idle(self) -> None:
-        """Signal that the session may now be idle, waking any pending_fire loops."""
-        event = self._idle_event
-        self._idle_event = asyncio.Event()
-        event.set()
+        """Signal that the session may now be idle, waking the oldest pending_fire loop first."""
+        self._wake_next()
 
     async def stop(self, target: str) -> list[Task]:
         key = target.strip()
@@ -362,38 +365,61 @@ class LoopScheduler:
                         break
                     await asyncio.sleep(min(info.next_fire, info.expires_at) - now)
 
-                while True:
-                    if time.monotonic() >= info.expires_at:
-                        return self._complete(task, "已达 7 天有效期上限")
-                    wait_event = self._idle_event
-                    if self.is_busy():
-                        if not info.pending_fire or info.next_fire is not None:
-                            info.pending_fire = True
-                            info.next_fire = None
-                            self.tasks.changed(task)
-                        remaining = info.expires_at - time.monotonic()
-                        if remaining <= 0:
-                            return self._complete(task, "已达 7 天有效期上限")
-                        try:
-                            await asyncio.wait_for(wait_event.wait(), timeout=remaining)
-                        except TimeoutError:
-                            return self._complete(task, "已达 7 天有效期上限")
-                        continue
-
-                    async with self._fire_lock:
+                waiter: asyncio.Event | None = None
+                try:
+                    while True:
                         if time.monotonic() >= info.expires_at:
                             return self._complete(task, "已达 7 天有效期上限")
-                        if self.is_busy():
+                        # Queue when busy or when an older pending loop is ahead in FIFO order.
+                        if self.is_busy() or (self._waiters and self._waiters[0] is not waiter):
+                            if waiter is None:
+                                waiter = asyncio.Event()
+                                self._waiters.append(waiter)
+                            waiter.clear()
+                            if not info.pending_fire or info.next_fire is not None:
+                                info.pending_fire = True
+                                info.next_fire = None
+                                self.tasks.changed(task)
+                            if not self.is_busy():
+                                self._wake_next()
+                            remaining = info.expires_at - time.monotonic()
+                            if remaining <= 0:
+                                return self._complete(task, "已达 7 天有效期上限")
+                            try:
+                                await asyncio.wait_for(waiter.wait(), timeout=remaining)
+                            except TimeoutError:
+                                return self._complete(task, "已达 7 天有效期上限")
                             continue
-                        if task.stopped:
-                            await asyncio.sleep(0)
-                            raise asyncio.CancelledError
-                        info.runs += 1
-                        info.pending_fire = False
-                        info.next_fire = None
-                        self.tasks.changed(task)
-                        await self.trigger(task, info.prompt)
-                        break
+
+                        async with self._fire_lock:
+                            if time.monotonic() >= info.expires_at:
+                                return self._complete(task, "已达 7 天有效期上限")
+                            if self.is_busy() or (self._waiters and self._waiters[0] is not waiter):
+                                continue
+                            if task.stopped:
+                                await asyncio.sleep(0)
+                                raise asyncio.CancelledError
+                            if waiter is not None:
+                                self._waiters.remove(waiter)
+                                waiter = None
+                            info.runs += 1
+                            info.pending_fire = False
+                            info.next_fire = None
+                            self.tasks.changed(task)
+                            try:
+                                await self.trigger(task, info.prompt)
+                            finally:
+                                if not self.is_busy():
+                                    self._wake_next()
+                            break
+                finally:
+                    if waiter is not None:
+                        try:
+                            self._waiters.remove(waiter)
+                        except ValueError:
+                            pass
+                        if not self.is_busy():
+                            self._wake_next()
 
                 if task.stopped:
                     await asyncio.sleep(0)

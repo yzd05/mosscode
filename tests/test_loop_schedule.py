@@ -253,6 +253,59 @@ async def test_simultaneous_loops_serialize_across_idle_windows():
         await scheduler.close()
 
 
+async def test_fifo_pending_order_prevents_fast_loop_from_starving_peer():
+    tasks = TaskManager()
+    busy = True
+    fired_order: list[str] = []
+    triggered = asyncio.Event()
+
+    async def trigger(task: Task, _prompt: str) -> None:
+        nonlocal busy
+        busy = True
+        fired_order.append(task.id)
+        triggered.set()
+
+    async def wait_pending(task: Task) -> None:
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while not (task.loop is not None and task.loop.pending_fire):
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.005)
+
+    scheduler = LoopScheduler(tasks, is_busy=lambda: busy, trigger=trigger, jitter_ratio=0.0)
+    try:
+        # Enqueue fast first, then slow while busy so FIFO waiter order is guaranteed: [fast, slow].
+        fast = scheduler.schedule(0.01, "0.01 秒", "高频任务", max_runs=3)
+        await wait_pending(fast)
+        slow = scheduler.schedule(0.01, "0.01 秒", "低频任务", max_runs=2)
+        await wait_pending(slow)
+
+        # Idle window 1: fast (queue head) fires first.
+        busy = False
+        scheduler.notify_idle()
+        await asyncio.wait_for(triggered.wait(), timeout=1.0)
+        assert fired_order == [fast.id]
+
+        # Wait until fast re-arms while busy, placing it behind slow: [slow, fast].
+        await wait_pending(fast)
+
+        # Idle window 2: slow MUST fire ahead of fast's second run (zero starvation).
+        triggered.clear()
+        busy = False
+        scheduler.notify_idle()
+        await asyncio.wait_for(triggered.wait(), timeout=1.0)
+        await asyncio.sleep(0.005)
+        assert fired_order == [fast.id, slow.id]
+
+        # Idle window 3: fast now gets its second run.
+        triggered.clear()
+        busy = False
+        scheduler.notify_idle()
+        await asyncio.wait_for(triggered.wait(), timeout=1.0)
+        assert fired_order == [fast.id, slow.id, fast.id]
+    finally:
+        await scheduler.close()
+
+
 async def test_post_completion_spacing_and_max_runs_auto_completion():
     tasks = TaskManager()
     announcements: list[str] = []
