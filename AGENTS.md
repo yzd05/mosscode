@@ -62,7 +62,7 @@ MossCode 同时运行在 Windows、Linux 和 macOS 上：
 
 ## 代码审查（CodeRabbit）
 
-CodeRabbit 按本文件与 `.coderabbit.yaml` 审查 PR，审查意见用中文输出。
+CodeRabbit 按本文件与 `.coderabbit.yaml` 审查 PR，审查意见用英文输出（开源项目）。
 
 ### 核心不变量
 
