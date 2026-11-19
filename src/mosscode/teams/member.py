@@ -361,6 +361,7 @@ class MemberRunner:
         on_status: Callable[[str, dict], None] | None = None,
         poll: float = POLL,
         on_event: Callable[[object], None] | None = None,
+        has_active_peers: Callable[[], bool] | None = None,
     ):
         self.access, self.name, self.role = access, name, role
         self.loop: AgentLoop | None = None  # Set once the tools that need this runner exist.
@@ -373,6 +374,7 @@ class MemberRunner:
         self.shutdown: bool | None = None  # Set by its shutdown_response: True stops after this turn.
         self.on_approval, self.on_status = on_approval, on_status
         self.on_event = on_event  # A pane member's own window shows the turn.
+        self._has_active_peers = has_active_peers
         self.poll = poll
         self.status = "idle"
         self.since = time.monotonic()  # When it entered its status.
@@ -391,6 +393,24 @@ class MemberRunner:
     @property
     def policy(self):
         return self.loop.registry.permissions
+
+    @property
+    def cursor(self) -> int:
+        return self._cursor
+
+    def advance_cursor(self, seq: int) -> None:
+        """Monotonically advance this member's board cursor in config.json after a contiguous read."""
+        if seq <= self._cursor:
+            return
+
+        def bump(current: Team) -> None:
+            record = current.member(self.name)
+            if record is not None and record.board_cursor < seq:
+                record.board_cursor = seq
+
+        self.access.store.modify(bump)
+        if seq > self._cursor:
+            self._cursor = seq
 
     def wake(self) -> None:
         self.wakeup.set()
@@ -519,16 +539,33 @@ class MemberRunner:
         return {task.id for task in tasks if task.owner == self.name and task.status == "completed"}
 
     def _has_incomplete_upstream(self) -> bool:
+        store = self.access.store
         try:
-            tasks = self.access.store.board.list()
+            tasks = store.board.list()
         except TeamError:
             return False
-        return any(
+        if any(
             task.status != "completed"
             and task.owner != self.name
             and not (task.status == "pending" and task.blocked_by)
             for task in tasks
-        )
+        ):
+            return True
+        try:
+            team = store.load()
+        except TeamError:
+            return False
+        if any(member.name != self.name and member.status == "running" for member in team.members):
+            return True
+        record = team.member(self.name)
+        cursor = max(self._cursor, record.board_cursor if record is not None else 0)
+        try:
+            unread_posts, _ = store.blackboard.unread_for(self.name, cursor)
+            if unread_posts or store.mailbox.unread_count(self.name) > 0:
+                return True
+        except TeamError:
+            return False
+        return False
 
     async def _consume(self, prompt: str):
         final, stopped = "", None
@@ -585,9 +622,6 @@ class MemberRunner:
             self._run = None
         if not failure and (stopped is None or stopped.reason not in {"completed", "max_tokens"}):
             failure = stopped.notice if stopped is not None else "没有完整回复"
-        done = sorted(
-            await asyncio.to_thread(self._completed) - before, key=lambda key: int(key) if key.isdigit() else 0
-        )
         self.last_tool = ""
         if request is not None and self.shutdown is None:
             self.shutdown = True  # It never answered: the request stands.
@@ -599,22 +633,36 @@ class MemberRunner:
             except TeamError:
                 pass
         woke_peers_only = self._turn_woke_peers and not self._turn_mentioned_lead
+        ok = not failure and not interrupted
+        peer_suppressed = ok and (woke_peers_only or self._turn_breaker_tripped)
+        done = (
+            []
+            if peer_suppressed
+            else sorted(
+                await asyncio.to_thread(self._completed) - before, key=lambda key: int(key) if key.isdigit() else 0
+            )
+        )
         is_brief_turn = bool(messages) and all(isinstance(m, BoardPost) and m.kind == "brief" for m in messages)
         waiting_upstream = (
-            self.role == "integrator"
+            ok
+            and not peer_suppressed
+            and self.role == "integrator"
             and not is_brief_turn
             and not self._turn_mentioned_lead
             and not self._turn_woke_peers
-            and await asyncio.to_thread(self._has_incomplete_upstream)
+            and (
+                (self._has_active_peers is not None and self._has_active_peers())
+                or await asyncio.to_thread(self._has_incomplete_upstream)
+            )
         )
         role_quiet = (
-            self.role in {"integrator", "verifier"}
+            ok
+            and not peer_suppressed
+            and self.role in {"integrator", "verifier"}
             and not done
             and (is_brief_turn or self._turn_mentioned_lead or waiting_upstream)
         )
-        suppress_idle = (not failure and not interrupted) and (
-            woke_peers_only or role_quiet or self._turn_breaker_tripped
-        )
+        suppress_idle = peer_suppressed or role_quiet
         # Peer-only handoffs pass the baton directly without waking Lead; plans and shutdowns have their own replies.
         if (self.awaiting is None or failure) and self.shutdown is not True and not suppress_idle:
             reason = "interrupted" if interrupted else "failed" if failure else "completed"

@@ -264,6 +264,7 @@ async def build_runner(
     on_approval: Callable[[ApprovalRequest], None] | None = None,
     poll: float = POLL,
     session_mode: Callable[[], str] | None = None,
+    has_active_peers: Callable[[], bool] | None = None,
 ) -> MemberRunner:
     """The definition's prompt plus the team addendum, tools rooted in its worktree. The lead builds
     in-process members with it; a pane member's process builds itself with it (session_mode from its record)."""
@@ -291,6 +292,7 @@ async def build_runner(
         require_plan_approval=member.require_plan_approval,
         on_approval=on_approval,
         poll=poll,
+        has_active_peers=has_active_peers,
     )
     runner._cursor = member.board_cursor
     provider, budget, owned = conversation.subagents._provider(agent.model, f"成员 {member.name} ")
@@ -1293,6 +1295,9 @@ class TeamRuntime:
             wake=self._peer_wake,
             on_approval=lambda request: self._approval(request, member.name),
             poll=self.poll,
+            has_active_peers=lambda name=member.name: any(
+                other != name and r.status == "running" for other, r in self.runners.items()
+            ),
         )
         append = runner.loop.on_commit
 

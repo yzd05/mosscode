@@ -632,3 +632,180 @@ async def test_dropped_baton_verifier_without_mention_on_turn_two_notifies_lead(
     updates = conv.take_notifications()
     assert any("verifier 空闲" in item and "我检查完了但忘了发黑板" in item for item in updates)
     await conv.close()
+
+
+async def test_member_read_board_contiguous_scan_advances_cursor_and_avoids_duplicate_wakeup(tmp_path):
+    turn2_paused = asyncio.Event()
+    turn2_release = asyncio.Event()
+    turn3_paused = asyncio.Event()
+    turn3_release = asyncio.Event()
+    bob_turn2_paused = asyncio.Event()
+    bob_turn2_release = asyncio.Event()
+    alice_reads: list[str] = []
+
+    async def alice(messages, tools):
+        last = messages[-1]
+        turn_no = turns(messages)
+        if turn_no == 1:
+            return response("待命")
+        if turn_no == 2:
+            if last.role == "user":
+                turn2_paused.set()
+                await turn2_release.wait()
+                return response(calls=[tool_call("read_board", "rb_all", since=0, limit=50)])
+            alice_reads.append(last.tool_results[0].output)
+            return response("已扫描全量黑板")
+        if turn_no == 3:
+            if last.role == "user":
+                turn3_paused.set()
+                await turn3_release.wait()
+                return response(calls=[tool_call("read_board", "rb_seq", seqs=[1])])
+            return response("只看了第一条")
+        return response("收到后续未扫描消息")
+
+    async def bob(messages, tools):
+        last = messages[-1]
+        turn_no = turns(messages)
+        if turn_no == 1:
+            return response("bob 待命")
+        if turn_no == 2:
+            if last.role == "user":
+                bob_turn2_paused.set()
+                await bob_turn2_release.wait()
+                return response(calls=[tool_call("read_board", "rb_page", since=6, limit=2)])
+            return response("已分页读取")
+        return response("bob 收到未分页尾条")
+
+    script = Script(alice=alice, bob=bob)
+    _, conv = swarm_conversation(tmp_path, script)
+    await conv.teams.create("cursor-scan")
+    store = conv.teams.current
+
+    # Turn 1 brief for alice (#1).
+    await conv.teams.spawn("alice", "general", "等待通知", isolation="none")
+    await until(idle(conv, "alice"))
+
+    # Post #2 (@alice): wakes Turn 2; while paused before read_board(since=0, limit=50), post #3 (@alice).
+    await conv.teams.post_board("@alice 第一条通知")
+    await turn2_paused.wait()
+    await conv.teams.post_board("@alice 第二条通知")
+    turn2_release.set()
+    await until(idle(conv, "alice"))
+    await asyncio.sleep(0.08)
+
+    assert alice_reads and "第二条通知" in alice_reads[0]
+    assert store.load().member("alice").board_cursor >= 3
+    assert turns(script.seen["alice"][-1][0]) == 2 and len(script.seen["alice"]) == 3
+
+    # Post #4 (@alice): wakes Turn 3; random-access read_board(seqs=[1]) must NOT skip concurrent #5!
+    await conv.teams.post_board("@alice 第三条检查点")
+    await turn3_paused.wait()
+    await conv.teams.post_board("@alice 第四条未扫描")
+    turn3_release.set()
+
+    await until(lambda: len(script.seen["alice"]) == 6, timeout=5.0)
+    await until(idle(conv, "alice"))
+    assert turns(script.seen["alice"][-1][0]) == 4
+    assert "第四条未扫描" in script.seen["alice"][-1][0][-1].text
+    assert store.load().member("alice").board_cursor >= 5
+
+    # Spawn bob (#6); while bob Turn 2 pauses before read_board(since=6, limit=2), post #8 and #9.
+    # Limit-truncated read_since(6, limit=2) returns [#7, #8] -> advances to 8 ONLY, still waking bob on #9!
+    await conv.teams.spawn("bob", "general", "分页测试", isolation="none")
+    await until(idle(conv, "bob"))
+    await conv.teams.post_board("@bob 第七条起点")
+    await bob_turn2_paused.wait()
+    await conv.teams.post_board("@bob 批次A")
+    await conv.teams.post_board("@bob 批次B")
+    bob_turn2_release.set()
+
+    await until(lambda: len(script.seen["bob"]) == 4, timeout=5.0)
+    await until(idle(conv, "bob"))
+    await asyncio.sleep(0.08)
+    turn3_prompt = script.seen["bob"][-1][0][-1].text
+    assert turns(script.seen["bob"][-1][0]) == 3 and "批次B" in turn3_prompt and "批次A" not in turn3_prompt
+    assert len(script.seen["bob"]) == 4
+    await conv.close()
+
+
+async def test_integrator_suppresses_idle_when_upstream_peer_is_running_or_mention_queued(tmp_path):
+    author_completed_task = asyncio.Event()
+    author_release = asyncio.Event()
+    int_turn3_paused = asyncio.Event()
+    int_turn3_release = asyncio.Event()
+
+    async def author(messages, tools):
+        last = messages[-1]
+        if last.role == "user":
+            return response(calls=[tool_call("team_task_update", "ta1", id="1", owner="author", status="in_progress")])
+        cid = last.tool_results[0].call_id
+        if cid == "ta1":
+            return response(calls=[tool_call("team_task_update", "ta2", id="1", status="completed")])
+        if cid == "ta2":
+            author_completed_task.set()
+            await author_release.wait()
+            return response("上游任务已标记完成并收尾")
+        return response("author 完成")
+
+    async def integrator(messages, tools):
+        turn_no = turns(messages)
+        if turn_no == 1:
+            return response("待命")
+        if turn_no == 2:
+            return response("Turn2继续等待运行中的上游")
+        if turn_no == 3:
+            int_turn3_paused.set()
+            await int_turn3_release.wait()
+            return response("Turn3等待并发黑板消息")
+        return response("Turn4掉棒提醒")
+
+    script = Script(author=author, integrator=integrator)
+    _, conv = swarm_conversation(tmp_path, script)
+    await conv.teams.create("int-gate")
+    store = conv.teams.current
+
+    access = conv.teams.access()
+    access.task_create("前置开发")
+    access.task_create("合流验收", blocked_by=["1"])
+
+    await conv.teams.spawn("integrator", "general", "负责合流", role="integrator", isolation="none")
+    await until(idle(conv, "integrator"))
+    await conv.teams.settle()
+    await conv.teams._flush_lead(store)
+    conv.take_notifications()
+
+    # Case A: author completes Task 1 while still running -> integrator Turn 2 suppresses premature idle!
+    await conv.teams.spawn("author", "general", "先完成任务1", isolation="none")
+    await author_completed_task.wait()
+    await conv.teams.post_board("@integrator 检查是否需等待")
+    await until(lambda: len(script.seen["integrator"]) >= 2, timeout=5.0)
+    await until(idle(conv, "integrator"))
+    await asyncio.sleep(0.06)
+    await conv.teams.settle()
+    await conv.teams._flush_lead(store)
+    assert conv.take_notifications() == ()
+
+    # Let author finish idle and drain its idle notification.
+    author_release.set()
+    await until(idle(conv, "author"))
+    await conv.teams.settle()
+    await conv.teams._flush_lead(store)
+    conv.take_notifications()
+
+    # Case B: all upstream tasks completed and author idle, but unread @integrator arrives mid-Turn 3.
+    # Turn 3 suppresses premature idle, Turn 4 picks up the unread mention and reports dropped baton to Lead!
+    await conv.teams.post_board("@integrator 发起第3轮")
+    await int_turn3_paused.wait()
+    store.blackboard.append(LEAD, "@integrator 并发到达的待处理消息", valid_members=("author", "integrator"))
+    int_turn3_release.set()
+
+    await until(lambda: conv.notifications, timeout=5.0)
+    await until(idle(conv, "integrator"))
+    await asyncio.sleep(0.06)
+    await conv.teams.settle()
+    await conv.teams._flush_lead(store)
+
+    updates = "\n".join(conv.take_notifications())
+    assert "Turn3等待并发黑板消息" not in updates
+    assert "integrator 空闲" in updates and "Turn4掉棒提醒" in updates
+    await conv.close()

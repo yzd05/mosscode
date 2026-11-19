@@ -439,6 +439,42 @@ class ReadBoard(SharedTaskTool):
         }
 
 
+class MemberReadBoard(ReadBoard):
+    """Member read_board advances board_cursor monotonically on contiguous scans to avoid stale re-wakeups."""
+
+    def __init__(self, root, access: TeamAccess, runner: MemberRunner):
+        super().__init__(root, lambda: access)
+        self.runner = runner
+
+    async def execute(self, params: ReadBoardParams):
+        access = self._access()
+        blackboard = access.store.blackboard
+        cursor = self.runner.cursor
+        covered = 0
+        if params.seqs:
+            posts, head_seq = await self.run(blackboard.read_seqs, params.seqs)
+        elif params.since is not None:
+            posts, head_seq = await self.run(blackboard.read_since, params.since, limit=params.limit)
+            if params.since <= cursor:
+                covered = head_seq if len(posts) < params.limit else (posts[-1].seq if posts else cursor)
+        else:
+            posts, head_seq = await self.run(blackboard.read_recent, params.limit)
+            if not posts or posts[0].seq <= cursor + 1:
+                covered = head_seq
+        if covered > cursor:
+            try:
+                # Transient lock contention must not abort a read-only board query; unread mentions will simply retry.
+                await asyncio.to_thread(self.runner.advance_cursor, covered)
+            except TeamError:
+                pass
+        return _format_board_posts(posts, head_seq), {
+            "team": access.team,
+            "count": len(posts),
+            "head_seq": head_seq,
+            "seqs": [post.seq for post in posts],
+        }
+
+
 # Messages -------------------------------------------------------------------------------------------
 
 
@@ -589,7 +625,7 @@ def member_tools(root, access: TeamAccess, runner: MemberRunner) -> tuple[Tool, 
     own = lambda: access  # noqa: E731
     tools: list[Tool] = [
         MemberPostBoard(root, access, runner),
-        ReadBoard(root, own),
+        MemberReadBoard(root, access, runner),
         MemberSendMessage(root, access, runner),
         TeamTaskCreate(root, own),
         TeamTaskGet(root, own),
