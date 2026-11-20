@@ -15,7 +15,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -24,7 +23,6 @@ from .plugins import (
     Plugin,
     PluginError,
     PluginRecord,
-    ProjectPlugins,
     check_name,
     components,
     data_dir,
@@ -33,14 +31,42 @@ from .plugins import (
     load_records,
     manifest_name,
     plugins_home,
-    project_plugins,
     project_records_path,
-    read_head,
     read_plugin,
     repo_dir,
     save_project_records,
     save_records,
     source_kind,
+)
+from .plugins import (
+    _block as _block,
+)
+from .plugins import (
+    _detail as _detail,
+)
+from .plugins import (
+    _fix as _fix,
+)
+from .plugins import (
+    _label as _label,
+)
+from .plugins import (
+    _row as _row,
+)
+from .plugins import (
+    _trust_state as _trust_state,
+)
+from .plugins import (
+    _width as _width,
+)
+from .plugins import (
+    describe as describe,
+)
+from .plugins import (
+    report as report,
+)
+from .plugins import (
+    trust_text as trust_text,
 )
 
 GITHUB = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -262,42 +288,6 @@ def _get(source: str, ref: str | None, home: Path | None, name_hint: str) -> Fet
 # Showing and asking -----------------------------------------------------------------------
 
 
-def describe(plugin: Plugin, record: PluginRecord, commit: str = "") -> list[str]:
-    parts = components(plugin, Path.cwd())
-    where = (
-        record.source
-        + (f"（ref {record.ref}）" if record.ref else "")
-        + (f"，路径 {record.path}" if record.path else "")
-    )
-    rows = [
-        ("来源", where),
-        *([("提交", commit[:7])] if commit else []),
-        *([("描述", plugin.description)] if plugin.description else []),
-        ("Skill", "、".join(parts.skills) or "无"),
-        ("命令", "、".join(parts.commands) or "无"),
-        ("子 Agent", "、".join(parts.agents) or "无"),
-    ]
-    lines = [f"插件 {plugin.name}" + (f" {plugin.version}" if plugin.version else "")]
-    lines += [f"  {label}{' ' * (10 - _width(label))}{value}" for label, value in rows]
-    lines += _block("MCP 服务器（以你的权限运行）", parts.mcp)
-    lines += _block("Hook（以你的权限运行）", parts.hooks)
-    lines += _block("未支持的组件（不加载）", plugin.unsupported)
-    problems = parts.problems
-    if plugin.ref_root is not None and plugin.ref_root != plugin.root:  # A preview: name files where they will be.
-        problems = tuple(problem.replace(str(plugin.root), str(plugin.ref_root)) for problem in problems)
-    lines += _block("问题", problems)
-    return lines
-
-
-def _width(text: str) -> int:
-    """Terminal columns: CJK characters take two."""
-    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
-
-
-def _block(title: str, items) -> list[str]:
-    return [f"  {title}：", *(f"    {item}" for item in items)] if items else []
-
-
 def confirm(question: str, yes: bool, stdin=None) -> bool:
     from .launcher import is_terminal
 
@@ -326,10 +316,6 @@ def _place(fetched: Fetched, target: Path) -> None:
         remove_tree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(fetched.base), str(target))
-
-
-def _label(record: PluginRecord) -> str:
-    return f"插件 {record.name}" + ("（项目级）" if record.scope == "project" else "")
 
 
 # Subcommands ------------------------------------------------------------------------------
@@ -521,86 +507,6 @@ def toggle(args, home: Path | None, root: Path, enabled: bool) -> int:
     save_records(records, home)
     print(f"已{'启用' if enabled else '停用'}插件 {args.name}，下次启动 moss 时生效。")
     return 0
-
-
-def _fix(record: PluginRecord) -> str:
-    return "moss plugin install" if record.scope == "project" else f"moss plugin update {record.name}"
-
-
-def _row(record: PluginRecord, state: str, home: Path | None) -> list[str]:
-    root = record.root(home)
-    if not root.is_dir():
-        return [f"{record.name}  {state}  {record.source}  ! 不在磁盘上，运行 {_fix(record)}"]
-    try:
-        plugin = replace(read_plugin(root, record.name, home, record), create_data=False)
-    except PluginError as exc:
-        return [f"{record.name}  {state}  {record.source}  ! {exc}"]
-    commit = read_head(record.base(home))[:7] if record.kind == "git" else ""
-    parts = components(plugin, Path.cwd())
-    head_text = " ".join(filter(None, (record.name, plugin.version, state, record.source, commit)))
-    return [f"{head_text}  {parts.count()}", *(f"  ! {problem}" for problem in parts.problems)]
-
-
-def _trust_state(project: ProjectPlugins, home: Path | None) -> str:
-    if not project.plugins:
-        return ""
-    return "已确认" if project.trusted(home) else "未确认，启动 moss 时确认后加载"
-
-
-def report(home: Path | None = None, name: str = "", root: Path | None = None) -> str:
-    """moss plugin list, and /plugins in a session."""
-    records, problems = load_records(home)
-    project = project_plugins(Path.cwd() if root is None else root, home)
-    if name:
-        return _detail(name, records, project, home)
-    if not records and not project.records:
-        return "\n".join([*problems, *project.problems, "没有安装插件。用 moss plugin install <来源> 安装。"])
-    lines = [f"插件（{len(records)}）"] if records else []
-    for record in records:
-        lines += _row(record, "启用" if record.enabled else "已停用", home)
-    lines += [f"! {problem}" for problem in problems]
-    if project.records or project.problems:
-        state = _trust_state(project, home)
-        where = f"{project_records_path(project.root)}" + (f"，{state}" if state else "")
-        lines.append(f"项目插件（{len(project.records)}，{where}）")
-        overridden = {record.name for record in records} & {record.name for record in project.records}
-        for record in project.records:
-            lines += _row(record, "项目级", home)
-            if record.name in overridden:
-                lines.append(f"  覆盖同名的用户级插件 {record.name}")
-        lines += [f"! {problem}" for problem in project.problems]
-    return "\n".join(lines)
-
-
-def _detail(name: str, records: list[PluginRecord], project: ProjectPlugins, home: Path | None) -> str:
-    """The project's declaration first: it is the one that loads."""
-    record = next((item for item in (*project.records, *records) if item.name == name), None)
-    if record is None:
-        return f"没有安装名为 {name} 的插件，项目也没有声明。"
-    if not record.root(home).is_dir():
-        return f"{_label(record)} 不在磁盘上（{record.root(home)}），运行 {_fix(record)}。"
-    try:
-        plugin = replace(read_plugin(record.root(home), name, home, record), create_data=False)
-    except PluginError as exc:
-        return f"{_label(record)}：{exc}。"
-    lines = describe(plugin, record, read_head(record.base(home)) if record.kind == "git" else "")
-    if record.scope == "project":
-        state = f"项目级（{project_records_path(project.root)}），{_trust_state(project, home)}"
-    else:
-        state = "启用" if record.enabled else "已停用"
-    return "\n".join([*lines, f"  状态{' ' * 6}{state}"])
-
-
-def trust_text(project: ProjectPlugins, home: Path | None = None) -> str:
-    """What the startup panel asks about: everything the project's plugins would run."""
-    lines = [
-        f"项目在 {project_records_path(project.root)} 中声明的插件尚未确认（第一次使用，或声明、提交有变化）。",
-        "插件中的 Hook 和 MCP 服务器以你的权限运行；请先确认内容：",
-    ]
-    for plugin in project.plugins:
-        record = plugin.record  # Always set for a declared plugin.
-        lines += describe(replace(plugin, create_data=False), record, read_head(record.base(home)))
-    return "\n".join(lines)
 
 
 def parser() -> argparse.ArgumentParser:

@@ -213,6 +213,7 @@ __all__ = [
 class MossCodeApp(TerminalApp[None]):
     TITLE = "MossCode"
     SUB_TITLE = ""
+    muted_color = MUTED_COLOR
     CSS = (
         TERMINAL_CSS
         + """

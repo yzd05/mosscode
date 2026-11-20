@@ -26,6 +26,11 @@ ALIASES = {
     "openai-compat": "openai-chat-completions",
 }
 PROTOCOLS = set(ALIASES.values())
+OFFICIAL = {
+    "anthropic-messages": "https://api.anthropic.com",
+    "openai-responses": "https://api.openai.com/v1",
+    "openai-chat-completions": "https://api.openai.com/v1",
+}  # Where the SDK goes without base_url.
 TEAMMATE_MODES = ("auto", "in-process", "windows-terminal", "tmux")
 SEARCH_PROVIDERS = ("tavily",)
 CREDENTIAL_FIELDS = ("api_key", "api_key_env", "api_key_keyring")
@@ -338,8 +343,6 @@ def _shown(value: Any) -> str:
 
 
 def _host(item: ProviderConfig) -> str:
-    from .setup import OFFICIAL
-
     parsed = urlsplit(item.base_url or OFFICIAL[item.protocol])
     host = parsed.hostname or ""
     if not host.isascii():  # Look-alike letters must not pass for a familiar name.

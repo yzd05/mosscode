@@ -28,6 +28,7 @@ from .security import (
     starts_with,
     web_target,
 )
+from .tool_core import Decision as Decision
 
 MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
 REMOVED_MODES = {"strict": "default", "permissive": "bypassPermissions"}
@@ -171,13 +172,6 @@ class QuestionRequest:
     questions: tuple[Question, ...]
     source: str = ""
     choices: tuple[str, ...] = ()  # Empty: answered with answer(), never respond().
-
-
-@dataclass(frozen=True)
-class Decision:
-    action: Literal["allow", "deny", "ask"]
-    code: str = ""
-    reason: str = ""
 
 
 def path_matches(target: str, pattern: str) -> bool:

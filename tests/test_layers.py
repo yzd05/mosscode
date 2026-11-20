@@ -11,27 +11,61 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
+import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
 
-from mosscode import compaction, messages, prompts, providers, reasoning, tool_budget
+from mosscode import (
+    appearance,
+    commands,
+    compaction,
+    config,
+    credentials,
+    launcher,
+    messages,
+    paths,
+    permissions,
+    plugin_command,
+    plugins,
+    prompts,
+    providers,
+    reasoning,
+    redaction,
+    security,
+    setup,
+    tool_budget,
+    tool_core,
+    tool_execution,
+    version,
+)
+from mosscode.agent import ActiveSkillStore, AgentHookSink, AgentLoop
 from mosscode.compaction import RecordStore, clear_results, compact_history
 from mosscode.config import ProviderConfig
 from mosscode.context import ContextBudget
+from mosscode.hooks import HookEngine
 from mosscode.messages import (
     Completed,
     ContentBlock,
     InteractionRequest,
     Message,
+    RunStopped,
+    ToolCall,
     ToolResult,
 )
-from mosscode.permissions import ApprovalRequest, Operation, Question, QuestionRequest
+from mosscode.permissions import ApprovalRequest, Operation, PermissionPolicy, Question, QuestionRequest
 from mosscode.providers import AnthropicProvider, ProviderSettings
 from mosscode.reasoning import ReasoningConfig, thinking_options
 from mosscode.session import Session
+from mosscode.skills import ActiveSkills
+from mosscode.todo import TodoList
 from mosscode.tool_budget import RESULT_TOKENS, ResultStore, bound_result
+from mosscode.tool_core import Params, TodoStore, Tool, ToolHookSink, ToolPermissions, ToolRegistry
+from mosscode.tools import base as tools_base
+from mosscode.tools import execution as tools_execution
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "mosscode"
 
@@ -45,8 +79,10 @@ L0_FILES = frozenset(
         "paths.py",
         "providers.py",
         "reasoning.py",
+        "redaction.py",
         "serialization.py",
         "usage.py",
+        "version.py",
     }
 )
 
@@ -55,13 +91,14 @@ L1_FILES = frozenset(
         "agent.py",
         "compaction.py",
         "tool_budget.py",
-        "tools/base.py",
-        "tools/execution.py",
+        "tool_core.py",
+        "tool_execution.py",
     }
 )
 
 L2_FILES = frozenset(
     {
+        "agent_policies.py",
         "builtin_commands.py",
         "checkpoints.py",
         "command_env.py",
@@ -133,37 +170,8 @@ L3_FILES = frozenset(
 
 L3_PACKAGES = ("acp/",)
 
-# Existing upward edges tracked for incremental dependency inversion.
-# Enforced shrink-only against the target branch in pull-request CI: new or swapped edges fail CI,
-# and resolved edges must be removed immediately.
-ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
-    {
-        # Agent loop product-policy couplings (to be inverted into injected hooks/policies).
-        ("agent.py", "credentials.py"),
-        ("agent.py", "hooks/__init__.py"),
-        ("agent.py", "prompts.py"),
-        ("agent.py", "security.py"),
-        ("agent.py", "session.py"),
-        ("agent.py", "skills/__init__.py"),
-        ("agent.py", "todo.py"),
-        ("agent.py", "tools/__init__.py"),
-        # Tool registry & execution couplings (including enclosing tools/__init__.py cold-import edge).
-        ("tools/base.py", "coordinator.py"),
-        ("tools/base.py", "credentials.py"),
-        ("tools/base.py", "hooks/__init__.py"),
-        ("tools/base.py", "permissions.py"),
-        ("tools/base.py", "security.py"),
-        ("tools/base.py", "todo.py"),
-        ("tools/base.py", "tools/__init__.py"),
-        ("tools/base.py", "tools/files.py"),
-        ("tools/execution.py", "tools/__init__.py"),
-        # Product-to-surface couplings pending extraction of shared constants/metadata.
-        ("builtin_commands.py", "appearance.py"),
-        ("builtin_commands.py", "plugin_command.py"),
-        ("config.py", "setup.py"),
-        ("tools/web.py", "launcher.py"),
-    }
-)
+# Upward edges across layers must stay empty (enforced shrink-only in pull-request CI).
+ALLOWLIST: frozenset[tuple[str, str]] = frozenset()
 
 
 def _layer_of(rel: str) -> int | None:
@@ -1184,3 +1192,118 @@ async def test_tool_budget_and_compaction_run_with_protocol_stub(tmp_path: Path)
     )
     assert compacted.record == tmp_path / "compact.md"
     assert store.records and store.records[0][0] == "compact"
+
+
+def test_concrete_types_satisfy_l1_core_protocols_and_reexport_identities(tmp_path: Path) -> None:
+    policy = PermissionPolicy(tmp_path, load=False)
+    assert isinstance(policy, ToolPermissions)
+    assert inspect.signature(PermissionPolicy.set_mode).bind(policy, "plan")
+    assert inspect.signature(PermissionPolicy.authorize).bind(policy, "c1", object(), object(), gate=None, notify=None)
+    assert inspect.signature(PermissionPolicy.operation).bind(policy, object(), object(), typed=True)
+    assert inspect.signature(PermissionPolicy.decide).bind(policy, object(), read_only=True)
+
+    todos = TodoList()
+    assert isinstance(todos, TodoStore)
+    assert inspect.signature(TodoList.rewind).bind(todos, 0)
+    assert inspect.signature(TodoList.rebase).bind(todos)
+    assert inspect.signature(TodoList.clear).bind(todos)
+
+    hooks = HookEngine(tmp_path, enabled=False)
+    assert isinstance(hooks, ToolHookSink)
+    assert isinstance(hooks, AgentHookSink)
+    assert inspect.signature(HookEngine.make_event).bind(hooks, "pre_send", fields={"iteration": "1"})
+    assert inspect.signature(HookEngine.make_tool_event).bind(
+        hooks, "pre_tool_use", "main", "read_file", {}, None, tmp_path, None, agent_type="", worktree="", nested=False
+    )
+
+    skills = ActiveSkills()
+    assert isinstance(skills, ActiveSkillStore)
+    assert inspect.signature(ActiveSkills.texts).bind(skills)
+    assert inspect.signature(ActiveSkills.clear).bind(skills)
+
+    # Compatibility re-exports must preserve exact object and ContextVar identities.
+    assert tools_base.ToolRegistry is tool_core.ToolRegistry
+    assert tools_base.Tool is tool_core.Tool
+    assert tools_base.Params is tool_core.Params
+    assert tools_base.CURRENT_CALL is tool_core.CURRENT_CALL
+    assert tools_base.CURRENT_REGISTRY is tool_core.CURRENT_REGISTRY
+    assert tools_execution.execute_batch is tool_execution.execute_batch
+    assert tools_execution.partition_calls is tool_execution.partition_calls
+    assert permissions.Decision is tool_core.Decision
+    assert credentials.redact is redaction.redact
+    assert credentials.redact_value is redaction.redact_value
+    assert security.SecurityError is paths.SecurityError
+    assert security.project_path is paths.project_path
+    assert security.resolve_path is paths.resolve_path
+    assert setup.OFFICIAL is config.OFFICIAL
+    assert appearance.KEY_HELP is commands.KEY_HELP
+    assert plugin_command.report is plugins.report
+    assert launcher.version is version.version
+
+
+@pytest.mark.asyncio
+async def test_standalone_l1_agent_loop_executes_tool_without_l2_policies(tmp_path: Path) -> None:
+    class EchoParams(Params):
+        text: str
+
+    class EchoTool(Tool):
+        name = "echo"
+        description = "Echo text back."
+        params_model = EchoParams
+        read_only = True
+
+        async def execute(self, params: EchoParams):
+            return f"echo:{params.text}", {}
+
+    class TwoStepProvider:
+        def __init__(self) -> None:
+            self.seen: list[list[Message]] = []
+
+        async def stream(self, req_messages, system, tools=(), *, allow_tools=True):
+            self.seen.append(list(req_messages))
+            if len(self.seen) == 1:
+                call = ToolCall("call-1", "echo", json.dumps({"text": "hello"}))
+                yield Completed(Message("assistant", (), tool_calls=(call,)), "tool_use")
+            else:
+                yield Completed(Message("assistant", (ContentBlock("text", "done: hello"),)), "end_turn")
+
+        async def close(self) -> None:
+            pass
+
+    registry = ToolRegistry([EchoTool(tmp_path)])
+    provider = TwoStepProvider()
+    loop = AgentLoop(provider, "Minimal L1 system prompt.", registry)
+
+    events = [event async for event in loop.run("say hello")]
+
+    assert any(isinstance(e, Completed) and e.message.text == "done: hello" for e in events)
+    assert any(isinstance(e, RunStopped) and e.reason == "completed" for e in events)
+    assert len(provider.seen) == 2
+    tool_msgs = [m for m in provider.seen[1] if m.role == "tool"]
+    assert len(tool_msgs) == 1 and tool_msgs[0].tool_results[0].output == "echo:hello"
+
+
+def test_l1_cold_import_loads_no_l2_or_l3_modules() -> None:
+    script = (
+        "import json, sys; "
+        "import mosscode.agent, mosscode.tool_core, mosscode.tool_execution; "
+        "mods = sorted(m for m in sys.modules if m == 'mosscode' or m.startswith('mosscode.')); "
+        "print(json.dumps(mods))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    loaded = json.loads(proc.stdout)
+    mod_to_rel, _, _ = _module_index()
+    offenders: list[tuple[str, str, int | None]] = []
+    for mod in loaded:
+        if mod == "mosscode":
+            continue
+        rel = mod_to_rel.get(mod)
+        layer = _layer_of(rel) if rel is not None else None
+        if layer not in (0, 1):
+            offenders.append((mod, rel or "<unknown>", layer))
+    assert not offenders, f"Cold import of L1 core pulled in non-L0/L1 modules: {offenders}"

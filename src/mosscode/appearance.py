@@ -9,6 +9,7 @@ from rich.table import Table
 from rich.text import Text
 from textual.theme import Theme
 
+from .commands import KEY_HELP as KEY_HELP
 from .terminal_theme import is_light
 
 TEXT_COLOR = "ansi_default"
@@ -202,24 +203,3 @@ def compact_notice(event) -> str:
     if event.paused:
         notice += "\n  自动压缩已暂停，可以 /compact 手动重试或 /clear"
     return notice
-
-
-# The key half of /help; the command half comes from the registry.
-KEY_HELP = """按键
-Enter                 发送消息或执行命令
-Shift+Enter / Ctrl+J  换行（也可在行尾输入 \\ 再按 Enter）
-↑ / ↓                 在命令提示中选择；首行/末行时浏览本次输入历史
-Tab                   补全命令或参数
-Shift+Tab             依次切换 default → acceptEdits → plan
-运行中 Enter          排队消息，本轮工具执行后发送给模型
-Esc                   关闭命令提示（保留输入）
-Esc / Ctrl+C          取消正在生成的回复；排队消息放回输入框
-Esc Esc               空闲且输入框为空时打开 /rewind
-授权面板              ↑ / ↓ 选择，Enter 确认，Esc 拒绝本次，Ctrl+C 取消任务
-Ctrl+B                把前台运行的子 Agent 转入后台
-Ctrl+T                展开团队成员面板：Enter 查看对话，x 停止成员
-成员视图              PgUp / PgDn 滚动，← / → 切换成员，Esc 返回
-Ctrl+Q                退出（有后台任务时先确认）
-鼠标滚轮              滚动对话记录
-鼠标拖选              使用终端原生文字选择
-Ctrl+V                粘贴（多行内容保持原样）"""

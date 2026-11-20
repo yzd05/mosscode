@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from .prompts import Supplement
+from .messages import Supplement
 
 Status = Literal["pending", "in_progress", "completed"]
 STATUSES: tuple[str, ...] = ("pending", "in_progress", "completed")

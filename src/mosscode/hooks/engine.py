@@ -217,6 +217,46 @@ class HookEngine:
 
     # Running ---------------------------------------------------------------------------------
 
+    def make_event(
+        self,
+        name: str,
+        *,
+        fields: Mapping[str, str] | None = None,
+        payload: Mapping[str, Any] | None = None,
+        agent: str = "main",
+        agent_type: str = "",
+    ) -> HookEvent:
+        return HookEvent(
+            name,
+            agent=agent,
+            fields={} if fields is None else dict(fields),
+            payload={} if payload is None else dict(payload),
+            agent_type=agent_type,
+        )
+
+    def make_tool_event(
+        self,
+        name: str,
+        agent: str,
+        tool: str,
+        args: Mapping[str, Any],
+        operation: Any,
+        root: Path,
+        result: Any = None,
+        *,
+        agent_type: str = "",
+        worktree: str = "",
+        nested: bool = False,
+    ) -> HookEvent:
+        event = tool_event(name, agent, tool, args, operation, root, result, agent_type=agent_type)
+        if worktree:
+            event = replace(
+                event,
+                fields={**event.fields, "worktree": worktree},
+                payload={**event.payload, "worktree": worktree},
+            )
+        return replace(event, nested=True) if nested else event
+
     async def fire(self, event: HookEvent) -> HookOutcome:
         """Run the matching hooks in order. Never raises, except CancelledError."""
         if not self.enabled:

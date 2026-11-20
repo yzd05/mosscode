@@ -10,6 +10,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from .version import version as version
+
 OUTPUT_FORMATS = ("text", "json", "stream-json")
 SUBCOMMANDS = ("setup", "doctor", "models", "key", "plugin", "sandbox", "acp")
 NAMES = ("moss", "mosscode")
@@ -35,16 +37,6 @@ EXAMPLES = """\
 
 moss 与 mosscode 是同一个命令。要把 setup、doctor、models、key、plugin、sandbox 或 acp 当作消息发送，写成 moss -- doctor。
 """
-
-
-def version() -> str:
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as installed
-
-    try:
-        return installed("mosscode")
-    except PackageNotFoundError:  # Run from a source tree that was never installed.
-        return "0+unknown"
 
 
 def program() -> str:

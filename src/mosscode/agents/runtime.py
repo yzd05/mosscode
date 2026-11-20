@@ -386,7 +386,14 @@ class SubAgents:
             share(main.registry, registry)
         registry.nested = nested
         turns = min(agent.max_turns or main.max_iterations, main.max_iterations)
-        loop = AgentLoop(provider, agent.prompt, registry, max_iterations=turns, unknown_limit=main.unknown_limit)
+        loop = AgentLoop(
+            provider,
+            agent.prompt,
+            registry,
+            max_iterations=turns,
+            unknown_limit=main.unknown_limit,
+            policies=main.policies,
+        )
         loop.instructions = "\n\n".join(
             part
             for part in (
@@ -414,7 +421,12 @@ class SubAgents:
             forbidden=GLOBAL_BAN & set(main.registry.names()),
         )
         loop = AgentLoop(
-            main.provider, "", registry, max_iterations=main.max_iterations, unknown_limit=main.unknown_limit
+            main.provider,
+            "",
+            registry,
+            max_iterations=main.max_iterations,
+            unknown_limit=main.unknown_limit,
+            policies=main.policies,
         )
         loop.system, loop.instructions, loop.git = main.system, main.instructions, main.git
         loop.skill_catalog, loop.agent_catalog, loop.hook_context = (

@@ -10,16 +10,31 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
-from typing import Any
+
+from .redaction import (
+    MIN_SECRET as MIN_SECRET,
+)
+from .redaction import (
+    PLACEHOLDER as PLACEHOLDER,
+)
+from .redaction import (
+    forget_secrets,
+)
+from .redaction import (
+    redact as redact,
+)
+from .redaction import (
+    redact_value as redact_value,
+)
+from .redaction import (
+    remember as remember,
+)
 
 SERVICE = "mosscode"  # The service name every entry is saved under.
-PLACEHOLDER = "[已隐藏的密钥]"
-MIN_SECRET = 8  # Shorter values are too likely to occur by chance to hide.
 # Header names that carry a credential; other headers (versions, beta flags) are left alone.
 SECRET_HEADER = re.compile(r"auth|key|token|secret", re.IGNORECASE)
 
 _names: set[str] = set()
-_values: set[str] = set()
 
 
 class KeyringError(Exception):
@@ -35,15 +50,10 @@ def hide_variable(name: str | None) -> None:
         _names.add(_fold(name))
 
 
-def remember(value: str | None) -> None:
-    if value and len(value) >= MIN_SECRET:
-        _values.add(value)
-
-
 def forget_all() -> None:
     """Tests only: start from an empty set."""
     _names.clear()
-    _values.clear()
+    forget_secrets()
 
 
 def protect(settings) -> None:
@@ -72,28 +82,6 @@ def child_environment(env: Mapping[str, str] | None) -> dict[str, str] | None:
         return None if env is None else dict(env)
     source = os.environ if env is None else env
     return {name: value for name, value in source.items() if _fold(name) not in _names}
-
-
-def redact(text: str) -> str:
-    if not _values or not text:
-        return text
-    for value in sorted(_values, key=len, reverse=True):
-        if value in text:
-            text = text.replace(value, PLACEHOLDER)
-    return text
-
-
-def redact_value(value: Any) -> Any:
-    """redact through the strings of a tool result's details."""
-    if not _values:
-        return value
-    if isinstance(value, str):
-        return redact(value)
-    if isinstance(value, dict):
-        return {key: redact_value(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return type(value)(redact_value(item) for item in value)
-    return value
 
 
 def placeholder_problem(text: str) -> str | None:

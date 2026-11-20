@@ -17,17 +17,14 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .config import OFFICIAL as OFFICIAL
+
 PROTOCOLS = (
     ("anthropic-messages", "Anthropic Messages（Claude，或兼容 Messages 的服务）"),
     ("openai-responses", "OpenAI Responses"),
     ("openai-chat-completions", "OpenAI Chat Completions（DeepSeek、Qwen 等兼容服务）"),
 )
 NAMES = {"anthropic-messages": "claude", "openai-responses": "openai", "openai-chat-completions": "compat"}
-OFFICIAL = {
-    "anthropic-messages": "https://api.anthropic.com",
-    "openai-responses": "https://api.openai.com/v1",
-    "openai-chat-completions": "https://api.openai.com/v1",
-}  # Where the SDK goes without base_url.
 KEYS = {
     "anthropic-messages": "ANTHROPIC_API_KEY",
     "openai-responses": "OPENAI_API_KEY",

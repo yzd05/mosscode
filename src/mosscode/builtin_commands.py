@@ -14,9 +14,8 @@ from rich.text import Text
 from .agents import claude_model
 from .agents.runtime import GLOBAL_BAN, WORKSPACE_TOOLS, effective_mode, stats
 from .agents.tasks import ORIGIN_LABELS, STATUS_LABELS
-from .appearance import KEY_HELP, MUTED_COLOR
 from .catalog import ModelInfo, load_catalog, lookup, providers_for, tokens_label
-from .commands import Command, CommandContext, CommandRegistry, Parsed, argument_problem
+from .commands import KEY_HELP, Command, CommandContext, CommandRegistry, Parsed, argument_problem
 from .config import catalog_window
 from .follow import SOURCES as FOLLOWED
 from .goal import GOAL, MAX_CONDITION, continue_prompt, elapsed_text
@@ -141,13 +140,18 @@ async def _help(ctx: CommandContext, argument: str) -> None:
 # Session ----------------------------------------------------------------------------------
 
 TASK_OPTIONS = ("取消这些任务并继续", "返回")
+DEFAULT_MUTED_COLOR = "#8b929c"
 
 
-def choice_row(name: str, detail: str = "") -> Text:
+def _muted(ui) -> str:
+    return getattr(ui, "muted_color", DEFAULT_MUTED_COLOR)
+
+
+def choice_row(name: str, detail: str = "", *, muted_color: str = DEFAULT_MUTED_COLOR) -> Text:
     """A row of a list to choose from: what is chosen at full strength, its details in the supporting grey."""
     text = Text(name, no_wrap=True, overflow="ellipsis")
     if detail:
-        text.append("  " + detail, style=MUTED_COLOR)
+        text.append("  " + detail, style=muted_color)
     return text
 
 
@@ -186,12 +190,16 @@ async def _compact(ctx: CommandContext, argument: str) -> None:
     await ctx.ui.compact(argument)
 
 
-def _session_rows(sessions, current: str | None) -> list[Text]:
+def _session_rows(sessions, current: str | None, *, muted_color: str = DEFAULT_MUTED_COLOR) -> list[Text]:
     rows = []
     for item in sessions:
         mark = "  （当前）" if item.id == current else "  （使用中）" if item.locked else ""
         rows.append(
-            choice_row(f"{item.modified:%m-%d %H:%M}  {item.title}", f"· {item.messages} 条 · {item.id[-4:]}{mark}")
+            choice_row(
+                f"{item.modified:%m-%d %H:%M}  {item.title}",
+                f"· {item.messages} 条 · {item.id[-4:]}{mark}",
+                muted_color=muted_color,
+            )
         )
     return rows
 
@@ -219,7 +227,7 @@ async def _resume(ctx: CommandContext, argument: str) -> None:
         await ctx.ui.note(not_found)
         return
     current = conversation.session_id
-    rows = _session_rows(matched, current)
+    rows = _session_rows(matched, current, muted_color=_muted(ctx.ui))
 
     async def pick(index: int) -> None:
         await confirm_tasks(ctx.ui, conversation, lambda: _resume_now(ctx, matched[index].id))
@@ -243,7 +251,7 @@ async def open_sessions(ctx: CommandContext) -> None:
     if not any(item.id != current for item in sessions):
         await ctx.ui.note("本项目没有可恢复的会话。")
         return
-    rows = _session_rows(sessions, current)
+    rows = _session_rows(sessions, current, muted_color=_muted(ctx.ui))
 
     async def pick(index: int) -> None:
         await confirm_tasks(ctx.ui, conversation, lambda: _resume_now(ctx, sessions[index].id))
@@ -363,6 +371,7 @@ async def _rewind(ctx: CommandContext, argument: str) -> None:
         choice_row(
             _first_line(point.message.shown, "（空消息）"),
             f"· 之后改动 {point.files} 个文件" if point.files else "",
+            muted_color=_muted(ctx.ui),
         )
         for point in points
     ]
@@ -629,6 +638,7 @@ async def _model(ctx: CommandContext, argument: str) -> None:
                     f"{single.name}/{mid}{'  ✓' if mid == active_model else ''}",
                     f"{tokens_label(info.context_window)} 窗口"
                     + (f" · 输出 {tokens_label(info.max_output_tokens)}" if info.max_output_tokens else ""),
+                    muted_color=_muted(ctx.ui),
                 )
                 for mid, info in siblings
             ]
@@ -650,6 +660,7 @@ async def _model(ctx: CommandContext, argument: str) -> None:
             f"{item.name}{'  ✓' if item.name == current else ''}",
             f"{item.protocol} / {ctx.ui.model if item.name == current and ctx.ui.model else item.model}"
             + (f" · 跟随 {FOLLOWED[item.follow]}" if item.follow else ""),
+            muted_color=_muted(ctx.ui),
         )
         for item in providers
     ]
@@ -727,6 +738,7 @@ async def _thinking(ctx: CommandContext, argument: str) -> None:
         choice_row(
             f"{value}{'  ✓' if value == current else ''}  {LEVEL_LABELS[value]}",
             thinking_detail(config, None if value == DEFAULT else value),
+            muted_color=_muted(ctx.ui),
         )
         for value in THINKING_CHOICES
     ]
@@ -1423,7 +1435,7 @@ async def _agents(ctx: CommandContext, argument: str) -> None:
 
 
 async def _plugins(ctx: CommandContext, argument: str) -> None:
-    from .plugin_command import report
+    from .plugins import report
 
     text = await asyncio.to_thread(report, None, argument.strip())
     await ctx.ui.note(
