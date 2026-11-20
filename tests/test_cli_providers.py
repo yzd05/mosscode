@@ -502,14 +502,18 @@ async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonz
     await verify_cli_capabilities("cli-claude", str(flaky_claude))
 
     # Concurrent cold-cache probes for the same binary share ONE in-flight probe (single spawn),
-    # and launch failure releases the reservation so a later call can retry.
+    # both BEFORE subprocess registration (gated in `create_subprocess_exec`) AND AFTER registration
+    # (gated in `_read_help_bounded` once `tracked.add(managed)` has run).
     shared_gemini = _make_exec_wrapper(
         bin_dir, "shared-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
     )
     spawn_calls = 0
     spawn_entered = asyncio.Event()
     allow_spawn = asyncio.Event()
+    read_entered = asyncio.Event()
+    allow_read = asyncio.Event()
     real_exec = asyncio.create_subprocess_exec
+    real_read_help = cli_providers._read_help_bounded
 
     async def gated_exec(*args, **kwargs):
         nonlocal spawn_calls
@@ -518,15 +522,110 @@ async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonz
         await allow_spawn.wait()
         return await real_exec(*args, **kwargs)
 
+    async def gated_read_help(proc, *, max_bytes: int, label: str):
+        read_entered.set()
+        await allow_read.wait()
+        return await real_read_help(proc, max_bytes=max_bytes, label=label)
+
+    tracked_set: set[_ManagedProcess] = set()
     with monkeypatch.context() as mp:
         mp.setattr(asyncio, "create_subprocess_exec", gated_exec)
-        t1 = asyncio.create_task(verify_cli_capabilities("cli-gemini", str(shared_gemini)))
+        mp.setattr(cli_providers, "_read_help_bounded", gated_read_help)
+        t1 = asyncio.create_task(
+            verify_cli_capabilities("cli-gemini", str(shared_gemini), active_processes=tracked_set)
+        )
         await asyncio.wait_for(spawn_entered.wait(), timeout=2.0)
-        t2 = asyncio.create_task(verify_cli_capabilities("cli-gemini", str(shared_gemini)))
+        # Caller 2 arrives pre-registration.
+        t2 = asyncio.create_task(
+            verify_cli_capabilities("cli-gemini", str(shared_gemini), active_processes=tracked_set)
+        )
         await asyncio.sleep(0.02)
         allow_spawn.set()
-        await asyncio.gather(t1, t2)
+        await asyncio.wait_for(read_entered.wait(), timeout=2.0)
+        assert len(tracked_set) == 1
+        # Caller 3 arrives post-registration (after `tracked.add(managed)`).
+        t3 = asyncio.create_task(
+            verify_cli_capabilities("cli-gemini", str(shared_gemini), active_processes=tracked_set)
+        )
+        await asyncio.sleep(0.02)
+        allow_read.set()
+        await asyncio.gather(t1, t2, t3)
     assert spawn_calls == 1
+    assert tracked_set == set()
+
+    # Replacing the executable mid-probe invalidates the old verdict so the new binary MUST be probed.
+    replaced_gemini = _make_exec_wrapper(
+        bin_dir, "replaced-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
+    )
+    replace_read_done = asyncio.Event()
+    allow_replace_continue = asyncio.Event()
+    replace_spawns = 0
+
+    async def count_replace_exec(*args, **kwargs):
+        nonlocal replace_spawns
+        replace_spawns += 1
+        return await real_exec(*args, **kwargs)
+
+    async def replace_read_help(proc, *, max_bytes: int, label: str):
+        out = await real_read_help(proc, max_bytes=max_bytes, label=label)
+        if replace_spawns == 1:
+            replace_read_done.set()
+            await allow_replace_continue.wait()
+        return out
+
+    with monkeypatch.context() as mp:
+        mp.setattr(asyncio, "create_subprocess_exec", count_replace_exec)
+        mp.setattr(cli_providers, "_read_help_bounded", replace_read_help)
+        first = asyncio.create_task(verify_cli_capabilities("cli-gemini", str(replaced_gemini)))
+        await asyncio.wait_for(replace_read_done.wait(), timeout=5.0)
+        # Process #1 already finished with valid flags; now replace the binary with one missing required flags.
+        _make_exec_wrapper(bin_dir, "replaced-gemini", 'print("Usage: gemini -p --output-format")')
+        st = replaced_gemini.stat()
+        os.utime(replaced_gemini, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        allow_replace_continue.set()
+        with pytest.raises(ProviderError, match="--approval-mode.*--policy"):
+            await first
+    assert replace_spawns == 2
+
+    # `CLIProxyProvider.close()` cancels and awaits in-flight capability probes before returning,
+    # preventing any post-shutdown subprocess spawn.
+    close_gemini = _make_exec_wrapper(
+        bin_dir, "close-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
+    )
+    probe_blocked = asyncio.Event()
+    post_close_spawn = False
+
+    async def hanging_exec(*args, **kwargs):
+        nonlocal post_close_spawn
+        probe_blocked.set()
+        await asyncio.sleep(30)
+        post_close_spawn = True
+        return await real_exec(*args, **kwargs)
+
+    prov_close = CLIProxyProvider(
+        ProviderConfig("g", "cli-gemini", "gemini-2.5-flash", auth_type="cli"),
+        which=lambda _b: str(close_gemini),
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(asyncio, "create_subprocess_exec", hanging_exec)
+        caller = asyncio.create_task(
+            verify_cli_capabilities(
+                "cli-gemini",
+                str(close_gemini),
+                active_processes=prov_close._active,
+                probe_tasks=prov_close._active_probes,
+            )
+        )
+        await asyncio.wait_for(probe_blocked.wait(), timeout=2.0)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        # Shielded probe is still in-flight until `close()` cancels and awaits it.
+        assert len(prov_close._active_probes) == 1
+        await prov_close.close()
+        assert prov_close._active_probes == set()
+        assert prov_close._active == set()
+        assert post_close_spawn is False
 
     retry_gemini = _make_exec_wrapper(
         bin_dir, "retry-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
@@ -607,11 +706,14 @@ async def test_claude_settings_billing_guard_rejects_overrides_and_allows_clean_
         assert (dropins / ".backup.json") not in discovered_with_hidden
         _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
 
-        # A hidden file MUST NOT mask an active billing override from `managed-settings.json`.
+        # Hidden files and uppercase `.JSON` files MUST NOT mask an active billing override from `managed-settings.json`.
         managed_base.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "base-override"}}), encoding="utf-8")
         (dropins / "10-api.json").unlink()
         (dropins / "20-clear.json").unlink()
         (dropins / ".99-clear.json").write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": ""}}), encoding="utf-8")
+        (dropins / "99-clear.JSON").write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": ""}}), encoding="utf-8")
+        discovered_case = _claude_settings_paths({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
+        assert (dropins / "99-clear.JSON") not in discovered_case
         with pytest.raises(ProviderError, match="env.ANTHROPIC_API_KEY"):
             _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
 
