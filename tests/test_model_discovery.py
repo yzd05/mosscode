@@ -745,7 +745,8 @@ async def test_connect_wizard_project_config_isolation_back_reset_and_malformed_
         assert app._connect_step == "custom_model"
         assert app.query_one("#connect-input", Input).value == "my-local-model"
 
-        # 4. Saving from a project-config session writes to user ~/.mosscode/config.yaml, not project config!
+        # 4. Saving from a project-config session writes to user ~/.mosscode/config.yaml, not project config,
+        # and keeps the project providers and project config source intact in the running session!
         await app._handle_connect_input("my-local-model")
         await pilot.pause()
         await app._handle_connect_option(0)
@@ -754,6 +755,11 @@ async def test_connect_wizard_project_config_isolation_back_reset_and_malformed_
         user_cfg = isolated_home / ".mosscode" / "config.yaml"
         assert user_cfg.is_file()
         assert load_settings(user_cfg, isolated_home).providers[0].model == "my-local-model"
+        assert app.settings.source == project_cfg
+        assert {p.name for p in app.settings.providers} == {"proj", "ollama"}
+        assert app.provider_name == "ollama"
+        assert await app.switch_model("proj")
+        assert app.provider_name == "proj"
 
 
 async def test_picker_session_override_target_and_failed_switch_does_not_persist_default(isolated_home):
@@ -1288,3 +1294,156 @@ def test_acp_connect_hint_mentions_reconfirming_project_config():
     hint = _EXCLUDED_HINTS["connect"]
     assert "moss" in hint
     assert "重新确认" in hint
+
+
+def test_sdk_env_base_url_enforces_https_and_allows_loopback(monkeypatch):
+    from mosscode.messages import ProviderError
+    from mosscode.providers import AnthropicProvider, ChatCompletionsProvider, ResponsesProvider
+
+    anth_cfg = ProviderConfig(
+        name="anth",
+        protocol="anthropic-messages",
+        model="claude-sonnet-4-5",
+        base_url=None,
+        api_key="anth-secret-1234",
+    )
+    chat_cfg = ProviderConfig(
+        name="chat",
+        protocol="openai-chat-completions",
+        model="gpt-4o",
+        base_url=None,
+        api_key="openai-secret-1234",
+    )
+    resp_cfg = ProviderConfig(
+        name="resp",
+        protocol="openai-responses",
+        model="gpt-4o",
+        base_url=None,
+        api_key="openai-secret-1234",
+    )
+
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://api.example.com")
+    with pytest.raises(ProviderError, match="https://"):
+        AnthropicProvider(anth_cfg)
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://api.example.com/v1")
+    with pytest.raises(ProviderError, match="https://"):
+        ChatCompletionsProvider(chat_cfg)
+    with pytest.raises(ProviderError, match="https://"):
+        ResponsesProvider(resp_cfg)
+
+    # Loopback env base URLs remain allowed by the documented loopback exemption.
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:15721")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:15721/v1")
+    assert AnthropicProvider(anth_cfg).client is not None
+    assert ChatCompletionsProvider(chat_cfg).client is not None
+
+
+async def test_recent_model_recording_preserves_switch_order(isolated_home):
+    import threading
+
+    cfg = isolated_home / ".mosscode" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "default_provider: p1\n"
+        "providers:\n"
+        "  - name: p1\n"
+        "    protocol: anthropic-messages\n"
+        "    model: m1\n"
+        "    api_key: k1\n"
+        "  - name: p2\n"
+        "    protocol: openai-chat-completions\n"
+        "    model: m2\n"
+        "    api_key: k2\n"
+        "  - name: p3\n"
+        "    protocol: openai-chat-completions\n"
+        "    model: m3\n"
+        "    api_key: k3\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(cfg, isolated_home)
+    first_entered = threading.Event()
+    allow_first = threading.Event()
+    store = ModelPrefsStore(isolated_home)
+    orig_record = store.record_recent
+    order: list[str] = []
+
+    def gated_record(provider_name: str, model: str) -> None:
+        if provider_name == "p2":
+            first_entered.set()
+            assert allow_first.wait(timeout=2.0)
+        order.append(provider_name)
+        orig_record(provider_name, model)
+
+    store.record_recent = gated_record  # type: ignore[method-assign]
+    app = MossCodeApp(
+        Conversation(FakeProvider()),
+        "p1",
+        settings=settings,
+        model="m1",
+        provider_factory=lambda _cfg: FakeProvider(),
+    )
+    app._prefs_store = lambda: store  # type: ignore[method-assign]
+    async with app.run_test(size=(100, 32)):
+        assert await app.switch_model("p2")
+        assert first_entered.wait(timeout=2.0)
+        assert await app.switch_model("p3")
+        allow_first.set()
+        await app.workers.wait_for_complete()
+        assert order == ["p2", "p3"]
+        assert store.load().recent[:2] == (model_key("p3", "m3"), model_key("p2", "m2"))
+
+
+async def test_reloaded_endpoint_change_rebuilds_active_client_and_hides_new_env_var(isolated_home, monkeypatch):
+    from mosscode.credentials import child_environment
+
+    cfg = isolated_home / ".mosscode" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "default_provider: alpha\n"
+        "providers:\n"
+        "  - name: alpha\n"
+        "    protocol: openai-chat-completions\n"
+        "    base_url: https://old.example.com/v1\n"
+        "    model: m-alpha\n"
+        "    api_key: k-old\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(cfg, isolated_home)
+    built: list[ProviderConfig] = []
+
+    def factory(config: ProviderConfig):
+        built.append(config)
+        return FakeProvider()
+
+    app = MossCodeApp(
+        Conversation(FakeProvider()),
+        "alpha",
+        settings=settings,
+        model="m-alpha",
+        provider_factory=factory,
+    )
+    async with app.run_test(size=(100, 32)) as pilot:
+        # Edit alpha's endpoint and env credential on disk while alpha is already active.
+        monkeypatch.setenv("SERVICE_ACCESS", "opaque-non-heuristic-val")
+        cfg.write_text(
+            "default_provider: alpha\n"
+            "providers:\n"
+            "  - name: alpha\n"
+            "    protocol: openai-chat-completions\n"
+            "    base_url: https://new.example.com/v1\n"
+            "    model: m-alpha\n"
+            "    api_key_env: SERVICE_ACCESS\n",
+            encoding="utf-8",
+        )
+        await pilot.press("alt+m")
+        await pilot.pause()
+        await pilot.press("ctrl+d")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(built) == 1
+        assert built[0].base_url == "https://new.example.com/v1"
+        assert built[0].api_key_env == "SERVICE_ACCESS"
+        # Newly loaded api_key_env must be stripped from subprocess environments even with a non-heuristic name.
+        env_out = child_environment({"SERVICE_ACCESS": "opaque-non-heuristic-val", "PATH": "/bin"})
+        assert env_out is not None and "SERVICE_ACCESS" not in env_out

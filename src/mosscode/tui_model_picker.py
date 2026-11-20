@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from .builtin_cmds.common import choice_row
 from .builtin_cmds.runtime import _sibling_models
 from .catalog import tokens_label
 from .config import ConfigError, ProviderConfig, Settings, is_project_file, load_settings
+from .credentials import protect_providers
 from .follow import SOURCES as FOLLOWED
 from .model_discovery import ModelPrefs, ModelPrefsStore, fuzzy_score, model_key, set_default_model
 from .runtime_factory import with_model
@@ -54,14 +56,29 @@ class _ModelPickerMixin:
         store = self._prefs_store()
         if store is None:
             return
+        pending: deque[tuple[ModelPrefsStore, str, str]] | None = getattr(self, "_recent_model_queue", None)
+        if pending is None:
+            pending = deque()
+            self._recent_model_queue = pending
+        pending.append((store, provider_name, model))
+        if not getattr(self, "_recent_model_draining", False):
+            self._recent_model_draining = True
+            self.run_worker(self._drain_recent_models(), group="model-recent")
 
-        async def _save() -> None:
-            try:
-                await asyncio.to_thread(store.record_recent, provider_name, model)
-            except (OSError, FileLockTimeout):
-                pass
-
-        self.run_worker(_save(), group="model-recent")
+    async def _drain_recent_models(self) -> None:
+        pending: deque[tuple[ModelPrefsStore, str, str]] = getattr(self, "_recent_model_queue", deque())
+        try:
+            while pending:
+                store, provider_name, model = pending.popleft()
+                try:
+                    await asyncio.to_thread(store.record_recent, provider_name, model)
+                except (OSError, FileLockTimeout):
+                    pass
+        finally:
+            self._recent_model_draining = False
+            if pending:
+                self._recent_model_draining = True
+                self.run_worker(self._drain_recent_models(), group="model-recent")
 
     def _build_model_choices(self) -> list[ModelChoice]:
         providers: tuple[ProviderConfig, ...] = self._configured_providers or (
@@ -308,7 +325,13 @@ class _ModelPickerMixin:
             )
             if ok:
                 try:
-                    reloaded = await asyncio.to_thread(load_settings, source)
+
+                    def _reload_and_protect() -> Settings:
+                        loaded = load_settings(source)
+                        protect_providers(loaded.providers)
+                        return loaded
+
+                    reloaded = await asyncio.to_thread(_reload_and_protect)
                     merged_providers = self._merge_reloaded_providers(
                         reloaded,
                         persisted_provider=choice.provider_name,
@@ -316,6 +339,15 @@ class _ModelPickerMixin:
                     self.settings = replace(reloaded, providers=merged_providers)
                     self._configured_providers = reloaded.providers
                     self.conversation.provider_configs = merged_providers
+                    installed = getattr(self, "_installed_provider_config", None) or self.conversation.provider_config
+                    reloaded_active = next((item for item in merged_providers if item.name == self.provider_name), None)
+                    if (
+                        reloaded_active is not None
+                        and choice.provider_name == self.provider_name
+                        and installed is not None
+                        and reloaded_active != installed
+                    ):
+                        await self._switch_model(reloaded_active, force=True)
                 except Exception:
                     pass
             await self._local_note(("└ " if ok else "! ") + message)

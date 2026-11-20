@@ -16,6 +16,7 @@ from .builtin_commands import dispatch
 from .commands import CommandContext, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, refreshed
 from .conversation import Notice, Resumed
+from .credentials import protect_providers
 from .follow import SOURCES as FOLLOWED
 from .member_ui import MemberPanel
 from .messages import IMAGE_MARK, CompactFailed, CompactFinished, CompactStarted, Message, ProviderError
@@ -345,14 +346,13 @@ class _CommandUIMixin:
             await self._local_note(f"切换失败：未知 Provider：{name}。")
             return False
         configured = next((item for item in self._configured_providers if item.name == name), config)
+        installed = getattr(self, "_installed_provider_config", None) or self.conversation.provider_config
         if model is not None:
             base = configured
             try:
                 if base.follow:
                     base = refreshed(base)
-                    from .credentials import remember
-
-                    remember(base.api_key)
+                    protect_providers((base,), include_keyring=False)
                 config = with_model(base, model)
             except ConfigError as exc:
                 await self._local_note(f"切换失败：{exc}")
@@ -360,7 +360,8 @@ class _CommandUIMixin:
             current_model = self.model or (
                 self.conversation.provider_config.model if self.conversation.provider_config is not None else ""
             )
-            if config.name == self.provider_name and config.model == current_model:
+            same_runtime = installed is None or installed == config
+            if config.name == self.provider_name and config.model == current_model and same_runtime:
                 await self._local_note(f"└ 已在使用 {config.name}（{config.model}）。")
                 return True
             if await self._switch_model(config, force=True):
@@ -371,10 +372,11 @@ class _CommandUIMixin:
             return False
         if not configured.follow:
             same_model = not self.model or configured.model == self.model
-            if configured.name == self.provider_name and same_model and configured is config:
+            same_runtime = installed is None or installed == configured
+            if configured.name == self.provider_name and same_model and configured is config and same_runtime:
                 await self._local_note(f"└ 已在使用 {configured.name}（{configured.model}）。")
                 return True
-            if await self._switch_model(configured, force=configured is not config):
+            if await self._switch_model(configured, force=(configured is not config or not same_runtime)):
                 if configured is not config:
                     # An earlier model override replaced this provider: switching by name restores its configured model.
                     providers = tuple(configured if item.name == name else item for item in self.settings.providers)
@@ -388,9 +390,7 @@ class _CommandUIMixin:
         except ConfigError as exc:
             await self._local_note(f"切换失败：{exc}")
             return False
-        from .credentials import remember
-
-        remember(config.api_key)  # A key switched to in that tool since startup is kept out of output too.
+        protect_providers((config,), include_keyring=False)
         if await self._switch_model(config, again=config.name == self.provider_name):
             providers = tuple(config if item.name == name else item for item in self.settings.providers)
             self.settings = replace(self.settings, providers=providers)
@@ -407,6 +407,7 @@ class _CommandUIMixin:
         if config.name == self.provider_name and same_model and not again and not force:
             await self._local_note(f"└ 已在使用 {config.name}（{config.model}）。")
             return False
+        protect_providers((config,), include_keyring=False)
         provider = None
         close_error: Exception | None = None
         try:
@@ -423,6 +424,7 @@ class _CommandUIMixin:
             if provider is None or self.conversation.provider is not provider:
                 raise
             close_error = exc
+        self._installed_provider_config = config
         self.provider_name, self.model = config.name, config.model
         self._record_recent_model(config.name, config.model)
         if self.query("#banner"):  # Not yet committed to the scrollback: it can still change.

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import random
 import sys
 import threading
@@ -366,8 +367,10 @@ class SDKProvider:
 
     def _client(self) -> Any:
         config = self.config
+        env_var = "ANTHROPIC_BASE_URL" if config.protocol == "anthropic-messages" else "OPENAI_BASE_URL"
+        effective_base_url = config.base_url or os.environ.get(env_var)
         if is_cleartext_remote_credential_url(
-            config.base_url,
+            effective_base_url,
             auth_type=config.auth_type,
             headers=config.headers,
         ):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ from .appearance import OPERATION_COLOR
 from .builtin_cmds.common import choice_row
 from .catalog import lookup, tokens_label
 from .config import OFFICIAL, ConfigError, is_loopback_url, is_project_file, load_settings
-from .credentials import keyring_label, keyring_problem, remember
+from .credentials import keyring_label, keyring_problem, protect_providers, remember
 from .follow import SOURCES as FOLLOWED
 from .follow import detected as detected_follow
 from .follow import resolve as resolve_follow
@@ -514,7 +514,13 @@ class _ConnectMixin:
             saved_path, saved_name = committed
 
         try:
-            reloaded = await asyncio.to_thread(load_settings, saved_path, home)
+
+            def _reload_and_protect():
+                loaded = load_settings(saved_path, home)
+                protect_providers(loaded.providers)
+                return loaded
+
+            reloaded = await asyncio.to_thread(_reload_and_protect)
         except (ConfigError, OSError) as exc:
             # Config is already committed on disk: only offer retrying reload/switch, never re-appending.
             self._connect_step = "reload_failed"
@@ -538,9 +544,23 @@ class _ConnectMixin:
             return
 
         async with self._model_switch_lock:
-            self.settings = reloaded
-            self._configured_providers = reloaded.providers
-            self.conversation.provider_configs = reloaded.providers
+            current_source = getattr(self.settings, "source", None) if self.settings is not None else None
+            if self.settings is not None and current_source is not None and is_project_file(current_source):
+                # Preserve the active project config and its providers; only merge the newly saved user provider.
+                saved_entry = next((item for item in reloaded.providers if item.name == saved_name), None)
+                if saved_entry is not None:
+                    base_active = [item for item in self.settings.providers if item.name != saved_name]
+                    base_active.append(saved_entry)
+                    base_configured = [item for item in self._configured_providers if item.name != saved_name]
+                    base_configured.append(saved_entry)
+                    merged_active = tuple(base_active)
+                    self.settings = replace(self.settings, providers=merged_active)
+                    self._configured_providers = tuple(base_configured)
+                    self.conversation.provider_configs = merged_active
+            else:
+                self.settings = reloaded
+                self._configured_providers = reloaded.providers
+                self.conversation.provider_configs = reloaded.providers
         self._close_connect_panel()
         await self._local_note(f"└ 已保存 Provider {saved_name} 到 {saved_path}。")
         await self.switch_model(saved_name)

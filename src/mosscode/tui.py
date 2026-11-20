@@ -38,7 +38,7 @@ from .catalog import tokens_label
 from .choice_list import KeyboardOptions
 from .clipboard import read_clipboard_async
 from .commands import CommandRegistry, Hint, parse_input, unknown_note
-from .config import Settings
+from .config import ProviderConfig, Settings
 from .conversation import Conversation, MemoryUpdated, Notice
 from .coordinator import BADGE as COORDINATOR_BADGE
 from .goal import GOAL, GoalStep, elapsed_text
@@ -375,6 +375,11 @@ class MossCodeApp(
         self.settings, self.model = settings, model
         # As configured: /model <name>/<model> replaces a provider for this session, /model <name> brings it back.
         self._configured_providers = settings.providers if settings is not None else ()
+        # Track the exact ProviderConfig installed in the active client separately from reloaded config entries.
+        self._installed_provider_config: ProviderConfig | None = conversation.provider_config or next(
+            (item for item in self._configured_providers if item.name == provider_name),
+            None,
+        )
         if provider_factory is None:
             from .providers import create_provider as provider_factory
         self.provider_factory = provider_factory
