@@ -1354,7 +1354,12 @@ def test_uri_paths_resolves_symlink_before_parent_traversal(tmp_path):
     try:
         link.symlink_to(subdir, target_is_directory=True)
     except OSError:
-        pytest.skip("symlinks are unavailable in this environment")
+        if sys.platform == "win32":
+            import _winapi
+
+            _winapi.CreateJunction(str(subdir), str(link))
+        else:
+            raise
 
     direct = _uri_paths(f"{link.as_uri()}/inside.txt")
     assert direct is not None

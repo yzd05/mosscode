@@ -545,6 +545,8 @@ class TeamRuntime:
                 f"当前团队已切换为 {store.name}，已取消停止原团队 {expected_team} 的成员 {name}。",
             )
         team = await asyncio.to_thread(store.load)
+        if self.current is not store:
+            raise TeamError("team_changed", f"团队已切换，已取消停止原团队 {store.name} 的成员 {name}。")
         if team.member(name) is None:
             raise TeamError("unknown_member", f"团队 {team.name} 中没有成员 {name}。")
         runner = self.runners.get(name)
