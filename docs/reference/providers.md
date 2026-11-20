@@ -6,12 +6,13 @@ Provider 配置、协议、重试与无界面输出。
 
 在 `config.yaml` 的 `providers` 列表追加配置即可接入兼容已有协议的服务：在终端交互界面中推荐直接输入 `/connect`（支持自动发现本机服务、OpenRouter OAuth PKCE / GitHub Copilot 设备码浏览器一键登录、在线探测连通性与 `/models` 列表，保存后立即热重载切换）；也可以在命令行运行 `moss login`（浏览器 OAuth 登录）、`moss config --web`（本机临时 Web 配置面板）或 `moss setup --add`（终端问答）写入用户级配置。同一服务的不同模型无需在 YAML 中重复配置：对话中可直接用 `/model`（或按 `Alt+M`）打开可搜索选择器，或用 `/model <提供商>/<模型>`、`/model <模型>`（目录未收录模型用 `/model :<模型>`）复用该提供商的凭据与 `base_url` 切换模型；经常切换或需要独立参数的模型也可以分别配置不同 `name`。
 
-凭据字段四选一：
+凭据字段五选一：
 
 - `api_key_keyring: deepseek`（推荐）：密钥保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），用 `moss key set deepseek`、`moss login`、`moss config --web` 或 `/connect` 保存，配置只写名称，见[命令行](cli.md#key)。保存后立即生效，不用重开终端。
 - `api_key_env: DEEPSEEK_API_KEY`：填写环境变量名称，并在启动进程的环境中设置该变量。例如 PowerShell 中先执行 `$env:DEEPSEEK_API_KEY = '你的密钥'` 再启动应用。`api_key_env` 不能填写 `sk-...`；误填时会给出字段说明，错误中不回显该值。
 - `api_key: '你的密钥'`：明文写在配置文件中。
 - `auth_type: none`（仅限本机回环地址）：适用于本机运行的 Ollama、LM Studio、vLLM 等无密钥兼容服务。出于安全边界限制，仅当 `base_url` 主机为 `localhost`、`127.0.0.1` 或 `::1` 时允许免密钥，指向非本机地址时拒绝加载（fail-closed）。
+- `auth_type: cli`（仅限本机官方 CLI 代理协议 `cli-claude` / `cli-codex` / `cli-gemini`）：通过官方无头 JSON 流式子进程复用用户已登录的 Claude Code / Codex / Gemini CLI 订阅，从不读取也不复制任何第三方私有 OAuth 令牌，不允许配置 `base_url`、`headers` 或 `api_key*`（fail-closed）。
 
 Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key`）；使用 GitHub Copilot 设备码登录的端点设 `auth_type: github-copilot`（由 `preset: copilot` 自动填充，运行时自动将保存的 GitHub OAuth 令牌换取并刷新短期 Copilot 会话令牌）。
 
@@ -49,6 +50,9 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
 | `ollama` | openai-chat-completions | `http://127.0.0.1:11434/v1` | `llama3.1` | 免密钥（`auth_type: none`） |
 | `lmstudio` | openai-chat-completions | `http://127.0.0.1:1234/v1` | `llama3.1` | 免密钥（`auth_type: none`） |
 | `copilot` | openai-chat-completions | `https://api.githubcopilot.com` | `gpt-4.1` | `GITHUB_COPILOT_TOKEN`（推荐 `moss login copilot` 存凭据管理器，`auth_type: github-copilot`） |
+| `claude-cli` | cli-claude | 本机官方 CLI（`claude`） | `claude-sonnet-5-5` | 复用本机官方 CLI 登录态（`auth_type: cli`） |
+| `codex-cli` | cli-codex | 本机官方 CLI（`codex`） | `gpt-5.6` | 复用本机官方 CLI 登录态（`auth_type: cli`） |
+| `gemini-cli` | cli-gemini | 本机官方 CLI（`gemini`） | `gemini-2.5-flash` | 复用本机官方 CLI 登录态（`auth_type: cli`） |
 
 配置中写出的字段优先，预设只填配置没写的部分；写了 `api_key`、`api_key_env` 或 `api_key_keyring` 时不再使用预设的变量名。默认模型都在[模型目录](#模型目录)中，上下文窗口和价格随之而来。
 
@@ -97,12 +101,29 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
 | anthropic-messages | Messages | Anthropic SDK 默认值 |
 | openai-responses | Responses | OpenAI SDK 默认值 |
 | openai-chat-completions | Chat Completions | OpenAI SDK 默认值 |
+| cli-claude | Claude Code CLI 无头流（`claude -p --output-format stream-json --tools "" --strict-mcp-config --setting-sources user`） | 本机 PATH 绝对目录中的 `claude` |
+| cli-codex | OpenAI Codex CLI 无头流（`codex exec --json --sandbox read-only -`） | 本机 PATH 绝对目录中的 `codex` |
+| cli-gemini | Google Gemini CLI 无头流（`gemini -p "" --output-format stream-json --approval-mode plan --policy …`） | 本机 PATH 绝对目录中的 `gemini` |
 
 兼容服务使用对应协议适配器。`base_url` 填 SDK 请求前缀，不填写完整的 `/messages`、`/responses` 或 `/chat/completions` 地址。OpenAI 兼容服务通常需包含 `/v1`，具体以服务文档为准。可选 `headers` 支持额外认证头，勿把含凭据的配置提交到仓库。
 
-支持简写：`anthropic` → Messages，`openai` → Responses，`openai-compat` → Chat Completions。Messages 的 thinking 支持 `false`、`true`（adaptive）或显式对象；手动 enabled 模式需配置预算。模型名不用于能力推断，服务拒绝的参数会显示错误。Chat Completions 的 `stream_usage` 和 `max_tokens_field` 可配置，以适应端点差异；发送前自动将非前缀尾部补充（如空回复重发提示）折叠为 `user` 消息，并按顺序合并相邻的 `user` 消息（含文本与多模态图片块），保证严格要求首条之后不再出现 `system` 且角色严格交替的 vLLM、SGLang 及 HuggingFace Jinja `chat_template` 服务端正常接受请求。
+支持简写：`anthropic` → Messages，`openai` → Responses，`openai-compat` → Chat Completions，`claude-cli` → `cli-claude`，`codex-cli` → `cli-codex`，`gemini-cli` → `cli-gemini`。Messages 的 thinking 支持 `false`、`true`（adaptive）或显式对象；手动 enabled 模式需配置预算。模型名不用于能力推断，服务拒绝的参数会显示错误。Chat Completions 的 `stream_usage` 和 `max_tokens_field` 可配置，以适应端点差异；发送前自动将非前缀尾部补充（如空回复重发提示）折叠为 `user` 消息，并按顺序合并相邻的 `user` 消息（含文本与多模态图片块），避免在首条之后重复出现 `system` 或连续 `user` 消息（连续的 `assistant` 消息保持原样，服务端是否接受以实际模板规则为准），以提升 vLLM、SGLang 及 HuggingFace Jinja `chat_template` 等端点的兼容性。
 
 Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，多轮原样回传服务返回的不透明推理数据。兼容服务不支持该选项时可设 `include_encrypted_reasoning: false`；缺少加密数据的推理条目不回传，仍保留正文历史，无法保留隐式推理连续性。
+
+### 本机官方 CLI 代理后端
+
+若本机已安装并登录官方 `claude`、`codex` 或 `gemini` CLI，可通过 `preset: claude-cli` / `codex-cli` / `gemini-cli`（或在 `/connect`、`moss config --web`、`moss setup` 中直接选择）将其作为 MossCode 的合规推理后端，适用于主会话、`-p`、ACP、子 Agent 与 `/swarm` 团队成员：
+
+```yaml
+  - name: claude-cli
+    preset: claude-cli
+```
+
+- **合规与安全边界**：仅调用硬编码白名单内的官方可执行程序（只从 `PATH` 中的显式绝对目录查找，绝不解析当前工作目录或相对路径，Windows 上自动跳过 `.ps1` 等需外部解释器的脚本扩展名，`shell=False`，不允许项目配置指定任意可执行路径），通过标准输入传入提示词，从不读取或复制外部 CLI 的私有 OAuth 令牌文件。
+- **计费路由隔离**：子进程环境会剥离 `MOSSCODE_*` 内部变量以及对应厂商的 API 密钥/云端路由变量（`cli-claude` 剥离 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_CUSTOM_HEADERS`、`ANTHROPIC_FOUNDRY_API_KEY`、`ANTHROPIC_FOUNDRY_BASE_URL`、`ANTHROPIC_FOUNDRY_RESOURCE`、`ANTHROPIC_BEDROCK_BASE_URL`、`ANTHROPIC_VERTEX_PROJECT_ID` 与 `CLAUDE_CODE_USE_*`；`cli-codex` 剥离 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等；`cli-gemini` 剥离 `GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_GENAI_USE_VERTEXAI`）；启动 `cli-claude` 前还会校验其会加载的用户级 `settings.json` 与生效的受管配置（`managed-settings.json` 及可见的 `managed-settings.d/*.json`，自动忽略隐藏文件）中是否存在 `apiKeyHelper`、非订阅 `forceLoginMethod` 或覆盖计费/路由的 `env` 项（存在或配置无法读取/解析时 fail-closed 拒绝启动），防止静默把订阅登录切换为按量 API 计费。Windows 上同时要求 Claude Code CLI 版本 `>= 2.1.75`（避免旧版本读取已弃用的 `ProgramData` 受管路径，见 `GHSA-5cwg-9f6j-9jvx`）。
+- **工具调用与只读策略控制**：启动前校验官方 CLI 是否支持必需的厂商侧隔离参数（不支持时 fail-closed 拒绝启用）：`cli-claude` 同时禁用内置工具（`--tools ""`）、外部 MCP 服务器（`--strict-mcp-config`）与项目/本地设置及工作区 Hook（`--setting-sources user`，同时保留用户订阅登录）；`cli-codex` 强制只读沙箱（`--sandbox read-only`）；`cli-gemini` 同时强制 `--approval-mode plan` 与拒绝全部工具的临时 `--policy` 规则文件（覆盖继承的自动编辑设置）。MossCode 通过每轮随机 64 位 Nonce 封装协议桥接自身工具调用，因此所有文件修改、命令执行、权限审批、命令沙箱、检查点与 `/swarm` 黑板协作仍完全由 MossCode 统一管控。
+- **限制**：`cli-*` 协议暂不支持图片输入（自动以占位符替代）、显式 `thinking` 配置与 `/thinking` 档位覆盖（由外部官方 CLI 自行管理）；超时、取消或父进程先行退出时均按进程树清理（Windows 使用 Job Object 并捕获早期子进程，POSIX 使用进程组）。正常情况下仅在确认进程树退出后才释放追踪记录；若在清理超时内未能确认退出，会抛出错误并保留追踪记录。后续再次调用该 Provider 的 `close()` 时可继续重试（总计最多 3 次；达到上限仍未确认退出时报错并停止重试，Windows 上同时关闭 Job Object 句柄以触发内核 `KILL_ON_JOB_CLOSE` 并移除记录）。当前主会话退出路径仅调用一次 `conversation.close()`，因此单次退出清理失败后会直接上报错误，不会在本次退出流程中自动执行剩余重试次数。
 
 ## 思考强度
 

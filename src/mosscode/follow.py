@@ -111,7 +111,7 @@ def _claude(home, environ) -> dict:
         helper = "；apiKeyHelper 生成的密钥不能共用" if data.get("apiKeyHelper") else ""
         raise _error(
             f"跟随 Claude Code：{path} 和环境变量中都没有 ANTHROPIC_AUTH_TOKEN 或 ANTHROPIC_API_KEY"
-            f"（用账号登录的 Claude Code 不能共用{helper}）。"
+            f"（用账号登录的 Claude Code 不能共用{helper}；如需复用本机 Claude Code 订阅登录，请改用 preset: claude-cli）。"
         )
     found = {"protocol": "anthropic-messages", "api_key": token or key, "auth_type": "bearer" if token else "api_key"}
     if url := value("ANTHROPIC_BASE_URL"):
@@ -174,7 +174,10 @@ def _codex(home, environ) -> dict:
         auth = _read(root / "auth.json", "Codex", json.loads)
         key = auth.get("OPENAI_API_KEY") if isinstance(auth, dict) else None
         if not isinstance(key, str) or not key.strip():
-            raise _error("跟随 Codex：auth.json 中没有 OPENAI_API_KEY（用 ChatGPT 账号登录的 Codex 不能共用）。")
+            raise _error(
+                "跟随 Codex：auth.json 中没有 OPENAI_API_KEY"
+                "（用 ChatGPT 账号登录的 Codex 不能共用；如需复用本机 Codex 订阅登录，请改用 preset: codex-cli）。"
+            )
         key = key.strip()
     found["api_key"] = key
     headers = {k: v for k, v in (table.get("http_headers") or {}).items() if isinstance(v, str)}

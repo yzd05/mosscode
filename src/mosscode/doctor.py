@@ -121,6 +121,18 @@ def _credential(provider) -> tuple[str, str, str]:
         from .follow import SOURCES
 
         return OK, f"跟随 {SOURCES[provider.follow]} 的设置（已读取）", ""
+    if getattr(provider, "auth_type", None) == "cli" or getattr(provider, "protocol", None) in {
+        "cli-claude",
+        "cli-codex",
+        "cli-gemini",
+    }:
+        from .cli_providers import CLI_BINARIES, CLI_INSTALL_HINTS, CLI_LABELS, resolve_cli_executable
+
+        binary = CLI_BINARIES[provider.protocol]
+        found = resolve_cli_executable(binary)
+        if found:
+            return OK, f"复用本机 {CLI_LABELS[provider.protocol]}（{found}）", ""
+        return WARN, f"PATH 绝对目录中未找到 {binary}", CLI_INSTALL_HINTS[provider.protocol]
     if getattr(provider, "auth_type", None) == "none":
         return OK, "免密钥（本机回环地址）", ""
     is_copilot = getattr(provider, "auth_type", None) == "github-copilot"
@@ -221,11 +233,16 @@ def check_config(config: str | None = None, cwd: Path | None = None, home: Path 
             )
             for provider in settings.providers:
                 level, credential, fix = _credential(provider)
-                host = (
-                    urlsplit(provider.base_url).hostname
-                    if provider.base_url
-                    else f"{urlsplit(OFFICIAL[provider.protocol]).hostname}（官方地址）"
-                )
+                if provider.protocol in {"cli-claude", "cli-codex", "cli-gemini"}:
+                    from .cli_providers import CLI_BINARIES
+
+                    host = f"本机 CLI（{CLI_BINARIES[provider.protocol]}）"
+                else:
+                    host = (
+                        urlsplit(provider.base_url).hostname
+                        if provider.base_url
+                        else f"{urlsplit(OFFICIAL[provider.protocol]).hostname}（官方地址）"
+                    )
                 default = "（默认）" if provider.name == settings.default_provider else ""
                 items.append(
                     Item(

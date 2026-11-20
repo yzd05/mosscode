@@ -28,7 +28,8 @@ from .auth import (
     poll_copilot_device_token_once,
     start_copilot_device_flow,
 )
-from .config import OFFICIAL, ConfigError, is_loopback_url, load_settings
+from .cli_providers import CLI_BINARIES, CLI_LABELS, CLI_PROTOCOLS, detect_installed_clis, resolve_cli_executable
+from .config import ALIASES, OFFICIAL, ConfigError, is_loopback_url, load_settings
 from .credentials import keyring_label, keyring_problem
 from .model_discovery import detect_local_servers, probe_provider, save_provider_entry, set_default_model
 from .paths import mosscode_home
@@ -42,6 +43,8 @@ def _sanitize_provider(provider: Any) -> dict[str, Any]:
     """Return non-sensitive metadata for one configured ProviderConfig (never any key or secret header)."""
     if provider.follow:
         cred_kind = f"跟随 {provider.follow}"
+    elif provider.auth_type == "cli" or provider.protocol in CLI_PROTOCOLS:
+        cred_kind = f"复用本机 {CLI_LABELS.get(provider.protocol, provider.protocol)} 登录态"
     elif provider.auth_type == "none":
         cred_kind = "免密钥（本机回环）"
     elif provider.auth_type == "github-copilot":
@@ -54,11 +57,16 @@ def _sanitize_provider(provider: Any) -> dict[str, Any]:
         cred_kind = "配置文件明文密钥"
     else:
         cred_kind = "未配置"
+    endpoint = (
+        f"本机 CLI（{CLI_BINARIES[provider.protocol]}）"
+        if provider.protocol in CLI_PROTOCOLS
+        else (provider.base_url or OFFICIAL.get(provider.protocol, ""))
+    )
     return {
         "name": provider.name,
         "protocol": provider.protocol,
         "model": provider.model,
-        "base_url": provider.base_url or OFFICIAL.get(provider.protocol, ""),
+        "base_url": endpoint,
         "auth_type": provider.auth_type,
         "preset": provider.preset,
         "follow": provider.follow,
@@ -152,6 +160,12 @@ button:disabled {{ opacity:.5; cursor:not-allowed; }}
     </div>
 
     <section class="card">
+      <h2>本机官方 CLI 代理（复用官方订阅登录）</h2>
+      <p class="muted">通过官方无头 CLI 子进程调用，不读取也不复制任何第三方私有 OAuth 令牌。</p>
+      <div id="cli-list" class="muted">正在检测本机官方 CLI…</div>
+    </section>
+
+    <section class="card">
       <h2>添加模型服务（厂商预设或自定义端点）</h2>
       <div class="grid grid-2">
         <div>
@@ -168,6 +182,9 @@ button:disabled {{ opacity:.5; cursor:not-allowed; }}
             <option value="openai-chat-completions">OpenAI Chat Completions</option>
             <option value="anthropic-messages">Anthropic Messages</option>
             <option value="openai-responses">OpenAI Responses</option>
+            <option value="cli-claude">Claude Code CLI (cli-claude)</option>
+            <option value="cli-codex">OpenAI Codex CLI (cli-codex)</option>
+            <option value="cli-gemini">Google Gemini CLI (cli-gemini)</option>
           </select>
         </div>
         <div>
@@ -180,6 +197,7 @@ button:disabled {{ opacity:.5; cursor:not-allowed; }}
             <option value="keyring">系统凭据管理器（推荐）</option>
             <option value="env">环境变量名</option>
             <option value="none">免密钥（仅本机回环地址）</option>
+            <option value="cli">复用本机官方 CLI 登录态</option>
             <option value="plain">直接写入配置文件（明文）</option>
           </select>
         </div>
@@ -346,6 +364,55 @@ function renderLocalServers() {{
   }}
 }}
 
+function renderCLIBackends() {{
+  const box = document.getElementById('cli-list');
+  box.textContent = '';
+  const list = (STATE && STATE.cli_backends) || [];
+  if (!list.length) {{
+    box.textContent = '未在 PATH 中检测到 claude、codex 或 gemini 官方 CLI；安装并登录后刷新即可一键接入。';
+    return;
+  }}
+  for (const c of list) {{
+    const row = document.createElement('div');
+    row.className = 'provider-item';
+    const left = document.createElement('div');
+    const title = document.createElement('div');
+    title.textContent = c.label + '（命令：' + c.binary + '）';
+    const meta = document.createElement('div');
+    meta.className = 'provider-meta';
+    meta.textContent = c.protocol + ' / 默认 ' + c.default_model + ' · 复用官方订阅登录';
+    left.append(title, meta);
+    const btn = document.createElement('button');
+    btn.className = 'primary';
+    btn.textContent = '一键添加';
+    btn.onclick = async () => {{
+      try {{
+        await api('/api/providers', {{
+          method: 'POST',
+          body: JSON.stringify({{
+            preset: c.preset_key,
+            name: c.preset_key,
+            protocol: c.protocol,
+            model: c.default_model,
+            cred_method: 'cli',
+            set_default: true
+          }})
+        }});
+        setStatus('form-status', '已添加本机 ' + c.label + ' 并设为默认。', 'ok');
+        await refreshState();
+      }} catch (e) {{
+        setStatus('form-status', e.message, 'err');
+      }}
+    }};
+    row.append(left, btn);
+    box.append(row);
+  }}
+}}
+
+function isCLIProtocol(proto) {{
+  return proto === 'cli-claude' || proto === 'cli-codex' || proto === 'cli-gemini';
+}}
+
 function fillPresets() {{
   const sel = document.getElementById('f-preset');
   sel.textContent = '';
@@ -362,9 +429,27 @@ function fillPresets() {{
 }}
 
 function syncCredInput() {{
-  const method = document.getElementById('f-cred-method').value;
+  const proto = document.getElementById('f-protocol').value;
+  const credSel = document.getElementById('f-cred-method');
+  const urlInp = document.getElementById('f-url');
   const label = document.getElementById('l-secret');
   const inp = document.getElementById('f-secret');
+  if (isCLIProtocol(proto)) {{
+    credSel.value = 'cli';
+    credSel.disabled = true;
+    urlInp.value = '';
+    urlInp.disabled = true;
+    label.textContent = '复用本机官方 CLI 登录态（不读取凭据）';
+    inp.value = '';
+    inp.disabled = true;
+    return;
+  }}
+  credSel.disabled = false;
+  urlInp.disabled = false;
+  if (credSel.value === 'cli') {{
+    credSel.value = (STATE && STATE.keyring_ok) ? 'keyring' : 'env';
+  }}
+  const method = credSel.value;
   if (method === 'env') {{
     label.textContent = '环境变量名（不要填密钥本身）';
     inp.type = 'text';
@@ -386,7 +471,10 @@ document.getElementById('f-cred-method').onchange = () => {{
   syncCredInput();
   resetDiscovered();
 }};
-document.getElementById('f-protocol').onchange = resetDiscovered;
+document.getElementById('f-protocol').onchange = () => {{
+  syncCredInput();
+  resetDiscovered();
+}};
 document.getElementById('f-url').oninput = resetDiscovered;
 document.getElementById('f-secret').oninput = resetDiscovered;
 document.getElementById('f-model').oninput = () => {{ modelFromDiscovery = false; }};
@@ -396,13 +484,20 @@ document.getElementById('f-preset').onchange = () => {{
   document.getElementById('f-protocol').disabled = Boolean(key);
   resetDiscovered();
   const p = ((STATE && STATE.presets) || []).find(x => x.key === key);
-  if (!p) return;
+  if (!p) {{
+    syncCredInput();
+    return;
+  }}
   document.getElementById('f-name').value = p.key;
   document.getElementById('f-protocol').value = p.protocol;
-  document.getElementById('f-url').value = p.auth_type === 'github-copilot' ? '' : (p.base_url || '');
+  document.getElementById('f-url').value = (p.auth_type === 'github-copilot' || p.auth_type === 'cli') ? '' : (p.base_url || '');
   document.getElementById('f-model').value = p.model;
   modelFromDiscovery = false;
-  document.getElementById('f-cred-method').value = p.auth_type === 'none' ? 'none' : (STATE.keyring_ok ? 'keyring' : 'env');
+  if (p.auth_type === 'cli') {{
+    document.getElementById('f-cred-method').value = 'cli';
+  }} else {{
+    document.getElementById('f-cred-method').value = p.auth_type === 'none' ? 'none' : (STATE.keyring_ok ? 'keyring' : 'env');
+  }}
   if (document.getElementById('f-cred-method').value === 'env') {{
     document.getElementById('f-secret').value = p.api_key_env || '';
   }} else {{
@@ -422,6 +517,7 @@ async function refreshState() {{
   document.getElementById('cfg-path').textContent = STATE.config_path;
   renderProviders();
   renderLocalServers();
+  renderCLIBackends();
   if (!document.getElementById('f-preset').options.length) fillPresets();
   document.getElementById('f-protocol').disabled = Boolean(document.getElementById('f-preset').value);
   syncCredInput();
@@ -628,11 +724,13 @@ class ConfigWebServer:
         vault: Any = None,
         transport: Any = None,
         idle_timeout: float = 1800.0,
+        which: Any = None,
     ) -> None:
         self.home = home
         self.config_path = mosscode_home(home) / "config.yaml"
         self.vault = vault
         self.transport = transport
+        self.which = resolve_cli_executable if which is None else which
         self.idle_timeout = float(idle_timeout)
         self.boot_token = secrets.token_urlsafe(32)
         self.session_token = secrets.token_urlsafe(32)
@@ -700,6 +798,7 @@ class ConfigWebServer:
             except (ConfigError, OSError, UnicodeError) as exc:
                 config_error = f"配置文件无法读取，请先修复 {self.config_path}：{exc}"
         local = asyncio.run(detect_local_servers(timeout=0.35, transport=self.transport))
+        cli_backends = detect_installed_clis(self.which)
         problem = (
             self.vault.problem()
             if (self.vault is not None and callable(getattr(self.vault, "problem", None)))
@@ -734,6 +833,17 @@ class ConfigWebServer:
                 }
                 for srv in local
             ],
+            "cli_backends": [
+                {
+                    "protocol": item.protocol,
+                    "preset_key": item.preset_key,
+                    "binary": item.binary,
+                    "label": item.label,
+                    "executable": item.executable,
+                    "default_model": item.default_model,
+                }
+                for item in cli_backends
+            ],
         }
 
     def _handle_probe(self, body: dict[str, Any]) -> tuple[HTTPStatus, dict[str, Any]]:
@@ -750,6 +860,29 @@ class ConfigWebServer:
             protocol = preset.protocol
             if base_url is None and preset.base_url is not None and preset.auth_type != "github-copilot":
                 base_url = preset.base_url
+        else:
+            protocol = ALIASES.get(protocol, protocol)
+        if cred_method == "cli" or protocol in CLI_PROTOCOLS:
+            auth_type = "cli" if cred_method == "cli" else ("none" if cred_method == "none" else "api_key")
+            res = asyncio.run(
+                probe_provider(
+                    protocol,
+                    base_url,
+                    None,
+                    auth_type=auth_type,
+                    timeout=8.0,
+                    transport=self.transport,
+                    which=self.which,
+                )
+            )
+            return HTTPStatus.OK, {
+                "ok": res.ok,
+                "models": list(res.models),
+                "latency_ms": res.latency_ms,
+                "detail": res.detail,
+                "error": res.error,
+                "resolved_base_url": res.resolved_base_url,
+            }
         if cred_method == "none":
             auth_type = "none"
         elif preset is not None and preset.auth_type == "github-copilot":
@@ -799,10 +932,23 @@ class ConfigWebServer:
 
         if not name or not model:
             return HTTPStatus.BAD_REQUEST, {"error": "Provider 名称和模型名不能为空。"}
-        if cred_method not in {"keyring", "env", "plain", "none"}:
+        if cred_method not in {"keyring", "env", "plain", "none", "cli"}:
             return HTTPStatus.BAD_REQUEST, {"error": "不支持的凭据保存方式。"}
 
         preset = PRESETS.get(preset_key) if isinstance(preset_key, str) else None
+        effective_protocol = preset.protocol if preset is not None else ALIASES.get(protocol, protocol)
+        if effective_protocol in CLI_PROTOCOLS:
+            if cred_method != "cli":
+                return HTTPStatus.BAD_REQUEST, {
+                    "error": "CLI 代理协议必须使用 auth_type: cli（复用本机官方 CLI 登录态）。"
+                }
+            if base_url is not None:
+                return HTTPStatus.BAD_REQUEST, {"error": "CLI 代理协议通过本机官方 CLI 执行，不支持配置 base_url。"}
+        elif cred_method == "cli":
+            return HTTPStatus.BAD_REQUEST, {
+                "error": "auth_type: cli 仅用于 CLI 代理协议（cli-claude / cli-codex / cli-gemini）。"
+            }
+
         effective_url = base_url if base_url is not None else (preset.base_url if preset is not None else None)
         if cred_method == "none" and not is_loopback_url(effective_url):
             return HTTPStatus.BAD_REQUEST, {"error": "免密钥模式仅允许用于本机回环地址。"}
@@ -820,7 +966,10 @@ class ConfigWebServer:
                 entry["base_url"] = base_url
 
         pending_key: str | None = None
-        if cred_method == "none":
+        if cred_method == "cli":
+            if preset is None:
+                entry["auth_type"] = "cli"
+        elif cred_method == "none":
             entry["auth_type"] = "none"
         elif cred_method == "keyring":
             if not secret:

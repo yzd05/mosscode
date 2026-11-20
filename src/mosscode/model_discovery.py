@@ -18,7 +18,15 @@ from urllib.parse import urlsplit, urlunsplit
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
-from .config import OFFICIAL, ConfigError, is_loopback_url, load_settings, render_config
+from .cli_providers import (
+    CLI_BINARIES,
+    CLI_DEFAULT_MODELS,
+    CLI_INSTALL_HINTS,
+    CLI_LABELS,
+    CLI_PROTOCOLS,
+    resolve_cli_executable,
+)
+from .config import ALIASES, OFFICIAL, ConfigError, is_loopback_url, load_settings, render_config
 from .paths import mosscode_home
 from .redaction import COPILOT_URL_ERROR, is_approved_copilot_url, is_cleartext_remote_credential_url, redact
 
@@ -167,8 +175,30 @@ async def probe_provider(
     headers: Mapping[str, str] | None = None,
     timeout: float = 8.0,
     transport: Any = None,
+    which: Any = None,
 ) -> ProbeResult:
-    """Probe provider connectivity and discover available model IDs via GET /models."""
+    """Probe provider connectivity and discover available model IDs via GET /models or local CLI lookup."""
+    protocol = ALIASES.get(protocol, protocol)
+    if protocol in CLI_PROTOCOLS or auth_type == "cli":
+        if protocol not in CLI_PROTOCOLS:
+            return ProbeResult(
+                False, error="auth_type: cli 仅用于 CLI 代理协议（cli-claude / cli-codex / cli-gemini）。"
+            )
+        if auth_type != "cli":
+            return ProbeResult(False, error="CLI 代理协议必须使用 auth_type: cli。")
+        if base_url:
+            return ProbeResult(False, error="CLI 代理协议通过本机官方 CLI 执行，不支持配置 base_url。")
+        resolver = resolve_cli_executable if which is None else which
+        binary = CLI_BINARIES[protocol]
+        executable = resolver(binary)
+        if not executable or not Path(executable).is_absolute():
+            return ProbeResult(False, error=f"PATH 绝对目录中未找到官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。")
+        return ProbeResult(
+            True,
+            models=(CLI_DEFAULT_MODELS[protocol],),
+            detail=f"已检测到本机 {CLI_LABELS[protocol]}（{executable}），将复用官方 CLI 登录态",
+        )
+
     import httpx
 
     if protocol not in OFFICIAL:

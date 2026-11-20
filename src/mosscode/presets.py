@@ -103,6 +103,33 @@ PRESETS = {
             "GITHUB_COPILOT_TOKEN",
             auth_type="github-copilot",
         ),
+        Preset(
+            "claude-cli",
+            "Claude Code CLI（复用官方订阅）",
+            "cli-claude",
+            None,
+            "claude-sonnet-5-5",
+            "",
+            auth_type="cli",
+        ),
+        Preset(
+            "codex-cli",
+            "OpenAI Codex CLI（复用官方订阅）",
+            "cli-codex",
+            None,
+            "gpt-5.6",
+            "",
+            auth_type="cli",
+        ),
+        Preset(
+            "gemini-cli",
+            "Google Gemini CLI（复用官方订阅）",
+            "cli-gemini",
+            None,
+            "gemini-2.5-flash",
+            "",
+            auth_type="cli",
+        ),
     )
 }
 CREDENTIALS = ("api_key", "api_key_env", "api_key_keyring")
@@ -125,6 +152,10 @@ def expand(raw: dict) -> dict:
         data.setdefault("base_url", preset.base_url)
     if preset.auth_type is not None:
         data.setdefault("auth_type", preset.auth_type)
-    if preset.api_key_env and data.get("auth_type") != "none" and not any(data.get(field) for field in CREDENTIALS):
+    if (
+        preset.api_key_env
+        and data.get("auth_type") not in {"none", "cli"}
+        and not any(data.get(field) for field in CREDENTIALS)
+    ):
         data["api_key_env"] = preset.api_key_env
     return data

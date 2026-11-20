@@ -897,7 +897,29 @@ class ChatCompletionsProvider(SDKProvider):
         yield Completed(Message("assistant", tuple(content), self.config.protocol, (native,), calls), stop, usage)
 
 
-def create_provider(config: ProviderSettings) -> SDKProvider:
+@runtime_checkable
+class ModelProvider(Protocol):
+    """Shared structural contract implemented by both SDK and CLI proxy adapters."""
+
+    thinking: str | None
+
+    def stream(
+        self,
+        messages: Sequence[Message],
+        system: str | PromptRequest,
+        tools: Sequence[ToolDefinition] = (),
+        *,
+        allow_tools: bool = True,
+    ) -> AsyncIterator[StreamEvent]: ...
+
+    async def close(self) -> None: ...
+
+
+def create_provider(config: ProviderSettings) -> ModelProvider:
+    if config.protocol in {"cli-claude", "cli-codex", "cli-gemini"}:
+        from .cli_providers import CLIProxyProvider
+
+        return CLIProxyProvider(config)
     adapters = {
         "anthropic-messages": AnthropicProvider,
         "openai-responses": ResponsesProvider,

@@ -74,6 +74,8 @@ def _deepseek(config: ReasoningConfig) -> bool:
 
 
 def _check(config: ReasoningConfig) -> None:
+    if config.protocol in {"cli-claude", "cli-codex", "cli-gemini"}:
+        raise Unsupported("CLI 代理协议由本机官方 CLI 管理思考模式，不支持 /thinking 覆盖")
     if config.reasoning is False:
         raise Unsupported(f"提供商 {config.name} 配置了 reasoning: false")
     info = config.catalog

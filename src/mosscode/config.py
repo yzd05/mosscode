@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from .catalog import ModelInfo, load_catalog, lookup, tokens_label
+from .cli_providers import CLI_BINARIES, CLI_LABELS, CLI_MODEL_ERROR, CLI_PROTOCOLS, is_valid_cli_model
 from .context import ContextBudget
 from .prompts import DEFAULT_SYSTEM_PROMPT, stable_prompt
 from .redaction import (
@@ -35,6 +36,9 @@ ALIASES = {
     "anthropic": "anthropic-messages",
     "openai": "openai-responses",
     "openai-compat": "openai-chat-completions",
+    "claude-cli": "cli-claude",
+    "codex-cli": "cli-codex",
+    "gemini-cli": "cli-gemini",
 }
 PROTOCOLS = set(ALIASES.values())
 OFFICIAL = {
@@ -91,6 +95,8 @@ class ProviderConfig:
 
     @property
     def accepts_images(self) -> bool:
+        if self.protocol in CLI_PROTOCOLS:
+            return False
         # Many Chat Completions services (DeepSeek and the like) have text-only models.
         return self.images if self.images is not None else self.protocol != "openai-chat-completions"
 
@@ -112,6 +118,10 @@ class ProviderConfig:
         return ContextBudget.for_provider(self.context_window, self.max_output_tokens, self.compact_threshold)
 
     def credential(self) -> str:
+        if self.auth_type == "cli":
+            if self.protocol not in CLI_PROTOCOLS:
+                raise ConfigError(f"{self.name}：auth_type: cli 仅用于 CLI 代理协议。")
+            return ""
         if self.auth_type == "none":
             if not is_loopback_url(self.base_url):
                 raise ConfigError(
@@ -373,6 +383,8 @@ def _shown(value: Any) -> str:
 
 
 def _host(item: ProviderConfig) -> str:
+    if item.protocol in CLI_PROTOCOLS:
+        return f"本机官方 CLI（{CLI_LABELS[item.protocol]} / {CLI_BINARIES[item.protocol]}）"
     parsed = urlsplit(item.base_url or OFFICIAL[item.protocol])
     host = parsed.hostname or ""
     if not host.isascii():  # Look-alike letters must not pass for a familiar name.
@@ -393,6 +405,8 @@ def _credential(item: ProviderConfig | WebSearchConfig) -> str:
         from .follow import SOURCES
 
         return f"{SOURCES[item.follow]} 的设置中的密钥"
+    if getattr(item, "auth_type", None) == "cli" or getattr(item, "protocol", None) in CLI_PROTOCOLS:
+        return "复用本机官方 CLI 登录态（不读取凭据）"
     if getattr(item, "auth_type", None) == "none":
         return "免密钥（本机回环地址）"
     if item.api_key_env:
@@ -469,7 +483,13 @@ def _provider(raw: Any, home: Path | None = None) -> ProviderConfig:
     data = dict(raw)
     data["protocol"] = ALIASES.get(data["protocol"], data["protocol"])
     if data["protocol"] not in PROTOCOLS:
-        raise ConfigError("protocol 必须是 anthropic-messages、openai-responses 或 openai-chat-completions。")
+        raise ConfigError(
+            "protocol 必须是 anthropic-messages、openai-responses、openai-chat-completions"
+            "、cli-claude、cli-codex 或 cli-gemini。"
+        )
+    is_cli = data["protocol"] in CLI_PROTOCOLS
+    if is_cli and not is_valid_cli_model(data["model"]):
+        raise ConfigError(CLI_MODEL_ERROR)
     url = data.get("base_url")
     if url is not None:
         if not isinstance(url, str):
@@ -496,9 +516,25 @@ def _provider(raw: Any, home: Path | None = None) -> ProviderConfig:
     timeout = data.get("timeout", 60.0)
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ConfigError("timeout 必须是有限的正数秒数。")
-    auth_type = data.get("auth_type", "api_key")
-    if auth_type not in {"api_key", "bearer", "none", "github-copilot"}:
-        raise ConfigError("auth_type 必须是 api_key、bearer、none 或 github-copilot。")
+    auth_type = data.get("auth_type", "cli" if is_cli else "api_key")
+    if auth_type not in {"api_key", "bearer", "none", "github-copilot", "cli"}:
+        raise ConfigError("auth_type 必须是 api_key、bearer、none、github-copilot 或 cli。")
+    data["auth_type"] = auth_type
+    if is_cli:
+        if auth_type != "cli":
+            raise ConfigError("CLI 代理协议（cli-claude / cli-codex / cli-gemini）的 auth_type 必须是 cli。")
+        if url is not None:
+            raise ConfigError("CLI 代理协议通过本机官方 CLI 执行，不支持配置 base_url。")
+        if any(data.get(key) for key in CREDENTIAL_FIELDS):
+            raise ConfigError(
+                "CLI 代理协议复用本机官方 CLI 的登录状态，不能配置 api_key、api_key_env 或 api_key_keyring。"
+            )
+        if headers:
+            raise ConfigError("CLI 代理协议不支持配置 headers。")
+        if data.get("images") is True:
+            raise ConfigError("CLI 代理协议暂不支持图片输入（images 不能设为 true）。")
+    elif auth_type == "cli":
+        raise ConfigError("auth_type: cli 仅用于 CLI 代理协议（cli-claude / cli-codex / cli-gemini）。")
     if auth_type == "github-copilot":
         from .auth import COPILOT_HEADERS
 
@@ -599,7 +635,7 @@ def _catalog_defaults(data: dict) -> None:
         if data.get("context_window") is None and (window := catalog_window(info, output)):
             data["context_window"] = window
             filled.append("context_window")
-        if data.get("images") is None and info.vision is not None:
+        if data.get("images") is None and info.vision is not None and data["protocol"] not in CLI_PROTOCOLS:
             data["images"] = info.vision
             filled.append("images")
     data.setdefault("max_output_tokens", ProviderConfig.max_output_tokens)
