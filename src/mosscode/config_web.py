@@ -66,18 +66,20 @@ def _sanitize_provider(provider: Any) -> dict[str, Any]:
     }
 
 
-def _render_web_page(session_token: str | None, nonce: str) -> bytes:
+def _render_web_page(session_token: str | None, nonce: str, *, page_epoch: int = 1) -> bytes:
     """Self-contained offline HTML/CSS/JS configuration UI with CSP script nonce and origin-scoped session token."""
     # Only the single-use bootstrap response embeds the session token; subsequent reloads get an empty meta value
     # and read the token exclusively from origin-scoped `sessionStorage` (never a host-wide cookie).
     safe_boot = html.escape(session_token or "", quote=True)
     safe_nonce = html.escape(nonce, quote=True)
+    safe_epoch = str(int(page_epoch))
     page = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="session-bootstrap" content="{safe_boot}">
+<meta name="oauth-epoch" content="{safe_epoch}">
 <title>MossCode 本地配置面板</title>
 <style>
 :root {{
@@ -215,6 +217,8 @@ let SESSION_TOKEN = BOOT_TOKEN;
 if (!SESSION_TOKEN) {{
   try {{ SESSION_TOKEN = sessionStorage.getItem('mosscode_web_token') || ''; }} catch (_) {{}}
 }}
+const EPOCH_META = document.querySelector('meta[name="oauth-epoch"]');
+const PAGE_EPOCH = EPOCH_META ? (parseInt(EPOCH_META.content, 10) || 0) : 0;
 let STATE = null;
 let probeSeq = 0;
 let modelFromDiscovery = false;
@@ -395,7 +399,7 @@ document.getElementById('f-preset').onchange = () => {{
   if (!p) return;
   document.getElementById('f-name').value = p.key;
   document.getElementById('f-protocol').value = p.protocol;
-  document.getElementById('f-url').value = p.base_url || '';
+  document.getElementById('f-url').value = p.auth_type === 'github-copilot' ? '' : (p.base_url || '');
   document.getElementById('f-model').value = p.model;
   modelFromDiscovery = false;
   document.getElementById('f-cred-method').value = p.auth_type === 'none' ? 'none' : (STATE.keyring_ok ? 'keyring' : 'env');
@@ -498,7 +502,7 @@ document.getElementById('btn-or-login').onclick = async () => {{
   const myGen = ++oauthGen;
   setStatus('oauth-status', '正在启动 OpenRouter PKCE 授权…');
   try {{
-    const start = await api('/api/auth/openrouter/start', {{method:'POST', body: JSON.stringify({{set_default:true, generation: myGen}})}});
+    const start = await api('/api/auth/openrouter/start', {{method:'POST', body: JSON.stringify({{set_default:true, epoch: PAGE_EPOCH, generation: myGen}})}});
     if (myGen !== oauthGen) return;
     window.open(start.auth_url, '_blank', 'noopener');
     setStatus('oauth-status', '已打开 OpenRouter 授权页；若未自动打开，请手动访问：\\n' + start.auth_url);
@@ -546,7 +550,7 @@ document.getElementById('btn-cp-login').onclick = async () => {{
   const myGen = ++oauthGen;
   setStatus('oauth-status', '正在请求 GitHub Copilot 设备码…');
   try {{
-    const start = await api('/api/auth/copilot/start', {{method:'POST', body: JSON.stringify({{generation: myGen}})}});
+    const start = await api('/api/auth/copilot/start', {{method:'POST', body: JSON.stringify({{epoch: PAGE_EPOCH, generation: myGen}})}});
     if (myGen !== oauthGen) return;
     const box = document.getElementById('oauth-status');
     box.textContent = '';
@@ -642,7 +646,8 @@ class ConfigWebServer:
         self._shutting_down = False
         self._closed = False
         self._active_oauth_owner: tuple[str, str] | None = None
-        self._oauth_client_gen = 0
+        self._page_epoch_seq = 0
+        self._oauth_order: tuple[int, int] = (0, 0)
         self._or_jobs: dict[str, dict[str, Any]] = {}
         self._cp_jobs: dict[str, dict[str, Any]] = {}
         self._cp_in_flight: set[str] = set()
@@ -866,12 +871,20 @@ class ConfigWebServer:
             ok, msg = set_default_model(self.config_path, provider, model_arg, home=self.home)
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST), {"ok": ok, "message": msg, "error": "" if ok else msg}
 
+    def _next_page_epoch(self) -> int:
+        with self._lock:
+            self._page_epoch_seq += 1
+            return self._page_epoch_seq
+
     @staticmethod
-    def _parse_generation(body: dict[str, Any]) -> int | None:
-        raw = body.get("generation")
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
-            return raw
-        return None
+    def _parse_order(body: dict[str, Any], default_epoch: int) -> tuple[int, int] | None:
+        raw_gen = body.get("generation")
+        if not (isinstance(raw_gen, int) and not isinstance(raw_gen, bool) and raw_gen > 0):
+            return None
+        raw_epoch = body.get("epoch")
+        if isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool) and raw_epoch >= 0:
+            return (raw_epoch, raw_gen)
+        return (default_epoch, raw_gen)
 
     def _retire_openrouter_jobs_locked(self, reason: str) -> list[LoopbackCallbackServer]:
         stale_callbacks: list[LoopbackCallbackServer] = []
@@ -883,6 +896,36 @@ class ConfigWebServer:
                 old_job["error"] = reason
         return stale_callbacks
 
+    def _reserve_oauth_start(
+        self,
+        provider_kind: str,
+        body: dict[str, Any],
+    ) -> tuple[str | None, HTTPStatus | None, dict[str, Any] | None]:
+        """Atomically fence previous OAuth jobs and reserve ownership BEFORE any external network/socket I/O."""
+        reservation_id = secrets.token_urlsafe(12)
+        stale_callbacks: list[LoopbackCallbackServer] = []
+        with self._commit_lock:
+            if self._shutting_down:
+                return None, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
+            with self._lock:
+                order = self._parse_order(body, self._oauth_order[0])
+                if order is not None:
+                    if order <= self._oauth_order:
+                        return None, HTTPStatus.CONFLICT, {"error": "登录请求已过期，已被较新的登录取代。"}
+                    self._oauth_order = order
+                stale_callbacks = self._retire_openrouter_jobs_locked("已被新的登录请求取代。")
+                self._active_oauth_owner = (f"pending-{provider_kind}", reservation_id)
+        for old_cb in stale_callbacks:
+            with suppress(Exception):
+                old_cb.close()
+        return reservation_id, None, None
+
+    def _release_reservation(self, provider_kind: str, reservation_id: str) -> None:
+        with self._commit_lock:
+            with self._lock:
+                if self._active_oauth_owner == (f"pending-{provider_kind}", reservation_id):
+                    self._active_oauth_owner = None
+
     def _handle_openrouter_start(self, body: dict[str, Any]) -> tuple[HTTPStatus, dict[str, Any]]:
         problem = (
             self.vault.problem()
@@ -892,43 +935,33 @@ class ConfigWebServer:
         if problem is not None:
             return HTTPStatus.BAD_REQUEST, {"error": f"系统凭据管理器不可用（{problem}），无法安全保存 OAuth 密钥。"}
 
-        generation = self._parse_generation(body)
-        with self._commit_lock:
-            if self._shutting_down:
-                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
-            with self._lock:
-                if generation is not None and generation <= self._oauth_client_gen:
-                    return HTTPStatus.CONFLICT, {"error": "登录请求已过期，已被较新的登录取代。"}
+        reservation_id, err_status, err_payload = self._reserve_oauth_start("openrouter", body)
+        if err_status is not None or reservation_id is None:
+            return err_status or HTTPStatus.CONFLICT, err_payload or {"error": "无法发起登录。"}
 
         set_default = bool(body.get("set_default", True))
         verifier, challenge = generate_pkce_pair()
         try:
             callback = LoopbackCallbackServer().start()
         except Exception as exc:
+            self._release_reservation("openrouter", reservation_id)
             return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"无法启动本地 OAuth 回调监听：{redact(str(exc))}"}
         auth_url = build_openrouter_auth_url(callback.callback_url, challenge)
         job_id = secrets.token_urlsafe(12)
         job: dict[str, Any] = {"status": "pending", "callback": callback, "name": "", "error": ""}
-        stale_callbacks: list[LoopbackCallbackServer] = []
         with self._commit_lock:
             if self._shutting_down:
                 callback.close()
                 return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
             with self._lock:
-                if generation is not None:
-                    if generation <= self._oauth_client_gen:
-                        callback.close()
-                        return HTTPStatus.CONFLICT, {"error": "登录请求已过期，已被较新的登录取代。"}
-                    self._oauth_client_gen = generation
-                stale_callbacks = self._retire_openrouter_jobs_locked("已被新的登录请求取代。")
+                if self._active_oauth_owner != ("pending-openrouter", reservation_id):
+                    callback.close()
+                    return HTTPStatus.CONFLICT, {"error": "登录请求已过期，已被较新的登录取代。"}
                 while len(self._or_jobs) >= 8:
                     oldest = next(iter(self._or_jobs))
                     self._or_jobs.pop(oldest, None)
                 self._or_jobs[job_id] = job
                 self._active_oauth_owner = ("openrouter", job_id)
-        for old_cb in stale_callbacks:
-            with suppress(Exception):
-                old_cb.close()
 
         def _worker() -> None:
             try:
@@ -1012,34 +1045,29 @@ class ConfigWebServer:
         )
         if problem is not None:
             return HTTPStatus.BAD_REQUEST, {"error": f"系统凭据管理器不可用（{problem}），无法安全保存 OAuth 令牌。"}
-        generation = self._parse_generation(body or {})
-        with self._commit_lock:
-            if self._shutting_down:
-                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
-            with self._lock:
-                if generation is not None and generation <= self._oauth_client_gen:
-                    return HTTPStatus.CONFLICT, {"error": "登录请求已过期，已被较新的登录取代。"}
+        # Reserve ownership BEFORE contacting GitHub so an older OpenRouter/Copilot exchange cannot save while waiting.
+        reservation_id, err_status, err_payload = self._reserve_oauth_start("copilot", body or {})
+        if err_status is not None or reservation_id is None:
+            return err_status or HTTPStatus.CONFLICT, err_payload or {"error": "无法发起登录。"}
         try:
             challenge = asyncio.run(start_copilot_device_flow(transport=self.transport))
         except AuthError as exc:
+            self._release_reservation("copilot", reservation_id)
             return HTTPStatus.BAD_GATEWAY, {"error": str(exc)}
         job_id = secrets.token_urlsafe(12)
         deadline = time.monotonic() + float(challenge.expires_in)
-        stale_callbacks: list[LoopbackCallbackServer] = []
         with self._commit_lock:
             if self._shutting_down:
                 return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
             with self._lock:
-                if generation is not None:
-                    if generation <= self._oauth_client_gen:
-                        return HTTPStatus.CONFLICT, {"error": "登录请求已过期，已被较新的登录取代。"}
-                    self._oauth_client_gen = generation
+                if self._active_oauth_owner != ("pending-copilot", reservation_id):
+                    return HTTPStatus.CONFLICT, {"error": "登录请求已过期，已被较新的登录取代。"}
                 while len(self._cp_jobs) >= 8:
                     evictable = next((jid for jid in self._cp_jobs if jid not in self._cp_in_flight), None)
                     if evictable is None:
+                        self._active_oauth_owner = None
                         return HTTPStatus.TOO_MANY_REQUESTS, {"error": "当前进行中的设备码登录任务过多，请稍后再试。"}
                     self._cp_jobs.pop(evictable, None)
-                stale_callbacks = self._retire_openrouter_jobs_locked("已被新的登录请求取代。")
                 self._cp_jobs[job_id] = {
                     "challenge": challenge,
                     "deadline": deadline,
@@ -1047,9 +1075,6 @@ class ConfigWebServer:
                     "exchange_attempts": 0,
                 }
                 self._active_oauth_owner = ("copilot", job_id)
-        for old_cb in stale_callbacks:
-            with suppress(Exception):
-                old_cb.close()
         return HTTPStatus.OK, {
             "job_id": job_id,
             "user_code": challenge.user_code,
@@ -1235,7 +1260,8 @@ class ConfigWebServer:
 
             def _send_html_page(self, session_token: str | None) -> None:
                 nonce = secrets.token_urlsafe(16)
-                body = _render_web_page(session_token, nonce)
+                page_epoch = parent._next_page_epoch()
+                body = _render_web_page(session_token, nonce, page_epoch=page_epoch)
                 self.send_response(int(HTTPStatus.OK))
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))

@@ -405,11 +405,17 @@ class SDKProvider:
                 if config.protocol == "anthropic-messages"
                 else openai.DefaultAsyncHttpxClient
             )
-            http_client = http_cls(
-                timeout=config.timeout,
-                follow_redirects=False,
-                trust_env=not is_loopback_url(effective_base_url),
-            )
+            loopback = is_loopback_url(effective_base_url)
+            http_kwargs: dict[str, Any] = {
+                "timeout": config.timeout,
+                "follow_redirects": False,
+                "trust_env": not loopback,
+            }
+            if loopback:
+                # Anthropic's DefaultAsyncHttpxClient builds explicit env proxy mounts unless `transport` is passed.
+                http_mod = sys.modules[http_cls.__bases__[0].__module__.split(".")[0]]
+                http_kwargs["transport"] = http_mod.AsyncHTTPTransport()
+            http_client = http_cls(**http_kwargs)
             options["http_client"] = http_client
         if config.protocol == "anthropic-messages":
             if config.auth_type == "bearer":

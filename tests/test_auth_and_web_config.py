@@ -404,6 +404,31 @@ def test_copilot_token_manager_caches_and_refreshes_near_expiry():
         mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=prime_then_reject)
     assert mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=fake_exchange) == "session-primed-fresh"
 
+    # Successful exchange must NOT resurrect a session cleared by invalidate() while exchange was in flight.
+    mgr.prime("ghu_abc12345", "session-before-logout", 3000.0, COPILOT_API_BASE)
+    clock[0] = 2950.0
+
+    def invalidate_then_succeed(_gh: str) -> tuple[str, float, str]:
+        mgr.invalidate("ghu_abc12345")
+        return "session-stale-after-logout", 5000.0, COPILOT_API_BASE
+
+    with pytest.raises(AuthError, match="已失效"):
+        mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=invalidate_then_succeed)
+    assert mgr._cache.get(mgr._cache_key("ghu_abc12345")) is None
+
+    # Successful older exchange must NOT overwrite a newer session installed by prime() during exchange.
+    mgr.prime("ghu_abc12345", "session-expiring", 3000.0, COPILOT_API_BASE)
+
+    def prime_then_succeed(_gh: str) -> tuple[str, float, str]:
+        mgr.prime("ghu_abc12345", "session-newly-primed", 6000.0, COPILOT_API_BASE)
+        return "session-stale-old-exchange", 5000.0, COPILOT_API_BASE
+
+    assert (
+        mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=prime_then_succeed)
+        == "session-newly-primed"
+    )
+    assert mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=fake_exchange) == "session-newly-primed"
+
 
 async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_retry_loop(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.yaml"
@@ -541,6 +566,10 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
 
     from mosscode.providers import AnthropicProvider
 
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9999")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
     anthropic_copilot_cfg = ProviderConfig(
         name="copilot-anthropic",
         protocol="anthropic-messages",
@@ -553,9 +582,29 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
     try:
         assert real_anthropic_sdk._owned_http_client is not None
         assert real_anthropic_sdk._owned_http_client.follow_redirects is False
+        # Remote Copilot URL retains environment proxy routing.
+        assert bool(real_anthropic_sdk._owned_http_client._mounts)
     finally:
         await real_anthropic_sdk.close()
     assert real_anthropic_sdk._owned_http_client.is_closed
+
+    # Approved HTTPS loopback Copilot relay must bypass Anthropic's environment proxy mounts.
+    anthropic_loopback_cfg = ProviderConfig(
+        name="copilot-anthropic-loopback",
+        protocol="anthropic-messages",
+        model="claude-sonnet-4",
+        base_url="https://127.0.0.1:8443",
+        api_key="ghu_live_token_123456",
+        auth_type="github-copilot",
+    )
+    real_anthropic_loopback = AnthropicProvider(anthropic_loopback_cfg)
+    try:
+        assert real_anthropic_loopback._owned_http_client is not None
+        assert real_anthropic_loopback._owned_http_client.follow_redirects is False
+        assert real_anthropic_loopback._owned_http_client._mounts == {}
+    finally:
+        await real_anthropic_loopback.close()
+    assert real_anthropic_loopback._owned_http_client.is_closed
 
     # Transient refresh failure when no unexpired cache exists retries cleanly inside stream().
     refresh_attempts = 0
@@ -1314,6 +1363,106 @@ def test_config_web_oauth_cross_provider_fencing_generation_ordering_and_exchang
         assert load_settings(srv.config_path, tmp_path).default_provider == "openrouter"
         assert stored["copilot"] == "ghu_tok_1"
         assert stored["openrouter"] == "or-newer-provider-key"
+
+
+def test_config_web_reload_epoch_and_pre_github_reservation_fences_openrouter(tmp_path):
+    stored: dict[str, str] = {}
+    or_exchange_entered = threading.Event()
+    release_or_exchange = threading.Event()
+    gh_device_entered = threading.Event()
+    release_gh_device = threading.Event()
+
+    class MemoryVault:
+        def problem(self):
+            return None
+
+        def exists(self, name: str) -> bool:
+            return name in stored
+
+        def store(self, name: str, secret: str) -> None:
+            stored[name] = secret
+
+        def delete(self, name: str) -> None:
+            stored.pop(name, None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "https://openrouter.ai/api/v1/auth/keys":
+            or_exchange_entered.set()
+            assert release_or_exchange.wait(timeout=5.0)
+            return httpx.Response(200, json={"key": "or-must-not-commit"})
+        if url == "https://github.com/login/device/code":
+            gh_device_entered.set()
+            assert release_gh_device.wait(timeout=5.0)
+            return httpx.Response(503, json={"error": "github temporarily down"})
+        return httpx.Response(404)
+
+    with ConfigWebServer(home=tmp_path, vault=MemoryVault(), transport=httpx.MockTransport(handler)) as srv:
+        # Bootstrap gets epoch=1; reloading GET / gets epoch=2 so generation=1 works immediately after reload.
+        st1, _, html1 = _http_req(srv.port, "GET", f"/?token={srv.boot_token}")
+        assert st1 == 200 and '<meta name="oauth-epoch" content="1">' in html1.decode("utf-8")
+        st2, _, html2 = _http_req(srv.port, "GET", "/")
+        assert st2 == 200 and '<meta name="oauth-epoch" content="2">' in html2.decode("utf-8")
+
+        auth_hdrs = {"X-MossCode-Token": srv.session_token, "Origin": f"http://127.0.0.1:{srv.port}"}
+
+        # Start OpenRouter on epoch=1, gen=2, deliver callback so it blocks mid-exchange.
+        st_or, _, body_or = _http_req(
+            srv.port,
+            "POST",
+            "/api/auth/openrouter/start",
+            headers=auth_hdrs,
+            body=b'{"set_default":true,"epoch":1,"generation":2}',
+        )
+        assert st_or == 200
+        or_job = json.loads(body_or)
+        cb = urllib.parse.urlsplit(
+            urllib.parse.parse_qs(urllib.parse.urlsplit(or_job["auth_url"]).query)["callback_url"][0]
+        )
+        assert _http_req(cb.port or 80, "GET", f"{cb.path}?code=stale_or_code")[0] == 200
+        assert or_exchange_entered.wait(timeout=5.0)
+
+        # User reloads page (epoch=2) and clicks Copilot login (gen=1). Copilot reserves ownership BEFORE calling GitHub.
+        cp_res: list[int] = []
+
+        def start_cp() -> None:
+            st, _, _ = _http_req(
+                srv.port,
+                "POST",
+                "/api/auth/copilot/start",
+                headers=auth_hdrs,
+                body=b'{"epoch":2,"generation":1}',
+            )
+            cp_res.append(st)
+
+        t_cp = threading.Thread(target=start_cp, daemon=True)
+        t_cp.start()
+        try:
+            assert gh_device_entered.wait(timeout=5.0)
+            # Delayed start from previous page epoch=1 (even with higher gen=9) is rejected with 409 Conflict.
+            st_old_epoch, _, _ = _http_req(
+                srv.port,
+                "POST",
+                "/api/auth/openrouter/start",
+                headers=auth_hdrs,
+                body=b'{"epoch":1,"generation":9}',
+            )
+            assert st_old_epoch == 409
+
+            # Release the older OpenRouter exchange WHILE Copilot is still blocked waiting on GitHub!
+            worker_or = srv._or_jobs[or_job["job_id"]]["thread"]
+            release_or_exchange.set()
+            worker_or.join(timeout=5.0)
+            assert not worker_or.is_alive()
+        finally:
+            release_or_exchange.set()
+            release_gh_device.set()
+            t_cp.join(timeout=5.0)
+        assert not t_cp.is_alive()
+        assert cp_res == [502]
+        # Even though GitHub returned 503, the superseded OpenRouter exchange MUST NOT have written credentials or config!
+        assert stored == {}
+        assert not srv.config_path.exists()
 
 
 # ---------------------------------------------------------------------------

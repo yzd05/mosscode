@@ -715,12 +715,17 @@ class CopilotTokenManager:
         self._lock = threading.Lock()
         self._refresh_locks: dict[str, threading.Lock] = {}
         self._cache: dict[str, tuple[str, float, str]] = {}
+        self._versions: dict[str, int] = {}
+        self._global_version = 0
         self._refresh_margin = refresh_margin
 
     @staticmethod
     def _cache_key(github_token: str) -> str:
         # Never store the raw GitHub OAuth token as a dict key so tracebacks/reprs cannot leak it.
         return hashlib.sha256(github_token.encode("utf-8")).hexdigest()
+
+    def _key_version_locked(self, key: str) -> tuple[int, int]:
+        return (self._global_version, self._versions.get(key, 0))
 
     def get_session_token(
         self,
@@ -741,6 +746,7 @@ class CopilotTokenManager:
                 observed = self._cache.get(key)
                 if observed is not None and now() < observed[1] - self._refresh_margin:
                     return observed[0]
+                observed_version = self._key_version_locked(key)
             try:
                 token, expires_at, endpoint = exchange(github_token)
             except AuthError as exc:
@@ -752,11 +758,21 @@ class CopilotTokenManager:
                         return current[0]
                 else:
                     with self._lock:
-                        # Evict only the observed snapshot so a newer prime() installed during exchange stays intact.
-                        if observed is not None and self._cache.get(key) == observed:
+                        # Evict only if neither prime() nor invalidate() mutated this key during exchange.
+                        if (
+                            self._key_version_locked(key) == observed_version
+                            and observed is not None
+                            and self._cache.get(key) == observed
+                        ):
                             self._cache.pop(key, None)
                 raise
             with self._lock:
+                if self._key_version_locked(key) != observed_version:
+                    # A concurrent prime() or invalidate() mutated the cache while exchange() ran.
+                    current = self._cache.get(key)
+                    if current is not None and now() < current[1]:
+                        return current[0]
+                    raise AuthError("GitHub Copilot 会话缓存已失效，请重新获取。", transient=True)
                 self._cache[key] = (token, expires_at, endpoint)
             return token
 
@@ -764,14 +780,18 @@ class CopilotTokenManager:
         """Store a freshly exchanged session token under the lock."""
         key = self._cache_key(github_token)
         with self._lock:
+            self._versions[key] = self._versions.get(key, 0) + 1
             self._cache[key] = (session_token, expires_at, endpoint)
 
     def invalidate(self, github_token: str | None = None) -> None:
         with self._lock:
             if github_token is None:
+                self._global_version += 1
                 self._cache.clear()
             else:
-                self._cache.pop(self._cache_key(github_token), None)
+                key = self._cache_key(github_token)
+                self._versions[key] = self._versions.get(key, 0) + 1
+                self._cache.pop(key, None)
 
 
 copilot_token_manager = CopilotTokenManager()
