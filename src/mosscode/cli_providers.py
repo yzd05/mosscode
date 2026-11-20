@@ -129,6 +129,9 @@ _REQUIRED_HELP_ARGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "cli-codex": (("exec", "--help"), ("--json", "--sandbox")),
     "cli-gemini": (("--help",), ("--approval-mode", "--policy")),
 }
+# Claude Code < 2.1.75 on Windows loaded legacy ProgramData managed settings (GHSA-5cwg-9f6j-9jvx).
+_CLAUDE_MIN_WINDOWS_VERSION: tuple[int, int, int, bool] = (2, 1, 75, True)
+_SEMVER_RE = re.compile(r"(?<![0-9A-Za-z._-])v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?![0-9A-Za-z.])")
 
 MAX_LINE_BYTES = 16 * 1024 * 1024
 MAX_TOOL_ENVELOPE_CHARS = 512 * 1024
@@ -138,6 +141,7 @@ MAX_CLEANUP_ATTEMPTS = 3
 READ_CHUNK_BYTES = 64 * 1024
 UNSUPPORTED_IMAGE = "当前模型不支持图片，已省略"
 _CAPABILITY_CACHE: dict[tuple[str, str, int, int], str | None] = {}
+_INFLIGHT_HELP_PROBES: dict[tuple[int, str, str], asyncio.Task[None]] = {}
 
 
 @dataclass(frozen=True)
@@ -333,8 +337,10 @@ def _claude_settings_paths(env: Mapping[str, str]) -> list[Path]:
             f"无法读取 Claude Code 受管配置目录 {dropin_dir} 以校验计费路由（{redact(str(exc))}），已拒绝启动 cli-claude。"
         ) from None
     for entry in entries:
-        if entry.name.lower().endswith(".json"):
-            paths.append(entry)
+        # Claude Code ignores hidden dot-files in `managed-settings.d/`.
+        if entry.name.startswith(".") or not entry.name.lower().endswith(".json"):
+            continue
+        paths.append(entry)
     return paths
 
 
@@ -1321,7 +1327,23 @@ def _linux_pgid_has_live_member(pgid: int, *, proc_root: Path = Path("/proc")) -
         except ValueError:
             uncertain = True
             continue
-        if member_pgid == pgid and state not in {"Z", "X", "x"}:
+        if member_pgid != pgid:
+            continue
+        if state not in {"Z", "X", "x"}:
+            return True
+        # A zombie main thread can still have running worker threads in the same thread group.
+        # Field 20 (`num_threads`, index 17 after `") "`) must equal 1 to confirm no other threads remain.
+        if len(fields) <= 17:
+            uncertain = True
+            continue
+        try:
+            num_threads = int(fields[17])
+        except ValueError:
+            uncertain = True
+            continue
+        if num_threads < 1:
+            uncertain = True
+        elif num_threads > 1:
             return True
     return None if uncertain else False
 
@@ -1617,6 +1639,151 @@ async def _read_help_bounded(
     return bytes(out_buf), bytes(err_buf)
 
 
+def _parse_semver(text: str) -> tuple[int, int, int, bool] | None:
+    """Parse the first semantic version (`major.minor.patch[-pre]`); final flag is True for non-prerelease."""
+    match = _SEMVER_RE.search(text)
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)), match.group(4) is None)
+
+
+async def _run_probe_subprocess(
+    protocol: str,
+    executable: str,
+    args: Sequence[str],
+    *,
+    timeout: float,
+    max_help_bytes: int,
+    tracked: set[_ManagedProcess],
+    probe_key: tuple[str, str],
+    label: str,
+) -> tuple[int | None, bytes, bytes]:
+    """Run one bounded capability/version probe subprocess and retain its handle if teardown is unconfirmed."""
+    spawn_kwargs: dict[str, Any] = {
+        "stdin": asyncio.subprocess.DEVNULL,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "env": _cli_env(protocol),
+    }
+    if os.name == "nt":
+        spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        spawn_kwargs["start_new_session"] = True
+
+    try:
+        proc = await asyncio.create_subprocess_exec(executable, *args, **spawn_kwargs)
+    except OSError as exc:
+        raise ProviderError(f"无法检测 {label} 版本能力：{redact(str(exc))}") from None
+
+    job, job_err = _attach_windows_job(proc.pid)
+    managed = _ManagedProcess(
+        proc=proc,
+        pid=proc.pid,
+        job=job,
+        pgid=None if os.name == "nt" else proc.pid,
+        probe_key=probe_key,
+    )
+    tracked.add(managed)
+    if os.name == "nt" and job is None and job_err is not None:
+        if _windows_pid_alive(proc.pid) or _windows_descendant_pids(proc.pid):
+            try:
+                await _run_teardown(managed)
+            finally:
+                if managed.cleaned:
+                    tracked.discard(managed)
+            raise ProviderError(f"无法为 {label} 能力检测建立 Windows 进程树隔离，已中止执行。") from None
+
+    try:
+        async with asyncio.timeout(min(timeout, 10.0)):
+            stdout_b, stderr_b = await _read_help_bounded(proc, max_bytes=max_help_bytes, label=label)
+    except TimeoutError:
+        raise ProviderError(f"检测 {label} 安全参数能力超时，已拒绝启用。") from None
+    finally:
+        _signal_tree_sync(managed)
+        try:
+            await _run_teardown(managed)
+        finally:
+            if managed.cleaned:
+                tracked.discard(managed)
+
+    if not managed.cleaned:
+        raise ProviderError(f"检测 {label} 安全参数能力后子进程树未能确认完全退出，已保留待关闭重试。")
+    return proc.returncode, stdout_b, stderr_b
+
+
+async def _execute_capability_probe(
+    protocol: str,
+    executable: str,
+    *,
+    cache_key: tuple[str, str, int, int] | None,
+    timeout: float,
+    max_help_bytes: int,
+    tracked: set[_ManagedProcess],
+    probe_key: tuple[str, str],
+) -> None:
+    help_args, required_flags = _REQUIRED_HELP_ARGS[protocol]
+    label = CLI_LABELS[protocol]
+
+    returncode, stdout_b, stderr_b = await _run_probe_subprocess(
+        protocol,
+        executable,
+        help_args,
+        timeout=timeout,
+        max_help_bytes=max_help_bytes,
+        tracked=tracked,
+        probe_key=probe_key,
+        label=label,
+    )
+
+    # Do not permanently cache nonzero help exits so transient startup failures recover on retry.
+    if returncode != 0:
+        raise ProviderError(f"无法验证 {label} 安全参数能力（退出码 {returncode}），已拒绝启用。")
+
+    combined = (stdout_b + b"\n" + stderr_b).decode("utf-8", errors="replace")
+    missing = [flag for flag in required_flags if flag not in combined]
+    if missing:
+        err = (
+            f"当前安装的 {label} 不支持必需的安全隔离参数（缺少 {'、'.join(missing)}），"
+            f"为防止绕过 MossCode 权限与审批，已拒绝启用 {protocol}；请升级官方 CLI 后重试。"
+        )
+        if cache_key is not None:
+            _CAPABILITY_CACHE[cache_key] = err
+        raise ProviderError(err)
+
+    if protocol == "cli-claude" and os.name == "nt":
+        ver_rc, ver_out, ver_err = await _run_probe_subprocess(
+            protocol,
+            executable,
+            ("--version",),
+            timeout=timeout,
+            max_help_bytes=max_help_bytes,
+            tracked=tracked,
+            probe_key=probe_key,
+            label=label,
+        )
+        if ver_rc != 0:
+            raise ProviderError(f"无法验证 Windows {label} 版本（退出码 {ver_rc}），已拒绝启用。")
+        parsed_ver = _parse_semver(ver_out.decode("utf-8", errors="replace")) or _parse_semver(
+            ver_err.decode("utf-8", errors="replace")
+        )
+        if parsed_ver is None or parsed_ver < _CLAUDE_MIN_WINDOWS_VERSION:
+            shown = (
+                f"{parsed_ver[0]}.{parsed_ver[1]}.{parsed_ver[2]}" + ("" if parsed_ver[3] else "-prerelease")
+                if parsed_ver is not None
+                else "未知版本"
+            )
+            err = (
+                f"Windows 平台要求官方 {label} 版本 >= 2.1.75（当前检测为 {shown}），"
+                "以避免旧版本读取遗留 ProgramData 受管配置（GHSA-5cwg-9f6j-9jvx）；请升级官方 CLI 后重试。"
+            )
+            if cache_key is not None:
+                _CAPABILITY_CACHE[cache_key] = err
+            raise ProviderError(err)
+
+    if cache_key is not None:
+        _CAPABILITY_CACHE[cache_key] = None
+
+
 async def verify_cli_capabilities(
     protocol: str,
     executable: str,
@@ -1662,74 +1829,31 @@ async def verify_cli_capabilities(
             raise ProviderError(cached_err)
         return
 
-    help_args, required_flags = _REQUIRED_HELP_ARGS[protocol]
-    spawn_kwargs: dict[str, Any] = {
-        "stdin": asyncio.subprocess.DEVNULL,
-        "stdout": asyncio.subprocess.PIPE,
-        "stderr": asyncio.subprocess.PIPE,
-        "env": _cli_env(protocol),
-    }
-    if os.name == "nt":
-        spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        spawn_kwargs["start_new_session"] = True
-
-    try:
-        proc = await asyncio.create_subprocess_exec(executable, *help_args, **spawn_kwargs)
-    except OSError as exc:
-        raise ProviderError(f"无法检测 {label} 版本能力：{redact(str(exc))}") from None
-
-    job, job_err = _attach_windows_job(proc.pid)
-    managed = _ManagedProcess(
-        proc=proc,
-        pid=proc.pid,
-        job=job,
-        pgid=None if os.name == "nt" else proc.pid,
-        probe_key=probe_key,
-    )
-    tracked.add(managed)
-    if os.name == "nt" and job is None and job_err is not None:
-        if _windows_pid_alive(proc.pid) or _windows_descendant_pids(proc.pid):
-            try:
-                await _run_teardown(managed)
-            finally:
-                if managed.cleaned:
-                    tracked.discard(managed)
-            raise ProviderError(f"无法为 {label} 能力检测建立 Windows 进程树隔离，已中止执行。") from None
-
-    try:
-        async with asyncio.timeout(min(timeout, 10.0)):
-            stdout_b, stderr_b = await _read_help_bounded(proc, max_bytes=max_help_bytes, label=label)
-    except TimeoutError:
-        raise ProviderError(f"检测 {label} 安全参数能力超时，已拒绝启用。") from None
-    finally:
-        _signal_tree_sync(managed)
-        try:
-            await _run_teardown(managed)
-        finally:
-            if managed.cleaned:
-                tracked.discard(managed)
-
-    if not managed.cleaned:
-        raise ProviderError(f"检测 {label} 安全参数能力后子进程树未能确认完全退出，已保留待关闭重试。")
-
-    # Do not permanently cache nonzero help exits so transient startup failures recover on retry.
-    if proc.returncode != 0:
-        raise ProviderError(f"无法验证 {label} 安全参数能力（退出码 {proc.returncode}），已拒绝启用。")
-
-    combined = (stdout_b + b"\n" + stderr_b).decode("utf-8", errors="replace")
-    missing = [flag for flag in required_flags if flag not in combined]
-    if missing:
-        err = (
-            f"当前安装的 {label} 不支持必需的安全隔离参数（缺少 {'、'.join(missing)}），"
-            f"为防止绕过 MossCode 权限与审批，已拒绝启用 {protocol}；请升级官方 CLI 后重试。"
+    # Reserve the probe key synchronously before any await so concurrent callers share one probe task.
+    inflight_key = (id(tracked), protocol, executable)
+    probe_task = _INFLIGHT_HELP_PROBES.get(inflight_key)
+    if probe_task is None or probe_task.done():
+        probe_task = asyncio.create_task(
+            _execute_capability_probe(
+                protocol,
+                executable,
+                cache_key=cache_key,
+                timeout=timeout,
+                max_help_bytes=max_help_bytes,
+                tracked=tracked,
+                probe_key=probe_key,
+            )
         )
-        if cache_key is not None:
-            _CAPABILITY_CACHE[cache_key] = err
-        raise ProviderError(err)
+        _INFLIGHT_HELP_PROBES[inflight_key] = probe_task
 
-    if cache_key is not None:
-        _CAPABILITY_CACHE[cache_key] = None
+        def _release_probe(done_task: asyncio.Task[None]) -> None:
+            if _INFLIGHT_HELP_PROBES.get(inflight_key) is done_task:
+                _INFLIGHT_HELP_PROBES.pop(inflight_key, None)
+            with suppress(BaseException):
+                done_task.exception()
+
+        probe_task.add_done_callback(_release_probe)
+    await asyncio.shield(probe_task)
 
 
 def _write_temp_policy() -> Path:

@@ -36,6 +36,7 @@ from mosscode.cli_providers import (
     _linux_pgid_has_live_member,
     _managed_alive,
     _ManagedProcess,
+    _parse_semver,
     _ToolTagFilter,
     _windows_candidate_names,
     _windows_pid_alive,
@@ -425,11 +426,19 @@ def test_build_cli_argv_enforces_vendor_restrictions_and_model_safety(tmp_path):
         build_cli_argv("cli-claude", exe, "--bad")
 
 
-async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonzero(tmp_path):
+async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonzero(tmp_path, monkeypatch):
     bin_dir = tmp_path / "cap_bin"
     old_claude = _make_exec_wrapper(bin_dir, "old-claude", 'print("Usage: claude -p --tools --strict-mcp-config")')
     new_claude = _make_exec_wrapper(
-        bin_dir, "new-claude", 'print("Usage: claude -p --tools --strict-mcp-config --setting-sources")'
+        bin_dir,
+        "new-claude",
+        """
+        import sys
+        if "--version" in sys.argv:
+            print("2.1.75 (Claude Code)")
+        else:
+            print("Usage: claude -p --tools --strict-mcp-config --setting-sources")
+        """,
     )
     old_gemini = _make_exec_wrapper(bin_dir, "old-gemini", 'print("Usage: gemini -p --output-format")')
     new_gemini = _make_exec_wrapper(
@@ -439,6 +448,27 @@ async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonz
     with pytest.raises(ProviderError, match="--setting-sources"):
         await verify_cli_capabilities("cli-claude", str(old_claude))
     await verify_cli_capabilities("cli-claude", str(new_claude))
+
+    # SemVer parsing + Windows minimum Claude Code version >= 2.1.75 (GHSA-5cwg-9f6j-9jvx).
+    assert _parse_semver("2.1.75 (Claude Code)") == (2, 1, 75, True)
+    assert _parse_semver("2.1.75-rc.1 (Claude Code)") == (2, 1, 75, False)
+    assert _parse_semver("2.1.75-rc.1") < _parse_semver("2.1.75")  # type: ignore[operator]
+    assert _parse_semver("no-version-here") is None
+    if os.name == "nt":
+        for stem, ver_text in [("oldver", "2.1.74 (Claude Code)"), ("prever", "2.1.75-rc.1"), ("badver", "unknown")]:
+            bad_claude = _make_exec_wrapper(
+                bin_dir,
+                f"claude-{stem}",
+                f"""
+                import sys
+                if "--version" in sys.argv:
+                    print({ver_text!r})
+                else:
+                    print("Usage: claude -p --tools --strict-mcp-config --setting-sources")
+                """,
+            )
+            with pytest.raises(ProviderError, match="2.1.75"):
+                await verify_cli_capabilities("cli-claude", str(bad_claude))
 
     with pytest.raises(ProviderError, match="--approval-mode.*--policy"):
         await verify_cli_capabilities("cli-gemini", str(old_gemini))
@@ -457,6 +487,9 @@ async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonz
         f"""
         import sys
         from pathlib import Path
+        if "--version" in sys.argv:
+            print("2.1.75 (Claude Code)")
+            sys.exit(0)
         flag = Path({str(marker)!r})
         if not flag.exists():
             flag.write_text("failed-once", encoding="utf-8")
@@ -467,6 +500,52 @@ async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonz
     with pytest.raises(ProviderError, match="退出码 1"):
         await verify_cli_capabilities("cli-claude", str(flaky_claude))
     await verify_cli_capabilities("cli-claude", str(flaky_claude))
+
+    # Concurrent cold-cache probes for the same binary share ONE in-flight probe (single spawn),
+    # and launch failure releases the reservation so a later call can retry.
+    shared_gemini = _make_exec_wrapper(
+        bin_dir, "shared-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
+    )
+    spawn_calls = 0
+    spawn_entered = asyncio.Event()
+    allow_spawn = asyncio.Event()
+    real_exec = asyncio.create_subprocess_exec
+
+    async def gated_exec(*args, **kwargs):
+        nonlocal spawn_calls
+        spawn_calls += 1
+        spawn_entered.set()
+        await allow_spawn.wait()
+        return await real_exec(*args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(asyncio, "create_subprocess_exec", gated_exec)
+        t1 = asyncio.create_task(verify_cli_capabilities("cli-gemini", str(shared_gemini)))
+        await asyncio.wait_for(spawn_entered.wait(), timeout=2.0)
+        t2 = asyncio.create_task(verify_cli_capabilities("cli-gemini", str(shared_gemini)))
+        await asyncio.sleep(0.02)
+        allow_spawn.set()
+        await asyncio.gather(t1, t2)
+    assert spawn_calls == 1
+
+    retry_gemini = _make_exec_wrapper(
+        bin_dir, "retry-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
+    )
+    attempts = 0
+
+    async def fail_once_exec(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary spawn error")
+        return await real_exec(*args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(asyncio, "create_subprocess_exec", fail_once_exec)
+        with pytest.raises(ProviderError, match="无法检测"):
+            await verify_cli_capabilities("cli-gemini", str(retry_gemini))
+        await verify_cli_capabilities("cli-gemini", str(retry_gemini))
+    assert attempts == 2
 
 
 async def test_claude_settings_billing_guard_rejects_overrides_and_allows_clean_settings(tmp_path, monkeypatch):
@@ -522,7 +601,19 @@ async def test_claude_settings_billing_guard_rejects_overrides_and_allows_clean_
 
         # A later drop-in clearing the override restores a clean effective subscription config.
         (dropins / "20-clear.json").write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": ""}}), encoding="utf-8")
+        # Hidden dot-files (even malformed) are ignored by Claude Code and must not break a clean launch.
+        (dropins / ".backup.json").write_text("{corrupt hidden json", encoding="utf-8")
+        discovered_with_hidden = _claude_settings_paths({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
+        assert (dropins / ".backup.json") not in discovered_with_hidden
         _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
+
+        # A hidden file MUST NOT mask an active billing override from `managed-settings.json`.
+        managed_base.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "base-override"}}), encoding="utf-8")
+        (dropins / "10-api.json").unlink()
+        (dropins / "20-clear.json").unlink()
+        (dropins / ".99-clear.json").write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": ""}}), encoding="utf-8")
+        with pytest.raises(ProviderError, match="env.ANTHROPIC_API_KEY"):
+            _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
 
         # Unreadable/non-directory `managed-settings.d` must fail closed.
         bad_managed = tmp_path / "bad_managed"
@@ -1209,15 +1300,32 @@ async def test_unconfirmed_teardown_retains_ownership_surfaces_failure_and_handl
 
 
 def test_managed_alive_windows_job_unknown_and_linux_proc_zombies(tmp_path):
-    # Linux `/proc` inspection distinguishes zombie-only groups from live members and fails closed on unreadable `/proc`.
+    # Linux `/proc/<pid>/stat`: fields after `") "` are state(0), ppid(1), pgrp(2), ..., num_threads(17).
+    def _stat_line(pid: int, comm: str, state: str, pgrp: int, num_threads: int | None) -> str:
+        tail = [state, "1", str(pgrp)] + ["0"] * 14
+        if num_threads is not None:
+            tail.append(str(num_threads))
+        return f"{pid} ({comm}) " + " ".join(tail) + "\n"
+
     fake_proc = tmp_path / "proc"
     fake_proc.mkdir()
     (fake_proc / "101").mkdir()
-    (fake_proc / "101" / "stat").write_text("101 (child (weird) name) Z 1 4242 4242 0\n", encoding="utf-8")
+    # Single-threaded zombie (`num_threads == 1`) is truly exited -> False.
+    (fake_proc / "101" / "stat").write_text(_stat_line(101, "child (weird) name", "Z", 4242, 1), encoding="utf-8")
     assert _linux_pgid_has_live_member(4242, proc_root=fake_proc) is False
 
+    # Zombie main thread with a live worker thread (`num_threads == 2`) MUST still count as alive -> True!
+    (fake_proc / "101" / "stat").write_text(_stat_line(101, "child (weird) name", "Z", 4242, 2), encoding="utf-8")
+    assert _linux_pgid_has_live_member(4242, proc_root=fake_proc) is True
+
+    # Truncated stat missing `num_threads` for a zombie entry MUST fail closed -> None!
+    (fake_proc / "101" / "stat").write_text(_stat_line(101, "child", "Z", 4242, None), encoding="utf-8")
+    assert _linux_pgid_has_live_member(4242, proc_root=fake_proc) is None
+
+    # Restore single-threaded zombie + add live `'S'` member -> True.
+    (fake_proc / "101" / "stat").write_text(_stat_line(101, "child", "Z", 4242, 1), encoding="utf-8")
     (fake_proc / "102").mkdir()
-    (fake_proc / "102" / "stat").write_text("102 (worker) S 1 4242 4242 0\n", encoding="utf-8")
+    (fake_proc / "102" / "stat").write_text(_stat_line(102, "worker", "S", 4242, 1), encoding="utf-8")
     assert _linux_pgid_has_live_member(4242, proc_root=fake_proc) is True
 
     assert _linux_pgid_has_live_member(4242, proc_root=tmp_path / "missing_proc") is None
