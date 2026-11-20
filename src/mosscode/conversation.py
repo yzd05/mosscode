@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .agent import DEFAULT_MAX_ITERATIONS, AgentLoop, Provider
+from .agent_policies import coding_agent_policies
 from .agents import AgentCatalog
 from .agents.runtime import AUTO_BACKGROUND, GLOBAL_BAN, MAX_BACKGROUND, SubAgents
 from .checkpoints import Checkpoints, Restoration, parse_active_skills
@@ -272,7 +273,14 @@ class Conversation:
         self._start_lock = asyncio.Lock()
         self._notices = list(notices)  # Reported once, by the first start().
         self._raised: list[str] = []  # Notices raised while running, delivered as Notice events.
-        self._agent = AgentLoop(provider, system, registry, max_iterations=max_iterations, unknown_limit=unknown_limit)
+        self._agent = AgentLoop(
+            provider,
+            system,
+            registry,
+            max_iterations=max_iterations,
+            unknown_limit=unknown_limit,
+            policies=coding_agent_policies(),
+        )
         self._agent.run_budget = RunBudget(**(run_budget or {}))
         self.system = self._agent.system
         if budget is not None:
@@ -806,13 +814,14 @@ class Conversation:
             raise ProviderError(SWARM_UNAVAILABLE)
         if target == self.coordinator:
             return False
-        from .coordinator import SECTION, withheld
+        from .coordinator import SECTION, WITHHELD, withheld
 
         self.coordinator = target
         if not target:
             self._coordinator_configured = False
         if self.registry is not None:
             self.registry.withheld = withheld if target else None
+            self.registry.withheld_message = WITHHELD
         if self.teams is not None:
             base = self.teams.guide()
             self._agent.team_guide = base + "\n\n" + SECTION if target else base
@@ -1663,6 +1672,7 @@ class Conversation:
             self._fork_registry(skill, task),
             max_iterations=main.max_iterations,
             unknown_limit=main.unknown_limit,
+            policies=main.policies,
         )
         child.system, child.instructions, child.git = main.system, main.instructions, main.git  # No catalog.
         child.budget, child.auto_compact, child.session = budget, main.auto_compact, self.session

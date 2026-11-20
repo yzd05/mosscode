@@ -4,13 +4,13 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .compaction import (
     CLEAR_TARGET,
@@ -27,7 +27,6 @@ from .compaction import (
     released_reads,
 )
 from .context import ContextBudget, ContextMeter, ContextSnapshot, estimate_message, estimate_messages, estimate_text
-from .credentials import redact, redact_value
 from .images import ImageRef
 from .limits import RunBudget, stream
 from .messages import (
@@ -45,12 +44,14 @@ from .messages import (
     IterationProgress,
     Message,
     Notice,
+    PromptRequest,
     ProviderError,
     ReplyRetry,
     ResponseBoundary,
     ResultsCleared,
     RunStopped,
     StreamEvent,
+    Supplement,
     TasksNotified,
     ToolCall,
     ToolDefinition,
@@ -63,24 +64,9 @@ from .messages import (
     message_id,
     user_content,
 )
-from .prompts import (
-    PromptRequest,
-    Supplement,
-    active_skills,
-    build_system_prompt,
-    current_date,
-    environment,
-    hook_notification,
-    mode_reminder,
-    stable_prompt,
-)
-from .security import read_only_command
-from .session import clear_record, collapse_record, compact_record, message_record, rewind_record, todo_record
-from .skills import ActiveSkills
-from .todo import todo_reminder
-from .tools import shell_label
-from .tools.base import ToolRegistry
-from .tools.execution import execute_batch
+from .redaction import redact, redact_value
+from .tool_core import ToolRegistry
+from .tool_execution import execute_batch
 from .usage import price_of, request_cost
 
 if TYPE_CHECKING:
@@ -97,6 +83,92 @@ class Provider(Protocol):
         allow_tools: bool = True,
     ) -> AsyncIterator[StreamEvent]: ...
     async def close(self) -> None: ...
+
+
+@runtime_checkable
+class ActiveSkillStore(Protocol):
+    """Per-session active skill store contract observed by L1 AgentLoop."""
+
+    def texts(self) -> tuple[str, ...]: ...
+
+    def clear(self) -> None: ...
+
+
+class _NullActiveSkills:
+    def texts(self) -> tuple[str, ...]:
+        return ()
+
+    def clear(self) -> None:
+        pass
+
+
+@runtime_checkable
+class AgentHookSink(Protocol):
+    """Hook sink contract used by L1 AgentLoop for compact, pre_send, post_receive, and pre_finish."""
+
+    def wants(self, event: str) -> bool: ...
+
+    def make_event(self, name: str, *, fields: Mapping[str, str] | None = None) -> Any: ...
+
+    async def fire(self, event: Any) -> Any: ...
+
+
+@dataclass(frozen=True)
+class TranscriptRecords:
+    """Optional transcript record builders injected by L2 for AgentLoop history commits."""
+
+    message: Callable[[Message], dict] | None = None
+    clear: Callable[[Any], dict] | None = None
+    collapse: Callable[[Collapse], dict] | None = None
+    compact: Callable[[Message, int, str | None], dict] | None = None
+    rewind: Callable[[int, str], dict] | None = None
+    todo: Callable[[Any, int], dict] | None = None
+
+
+def _default_stable_prompt(override: str) -> str:
+    return override
+
+
+def _default_build_system_prompt(
+    tools: Sequence[ToolDefinition] = (), *, override: str = "", instructions: str = ""
+) -> str:
+    return "\n\n".join(part for part in (override, instructions) if part)
+
+
+def _default_today() -> str:
+    return date.today().isoformat()
+
+
+def _default_environment(
+    root: Path,
+    *,
+    tools_enabled: bool,
+    permission_mode: str | None = None,
+    git: dict | None = None,
+    shell: str | None = None,
+    today: str | None = None,
+) -> Supplement:
+    facts: dict[str, Any] = {
+        "date": today or _default_today(),
+        "working_directory": str(root.resolve()),
+        "tools_enabled": tools_enabled,
+    }
+    if permission_mode is not None:
+        facts["permission_mode"] = permission_mode
+    if shell is not None:
+        facts["shell"] = shell
+    if git is not None:
+        facts["git"] = git
+    text = json.dumps(facts, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+    return Supplement("environment", text)
+
+
+def _none_one(_value: Any) -> None:
+    return None
+
+
+def _none_two(_first: Any, _second: Any) -> None:
+    return None
 
 
 class ResponseCollector:
@@ -135,15 +207,39 @@ CONTINUE_PROMPT = (
 )
 
 
-def needs_finish_check(call: ToolCall, result: ToolResult, registry: ToolRegistry) -> bool:
+def needs_finish_check(
+    call: ToolCall,
+    result: ToolResult,
+    registry: ToolRegistry,
+    *,
+    read_only_command: Callable[[str], bool] | None = None,
+) -> bool:
     # Network reads and saved notes do not change the working files.
     if registry.is_read_only(call.name) or call.name in {"web_fetch", "web_search", "memory"}:
         return False
     if result.is_error and "exit_code" not in result.details:
         return False
-    if call.name == "execute_command":
+    if call.name == "execute_command" and read_only_command is not None:
         return not read_only_command(json.loads(call.arguments)["command"])
     return True
+
+
+@dataclass(frozen=True)
+class AgentPolicies:
+    """L2 policy hooks injected into L1 AgentLoop; defaults keep standalone L1 self-contained."""
+
+    stable_prompt: Callable[[str], str] = _default_stable_prompt
+    build_system_prompt: Callable[..., str] = _default_build_system_prompt
+    environment: Callable[..., Supplement] = _default_environment
+    mode_reminder: Callable[[str, str], Supplement | None] = _none_two
+    active_skills_supplement: Callable[[Sequence[str]], Supplement | None] = _none_one
+    hook_notification: Callable[[Sequence[tuple[str, str]]], Supplement | None] = _none_one
+    todo_reminder: Callable[[Any], Supplement | None] = _none_one
+    shell_label: Callable[[ToolRegistry | None], str | None] = _none_one
+    today: Callable[[], str] = _default_today
+    needs_finish_check: Callable[[ToolCall, ToolResult, ToolRegistry], bool] = needs_finish_check
+    active_skills_factory: Callable[[], ActiveSkillStore] = _NullActiveSkills
+    records: TranscriptRecords = field(default_factory=TranscriptRecords)
 
 
 def truncation_notice(continued: int) -> str:
@@ -257,10 +353,6 @@ BREAKER = 3  # Consecutive automatic compaction failures before automatic compac
 _REAL_DATE = date
 
 
-def _today() -> str:
-    return date.today().isoformat() if date is not _REAL_DATE else current_date()
-
-
 class AgentLoop:
     def __init__(
         self,
@@ -270,11 +362,13 @@ class AgentLoop:
         *,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         unknown_limit: int = 3,
+        policies: AgentPolicies | None = None,
     ):
         if type(max_iterations) is not int or max_iterations < 1 or type(unknown_limit) is not int or unknown_limit < 1:
             raise ValueError("循环上限与未知工具阈值必须是正整数。")
-        self.provider, self.system, self.registry = provider, system, registry
-        self.system = stable_prompt(system)
+        self.policies = AgentPolicies() if policies is None else policies
+        self.provider, self.registry = provider, registry
+        self.system = self.policies.stable_prompt(system)
         self.max_iterations, self.unknown_limit = max_iterations, unknown_limit
         # Assembled by the application layer (project files, git); the loop never reads them itself.
         self.instructions = ""
@@ -282,8 +376,10 @@ class AgentLoop:
         self.skill_catalog = ""  # The model-visible list of skills, after the instructions.
         self.agent_catalog = ""  # The sub-agent types, after the skills.
         self.team_guide = ""  # The lead's team section; never copied to forks or members.
-        self.active_skills = ActiveSkills()  # Pinned SOPs, sent in the cached prefix.
-        self.session_date: str = _today()
+        self.active_skills: ActiveSkillStore = (
+            self.policies.active_skills_factory()
+        )  # Pinned SOPs, sent in cached prefix.
+        self.session_date: str = self._today()
         self._env_mode: str | None = self.registry.permissions.mode if self.registry is not None else None
         self._announced = self._initial_announced()
         self.history: list[Message] = []
@@ -324,18 +420,25 @@ class AgentLoop:
         # The main conversation's file checkpoints: each typed message starts a new turn of snapshots.
         self.checkpoints = None
         # The main conversation's HookEngine (a fork sub-agent has none).
-        self.hooks = None
+        self.hooks: AgentHookSink | None = None
         self._finish_pending = False
         self.finish_deferred = None  # The main conversation's background tasks, if any.
         self.hook_context: Supplement | None = None  # session_start output, cached prefix.
         self.turn_notes: tuple[tuple[str, str], ...] = ()  # turn_start output, every request this turn.
         self.goal_note: Supplement | None = None  # The /goal condition, set by the conversation.
         if registry is not None:
-            registry.todos.on_change = lambda items, mark: self._commit(todo_record(items, mark))
+            registry.todos.on_change = lambda items, mark: self._emit(self.policies.records.todo, items, mark)
+
+    def _today(self) -> str:
+        return date.today().isoformat() if date is not _REAL_DATE else self.policies.today()
 
     def _commit(self, record: dict) -> None:
         if self.on_commit is not None:
             self.on_commit(record)
+
+    def _emit(self, builder: Callable[..., dict] | None, *args: Any) -> None:
+        if builder is not None:
+            self._commit(builder(*args))
 
     def _append(self, message: Message) -> None:
         if message.role == "user" and message.synthetic is None and message.id is None:
@@ -345,7 +448,7 @@ class AgentLoop:
         if message.id is not None and self.checkpoints is not None:
             self.checkpoints.begin(message.id)
         self.history.append(message)
-        self._commit(message_record(message))
+        self._emit(self.policies.records.message, message)
 
     def _reset_anchor_meta(self) -> None:
         self._anchored_tools = None
@@ -388,7 +491,7 @@ class AgentLoop:
         if self.registry is not None:
             self.registry.forget_reads()
             self.registry.todos.rewind(keep)
-        self._commit(rewind_record(keep, message))
+        self._emit(self.policies.records.rewind, keep, message)
 
     def remind(self, reminder: Supplement) -> None:
         """Told once, with the next request."""
@@ -439,7 +542,7 @@ class AgentLoop:
         self.history, self.pending, self.notifications = [], [], []
         self.pending_images = {}
         self.total_usage = UsageTotals()
-        self.session_date = _today()
+        self.session_date = self._today()
         self._env_mode = self.registry.permissions.mode if self.registry is not None else None
         # A fresh context has not seen the mode rules yet.
         self._announced = self._initial_announced()
@@ -476,10 +579,10 @@ class AgentLoop:
         instructions = "\n\n".join(
             part for part in (self.instructions, self.skill_catalog, self.agent_catalog, self.team_guide) if part
         )
-        return build_system_prompt(definitions, override=self.system, instructions=instructions)
+        return self.policies.build_system_prompt(definitions, override=self.system, instructions=instructions)
 
     def _active(self) -> Supplement | None:
-        return active_skills(self.active_skills.texts())
+        return self.policies.active_skills_supplement(self.active_skills.texts())
 
     def _reminder(self, iteration: int, notes) -> tuple[Message | None, dict[str, str | None]]:
         """What the model has not been told yet, as one message for the history, and the standing texts it leaves.
@@ -490,17 +593,17 @@ class AgentLoop:
         """
         current_mode = self._effective_mode()
         announce_mode = iteration == 1 or self._reannounce or (self._announced != "plan" and current_mode != "plan")
-        mode = mode_reminder(current_mode, self._announced) if announce_mode else None
+        mode = self.policies.mode_reminder(current_mode, self._announced) if announce_mode else None
         self._announced, self._reannounce = current_mode, False
         gap, self._gap = self._gap, None
         repeat, self._repeat = self._repeat, None
-        today = _today()
+        today = self._today()
         date_note = Supplement("system-reminder", f"当前日期已变为 {today}。") if today != self.session_date else None
         standing = {
             "date": date_note,
-            "todo-list": todo_reminder(self.registry.todos if self.registry is not None else None),
+            "todo-list": self.policies.todo_reminder(self.registry.todos if self.registry is not None else None),
             "goal": self.goal_note,
-            "hook-notification": hook_notification((*self.turn_notes, *notes)),
+            "hook-notification": self.policies.hook_notification((*self.turn_notes, *notes)),
         }
         changed = [item for kind, item in standing.items() if item is not None and self._sent.get(kind) != item.text]
         texts = {kind: None if item is None else item.text for kind, item in standing.items()}
@@ -545,12 +648,12 @@ class AgentLoop:
             if definitions
             else (self.registry.permissions.root if self.registry is not None else Path.cwd())
         )
-        return environment(
+        return self.policies.environment(
             root,
             tools_enabled=self.registry is not None,
             permission_mode=self._env_permission_mode(),
             git=self.git,
-            shell=shell_label(self.registry),
+            shell=self.policies.shell_label(self.registry),
             today=self.session_date,
         )
 
@@ -608,7 +711,7 @@ class AgentLoop:
         if not done.results or estimate - done.tokens > target:
             return None  # Too few could be kept on disk; the history stays as it was.
         self.history = done.history
-        self._commit(clear_record(done.results))
+        self._emit(self.policies.records.clear, done.results)
         if self.registry is not None:
             self.registry.forget_reads(done.paths)
         self.meter.invalidate()
@@ -645,7 +748,7 @@ class AgentLoop:
             self.collapse_failures += 1
             return None
         self.collapses.append(done)
-        self._commit(collapse_record(done))
+        self._emit(self.policies.records.collapse, done)
         if self.registry is not None:
             self.registry.forget_reads(released_reads(self.history, start, end))
         # The mode rules and reminders may be in the collapsed part; the next request repeats them.
@@ -713,7 +816,12 @@ class AgentLoop:
             yield CompactFailed(str(exc), self.compact_failures, self.auto_paused, exc.code, manual)
             return
         self.history, self.collapses = done.history, []
-        self._commit(compact_record(done.history[0], len(done.history) - 1, str(done.record) if done.record else None))
+        self._emit(
+            self.policies.records.compact,
+            done.history[0],
+            len(done.history) - 1,
+            str(done.record) if done.record else None,
+        )
         if self.registry is not None:
             self.registry.forget_reads()
             self.registry.todos.rebase()
@@ -727,10 +835,8 @@ class AgentLoop:
             done.removed, done.summary_tokens, time.monotonic() - started, str(done.record) if done.record else None
         )
         if self.hooks is not None and self.hooks.wants("compact"):
-            from .hooks import HookEvent
-
             trigger = "restore" if failure is not None else "manual" if manual else "auto"
-            await self.hooks.fire(HookEvent("compact", fields={"trigger": trigger}))
+            await self.hooks.fire(self.hooks.make_event("compact", fields={"trigger": trigger}))
 
     async def compact(self, instructions: str = ""):
         """Manual /compact: idle only, regardless of the threshold; resets the breaker on success."""
@@ -779,9 +885,7 @@ class AgentLoop:
     async def _hook(self, name: str, fields: dict) -> tuple[tuple[str, str], ...]:
         if self.hooks is None or not self.hooks.wants(name):
             return ()
-        from .hooks import HookEvent
-
-        return (await self.hooks.fire(HookEvent(name, fields=fields))).notes
+        return (await self.hooks.fire(self.hooks.make_event(name, fields=fields))).notes
 
     async def run(
         self,
@@ -919,11 +1023,9 @@ class AgentLoop:
                             if self.finish_deferred is not None and self.finish_deferred():
                                 yield Notice("仍有后台任务，完成前验收将在结果送达后执行。")
                             else:
-                                from .hooks import HookEvent
-
                                 yield Notice("正在执行完成前验收…")
                                 outcome = await self.hooks.fire(
-                                    HookEvent(
+                                    self.hooks.make_event(
                                         "pre_finish",
                                         fields={"iteration": str(iteration), "attempt": str(finish_failures + 1)},
                                     )
@@ -1015,8 +1117,8 @@ class AgentLoop:
                     # The batch's final results, once, also when cancelled: never its intermediate states.
                     if len(self.history) > position:
                         for call, result in zip(calls, self.history[position].tool_results):
-                            self._finish_pending |= needs_finish_check(call, result, self.registry)
-                        self._commit(message_record(self.history[position]))
+                            self._finish_pending |= self.policies.needs_finish_check(call, result, self.registry)
+                        self._emit(self.policies.records.message, self.history[position])
                 unknown_run = unknown_run + 1 if all(self.registry.get(c.name) is None for c in calls) else 0
                 if unknown_run >= self.unknown_limit:
                     yield RunStopped(

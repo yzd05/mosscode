@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from ..permissions import PermissionPolicy
+from ..todo import TodoList
 from .ask import AskUser
 from .base import ToolRegistry
 from .files import EditFile, FileState, ReadFile, WriteFile
@@ -54,7 +55,7 @@ def create_default_registry(
         backend = create_backend(web_search)
         if backend is not None:
             tools += (WebSearch(root, backend),)
-    return ToolRegistry(tools, permissions=policy)
+    return ToolRegistry(tools, permissions=policy, todos_factory=TodoList)
 
 
 def web_tools(registry: ToolRegistry, root: Path) -> tuple:

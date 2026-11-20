@@ -4,38 +4,20 @@ import functools
 import ipaddress
 import re
 import shlex
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-
-class SecurityError(Exception):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-
-
-def resolve_path(root: Path, value: str | Path) -> Path:
-    """Resolve links and relative parts; no project boundary check."""
-    if not str(value) or "\0" in str(value):
-        raise SecurityError("invalid_path", "路径不能为空或包含空字符。")
-    try:
-        path = Path(value).expanduser()
-        return (path if path.is_absolute() else root / path).resolve()
-    except (OSError, RuntimeError):
-        raise SecurityError("invalid_path", "无法安全解析目标路径或目录链接。") from None
-
-
-def inside(root: Path, path: Path) -> bool:
-    # root is the canonical anchor captured at session creation. Re-resolving
-    # it here would silently move the boundary if that directory became a link.
-    return path.is_relative_to(root)
-
-
-def project_path(root: Path, value: str | Path) -> Path:
-    path = resolve_path(root, value)
-    if not inside(root, path):
-        raise SecurityError("path_blocked", "目标解析后位于项目目录之外，此操作不能授权。")
-    return path
+from .paths import (
+    SecurityError as SecurityError,
+)
+from .paths import (
+    inside as inside,
+)
+from .paths import (
+    project_path as project_path,
+)
+from .paths import (
+    resolve_path as resolve_path,
+)
 
 
 # These are known-danger signatures, not an OS sandbox; they also run on each parsed subcommand.

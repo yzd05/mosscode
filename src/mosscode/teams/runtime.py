@@ -329,7 +329,14 @@ async def build_runner(
     runner.commands = registry.commands
     system = agent.prompt + "\n\n" + addendum(store.name, member.name, member.worktree, member.role)
     turns = min(agent.max_turns or main.max_iterations, main.max_iterations)
-    loop = AgentLoop(provider, system, registry, max_iterations=turns, unknown_limit=main.unknown_limit)
+    loop = AgentLoop(
+        provider,
+        system,
+        registry,
+        max_iterations=turns,
+        unknown_limit=main.unknown_limit,
+        policies=main.policies,
+    )
     loop.instructions = "\n\n".join(
         part
         for part in (

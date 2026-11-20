@@ -375,7 +375,7 @@ class WebSearch(Tool):
 
 
 def _version() -> str:
-    from ..launcher import version
+    from ..version import version
 
     return version()
 
