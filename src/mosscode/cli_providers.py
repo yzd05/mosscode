@@ -2,6 +2,16 @@
 
 Invokes allow-listed vendor CLIs via their documented headless JSON-streaming subprocess interfaces
 so users can reuse existing official CLI subscriptions without reading or copying private OAuth tokens.
+
+Security and isolation guarantees:
+- Executables are resolved exclusively from explicit absolute directories on `PATH` (never CWD).
+- Vendor-side tool/MCP/write restrictions are enforced via CLI flags (`--tools ""` + `--strict-mcp-config`
+  for Claude, `--sandbox read-only` for Codex, `--approval-mode plan` + a deny-all `--policy` TOML for
+  Gemini), backed by a cached capability preflight that fails closed on unsupported CLI versions.
+- Inherited vendor API-key / cloud-routing environment variables are scrubbed per backend so billing
+  cannot silently switch from the user's CLI subscription to pay-as-you-go API keys.
+- Subprocess trees are tracked independently of leader exit and torn down on completion, timeout, or
+  cancellation (Windows kill-on-close Job Object with descendant capture; POSIX process groups).
 """
 
 from __future__ import annotations
@@ -11,12 +21,13 @@ import json
 import os
 import re
 import secrets
-import shutil
 import signal
 import subprocess
+import tempfile
 from collections.abc import AsyncIterator, Callable, Sequence
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from .messages import (
@@ -67,10 +78,51 @@ CLI_INSTALL_HINTS: dict[str, str] = {
 CLI_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$")
 CLI_MODEL_ERROR = "CLI 代理协议的 model 必须以字母或数字开头，仅允许字母、数字及 . _ : / @ -（最长 128 字符）。"
 
+# Vendor-side deny-all policy loaded via `--policy` for Gemini CLI (highest priority, overrides auto-edit).
+GEMINI_DENY_ALL_POLICY = '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n'
+
+# Exact environment variables and prefixes scrubbed per protocol so inherited API keys / cloud selectors
+# never silently hijack the user's official CLI subscription billing route.
+_CLAUDE_SCRUB_EXACT = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "ANTHROPIC_FOUNDRY_API_KEY",
+    }
+)
+_CLAUDE_SCRUB_PREFIXES = ("CLAUDE_CODE_USE_",)
+_CODEX_SCRUB_EXACT = frozenset(
+    {
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_ORG_ID",
+        "OPENAI_ORGANIZATION",
+        "OPENAI_PROJECT",
+    }
+)
+_GEMINI_SCRUB_EXACT = frozenset(
+    {
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+    }
+)
+
+# Required CLI flags verified by capability preflight so older CLIs that lack tool/MCP/write restrictions fail closed.
+_REQUIRED_HELP_ARGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "cli-claude": (("--help",), ("--tools", "--strict-mcp-config")),
+    "cli-codex": (("exec", "--help"), ("--json", "--sandbox")),
+    "cli-gemini": (("--help",), ("--approval-mode", "--policy")),
+}
+
 MAX_LINE_BYTES = 16 * 1024 * 1024
+MAX_TOOL_ENVELOPE_CHARS = 512 * 1024
 MAX_STDERR_BYTES = 16 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 UNSUPPORTED_IMAGE = "当前模型不支持图片，已省略"
+_CAPABILITY_CACHE: dict[tuple[str, str, int, int], str | None] = {}
 
 
 @dataclass(frozen=True)
@@ -90,15 +142,51 @@ def is_valid_cli_model(model: str) -> bool:
     return isinstance(model, str) and bool(CLI_MODEL_RE.fullmatch(model))
 
 
+def resolve_cli_executable(
+    binary: str,
+    *,
+    path_env: str | None = None,
+    pathext_env: str | None = None,
+) -> str | None:
+    """Resolve `binary` strictly from explicit absolute directories in `PATH` (never CWD or relative entries)."""
+    if not binary or os.sep in binary or (os.altsep and os.altsep in binary) or ":" in binary:
+        return None
+    raw_path = os.environ.get("PATH", "") if path_env is None else path_env
+    if not raw_path:
+        return None
+    if os.name == "nt":
+        raw_ext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD") if pathext_env is None else pathext_env
+        exts = [ext.lower() for ext in raw_ext.split(os.pathsep) if ext.strip()]
+        if not exts:
+            exts = [".com", ".exe", ".bat", ".cmd"]
+        lower_bin = binary.lower()
+        candidates = [binary] if any(lower_bin.endswith(ext) for ext in exts) else [binary + ext for ext in exts]
+    else:
+        candidates = [binary]
+
+    for entry in raw_path.split(os.pathsep):
+        cleaned = entry.strip().strip('"')
+        if not cleaned or not Path(cleaned).is_absolute():
+            continue
+        for name in candidates:
+            full = os.path.join(cleaned, name)
+            try:
+                if os.path.isfile(full) and (os.name == "nt" or os.access(full, os.X_OK)):
+                    return os.path.abspath(full)
+            except OSError:
+                continue
+    return None
+
+
 def detect_installed_clis(
-    which: Callable[[str], str | None] = shutil.which,
+    which: Callable[[str], str | None] = resolve_cli_executable,
 ) -> list[DetectedCLIBackend]:
-    """Detect allow-listed official CLIs available on PATH without spawning any subprocess."""
+    """Detect allow-listed official CLIs available on absolute PATH entries without spawning any subprocess."""
     found: list[DetectedCLIBackend] = []
     for protocol in ("cli-claude", "cli-codex", "cli-gemini"):
         binary = CLI_BINARIES[protocol]
         executable = which(binary)
-        if executable:
+        if executable and Path(executable).is_absolute():
             found.append(
                 DetectedCLIBackend(
                     protocol=protocol,
@@ -112,7 +200,13 @@ def detect_installed_clis(
     return found
 
 
-def build_cli_argv(protocol: str, executable: str, model: str) -> list[str]:
+def build_cli_argv(
+    protocol: str,
+    executable: str,
+    model: str,
+    *,
+    policy_path: str | None = None,
+) -> list[str]:
     """Construct the strict allow-listed argv list for one headless official CLI invocation."""
     if protocol not in CLI_PROTOCOLS:
         raise ProviderError(f"不支持的 CLI 代理协议：{protocol}。")
@@ -129,6 +223,7 @@ def build_cli_argv(protocol: str, executable: str, model: str) -> list[str]:
             "--no-session-persistence",
             "--tools",
             "",
+            "--strict-mcp-config",
             "--model",
             model,
         ]
@@ -144,20 +239,39 @@ def build_cli_argv(protocol: str, executable: str, model: str) -> list[str]:
             model,
             "-",
         ]
+    if not policy_path or not isinstance(policy_path, str):
+        raise ProviderError("Google Gemini CLI 缺少强制只读策略文件，已拒绝启动。")
     return [
         executable,
         "-p",
         "",
         "--output-format",
         "stream-json",
+        "--approval-mode",
+        "plan",
+        "--policy",
+        policy_path,
         "--model",
         model,
     ]
 
 
-def _cli_env() -> dict[str, str]:
-    """Preserve user CLI login context while scrubbing MossCode-internal flags."""
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("MOSSCODE_")}
+def _cli_env(protocol: str) -> dict[str, str]:
+    """Preserve user CLI subscription context while scrubbing MossCode flags and vendor API-key overrides."""
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper.startswith("MOSSCODE_"):
+            continue
+        if protocol == "cli-claude" and (
+            upper in _CLAUDE_SCRUB_EXACT or any(upper.startswith(p) for p in _CLAUDE_SCRUB_PREFIXES)
+        ):
+            continue
+        if protocol == "cli-codex" and upper in _CODEX_SCRUB_EXACT:
+            continue
+        if protocol == "cli-gemini" and upper in _GEMINI_SCRUB_EXACT:
+            continue
+        env[key] = value
     env.setdefault("NO_COLOR", "1")
     return env
 
@@ -280,14 +394,24 @@ def _parse_tool_envelope(payload: str, allowed_names: frozenset[str]) -> ToolCal
 
 
 class _ToolTagFilter:
-    """Streaming splitter that emits visible text deltas while extracting nonce-delimited tool calls."""
+    """Streaming splitter that emits visible text deltas while extracting bounded nonce-delimited tool calls."""
 
-    def __init__(self, nonce: str | None, allowed_names: frozenset[str]) -> None:
+    def __init__(
+        self,
+        nonce: str | None,
+        allowed_names: frozenset[str],
+        *,
+        max_envelope_chars: int = MAX_TOOL_ENVELOPE_CHARS,
+    ) -> None:
         self._open = f"<mosscode_tool_call_{nonce}>" if nonce else ""
         self._close = f"</mosscode_tool_call_{nonce}>" if nonce else ""
         self._allowed = allowed_names
+        self._max_envelope_chars = max_envelope_chars
         self._in_tag = False
+        self._tag_oversized = False
         self._buf = ""
+        self._tag_tail = ""
+        self._close_scan_pos = 0
         self.text_parts: list[str] = []
         self.calls: list[ToolCall] = []
 
@@ -304,25 +428,54 @@ class _ToolTagFilter:
             return [Delta("text", chunk)]
 
         out: list[StreamEvent] = []
-        self._buf += chunk
+        if self._in_tag and self._tag_oversized:
+            window = self._tag_tail + chunk
+            end_idx = window.find(self._close)
+            if end_idx == -1:
+                self._tag_tail = window[-(len(self._close) - 1) :] if len(self._close) > 1 else ""
+                return out
+            # Oversized candidate is discarded without parsing or dispatching; resume after close tag.
+            self._in_tag = False
+            self._tag_oversized = False
+            self._tag_tail = ""
+            self._close_scan_pos = 0
+            self._buf = window[end_idx + len(self._close) :]
+        else:
+            prev_len = len(self._buf)
+            self._buf += chunk
+            if self._in_tag:
+                self._close_scan_pos = max(0, prev_len - len(self._close) + 1)
+
         while self._buf:
             if self._in_tag:
-                end_idx = self._buf.find(self._close)
+                end_idx = self._buf.find(self._close, self._close_scan_pos)
                 if end_idx == -1:
+                    if len(self._buf) > self._max_envelope_chars + len(self._close):
+                        self._tag_oversized = True
+                        self._tag_tail = self._buf[-(len(self._close) - 1) :] if len(self._close) > 1 else ""
+                        self._buf = ""
+                        self._close_scan_pos = 0
+                    else:
+                        self._close_scan_pos = max(0, len(self._buf) - len(self._close) + 1)
                     break
                 raw_payload = self._buf[:end_idx]
                 self._buf = self._buf[end_idx + len(self._close) :]
                 self._in_tag = False
-                call = _parse_tool_envelope(raw_payload, self._allowed)
-                if call is not None:
-                    self.calls.append(call)
-                    out.append(ToolProgress(call, "parsing"))
+                self._close_scan_pos = 0
+                if len(raw_payload) <= self._max_envelope_chars:
+                    call = _parse_tool_envelope(raw_payload, self._allowed)
+                    if call is not None:
+                        self.calls.append(call)
+                        out.append(ToolProgress(call, "parsing"))
             else:
                 start_idx = self._buf.find(self._open)
                 if start_idx != -1:
                     self._emit_text(self._buf[:start_idx], out)
                     self._buf = self._buf[start_idx + len(self._open) :]
                     self._in_tag = True
+                    self._tag_oversized = False
+                    self._tag_tail = ""
+                    self._close_scan_pos = 0
                     continue
                 # Hold back only a suffix that could still complete `self._open`.
                 keep = 0
@@ -342,9 +495,12 @@ class _ToolTagFilter:
         out: list[StreamEvent] = []
         if not self._in_tag and self._buf:
             self._emit_text(self._buf, out)
-        # Drop any truncated/unclosed tool-call tag without executing it (fail-closed).
+        # Drop any truncated/unclosed or oversized tool-call tag without executing it (fail-closed).
         self._buf = ""
+        self._tag_tail = ""
         self._in_tag = False
+        self._tag_oversized = False
+        self._close_scan_pos = 0
         return out
 
 
@@ -420,6 +576,7 @@ class _CLIStreamParser:
         self.usage = Usage()
         self.error_message: str = ""
         self.saw_json_frame = False
+        self.saw_terminal_success = False
         self.saw_stream_text = False
         self.saw_stream_thinking = False
         self.saw_any_text = False
@@ -450,17 +607,21 @@ class _CLIStreamParser:
         if not isinstance(frame, dict):
             self._note_non_json(stripped)
             return [], []
+        ftype = frame.get("type")
+        if ftype is not None and not isinstance(ftype, str):
+            raise ProviderError(f"{CLI_LABELS[self.protocol]} 返回了非法流事件（type 字段必须为字符串）。")
         self.saw_json_frame = True
+        if ftype is None:
+            return [], []
         if self.protocol == "cli-claude":
-            return self._feed_claude(frame)
+            return self._feed_claude(ftype, frame)
         if self.protocol == "cli-codex":
-            return self._feed_codex(frame)
-        return self._feed_gemini(frame)
+            return self._feed_codex(ftype, frame)
+        return self._feed_gemini(ftype, frame)
 
-    def _feed_claude(self, frame: dict[str, Any]) -> tuple[list[str], list[str]]:
+    def _feed_claude(self, ftype: str, frame: dict[str, Any]) -> tuple[list[str], list[str]]:
         texts: list[str] = []
         thinkings: list[str] = []
-        ftype = frame.get("type")
 
         if ftype == "stream_event":
             event = frame.get("event")
@@ -519,22 +680,24 @@ class _CLIStreamParser:
             if isinstance(frame.get("usage"), dict):
                 self._claude_usage_fields.update({k: v for k, v in frame["usage"].items() if v is not None})
                 self.usage = _parse_claude_usage(self._claude_usage_fields)
-            subtype = str(frame.get("subtype") or "")
+            raw_subtype = frame.get("subtype")
+            subtype = raw_subtype if isinstance(raw_subtype, str) else ""
             if frame.get("is_error") is True or subtype.startswith("error"):
                 self.error_message = _extract_error_text(frame) or "Claude Code CLI 执行失败。"
-            elif not self.saw_any_text and isinstance(frame.get("result"), str) and frame["result"]:
-                self.saw_any_text = True
-                texts.append(frame["result"])
+            else:
+                self.saw_terminal_success = True
+                if not self.saw_any_text and isinstance(frame.get("result"), str) and frame["result"]:
+                    self.saw_any_text = True
+                    texts.append(frame["result"])
             return texts, thinkings
 
         if ftype == "error":
             self.error_message = _extract_error_text(frame) or "Claude Code CLI 返回错误。"
         return texts, thinkings
 
-    def _feed_codex(self, frame: dict[str, Any]) -> tuple[list[str], list[str]]:
+    def _feed_codex(self, ftype: str, frame: dict[str, Any]) -> tuple[list[str], list[str]]:
         texts: list[str] = []
         thinkings: list[str] = []
-        ftype = frame.get("type")
 
         if ftype in {"item.delta", "response.output_text.delta"}:
             delta = frame.get("delta")
@@ -548,6 +711,8 @@ class _CLIStreamParser:
             item = frame.get("item")
             if isinstance(item, dict):
                 itype = item.get("type")
+                if not isinstance(itype, str):
+                    return texts, thinkings
                 if itype in {"agent_message", "message"}:
                     if not self.saw_stream_text:
                         text = item.get("text")
@@ -574,6 +739,7 @@ class _CLIStreamParser:
             return texts, thinkings
 
         if ftype == "turn.completed":
+            self.saw_terminal_success = True
             if isinstance(frame.get("usage"), dict):
                 self.usage = _parse_codex_usage(frame["usage"])
             return texts, thinkings
@@ -582,13 +748,13 @@ class _CLIStreamParser:
             self.error_message = _extract_error_text(frame) or "OpenAI Codex CLI 返回错误。"
         return texts, thinkings
 
-    def _feed_gemini(self, frame: dict[str, Any]) -> tuple[list[str], list[str]]:
+    def _feed_gemini(self, ftype: str, frame: dict[str, Any]) -> tuple[list[str], list[str]]:
         texts: list[str] = []
         thinkings: list[str] = []
-        ftype = frame.get("type")
 
         if ftype == "message":
-            role = str(frame.get("role") or "").lower()
+            raw_role = frame.get("role")
+            role = raw_role.lower() if isinstance(raw_role, str) else ""
             if role not in {"assistant", "model"}:
                 return texts, thinkings
             is_delta = frame.get("delta")
@@ -626,27 +792,31 @@ class _CLIStreamParser:
                     and parsed.output_tokens is None
                     and isinstance(stats.get("models"), dict)
                 ):
-                    # Sum per-model token counters only across complete fields; never fabricate missing counters as 0.
+                    # Sum per-model counters only when EVERY model provides a valid token record; never fabricate 0.
                     in_sum, out_sum, cache_sum = 0, 0, 0
                     in_complete, out_complete, cache_complete = True, True, True
                     saw_model = False
                     for entry in stats["models"].values():
+                        saw_model = True
                         tokens = entry.get("tokens") if isinstance(entry, dict) else None
-                        if isinstance(tokens, dict):
-                            p = _parse_gemini_usage(tokens)
-                            saw_model = True
-                            if p.input_tokens is None:
-                                in_complete = False
-                            else:
-                                in_sum += p.input_tokens
-                            if p.output_tokens is None:
-                                out_complete = False
-                            else:
-                                out_sum += p.output_tokens
-                            if p.cached_input_tokens is None:
-                                cache_complete = False
-                            else:
-                                cache_sum += p.cached_input_tokens
+                        if not isinstance(tokens, dict):
+                            in_complete = False
+                            out_complete = False
+                            cache_complete = False
+                            continue
+                        p = _parse_gemini_usage(tokens)
+                        if p.input_tokens is None:
+                            in_complete = False
+                        else:
+                            in_sum += p.input_tokens
+                        if p.output_tokens is None:
+                            out_complete = False
+                        else:
+                            out_sum += p.output_tokens
+                        if p.cached_input_tokens is None:
+                            cache_complete = False
+                        else:
+                            cache_sum += p.cached_input_tokens
                     if saw_model:
                         total_in = in_sum if in_complete else None
                         total_out = out_sum if out_complete else None
@@ -658,12 +828,15 @@ class _CLIStreamParser:
                         )
                         parsed = Usage(total_in, total_out, total_cached, None, uncached)
                 self.usage = parsed
-            status = str(frame.get("status") or "").lower()
+            raw_status = frame.get("status")
+            status = raw_status.lower() if isinstance(raw_status, str) else ""
             if status == "error" or frame.get("error"):
                 self.error_message = _extract_error_text(frame) or "Google Gemini CLI 执行失败。"
-            elif not self.saw_any_text and isinstance(frame.get("response"), str) and frame["response"]:
-                self.saw_any_text = True
-                texts.append(frame["response"])
+            else:
+                self.saw_terminal_success = True
+                if not self.saw_any_text and isinstance(frame.get("response"), str) and frame["response"]:
+                    self.saw_any_text = True
+                    texts.append(frame["response"])
             return texts, thinkings
 
         if ftype == "error":
@@ -671,8 +844,112 @@ class _CLIStreamParser:
         return texts, thinkings
 
 
+def _windows_descendant_pids(root_pid: int) -> list[int]:
+    """Enumerate all currently alive descendant PIDs of `root_pid` via Toolhelp32 snapshot."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    class _ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    api.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    api.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry32W)]
+    api.Process32FirstW.restype = wintypes.BOOL
+    api.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry32W)]
+    api.Process32NextW.restype = wintypes.BOOL
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+
+    snap = api.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    invalid_handle = ctypes.c_void_p(-1).value
+    if not snap or snap == invalid_handle:
+        return []
+    children_by_parent: dict[int, list[int]] = {}
+    try:
+        entry = _ProcessEntry32W()
+        entry.dwSize = ctypes.sizeof(_ProcessEntry32W)
+        if api.Process32FirstW(snap, ctypes.byref(entry)):
+            while True:
+                children_by_parent.setdefault(int(entry.th32ParentProcessID), []).append(int(entry.th32ProcessID))
+                if not api.Process32NextW(snap, ctypes.byref(entry)):
+                    break
+    finally:
+        api.CloseHandle(snap)
+
+    descendants: list[int] = []
+    seen = {root_pid}
+    stack = [root_pid]
+    while stack:
+        current = stack.pop()
+        for child in children_by_parent.get(current, ()):
+            if child not in seen:
+                seen.add(child)
+                descendants.append(child)
+                stack.append(child)
+    return descendants
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    api.OpenProcess.restype = wintypes.HANDLE
+    api.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    api.GetExitCodeProcess.restype = wintypes.BOOL
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+
+    handle = api.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD(0)
+        if not api.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return int(code.value) == 259  # STILL_ACTIVE
+    finally:
+        api.CloseHandle(handle)
+
+
+def _taskkill_tree_windows(pid: int) -> None:
+    """Fallback Windows process-tree kill using System32 taskkill.exe."""
+    if os.name != "nt":
+        return
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    exe = os.path.join(system_root, "System32", "taskkill.exe")
+    if not os.path.isfile(exe):
+        return
+    with suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            [exe, "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5.0,
+            check=False,
+        )
+
+
 class _WinProcessJob:
-    """Minimal L0 Windows kill-on-close Job Object to tear down CLI subprocess trees cleanly."""
+    """Minimal L0 Windows kill-on-close Job Object capturing leader and early descendants."""
 
     def __init__(self, pid: int) -> None:
         import ctypes
@@ -734,19 +1011,36 @@ class _WinProcessJob:
             raise ctypes.WinError(ctypes.get_last_error())
         limits = _ExtendedLimit()
         limits.Basic.Flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        proc_handle = None
         try:
             if not api.SetInformationJobObject(self._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
                 raise ctypes.WinError(ctypes.get_last_error())
-            proc_handle = api.OpenProcess(0x0101, False, pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
-            if not proc_handle or not api.AssignProcessToJobObject(self._handle, proc_handle):
-                raise ctypes.WinError(ctypes.get_last_error())
+            self._assign_pid(pid, required=True)
+            # Capture any descendants spawned between CreateProcess and AssignProcessToJobObject.
+            assigned = {pid}
+            for _ in range(3):
+                newly = [child for child in _windows_descendant_pids(pid) if child not in assigned]
+                if not newly:
+                    break
+                for child in newly:
+                    assigned.add(child)
+                    self._assign_pid(child, required=False)
         except OSError:
             self.close()
             raise
+
+    def _assign_pid(self, pid: int, *, required: bool) -> None:
+        import ctypes
+
+        proc_handle = self._api.OpenProcess(0x0101, False, pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
+        if not proc_handle:
+            if required:
+                raise ctypes.WinError(ctypes.get_last_error())
+            return
+        try:
+            if not self._api.AssignProcessToJobObject(self._handle, proc_handle) and required:
+                raise ctypes.WinError(ctypes.get_last_error())
         finally:
-            if proc_handle:
-                api.CloseHandle(proc_handle)
+            self._api.CloseHandle(proc_handle)
 
     def terminate(self) -> None:
         if self._handle:
@@ -761,48 +1055,124 @@ class _WinProcessJob:
                 self._api.CloseHandle(handle)
 
 
-def _attach_windows_job(pid: int) -> _WinProcessJob | None:
+def _attach_windows_job(pid: int) -> tuple[_WinProcessJob | None, OSError | None]:
     if os.name != "nt":
-        return None
+        return None, None
     try:
-        return _WinProcessJob(pid)
+        return _WinProcessJob(pid), None
+    except OSError as exc:
+        return None, exc
+
+
+@dataclass(eq=False)
+class _ManagedProcess:
+    """Process-tree ownership tracked independently of leader exit."""
+
+    proc: asyncio.subprocess.Process
+    pid: int
+    job: _WinProcessJob | None = None
+    pgid: int | None = None
+    cleaned: bool = False
+
+
+def _pgid_alive(pgid: int) -> bool:
+    if os.name == "nt":
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
     except OSError:
-        return None
+        return False
 
 
-async def _terminate_tree(proc: asyncio.subprocess.Process, job: _WinProcessJob | None) -> None:
-    """Terminate the subprocess and any children cleanly without raising on already-exited processes."""
+def _signal_tree_sync(managed: _ManagedProcess) -> None:
+    """Synchronously initiate process-tree termination before any await point."""
+    if os.name == "nt":
+        if managed.job is not None:
+            managed.job.terminate()
+        if managed.proc.returncode is None:
+            with suppress(ProcessLookupError, OSError):
+                managed.proc.terminate()
+        return
+    if managed.pgid is not None and _pgid_alive(managed.pgid):
+        with suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(managed.pgid, signal.SIGTERM)
+    if managed.proc.returncode is None:
+        with suppress(ProcessLookupError, OSError):
+            managed.proc.terminate()
+
+
+async def _terminate_managed(managed: _ManagedProcess) -> None:
+    """Tear down leader and all descendants cleanly, even after the leader has already exited."""
+    if managed.cleaned:
+        return
+    proc = managed.proc
     try:
-        if proc.returncode is None:
-            if os.name == "nt":
-                if job is not None:
-                    job.terminate()
-                with suppress(ProcessLookupError, OSError):
-                    proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=0.5)
-                except TimeoutError:
-                    with suppress(ProcessLookupError, OSError):
-                        proc.kill()
-                    with suppress(TimeoutError, OSError):
-                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+        if os.name == "nt":
+            if managed.job is not None:
+                managed.job.terminate()
             else:
-                with suppress(ProcessLookupError, PermissionError, OSError):
-                    os.killpg(proc.pid, signal.SIGTERM)
+                if proc.returncode is None or _windows_descendant_pids(managed.pid):
+                    await asyncio.to_thread(_taskkill_tree_windows, managed.pid)
+            if proc.returncode is None:
                 with suppress(ProcessLookupError, OSError):
                     proc.terminate()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=0.5)
                 except TimeoutError:
-                    with suppress(ProcessLookupError, PermissionError, OSError):
-                        os.killpg(proc.pid, signal.SIGKILL)
                     with suppress(ProcessLookupError, OSError):
                         proc.kill()
                     with suppress(TimeoutError, OSError):
                         await asyncio.wait_for(proc.wait(), timeout=2.0)
+            if managed.job is not None:
+                managed.job.close()
+        else:
+            pgid = managed.pgid
+            if proc.returncode is None or (pgid is not None and _pgid_alive(pgid)):
+                if pgid is not None:
+                    with suppress(ProcessLookupError, PermissionError, OSError):
+                        os.killpg(pgid, signal.SIGTERM)
+                if proc.returncode is None:
+                    with suppress(ProcessLookupError, OSError):
+                        proc.terminate()
+                loop = asyncio.get_running_loop()
+                grace_deadline = loop.time() + 0.5
+                while loop.time() < grace_deadline:
+                    if proc.returncode is None:
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(proc.wait(), timeout=0.05)
+                    group_live = pgid is not None and _pgid_alive(pgid)
+                    if proc.returncode is not None and not group_live:
+                        break
+                    if proc.returncode is not None:
+                        await asyncio.sleep(0.02)
+            # Escalate to SIGKILL if leader or any descendant in the POSIX process group survived SIGTERM.
+            if proc.returncode is None or (pgid is not None and _pgid_alive(pgid)):
+                if pgid is not None:
+                    with suppress(ProcessLookupError, PermissionError, OSError):
+                        os.killpg(pgid, signal.SIGKILL)
+                if proc.returncode is None:
+                    with suppress(ProcessLookupError, OSError):
+                        proc.kill()
+                loop = asyncio.get_running_loop()
+                kill_deadline = loop.time() + 2.0
+                while loop.time() < kill_deadline:
+                    if proc.returncode is None:
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(proc.wait(), timeout=0.1)
+                    group_live = pgid is not None and _pgid_alive(pgid)
+                    if proc.returncode is not None and not group_live:
+                        break
+                    if proc.returncode is not None:
+                        await asyncio.sleep(0.02)
     finally:
-        if job is not None:
-            job.close()
+        if managed.job is not None:
+            managed.job.close()
+        managed.cleaned = True
 
 
 async def _write_stdin(stream: asyncio.StreamWriter | None, payload: bytes) -> None:
@@ -834,25 +1204,38 @@ async def _drain_stderr(stream: asyncio.StreamReader | None) -> bytes:
     return bytes(buf)
 
 
-async def _iter_lines_bounded(stream: asyncio.StreamReader) -> AsyncIterator[str]:
-    """Read newline-delimited UTF-8 lines without triggering asyncio StreamReader's 64 KiB LimitOverrunError."""
+async def _iter_lines_bounded(
+    stream: asyncio.StreamReader,
+    *,
+    max_line_bytes: int = MAX_LINE_BYTES,
+) -> AsyncIterator[str]:
+    """Read newline-delimited UTF-8 lines, enforcing `max_line_bytes` per line (excluding delimiter)."""
     pending = bytearray()
     while True:
         chunk = await stream.read(READ_CHUNK_BYTES)
         if not chunk:
             break
         pending.extend(chunk)
-        if len(pending) > MAX_LINE_BYTES:
-            raise ProviderError("官方 CLI 输出的单行 JSON 超过大小上限，已中止读取。")
         while True:
             idx = pending.find(b"\n")
             if idx == -1:
                 break
             raw_line = bytes(pending[:idx])
             del pending[: idx + 1]
+            if raw_line.endswith(b"\r"):
+                raw_line = raw_line[:-1]
+            if len(raw_line) > max_line_bytes:
+                raise ProviderError("官方 CLI 输出的单行 JSON 超过大小上限，已中止读取。")
             yield raw_line.decode("utf-8", errors="replace")
+        # Allow a single trailing '\r' when CRLF splits across read chunks after an exact-length line.
+        unterminated_len = len(pending) - (1 if pending.endswith(b"\r") else 0)
+        if unterminated_len > max_line_bytes:
+            raise ProviderError("官方 CLI 输出的单行 JSON 超过大小上限，已中止读取。")
     if pending:
-        yield bytes(pending).decode("utf-8", errors="replace")
+        raw_line = bytes(pending[:-1] if pending.endswith(b"\r") else pending)
+        if len(raw_line) > max_line_bytes:
+            raise ProviderError("官方 CLI 输出的单行 JSON 超过大小上限，已中止读取。")
+        yield raw_line.decode("utf-8", errors="replace")
 
 
 def _safe_detail(text: str) -> str:
@@ -862,15 +1245,101 @@ def _safe_detail(text: str) -> str:
     return cleaned
 
 
+async def verify_cli_capabilities(
+    protocol: str,
+    executable: str,
+    *,
+    timeout: float = 10.0,
+) -> None:
+    """Verify the installed official CLI advertises required vendor-side safety flags; fail closed otherwise."""
+    if protocol not in _REQUIRED_HELP_ARGS:
+        raise ProviderError(f"不支持的 CLI 代理协议：{protocol}。")
+    try:
+        st = os.stat(executable)
+        cache_key = (protocol, executable, st.st_mtime_ns, st.st_size)
+    except OSError:
+        cache_key = None
+
+    if cache_key is not None and cache_key in _CAPABILITY_CACHE:
+        cached_err = _CAPABILITY_CACHE[cache_key]
+        if cached_err is not None:
+            raise ProviderError(cached_err)
+        return
+
+    help_args, required_flags = _REQUIRED_HELP_ARGS[protocol]
+    label = CLI_LABELS[protocol]
+    spawn_kwargs: dict[str, Any] = {
+        "stdin": asyncio.subprocess.DEVNULL,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "env": _cli_env(protocol),
+    }
+    if os.name == "nt":
+        spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        spawn_kwargs["start_new_session"] = True
+
+    try:
+        proc = await asyncio.create_subprocess_exec(executable, *help_args, **spawn_kwargs)
+    except OSError as exc:
+        raise ProviderError(f"无法检测 {label} 版本能力：{redact(str(exc))}") from None
+
+    job, _ = _attach_windows_job(proc.pid)
+    managed = _ManagedProcess(proc=proc, pid=proc.pid, job=job, pgid=None if os.name == "nt" else proc.pid)
+    try:
+        async with asyncio.timeout(min(timeout, 10.0)):
+            stdout_b, stderr_b = await proc.communicate()
+    except TimeoutError:
+        raise ProviderError(f"检测 {label} 安全参数能力超时，已拒绝启用。") from None
+    finally:
+        _signal_tree_sync(managed)
+        with suppress(BaseException):
+            await asyncio.shield(_terminate_managed(managed))
+
+    combined = (stdout_b + b"\n" + stderr_b).decode("utf-8", errors="replace")
+    missing = [flag for flag in required_flags if flag not in combined]
+    if proc.returncode != 0 or missing:
+        if missing:
+            err = (
+                f"当前安装的 {label} 不支持必需的安全隔离参数（缺少 {'、'.join(missing)}），"
+                f"为防止绕过 MossCode 权限与审批，已拒绝启用 {protocol}；请升级官方 CLI 后重试。"
+            )
+        else:
+            err = f"无法验证 {label} 安全参数能力（退出码 {proc.returncode}），已拒绝启用。"
+        if cache_key is not None:
+            _CAPABILITY_CACHE[cache_key] = err
+        raise ProviderError(err)
+
+    if cache_key is not None:
+        _CAPABILITY_CACHE[cache_key] = None
+
+
+def _write_temp_policy() -> Path:
+    """Create a private temporary TOML policy file denying all native/MCP Gemini CLI tools."""
+    fd, raw_path = tempfile.mkstemp(prefix="mosscode-gemini-policy-", suffix=".toml")
+    path = Path(raw_path)
+    try:
+        if os.name != "nt":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(GEMINI_DENY_ALL_POLICY)
+    except BaseException:
+        with suppress(OSError):
+            path.unlink(missing_ok=True)
+        raise
+    return path
+
+
 class CLIProxyProvider:
-    """Official CLI execution adapter conforming to MossCode's L1 Provider protocol."""
+    """Official CLI execution adapter conforming to MossCode's L0/L1 Provider protocol."""
 
     def __init__(
         self,
         config: Any,
         *,
-        which: Callable[[str], str | None] = shutil.which,
-        argv_builder: Callable[[str, str, str], list[str]] = build_cli_argv,
+        which: Callable[[str], str | None] = resolve_cli_executable,
+        argv_builder: Callable[..., list[str]] = build_cli_argv,
+        capability_checker: Callable[[str, str], Any] | None = None,
     ) -> None:
         if config.protocol not in CLI_PROTOCOLS:
             raise ProviderError(f"不支持的 CLI 代理协议：{config.protocol}。")
@@ -880,13 +1349,14 @@ class CLIProxyProvider:
         self.thinking: str | None = None
         self._which = which
         self._argv_builder = argv_builder
-        self._active: dict[asyncio.subprocess.Process, _WinProcessJob | None] = {}
+        self._capability_checker = capability_checker
+        self._active: set[_ManagedProcess] = set()
 
     async def close(self) -> None:
-        active = list(self._active.items())
-        self._active.clear()
-        for proc, job in active:
-            await _terminate_tree(proc, job)
+        active = list(self._active)
+        for managed in active:
+            await _terminate_managed(managed)
+            self._active.discard(managed)
 
     async def stream(
         self,
@@ -900,86 +1370,112 @@ class CLIProxyProvider:
         binary = CLI_BINARIES[protocol]
         label = CLI_LABELS[protocol]
         executable = self._which(binary)
-        if not executable:
-            raise ProviderError(f"PATH 中未找到官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。")
+        if not executable or not Path(executable).is_absolute():
+            raise ProviderError(f"PATH 绝对目录中未找到官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。")
 
-        argv = self._argv_builder(protocol, executable, self.config.model)
-        nonce = secrets.token_hex(8) if (tools and allow_tools) else None
-        allowed_names = frozenset(tool.name for tool in tools) if (tools and allow_tools) else frozenset()
-        prompt_bytes = render_cli_prompt(
-            messages,
-            system,
-            tools,
-            allow_tools=allow_tools,
-            nonce=nonce,
-        ).encode("utf-8")
+        if self._capability_checker is not None:
+            await self._capability_checker(protocol, executable)
+        elif self._argv_builder is build_cli_argv:
+            await verify_cli_capabilities(protocol, executable, timeout=self.config.timeout)
 
-        spawn_kwargs: dict[str, Any] = {
-            "stdin": asyncio.subprocess.PIPE,
-            "stdout": asyncio.subprocess.PIPE,
-            "stderr": asyncio.subprocess.PIPE,
-            "env": _cli_env(),
-        }
-        if os.name == "nt":
-            spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            spawn_kwargs["start_new_session"] = True
-
+        policy_file: Path | None = None
         try:
-            proc = await asyncio.create_subprocess_exec(*argv, **spawn_kwargs)
-        except FileNotFoundError:
-            raise ProviderError(f"无法执行官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。") from None
-        except OSError as exc:
-            raise ProviderError(f"启动 {label} 失败：{redact(str(exc))}") from None
+            if protocol == "cli-gemini" and self._argv_builder is build_cli_argv:
+                policy_file = _write_temp_policy()
+                argv = build_cli_argv(protocol, executable, self.config.model, policy_path=str(policy_file))
+            else:
+                argv = self._argv_builder(protocol, executable, self.config.model)
 
-        job = _attach_windows_job(proc.pid)
-        self._active[proc] = job
+            nonce = secrets.token_hex(8) if (tools and allow_tools) else None
+            allowed_names = frozenset(tool.name for tool in tools) if (tools and allow_tools) else frozenset()
+            prompt_bytes = render_cli_prompt(
+                messages,
+                system,
+                tools,
+                allow_tools=allow_tools,
+                nonce=nonce,
+            ).encode("utf-8")
 
-        stdin_task = asyncio.create_task(_write_stdin(proc.stdin, prompt_bytes))
-        stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
-        parser = _CLIStreamParser(protocol)
-        tag_filter = _ToolTagFilter(nonce, allowed_names)
+            spawn_kwargs: dict[str, Any] = {
+                "stdin": asyncio.subprocess.PIPE,
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.PIPE,
+                "env": _cli_env(protocol),
+            }
+            if os.name == "nt":
+                spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                spawn_kwargs["start_new_session"] = True
 
-        try:
-            async with asyncio.timeout(self.config.timeout):
+            try:
+                proc = await asyncio.create_subprocess_exec(*argv, **spawn_kwargs)
+            except FileNotFoundError:
+                raise ProviderError(f"无法执行官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。") from None
+            except OSError as exc:
+                raise ProviderError(f"启动 {label} 失败：{redact(str(exc))}") from None
+
+            job, job_err = _attach_windows_job(proc.pid)
+            managed = _ManagedProcess(
+                proc=proc,
+                pid=proc.pid,
+                job=job,
+                pgid=None if os.name == "nt" else proc.pid,
+            )
+            if os.name == "nt" and job is None and job_err is not None:
+                # Fail closed if Windows process-tree containment cannot be established while the process is alive.
+                if _windows_pid_alive(proc.pid) or _windows_descendant_pids(proc.pid):
+                    await _terminate_managed(managed)
+                    raise ProviderError(f"无法为 {label} 建立 Windows 进程树隔离，已中止执行。") from None
+
+            self._active.add(managed)
+            stdin_task = asyncio.create_task(_write_stdin(proc.stdin, prompt_bytes))
+            stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
+            parser = _CLIStreamParser(protocol)
+            tag_filter = _ToolTagFilter(nonce, allowed_names)
+            deadline = asyncio.get_running_loop().time() + self.config.timeout
+
+            try:
                 assert proc.stdout is not None
-                async for line in _iter_lines_bounded(proc.stdout):
-                    texts, thinkings = parser.feed_line(line)
-                    for thought in thinkings:
-                        yield Delta("thinking", thought)
-                    for text in texts:
-                        for event in tag_filter.feed(text):
-                            yield event
+                # Never yield while an asyncio.timeout scope is active (PEP 789): scope only subprocess awaits.
+                async with aclosing(_iter_lines_bounded(proc.stdout)) as line_iter:
+                    while True:
+                        try:
+                            async with asyncio.timeout_at(deadline):
+                                line = await anext(line_iter)
+                        except StopAsyncIteration:
+                            break
+                        texts, thinkings = parser.feed_line(line)
+                        for thought in thinkings:
+                            yield Delta("thinking", thought)
+                        for text in texts:
+                            for event in tag_filter.feed(text):
+                                yield event
                 for event in tag_filter.finish():
                     yield event
-                await stdin_task
-                stderr_bytes = await stderr_task
-                returncode = await proc.wait()
-        except TimeoutError:
-            raise ProviderError(
-                f"{label} 执行超时（>{self.config.timeout:g} 秒），请检查网络、登录状态或增大 timeout。"
-            ) from None
+                async with asyncio.timeout_at(deadline):
+                    await stdin_task
+                    stderr_bytes = await stderr_task
+                    returncode = await proc.wait()
+            except TimeoutError:
+                raise ProviderError(
+                    f"{label} 执行超时（>{self.config.timeout:g} 秒），请检查网络、登录状态或增大 timeout。"
+                ) from None
+            finally:
+                _signal_tree_sync(managed)
+                for task in (stdin_task, stderr_task):
+                    if not task.done():
+                        task.cancel()
+                with suppress(BaseException):
+                    await asyncio.shield(asyncio.gather(stdin_task, stderr_task, return_exceptions=True))
+                try:
+                    await asyncio.shield(_terminate_managed(managed))
+                finally:
+                    if managed.cleaned:
+                        self._active.discard(managed)
         finally:
-            self._active.pop(proc, None)
-            if proc.returncode is None:
-                # Signal teardown synchronously before any await so even immediate loop cancellation stops the tree.
-                if os.name == "nt":
-                    if job is not None:
-                        job.terminate()
-                    with suppress(ProcessLookupError, OSError):
-                        proc.terminate()
-                else:
-                    with suppress(ProcessLookupError, PermissionError, OSError):
-                        os.killpg(proc.pid, signal.SIGTERM)
-                    with suppress(ProcessLookupError, OSError):
-                        proc.terminate()
-            for task in (stdin_task, stderr_task):
-                if not task.done():
-                    task.cancel()
-            with suppress(BaseException):
-                await asyncio.shield(asyncio.gather(stdin_task, stderr_task, return_exceptions=True))
-            with suppress(BaseException):
-                await asyncio.shield(_terminate_tree(proc, job))
+            if policy_file is not None:
+                with suppress(OSError):
+                    policy_file.unlink(missing_ok=True)
 
         stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
         if returncode != 0:
@@ -994,6 +1490,9 @@ class CLIProxyProvider:
             detail = _safe_detail(stderr_text or parser.non_json_tail)
             suffix = f"（{detail}）" if detail else ""
             raise ProviderError(f"{label} 未输出有效的 JSON 流，请检查 CLI 版本及登录状态{suffix}。")
+
+        if not parser.saw_terminal_success:
+            raise ProviderError(f"{label} 流在完成信号前中断；未执行不完整的工具调用。")
 
         content: list[ContentBlock] = []
         if parser.thinking_parts:

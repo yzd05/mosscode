@@ -215,14 +215,14 @@ class Wizard:
         from .cli_providers import CLI_BINARIES, CLI_INSTALL_HINTS, CLI_PROTOCOLS
 
         if preset.protocol in CLI_PROTOCOLS:
-            import shutil
+            from .cli_providers import resolve_cli_executable
 
             binary = CLI_BINARIES[preset.protocol]
             self.write(f"  {preset.label}：{preset.protocol} · 本机官方 CLI（{binary}）")
-            if found := shutil.which(binary):
+            if found := resolve_cli_executable(binary):
                 self.write(f"  已检测到本机命令：{found}（复用官方 CLI 登录态，不读取凭据）。")
             else:
-                self.write(f"  提示：当前 PATH 中未找到 {binary}；{CLI_INSTALL_HINTS[preset.protocol]}。")
+                self.write(f"  提示：当前 PATH 绝对目录中未找到 {binary}；{CLI_INSTALL_HINTS[preset.protocol]}。")
         else:
             self.write(f"  {preset.label}：{preset.protocol} · {preset.base_url or OFFICIAL[preset.protocol]}")
         model = self.ask("模型名", preset.model)

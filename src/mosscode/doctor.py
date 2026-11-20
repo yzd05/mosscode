@@ -126,13 +126,13 @@ def _credential(provider) -> tuple[str, str, str]:
         "cli-codex",
         "cli-gemini",
     }:
-        from .cli_providers import CLI_BINARIES, CLI_INSTALL_HINTS, CLI_LABELS
+        from .cli_providers import CLI_BINARIES, CLI_INSTALL_HINTS, CLI_LABELS, resolve_cli_executable
 
         binary = CLI_BINARIES[provider.protocol]
-        found = shutil.which(binary)
+        found = resolve_cli_executable(binary)
         if found:
             return OK, f"复用本机 {CLI_LABELS[provider.protocol]}（{found}）", ""
-        return WARN, f"PATH 中未找到 {binary}", CLI_INSTALL_HINTS[provider.protocol]
+        return WARN, f"PATH 绝对目录中未找到 {binary}", CLI_INSTALL_HINTS[provider.protocol]
     if getattr(provider, "auth_type", None) == "none":
         return OK, "免密钥（本机回环地址）", ""
     is_copilot = getattr(provider, "auth_type", None) == "github-copilot"

@@ -7,7 +7,6 @@ import hmac
 import html
 import json
 import secrets
-import shutil
 import socket
 import threading
 import time
@@ -29,7 +28,7 @@ from .auth import (
     poll_copilot_device_token_once,
     start_copilot_device_flow,
 )
-from .cli_providers import CLI_BINARIES, CLI_LABELS, CLI_PROTOCOLS, detect_installed_clis
+from .cli_providers import CLI_BINARIES, CLI_LABELS, CLI_PROTOCOLS, detect_installed_clis, resolve_cli_executable
 from .config import ALIASES, OFFICIAL, ConfigError, is_loopback_url, load_settings
 from .credentials import keyring_label, keyring_problem
 from .model_discovery import detect_local_servers, probe_provider, save_provider_entry, set_default_model
@@ -731,7 +730,7 @@ class ConfigWebServer:
         self.config_path = mosscode_home(home) / "config.yaml"
         self.vault = vault
         self.transport = transport
-        self.which = shutil.which if which is None else which
+        self.which = resolve_cli_executable if which is None else which
         self.idle_timeout = float(idle_timeout)
         self.boot_token = secrets.token_urlsafe(32)
         self.session_token = secrets.token_urlsafe(32)

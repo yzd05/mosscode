@@ -7,7 +7,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import time
 from collections.abc import Mapping
 from contextlib import ExitStack, suppress
@@ -19,7 +18,14 @@ from urllib.parse import urlsplit, urlunsplit
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
-from .cli_providers import CLI_BINARIES, CLI_DEFAULT_MODELS, CLI_INSTALL_HINTS, CLI_LABELS, CLI_PROTOCOLS
+from .cli_providers import (
+    CLI_BINARIES,
+    CLI_DEFAULT_MODELS,
+    CLI_INSTALL_HINTS,
+    CLI_LABELS,
+    CLI_PROTOCOLS,
+    resolve_cli_executable,
+)
 from .config import ALIASES, OFFICIAL, ConfigError, is_loopback_url, load_settings, render_config
 from .paths import mosscode_home
 from .redaction import COPILOT_URL_ERROR, is_approved_copilot_url, is_cleartext_remote_credential_url, redact
@@ -182,11 +188,11 @@ async def probe_provider(
             return ProbeResult(False, error="CLI 代理协议必须使用 auth_type: cli。")
         if base_url:
             return ProbeResult(False, error="CLI 代理协议通过本机官方 CLI 执行，不支持配置 base_url。")
-        resolver = shutil.which if which is None else which
+        resolver = resolve_cli_executable if which is None else which
         binary = CLI_BINARIES[protocol]
         executable = resolver(binary)
-        if not executable:
-            return ProbeResult(False, error=f"PATH 中未找到官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。")
+        if not executable or not Path(executable).is_absolute():
+            return ProbeResult(False, error=f"PATH 绝对目录中未找到官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。")
         return ProbeResult(
             True,
             models=(CLI_DEFAULT_MODELS[protocol],),

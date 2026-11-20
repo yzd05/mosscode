@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import stat
 import subprocess
 import sys
 import textwrap
+import time
 from contextlib import aclosing
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
@@ -16,16 +20,23 @@ import pytest
 import yaml
 from textual.widgets import Static
 
-from mosscode import doctor, login_command
+from mosscode import cli_providers, doctor, login_command
 from mosscode.agent import AgentLoop
+from mosscode.agents import AgentCatalog
 from mosscode.cli_providers import (
     CLI_PROTOCOLS,
     CLIProxyProvider,
     DetectedCLIBackend,
+    _cli_env,
+    _iter_lines_bounded,
+    _ToolTagFilter,
+    _windows_pid_alive,
     build_cli_argv,
     detect_installed_clis,
     is_valid_cli_model,
     render_cli_prompt,
+    resolve_cli_executable,
+    verify_cli_capabilities,
 )
 from mosscode.config import ConfigError, ProviderConfig, load_settings, project_summary
 from mosscode.config_web import ConfigWebServer
@@ -36,14 +47,54 @@ from mosscode.images import ImageRef
 from mosscode.messages import Completed, ContentBlock, Delta, Message, ProviderError, ToolProgress, ToolResult
 from mosscode.model_discovery import probe_provider
 from mosscode.presets import PRESETS, expand
-from mosscode.providers import create_provider
+from mosscode.providers import ModelProvider, create_provider
 from mosscode.reasoning import Unsupported, thinking_options
+from mosscode.runtime_factory import build_conversation
 from mosscode.setup import setup, user_config
+from mosscode.skills import SkillCatalog
 from mosscode.tool_core import Params, Tool, ToolRegistry
+from mosscode.tools import create_default_registry
 from mosscode.tui import MossCodeApp
 from mosscode.tui_views import PromptArea
 from test_cli_product import wizard
 from test_conversation import FakeProvider
+from waiting import until
+
+
+def _pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        return _windows_pid_alive(pid)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _wait_pids_dead(pids: list[int], timeout: float = 4.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if all(not _pid_alive(pid) for pid in pids):
+            return True
+        time.sleep(0.05)
+    return all(not _pid_alive(pid) for pid in pids)
+
+
+def _make_exec_wrapper(directory: Path, stem: str, script_body: str) -> Path:
+    """Create a real cross-platform executable wrapper (.cmd on Windows, chmod +x script on POSIX)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    py_script = directory / f"_{stem}_impl.py"
+    py_script.write_text(textwrap.dedent(script_body), encoding="utf-8")
+    if os.name == "nt":
+        wrapper = directory / f"{stem}.cmd"
+        wrapper.write_text(f'@echo off\r\n"{sys.executable}" "{py_script}" %*\r\n', encoding="utf-8")
+        return wrapper
+    wrapper = directory / stem
+    wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{py_script}" "$@"\n', encoding="utf-8")
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return wrapper
 
 
 def _script_provider(
@@ -53,9 +104,10 @@ def _script_provider(
     *,
     model: str = "test-model",
     timeout: float = 15.0,
+    suffix: str = "",
 ) -> CLIProxyProvider:
     """Build a CLIProxyProvider backed by a tiny cross-platform Python subprocess script."""
-    script_path = tmp_path / f"mock_{protocol}.py"
+    script_path = tmp_path / f"mock_{protocol}{suffix}.py"
     script_path.write_text(textwrap.dedent(script), encoding="utf-8")
     config = ProviderConfig(
         name=protocol,
@@ -66,7 +118,7 @@ def _script_provider(
     )
     return CLIProxyProvider(
         config,
-        which=lambda _bin: sys.executable,
+        which=lambda _bin: os.path.abspath(sys.executable),
         argv_builder=lambda _proto, exe, _mdl: [exe, str(script_path)],
     )
 
@@ -80,7 +132,7 @@ async def _collect_events(provider: CLIProxyProvider, messages, system="", tools
 
 
 # ---------------------------------------------------------------------------
-# Lazy-import isolation & config / preset validation
+# Lazy-import isolation, typed factory contract, and config validation
 # ---------------------------------------------------------------------------
 
 
@@ -89,9 +141,10 @@ def test_cli_provider_imports_no_heavy_sdks(protocol):
     code = (
         "import json, sys\n"
         "from mosscode.config import ProviderConfig\n"
-        "from mosscode.providers import create_provider\n"
+        "from mosscode.providers import ModelProvider, create_provider\n"
         f"p = create_provider(ProviderConfig('p', {protocol!r}, 'test-model', auth_type='cli'))\n"
         "assert type(p).__name__ == 'CLIProxyProvider'\n"
+        "assert isinstance(p, ModelProvider)\n"
         "mods = ('anthropic', 'openai', 'httpx', 'textual', 'mcp')\n"
         "print(json.dumps({m: (m in sys.modules) for m in mods}))\n"
     )
@@ -229,41 +282,134 @@ def test_cli_config_validation_fails_closed(entry, match, tmp_path):
         load_settings(cfg, tmp_path)
 
 
-def test_build_cli_argv_enforces_readonly_flags_and_model_safety():
-    claude_argv = build_cli_argv("cli-claude", "/usr/bin/claude", "claude-sonnet-5-5")
-    assert claude_argv[0] == "/usr/bin/claude"
+# ---------------------------------------------------------------------------
+# Security boundaries: absolute PATH resolution, vendor flags, env scrubbing
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_cli_executable_ignores_cwd_and_relative_path_entries(tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    real_bin = tmp_path / "real_bin"
+    _make_exec_wrapper(workspace, "claude", "print('evil')")
+    real_exe = _make_exec_wrapper(real_bin, "claude", "print('ok')")
+
+    monkeypatch.chdir(workspace)
+    # Empty entry, ".", and relative subdirs MUST be ignored even when workspace contains `claude`.
+    rel_only = os.pathsep.join(["", ".", "repo", "./repo"])
+    assert resolve_cli_executable("claude", path_env=rel_only) is None
+    assert resolve_cli_executable("../claude", path_env=str(real_bin)) is None
+
+    # Only the explicit absolute PATH directory resolves.
+    mixed = os.pathsep.join(["", ".", str(real_bin)])
+    resolved = resolve_cli_executable("claude", path_env=mixed)
+    assert resolved == str(real_exe.resolve())
+    assert Path(resolved).is_absolute()
+
+
+def test_build_cli_argv_enforces_vendor_restrictions_and_model_safety(tmp_path):
+    exe = str((tmp_path / "bin").resolve())
+    claude_argv = build_cli_argv("cli-claude", exe, "claude-sonnet-5-5")
+    assert claude_argv[0] == exe
     assert "--output-format" in claude_argv and "stream-json" in claude_argv
     assert "--no-session-persistence" in claude_argv
     tools_idx = claude_argv.index("--tools")
     assert claude_argv[tools_idx + 1] == ""
+    assert "--strict-mcp-config" in claude_argv
 
-    codex_argv = build_cli_argv("cli-codex", "/usr/bin/codex", "gpt-5.6")
-    assert codex_argv[:3] == ["/usr/bin/codex", "exec", "--json"]
+    codex_argv = build_cli_argv("cli-codex", exe, "gpt-5.6")
+    assert codex_argv[:3] == [exe, "exec", "--json"]
     sandbox_idx = codex_argv.index("--sandbox")
     assert codex_argv[sandbox_idx + 1] == "read-only"
     assert codex_argv[-1] == "-"
 
-    gemini_argv = build_cli_argv("cli-gemini", "/usr/bin/gemini", "gemini-2.5-flash")
-    assert gemini_argv[:3] == ["/usr/bin/gemini", "-p", ""]
-    assert "--output-format" in gemini_argv and "stream-json" in gemini_argv
+    # Gemini requires an explicit deny-all policy file alongside `--approval-mode plan`.
+    with pytest.raises(ProviderError, match="只读策略文件"):
+        build_cli_argv("cli-gemini", exe, "gemini-2.5-flash")
+    policy = str((tmp_path / "deny.toml").resolve())
+    gemini_argv = build_cli_argv("cli-gemini", exe, "gemini-2.5-flash", policy_path=policy)
+    assert gemini_argv[:3] == [exe, "-p", ""]
+    assert gemini_argv[gemini_argv.index("--approval-mode") + 1] == "plan"
+    assert gemini_argv[gemini_argv.index("--policy") + 1] == policy
 
     assert is_valid_cli_model("claude-sonnet-5-5")
     assert is_valid_cli_model("anthropic/claude-3.7-sonnet:thinking")
     assert not is_valid_cli_model("-flag")
     assert not is_valid_cli_model("m;rm -rf /")
     with pytest.raises(ProviderError):
-        build_cli_argv("cli-claude", "/usr/bin/claude", "--bad")
+        build_cli_argv("cli-claude", exe, "--bad")
 
 
-def test_detect_installed_clis_lists_found_binaries_in_order():
-    found = detect_installed_clis(which=lambda b: f"/opt/bin/{b}" if b in {"claude", "gemini"} else None)
+async def test_verify_cli_capabilities_fails_closed_on_unsupported_versions(tmp_path):
+    bin_dir = tmp_path / "cap_bin"
+    old_claude = _make_exec_wrapper(bin_dir, "old-claude", 'print("Usage: claude -p --tools")')
+    new_claude = _make_exec_wrapper(bin_dir, "new-claude", 'print("Usage: claude -p --tools --strict-mcp-config")')
+    old_gemini = _make_exec_wrapper(bin_dir, "old-gemini", 'print("Usage: gemini -p --output-format")')
+    new_gemini = _make_exec_wrapper(
+        bin_dir, "new-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
+    )
+
+    with pytest.raises(ProviderError, match="--strict-mcp-config"):
+        await verify_cli_capabilities("cli-claude", str(old_claude))
+    await verify_cli_capabilities("cli-claude", str(new_claude))
+
+    with pytest.raises(ProviderError, match="--approval-mode.*--policy"):
+        await verify_cli_capabilities("cli-gemini", str(old_gemini))
+    await verify_cli_capabilities("cli-gemini", str(new_gemini))
+
+
+def test_cli_env_scrubs_vendor_billing_overrides_and_mosscode_flags(monkeypatch):
+    monkeypatch.setenv("MOSSCODE_DEBUG", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anth-api-billing-key")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "anth-bearer-token")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.com")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-api-billing-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.example.com/v1")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-api-billing-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-api-billing-key")
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("SAFE_USER_VAR", "keep-me")
+
+    claude_env = _cli_env("cli-claude")
+    assert claude_env["SAFE_USER_VAR"] == "keep-me"
+    for blocked in (
+        "MOSSCODE_DEBUG",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+    ):
+        assert blocked not in claude_env
+
+    codex_env = _cli_env("cli-codex")
+    assert "MOSSCODE_DEBUG" not in codex_env
+    assert "OPENAI_API_KEY" not in codex_env
+    assert "OPENAI_BASE_URL" not in codex_env
+
+    gemini_env = _cli_env("cli-gemini")
+    assert "MOSSCODE_DEBUG" not in gemini_env
+    assert "GEMINI_API_KEY" not in gemini_env
+    assert "GOOGLE_API_KEY" not in gemini_env
+    assert "GOOGLE_GENAI_USE_VERTEXAI" not in gemini_env
+
+
+def test_detect_installed_clis_lists_found_binaries_in_order(tmp_path):
+    def fake_which(name: str) -> str | None:
+        return str((tmp_path / name).resolve()) if name in {"claude", "gemini"} else None
+
+    found = detect_installed_clis(which=fake_which)
     assert [item.protocol for item in found] == ["cli-claude", "cli-gemini"]
     assert [item.preset_key for item in found] == ["claude-cli", "gemini-cli"]
-    assert found[0].executable == "/opt/bin/claude"
+    assert Path(found[0].executable).is_absolute()
+
+    # Relative path returned by a custom resolver is rejected.
+    assert detect_installed_clis(which=lambda _b: "relative/claude") == []
 
 
 # ---------------------------------------------------------------------------
-# Streaming protocol parsing for all 3 CLIs
+# Streaming protocol parsing, line bounds, frame validation, terminal events
 # ---------------------------------------------------------------------------
 
 
@@ -315,6 +461,7 @@ async def test_cli_codex_streaming_reasoning_agent_message_and_usage(tmp_path):
     frames = [
         {"type": "thread.started", "thread_id": "t-1"},
         {"type": "turn.started"},
+        {"type": "vendor.unknown_future_event", "data": 123},
         {"type": "item.completed", "item": {"id": "i1", "type": "reasoning", "text": "Checking files"}},
         {"type": "item.completed", "item": {"id": "i2", "type": "agent_message", "text": "All fixed."}},
         {"type": "turn.completed", "usage": {"input_tokens": 200, "cached_input_tokens": 50, "output_tokens": 30}},
@@ -370,7 +517,7 @@ async def test_cli_gemini_streaming_ignores_user_echo_and_parses_stats(tmp_path)
     assert completed.usage.uncached_input_tokens == 80
 
 
-async def test_cli_handles_large_json_line_over_64kib_without_limit_overrun(tmp_path):
+async def test_cli_handles_large_json_line_and_exact_per_line_boundary(tmp_path):
     script = """
     import json, sys
     sys.stdin.read()
@@ -382,6 +529,67 @@ async def test_cli_handles_large_json_line_over_64kib_without_limit_overrun(tmp_
     completed = events[-1]
     assert isinstance(completed, Completed)
     assert len(completed.message.text) == 140_000
+
+    # Line of exact `max_line_bytes` whose newline arrives in the next chunk must be accepted;
+    # `max_line_bytes + 1` must be rejected before decoding.
+    class _ChunkReader:
+        def __init__(self, chunks: list[bytes]) -> None:
+            self._chunks = list(chunks)
+
+        async def read(self, _n: int) -> bytes:
+            return self._chunks.pop(0) if self._chunks else b""
+
+    lines = [line async for line in _iter_lines_bounded(_ChunkReader([b"12345678", b"\r\nabc\n"]), max_line_bytes=8)]
+    assert lines == ["12345678", "abc"]
+
+    lines_crlf_split = [
+        line async for line in _iter_lines_bounded(_ChunkReader([b"12345678\r", b"\n"]), max_line_bytes=8)
+    ]
+    assert lines_crlf_split == ["12345678"]
+
+    with pytest.raises(ProviderError, match="超过大小上限"):
+        _ = [line async for line in _iter_lines_bounded(_ChunkReader([b"123456789\n"]), max_line_bytes=8)]
+
+
+async def test_cli_rejects_non_string_frame_type_and_incomplete_stream_without_terminal_event(tmp_path):
+    # Non-string `type` must raise a controlled ProviderError, never TypeError.
+    bad_type = _script_provider(
+        tmp_path,
+        "cli-codex",
+        """
+        import json, sys
+        sys.stdin.read()
+        print(json.dumps({"type": ["not", "a", "string"]}), flush=True)
+        """,
+        suffix="_badtype",
+    )
+    with pytest.raises(ProviderError, match="type 字段必须为字符串"):
+        await _collect_events(bad_type, [Message("user", (ContentBlock("text", "hi"),))], allow_tools=False)
+
+    # Stream ending cleanly (exit 0) WITHOUT vendor terminal completion event must fail closed
+    # and MUST NOT yield Completed or release any tool calls.
+    truncated = _script_provider(
+        tmp_path,
+        "cli-codex",
+        """
+        import json, re, sys
+        prompt = sys.stdin.read()
+        nonce = re.search(r"<mosscode_tool_call_([0-9a-f]{16})>", prompt).group(1)
+        payload = f"<mosscode_tool_call_{nonce}>" + json.dumps({"name": "echo_tool", "arguments": {"text": "half"}}) + f"</mosscode_tool_call_{nonce}>"
+        print(json.dumps({"type": "thread.started"}), flush=True)
+        print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": payload}}), flush=True)
+        """,
+        suffix="_trunc",
+    )
+    echo = _EchoTool(tmp_path)
+    with pytest.raises(ProviderError, match="完成信号前中断"):
+        await _collect_events(
+            truncated,
+            [Message("user", (ContentBlock("text", "hi"),))],
+            tools=[echo.definition()],
+            allow_tools=True,
+        )
+    assert echo.seen == []
 
 
 async def test_cli_redacts_stderr_and_scrubs_mosscode_env_vars(tmp_path, monkeypatch):
@@ -421,37 +629,68 @@ async def test_cli_json_error_frame_raises_provider_error(tmp_path):
 async def test_cli_missing_binary_fails_closed():
     config = ProviderConfig("c", "cli-claude", "claude-sonnet-5-5", auth_type="cli")
     provider = CLIProxyProvider(config, which=lambda _name: None)
-    with pytest.raises(ProviderError, match="PATH 中未找到官方命令 claude"):
+    with pytest.raises(ProviderError, match="PATH 绝对目录中未找到官方命令 claude"):
         await _collect_events(provider, [Message("user", (ContentBlock("text", "hi"),))], allow_tools=False)
 
 
-async def test_cli_timeout_and_cancellation_terminate_subprocess_cleanly(tmp_path):
-    pid_file = tmp_path / "child.pid"
-    script = f"""
-    import os, sys, time
+# ---------------------------------------------------------------------------
+# Process-tree teardown (timeout, cancellation, leader-exits-before-descendant)
+# and PEP 789 timeout-outside-yield guarantee
+# ---------------------------------------------------------------------------
+
+
+async def test_cli_timeout_cancellation_and_leader_exit_terminate_descendants(tmp_path):
+    # 1. Timeout with a real spawned descendant process.
+    pids_timeout = tmp_path / "pids_timeout.json"
+    script_timeout = f"""
+    import json, os, subprocess, sys, time
     from pathlib import Path
     sys.stdin.read()
-    Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding="utf-8")
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    Path({str(pids_timeout)!r}).write_text(json.dumps([os.getpid(), child.pid]), encoding="utf-8")
     time.sleep(30)
     """
-    provider = _script_provider(tmp_path, "cli-claude", script, timeout=0.6)
+    provider = _script_provider(tmp_path, "cli-claude", script_timeout, timeout=0.8, suffix="_to")
     with pytest.raises(ProviderError, match="执行超时"):
         await _collect_events(provider, [Message("user", (ContentBlock("text", "hang"),))], allow_tools=False)
-    assert provider._active == {}
+    assert provider._active == set()
+    recorded_to = json.loads(pids_timeout.read_text(encoding="utf-8"))
+    assert _wait_pids_dead(recorded_to), f"process tree leaked on timeout: {recorded_to}"
 
-    # Cancellation during live streaming must propagate CancelledError and clean up active process.
-    stream_script = """
-    import json, sys, time
+    # 2. Leader exits 0 immediately while descendant keeps stdout open -> timeout must kill descendant too!
+    pids_orphan = tmp_path / "pids_orphan.json"
+    script_orphan = f"""
+    import json, os, subprocess, sys
+    from pathlib import Path
     sys.stdin.read()
-    print(json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "start"}}}), flush=True)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    Path({str(pids_orphan)!r}).write_text(json.dumps([os.getpid(), child.pid]), encoding="utf-8")
+    sys.exit(0)
+    """
+    provider_orphan = _script_provider(tmp_path, "cli-claude", script_orphan, timeout=0.8, suffix="_orphan")
+    with pytest.raises(ProviderError, match="执行超时"):
+        await _collect_events(provider_orphan, [Message("user", (ContentBlock("text", "orphan"),))], allow_tools=False)
+    assert provider_orphan._active == set()
+    recorded_orphan = json.loads(pids_orphan.read_text(encoding="utf-8"))
+    assert _wait_pids_dead(recorded_orphan), f"descendant leaked after leader exit: {recorded_orphan}"
+
+    # 3. Cancellation during live streaming must propagate CancelledError and kill both leader and descendant.
+    pids_cancel = tmp_path / "pids_cancel.json"
+    script_cancel = f"""
+    import json, os, subprocess, sys, time
+    from pathlib import Path
+    sys.stdin.read()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    Path({str(pids_cancel)!r}).write_text(json.dumps([os.getpid(), child.pid]), encoding="utf-8")
+    print(json.dumps({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "text_delta", "text": "start"}}}}}}), flush=True)
     time.sleep(30)
     """
-    provider2 = _script_provider(tmp_path, "cli-claude", stream_script, timeout=15.0)
+    provider_cancel = _script_provider(tmp_path, "cli-claude", script_cancel, timeout=15.0, suffix="_cancel")
     got_first = asyncio.Event()
 
     async def runner():
         async with aclosing(
-            provider2.stream([Message("user", (ContentBlock("text", "stream"),))], "", allow_tools=False)
+            provider_cancel.stream([Message("user", (ContentBlock("text", "stream"),))], "", allow_tools=False)
         ) as stream:
             async for event in stream:
                 if isinstance(event, Delta):
@@ -462,7 +701,31 @@ async def test_cli_timeout_and_cancellation_terminate_subprocess_cleanly(tmp_pat
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert provider2._active == {}
+    assert provider_cancel._active == set()
+    recorded_cancel = json.loads(pids_cancel.read_text(encoding="utf-8"))
+    assert _wait_pids_dead(recorded_cancel), f"process tree leaked on cancel: {recorded_cancel}"
+
+
+async def test_cli_timeout_does_not_cancel_caller_await_between_yields(tmp_path):
+    """PEP 789: deadline expiring while caller handles a yielded Delta must NOT cancel the caller."""
+    script = """
+    import json, sys, time
+    sys.stdin.read()
+    print(json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hello"}}}), flush=True)
+    time.sleep(5)
+    """
+    provider = _script_provider(tmp_path, "cli-claude", script, timeout=0.35, suffix="_pep789")
+    caller_finished_sleep = False
+    with pytest.raises(ProviderError, match="执行超时"):
+        async with aclosing(
+            provider.stream([Message("user", (ContentBlock("text", "hi"),))], "", allow_tools=False)
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, Delta):
+                    # Sleep past the provider deadline while outside `stream()`'s timeout scope.
+                    await asyncio.sleep(0.55)
+                    caller_finished_sleep = True
+    assert caller_finished_sleep is True
 
 
 def test_render_cli_prompt_replaces_images_with_placeholders(tmp_path):
@@ -475,17 +738,16 @@ def test_render_cli_prompt_replaces_images_with_placeholders(tmp_path):
 
 
 async def test_cli_non_json_exit_zero_fails_closed_and_gemini_partial_stats_never_fabricates_zero(tmp_path):
-    # Non-JSON plain output on exit 0 must fail closed rather than silently yielding an empty reply.
     script_plain = """
     import sys
     sys.stdin.read()
     print("Please sign in to continue.", flush=True)
     """
-    provider_plain = _script_provider(tmp_path, "cli-claude", script_plain)
+    provider_plain = _script_provider(tmp_path, "cli-claude", script_plain, suffix="_plain")
     with pytest.raises(ProviderError, match="未输出有效的 JSON 流"):
         await _collect_events(provider_plain, [Message("user", (ContentBlock("text", "hi"),))], allow_tools=False)
 
-    # Partial Gemini stats across multiple models must keep incomplete fields as None (never 0) and preserve explicit 0 cache.
+    # Model missing `output` keeps output None while preserving explicit 0 cache across all models.
     script_stats = """
     import json, sys
     sys.stdin.read()
@@ -501,19 +763,65 @@ async def test_cli_non_json_exit_zero_fails_closed_and_gemini_partial_stats_neve
         }
     }), flush=True)
     """
-    provider_stats = _script_provider(tmp_path, "cli-gemini", script_stats)
+    provider_stats = _script_provider(tmp_path, "cli-gemini", script_stats, suffix="_stats1")
     events = await _collect_events(provider_stats, [Message("user", (ContentBlock("text", "hi"),))], allow_tools=False)
     completed = events[-1]
     assert isinstance(completed, Completed)
     assert completed.usage.input_tokens == 80
-    assert completed.usage.output_tokens is None  # m2 omitted output_tokens: must NOT become 0.
-    assert completed.usage.cached_input_tokens == 0  # explicit 0 preserved.
+    assert completed.usage.output_tokens is None
+    assert completed.usage.cached_input_tokens == 0
     assert completed.usage.uncached_input_tokens == 80
 
+    # A second model entry WITHOUT a `tokens` dict must mark ALL counters incomplete (not skip it!).
+    script_missing_tokens = """
+    import json, sys
+    sys.stdin.read()
+    print(json.dumps({"type": "message", "role": "assistant", "content": "ok", "delta": True}), flush=True)
+    print(json.dumps({
+        "type": "result",
+        "status": "success",
+        "stats": {
+            "models": {
+                "m1": {"tokens": {"input": 50, "output": 10, "cached": 5}},
+                "m2": {},
+            }
+        }
+    }), flush=True)
+    """
+    provider_missing = _script_provider(tmp_path, "cli-gemini", script_missing_tokens, suffix="_stats2")
+    events2 = await _collect_events(
+        provider_missing, [Message("user", (ContentBlock("text", "hi"),))], allow_tools=False
+    )
+    completed2 = events2[-1]
+    assert isinstance(completed2, Completed)
+    assert completed2.usage.input_tokens is None
+    assert completed2.usage.output_tokens is None
+    assert completed2.usage.cached_input_tokens is None
+
 
 # ---------------------------------------------------------------------------
-# Per-turn cryptographic nonce tool-calling bridge inside AgentLoop
+# Per-turn cryptographic nonce tool-calling bridge + bounded envelope filter
 # ---------------------------------------------------------------------------
+
+
+def test_tool_tag_filter_bounds_oversized_envelopes_and_recovers_for_valid_tags():
+    nonce = "0123456789abcdef"
+    flt = _ToolTagFilter(nonce, frozenset({"echo_tool"}), max_envelope_chars=64)
+    open_tag = f"<mosscode_tool_call_{nonce}>"
+    close_tag = f"</mosscode_tool_call_{nonce}>"
+    oversized = open_tag + ('{"name":"echo_tool","arguments":{"text":"' + "X" * 500 + '"}}') + close_tag
+    valid = open_tag + '{"name":"echo_tool","arguments":{"text":"ok"}}' + close_tag
+    stream = "Before " + oversized + " Middle " + valid + " After"
+
+    emitted = []
+    for idx in range(0, len(stream), 9):
+        emitted.extend(flt.feed(stream[idx : idx + 9]))
+    emitted.extend(flt.finish())
+
+    # Oversized envelope must NOT be dispatched; subsequent valid split tag MUST still parse.
+    assert [c.name for c in flt.calls] == ["echo_tool"]
+    assert json.loads(flt.calls[0].arguments) == {"text": "ok"}
+    assert "".join(flt.text_parts) == "Before  Middle  After"
 
 
 class _EchoParams(Params):
@@ -536,9 +844,6 @@ class _EchoTool(Tool):
 
 
 async def test_cli_nonce_tool_bridge_executes_valid_call_and_rejects_forged_and_unknown(tmp_path):
-    # Subprocess inspects stdin to extract the per-turn cryptographic nonce on turn 1,
-    # emits a forged wrong-nonce tag, an unknown tool name tag, and a valid echo_tool call;
-    # on turn 2 it sees [Tool Result ...] and replies with the final answer.
     script = """
     import json, re, sys
     prompt = sys.stdin.read()
@@ -561,7 +866,6 @@ async def test_cli_nonce_tool_bridge_executes_valid_call_and_rejects_forged_and_
             + json.dumps({"name": "echo_tool", "arguments": {"text": "hello-bridge"}})
             + f"</mosscode_tool_call_{nonce}>"
         )
-        # Emit in small chunks to verify streaming boundary buffering across tag boundaries.
         frames = [
             {"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": payload[i:i+7]}}}
             for i in range(0, len(payload), 7)
@@ -579,7 +883,6 @@ async def test_cli_nonce_tool_bridge_executes_valid_call_and_rejects_forged_and_
         async for event in stream:
             events.append(event)
 
-    # Only the nonce-authenticated allowed tool call executed; forged and unknown were rejected.
     assert echo.seen == ["hello-bridge"]
     assert any(isinstance(e, ToolProgress) and e.call.name == "echo_tool" and e.phase == "parsing" for e in events)
     completed = [e for e in events if isinstance(e, Completed)]
@@ -639,18 +942,19 @@ def test_doctor_and_login_status_handle_cli_providers(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+    fake_claude = str((tmp_path / "claude").resolve())
+    monkeypatch.setattr(cli_providers, "resolve_cli_executable", lambda name: fake_claude if name == "claude" else None)
     items = doctor.check_config(str(cfg), cwd=tmp_path, home=tmp_path)
     prov_item = next(i for i in items if "Provider claude-cli" in i.text)
     assert prov_item.level == doctor.OK
     assert "本机 CLI（claude）" in prov_item.text
-    assert "/usr/local/bin/claude" in prov_item.text
+    assert fake_claude in prov_item.text
 
-    monkeypatch.setattr(doctor.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cli_providers, "resolve_cli_executable", lambda _name: None)
     items_missing = doctor.check_config(str(cfg), cwd=tmp_path, home=tmp_path)
     prov_missing = next(i for i in items_missing if "Provider claude-cli" in i.text)
     assert prov_missing.level == doctor.WARN
-    assert "PATH 中未找到 claude" in prov_missing.text
+    assert "PATH 绝对目录中未找到 claude" in prov_missing.text
 
     lines: list[str] = []
     rc = login_command.main(["status", "--config", str(cfg)], home=tmp_path, write=lines.append)
@@ -663,7 +967,6 @@ def test_doctor_and_login_status_handle_cli_providers(tmp_path, monkeypatch):
 def test_setup_wizard_supports_cli_preset_without_asking_for_key(tmp_path):
     preset_keys = list(PRESETS)
     claude_cli_choice = str(preset_keys.index("claude-cli") + 1)
-    # Choose claude-cli, accept default model, confirm write.
     w, out = wizard([claude_cli_choice, "", ""])
     assert setup(tmp_path, w) == "ready"
     loaded = load_settings(user_config(tmp_path), tmp_path)
@@ -672,20 +975,24 @@ def test_setup_wizard_supports_cli_preset_without_asking_for_key(tmp_path):
     assert any("复用本机官方 CLI 登录态" in line for line in out)
 
 
-async def test_probe_provider_for_cli_backends_uses_which_without_network():
+async def test_probe_provider_for_cli_backends_uses_resolver_without_network(tmp_path):
+    fake_codex = str((tmp_path / "codex").resolve())
     ok = await probe_provider(
         "cli-codex",
         None,
         None,
         auth_type="cli",
-        which=lambda b: "/usr/bin/codex" if b == "codex" else None,
+        which=lambda b: fake_codex if b == "codex" else None,
     )
     assert ok.ok
     assert ok.models == ("gpt-5.6",)
-    assert "/usr/bin/codex" in ok.detail
+    assert fake_codex in ok.detail
 
     missing = await probe_provider("cli-codex", None, None, auth_type="cli", which=lambda _b: None)
-    assert not missing.ok and "PATH 中未找到官方命令 codex" in missing.error
+    assert not missing.ok and "PATH 绝对目录中未找到官方命令 codex" in missing.error
+
+    rel_rejected = await probe_provider("cli-codex", None, None, auth_type="cli", which=lambda _b: "codex")
+    assert not rel_rejected.ok
 
     bad_url = await probe_provider("cli-codex", "https://api.example.com", None, auth_type="cli")
     assert not bad_url.ok and "不支持配置 base_url" in bad_url.error
@@ -739,6 +1046,7 @@ async def test_connect_wizard_detects_installed_cli_and_saves_hot_reload(isolate
     async def no_local(timeout: float = 0.5):
         return []
 
+    fake_claude = str((isolated_home / "claude").resolve())
     app._local_server_detector = no_local
     app._cli_backend_detector = lambda: [
         DetectedCLIBackend(
@@ -746,7 +1054,7 @@ async def test_connect_wizard_detects_installed_cli_and_saves_hot_reload(isolate
             preset_key="claude-cli",
             binary="claude",
             label="Claude Code CLI",
-            executable="/usr/local/bin/claude",
+            executable=fake_claude,
             default_model="claude-sonnet-5-5",
         )
     ]
@@ -773,89 +1081,93 @@ async def test_connect_wizard_detects_installed_cli_and_saves_hot_reload(isolate
         assert saved.protocol == "cli-claude" and saved.auth_type == "cli"
 
 
-def test_config_web_exposes_cli_backends_probes_and_saves(tmp_path):
+def test_config_web_exposes_cli_backends_probes_and_saves_in_process(tmp_path):
+    """Exercise ConfigWebServer CLI state, probe, and save paths strictly in-process (zero network sockets)."""
+    fake_gemini = str((tmp_path / "gemini").resolve())
+
     def fake_which(name: str) -> str | None:
-        return "/usr/bin/gemini" if name == "gemini" else None
+        return fake_gemini if name == "gemini" else None
 
     def no_local_transport(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("no local servers")
 
-    with ConfigWebServer(
+    server = ConfigWebServer(
         home=tmp_path,
         transport=httpx.MockTransport(no_local_transport),
         which=fake_which,
-    ) as server:
-        headers = {"X-MossCode-Token": server.session_token}
-        base = f"http://127.0.0.1:{server.port}"
-        with httpx.Client(base_url=base, headers=headers, trust_env=False) as client:
-            state = client.get("/api/state").json()
-            assert [b["protocol"] for b in state["cli_backends"]] == ["cli-gemini"]
+    )
+    try:
+        state = server._state_payload()
+        assert [b["protocol"] for b in state["cli_backends"]] == ["cli-gemini"]
 
-            # Probe installed gemini CLI -> ok; missing claude CLI -> error.
-            p_ok = client.post(
-                "/api/probe",
-                json={"preset": "gemini-cli", "protocol": "cli-gemini", "cred_method": "cli"},
-            ).json()
-            assert p_ok["ok"] is True and "/usr/bin/gemini" in p_ok["detail"]
+        status_ok, p_ok = server._handle_probe({"preset": "gemini-cli", "protocol": "cli-gemini", "cred_method": "cli"})
+        assert status_ok == HTTPStatus.OK and p_ok["ok"] is True and fake_gemini in p_ok["detail"]
 
-            p_miss = client.post(
-                "/api/probe",
-                json={"preset": "claude-cli", "protocol": "cli-claude", "cred_method": "cli"},
-            ).json()
-            assert p_miss["ok"] is False and "claude" in p_miss["error"]
+        status_miss, p_miss = server._handle_probe(
+            {"preset": "claude-cli", "protocol": "cli-claude", "cred_method": "cli"}
+        )
+        assert status_miss == HTTPStatus.OK and p_miss["ok"] is False and "claude" in p_miss["error"]
 
-            # Reject invalid base_url or non-cli cred_method on CLI preset fail-closed.
-            bad_url = client.post(
-                "/api/providers",
-                json={
-                    "preset": "gemini-cli",
-                    "name": "gemini-cli",
-                    "protocol": "cli-gemini",
-                    "base_url": "https://api.example.com",
-                    "model": "gemini-2.5-flash",
-                    "cred_method": "cli",
-                },
-            )
-            assert bad_url.status_code == 400
+        bad_url_status, _ = server._handle_save_provider(
+            {
+                "preset": "gemini-cli",
+                "name": "gemini-cli",
+                "protocol": "cli-gemini",
+                "base_url": "https://api.example.com",
+                "model": "gemini-2.5-flash",
+                "cred_method": "cli",
+            }
+        )
+        assert bad_url_status == HTTPStatus.BAD_REQUEST
 
-            bad_cred = client.post(
-                "/api/providers",
-                json={
-                    "preset": "gemini-cli",
-                    "name": "gemini-cli",
-                    "protocol": "cli-gemini",
-                    "model": "gemini-2.5-flash",
-                    "cred_method": "plain",
-                    "secret": "not-allowed",
-                },
-            )
-            assert bad_cred.status_code == 400
+        bad_cred_status, _ = server._handle_save_provider(
+            {
+                "preset": "gemini-cli",
+                "name": "gemini-cli",
+                "protocol": "cli-gemini",
+                "model": "gemini-2.5-flash",
+                "cred_method": "plain",
+                "secret": "not-allowed",
+            }
+        )
+        assert bad_cred_status == HTTPStatus.BAD_REQUEST
 
-            # Save valid gemini-cli preset cleanly.
-            saved = client.post(
-                "/api/providers",
-                json={
-                    "preset": "gemini-cli",
-                    "name": "gemini-cli",
-                    "protocol": "cli-gemini",
-                    "model": "gemini-2.5-flash",
-                    "cred_method": "cli",
-                    "set_default": True,
-                },
-            )
-            assert saved.status_code == 200
-            state_after = client.get("/api/state").json()
-            assert state_after["default_provider"] == "gemini-cli"
-            p_meta = state_after["providers"][0]
-            assert p_meta["protocol"] == "cli-gemini"
-            assert p_meta["auth_type"] == "cli"
-            assert "本机 CLI（gemini）" in p_meta["base_url"]
+        saved_status, saved_payload = server._handle_save_provider(
+            {
+                "preset": "gemini-cli",
+                "name": "gemini-cli",
+                "protocol": "cli-gemini",
+                "model": "gemini-2.5-flash",
+                "cred_method": "cli",
+                "set_default": True,
+            }
+        )
+        assert saved_status == HTTPStatus.OK and saved_payload["name"] == "gemini-cli"
+
+        state_after = server._state_payload()
+        assert state_after["default_provider"] == "gemini-cli"
+        p_meta = state_after["providers"][0]
+        assert p_meta["protocol"] == "cli-gemini"
+        assert p_meta["auth_type"] == "cli"
+        assert "本机 CLI（gemini）" in p_meta["base_url"]
+    finally:
+        server.close()
 
 
-async def test_team_runtime_can_run_member_on_cli_proxy_provider(tmp_path):
-    """Verify CLIProxyProvider integrates seamlessly with /swarm and team member execution."""
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text(
+# ---------------------------------------------------------------------------
+# Factory check + real /swarm team member execution turn on CLIProxyProvider
+# ---------------------------------------------------------------------------
+
+
+async def test_team_member_runs_turn_on_cli_proxy_provider(tmp_path):
+    """Run an actual in-process team member turn backed by a CLIProxyProvider and verify its reply."""
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg_path = home / ".mosscode" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
         yaml.safe_dump(
             {
                 "default_provider": "codex-cli",
@@ -864,9 +1176,51 @@ async def test_team_runtime_can_run_member_on_cli_proxy_provider(tmp_path):
         ),
         encoding="utf-8",
     )
-    settings = load_settings(cfg, tmp_path)
-    prov = create_provider(settings.select())
-    assert isinstance(prov, CLIProxyProvider)
-    assert prov.config.protocol == "cli-codex"
-    assert prov.config.auth_type == "cli"
-    await prov.close()
+    settings = load_settings(cfg_path, home)
+    prov_cfg = settings.select()
+    factory_prov = create_provider(prov_cfg)
+    assert isinstance(factory_prov, CLIProxyProvider)
+    assert isinstance(factory_prov, ModelProvider)
+    await factory_prov.close()
+
+    member_script = """
+    import json, sys
+    prompt = sys.stdin.read()
+    reply = "CLI_MEMBER_DONE: acknowledged" if "Inspect workspace" in prompt else "CLI_MEMBER_IDLE"
+    print(json.dumps({"type": "thread.started", "thread_id": "t-swarm"}), flush=True)
+    print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": reply}}), flush=True)
+    print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 40, "output_tokens": 10}}), flush=True)
+    """
+    member_provider = _script_provider(tmp_path, "cli-codex", member_script, model="gpt-5.6", suffix="_member")
+
+    conv = build_conversation(
+        settings,
+        prov_cfg,
+        root=project,
+        registry=create_default_registry(project, load_permissions=False),
+        skills=SkillCatalog(),
+        agents=AgentCatalog.load(project, home=home),
+        home=home,
+        teams=True,
+        provider=member_provider,
+        provider_factory=lambda _cfg: _script_provider(
+            tmp_path, "cli-codex", member_script, model="gpt-5.6", suffix="_member_spawn"
+        ),
+    )
+    assert conv.teams is not None
+    conv.teams.teammate_mode = "in-process"
+    try:
+        await conv.teams.create("cli-swarm")
+        await conv.teams.spawn("worker", "general", "Inspect workspace", isolation="none")
+        runner = conv.teams.runners["worker"]
+        await until(
+            lambda: (
+                any(m.role == "assistant" for m in runner.loop.history)
+                and any("CLI_MEMBER_DONE: acknowledged" in note for note in conv.notifications)
+            ),
+            timeout=10.0,
+        )
+        assert any(m.role == "assistant" and "CLI_MEMBER_DONE: acknowledged" in m.text for m in runner.loop.history)
+        assert any("CLI_MEMBER_DONE: acknowledged" in note for note in conv.notifications)
+    finally:
+        await conv.close()
