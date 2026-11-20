@@ -608,7 +608,7 @@ async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonz
     )
 
     async def _drive_stream(prov: CLIProxyProvider) -> None:
-        async for _event in prov.stream([Message("user", "hi")], ""):
+        async for _event in prov.stream([Message("user", (ContentBlock("text", "hi"),))], ""):
             pass
 
     with monkeypatch.context() as mp:
