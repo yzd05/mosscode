@@ -27,7 +27,7 @@ from .model_discovery import save_provider_entry
 from .redaction import redact
 
 OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
-OPENROUTER_EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys/code"
+OPENROUTER_EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys"
 OPENROUTER_DEFAULT_MODEL = "anthropic/claude-sonnet-5.5"
 
 # Public VS Code / Copilot CLI OAuth App client ID used by open-source Copilot integrations.
@@ -180,6 +180,7 @@ class LoopbackCallbackServer:
         self._error: str | None = None
         self._done_thread_event = threading.Event()
         self._async_waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = []
+        self._started = False
         self._closed = False
         self._server = self._build_server(host, port)
         self.port = int(self._server.server_address[1])
@@ -271,6 +272,10 @@ class LoopbackCallbackServer:
         return _LoopbackHTTPServer((host, port), _Handler)
 
     def start(self) -> LoopbackCallbackServer:
+        with self._lock:
+            if self._started or self._closed:
+                return self
+            self._started = True
         self._thread.start()
         return self
 
@@ -279,12 +284,14 @@ class LoopbackCallbackServer:
             if self._closed:
                 return
             self._closed = True
+            was_started = self._started
             self._notify_waiters_locked()
-        with suppress(Exception):
-            self._server.shutdown()
+        if was_started:
+            with suppress(Exception):
+                self._server.shutdown()
         with suppress(Exception):
             self._server.server_close()
-        if self._thread.is_alive():
+        if was_started and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
     def __enter__(self) -> LoopbackCallbackServer:
@@ -317,12 +324,12 @@ class LoopbackCallbackServer:
 async def exchange_openrouter_code(
     code: str,
     code_verifier: str,
-    callback_url: str,
+    callback_url: str | None = None,
     *,
     timeout: float = 15.0,
     transport: Any = None,
 ) -> str:
-    """Exchange an OpenRouter PKCE authorization code for a user-owned API key."""
+    """Exchange an OpenRouter PKCE authorization code for a user-owned API key via POST /api/v1/auth/keys."""
     import httpx
 
     if not code.strip() or not code_verifier.strip():
@@ -331,7 +338,6 @@ async def exchange_openrouter_code(
         "code": code.strip(),
         "code_verifier": code_verifier,
         "code_challenge_method": "S256",
-        "callback_url": callback_url,
     }
     try:
         async with httpx.AsyncClient(timeout=timeout, transport=transport, follow_redirects=False) as client:
@@ -486,7 +492,7 @@ async def poll_copilot_device_token_once(
     """Perform one RFC 8628 poll attempt.
 
     Returns `(status, token_or_detail)` where status is one of:
-    `"ok"`, `"pending"`, `"slow_down"`, `"denied"`, `"expired"`.
+    `"ok"`, `"pending"`, `"slow_down"`, `"timeout"`, `"denied"`, `"expired"`.
     """
     import httpx
 
@@ -502,7 +508,8 @@ async def poll_copilot_device_token_once(
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
             )
     except httpx.TimeoutException:
-        raise AuthError("轮询 GitHub 授权状态超时。") from None
+        # RFC 8628 §3.5: transient connection timeout slows polling rather than aborting authorization.
+        return "timeout", None
     except Exception as exc:
         raise AuthError(f"轮询 GitHub 授权状态失败：{_safe_error_text(exc, device_code)}") from None
 
@@ -543,22 +550,32 @@ async def poll_copilot_device_token(
     transport: Any = None,
     sleep: Callable[[float], Any] = asyncio.sleep,
 ) -> str:
-    """Poll GitHub until the user authorizes the device code or the deadline elapses."""
+    """Poll GitHub until the user authorizes the device code or the shared deadline elapses."""
     deadline = time.monotonic() + min(float(challenge.expires_in), float(timeout))
     interval = float(challenge.interval)
     while True:
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if remaining <= 0 or remaining < interval:
             raise AuthError("等待 GitHub 设备码授权超时，请重试。")
-        await sleep(min(interval, remaining))
-        status, value = await poll_copilot_device_token_once(
-            challenge.device_code,
-            client_id=client_id,
-            transport=transport,
-        )
+        await sleep(interval)
+        remaining_after = deadline - time.monotonic()
+        if remaining_after <= 0:
+            raise AuthError("等待 GitHub 设备码授权超时，请重试。")
+        try:
+            status, value = await asyncio.wait_for(
+                poll_copilot_device_token_once(
+                    challenge.device_code,
+                    client_id=client_id,
+                    timeout=min(15.0, remaining_after),
+                    transport=transport,
+                ),
+                timeout=remaining_after,
+            )
+        except TimeoutError:
+            raise AuthError("等待 GitHub 设备码授权超时，请重试。") from None
         if status == "ok" and value:
             return value
-        if status == "slow_down":
+        if status in {"slow_down", "timeout"}:
             interval += 5.0
             continue
         if status == "pending":
@@ -566,7 +583,9 @@ async def poll_copilot_device_token(
         raise AuthError(value or "GitHub 授权未完成。")
 
 
-def _parse_copilot_session_response(status_code: int, payload: Any) -> tuple[str, float, str]:
+def _parse_copilot_session_response(
+    status_code: int, payload: Any, *, now: float | None = None
+) -> tuple[str, float, str]:
     if 300 <= status_code < 400:
         raise AuthError(f"GitHub Copilot 令牌交换返回异常重定向（HTTP {status_code}），出于安全考虑已中止。")
     if status_code in {401, 403, 404}:
@@ -581,13 +600,14 @@ def _parse_copilot_session_response(status_code: int, payload: Any) -> tuple[str
     expires_at = payload.get("expires_at")
     if not isinstance(session_token, str) or not session_token.strip():
         raise AuthError("GitHub Copilot 响应中缺少会话令牌。")
+    current_time = time.time() if now is None else now
     if (
         not isinstance(expires_at, (int, float))
         or isinstance(expires_at, bool)
         or not math.isfinite(expires_at)
-        or expires_at <= 0
+        or expires_at <= current_time
     ):
-        raise AuthError("GitHub Copilot 响应中缺少有效的令牌过期时间。")
+        raise AuthError("GitHub Copilot 返回的会话令牌过期时间无效或已过期，请检查系统时间或重新登录。")
     endpoint = COPILOT_API_BASE
     endpoints = payload.get("endpoints")
     if isinstance(endpoints, dict):

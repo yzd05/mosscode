@@ -30,7 +30,13 @@ from .messages import (
     as_prompt,
 )
 from .reasoning import ReasoningConfig, Unsupported, thinking_options
-from .redaction import CLEARTEXT_CREDENTIAL_URL_ERROR, is_cleartext_remote_credential_url, redact
+from .redaction import (
+    CLEARTEXT_CREDENTIAL_URL_ERROR,
+    COPILOT_URL_ERROR,
+    is_approved_copilot_url,
+    is_cleartext_remote_credential_url,
+    redact,
+)
 from .usage import parse_usage, usage_data
 
 
@@ -369,6 +375,8 @@ class SDKProvider:
         config = self.config
         env_var = "ANTHROPIC_BASE_URL" if config.protocol == "anthropic-messages" else "OPENAI_BASE_URL"
         effective_base_url = config.base_url or os.environ.get(env_var)
+        if config.auth_type == "github-copilot" and not is_approved_copilot_url(effective_base_url):
+            raise ProviderError(COPILOT_URL_ERROR)
         if is_cleartext_remote_credential_url(
             effective_base_url,
             auth_type=config.auth_type,
@@ -407,17 +415,17 @@ class SDKProvider:
         if _has_images(messages):
             # Reading and encoding image files stays off the event loop.
             messages = await asyncio.to_thread(_with_images, messages, self.config.accepts_images, self._encode)
-        if self.config.auth_type == "github-copilot" and hasattr(self.client, "api_key"):
-            try:
-                self.client.api_key = await asyncio.to_thread(self.config.credential)
-            except ProviderError:
-                raise
-            except Exception as exc:
-                raise ProviderError(f"刷新 GitHub Copilot 会话令牌失败：{redact(str(exc))}") from None
         attempt = 0
         while True:
             produced = False
             retry = None
+            if self.config.auth_type == "github-copilot" and hasattr(self.client, "api_key"):
+                try:
+                    self.client.api_key = await asyncio.to_thread(self.config.credential)
+                except ProviderError:
+                    raise
+                except Exception as exc:
+                    raise ProviderError(f"刷新 GitHub Copilot 会话令牌失败：{redact(str(exc))}") from None
             try:
                 async with aclosing(self._stream(messages, system, tools, allow_tools=allow_tools)) as events:
                     async for event in events:

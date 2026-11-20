@@ -7,11 +7,11 @@ import hmac
 import html
 import json
 import secrets
+import socket
 import threading
 import time
 from contextlib import suppress
 from http import HTTPStatus
-from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -37,7 +37,6 @@ from .presets import PRESETS
 from .redaction import redact
 
 MAX_BODY_BYTES = 64 * 1024
-SESSION_COOKIE = "mosscode_web_session"
 
 
 def _sanitize_provider(provider: Any) -> dict[str, Any]:
@@ -68,16 +67,18 @@ def _sanitize_provider(provider: Any) -> dict[str, Any]:
     }
 
 
-def _render_web_page(csrf_token: str, nonce: str) -> bytes:
-    """Self-contained offline HTML/CSS/JS configuration UI with CSP script nonce and CSRF meta token."""
-    safe_csrf = html.escape(csrf_token, quote=True)
+def _render_web_page(session_token: str | None, nonce: str) -> bytes:
+    """Self-contained offline HTML/CSS/JS configuration UI with CSP script nonce and origin-scoped session token."""
+    # Only the single-use bootstrap response embeds the session token; subsequent reloads get an empty meta value
+    # and read the token exclusively from origin-scoped `sessionStorage` (never a host-wide cookie).
+    safe_boot = html.escape(session_token or "", quote=True)
     safe_nonce = html.escape(nonce, quote=True)
     page = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="csrf-token" content="{safe_csrf}">
+<meta name="session-bootstrap" content="{safe_boot}">
 <title>MossCode 本地配置面板</title>
 <style>
 :root {{
@@ -116,7 +117,7 @@ button:disabled {{ opacity:.5; cursor:not-allowed; }}
   <header>
     <div>
       <h1>MossCode 本地配置中心</h1>
-      <div class="muted">仅监听本机 127.0.0.1 · 会话令牌隔离 · 密钥写入系统凭据管理器</div>
+      <div class="muted">仅监听本机 127.0.0.1 · 当前端口源隔离会话令牌 · 密钥写入系统凭据管理器</div>
     </div>
     <div class="row">
       <span class="badge" id="cfg-path">加载中…</span>
@@ -127,6 +128,7 @@ button:disabled {{ opacity:.5; cursor:not-allowed; }}
   <div class="grid">
     <section class="card">
       <h2>已配置的模型服务</h2>
+      <div id="config-error" class="status err"></div>
       <div id="provider-list" class="muted">加载中…</div>
     </section>
 
@@ -203,15 +205,30 @@ button:disabled {{ opacity:.5; cursor:not-allowed; }}
   </div>
 </div>
 <script nonce="{safe_nonce}">
-const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+const BOOT_META = document.querySelector('meta[name="session-bootstrap"]');
+const BOOT_TOKEN = BOOT_META ? BOOT_META.content : '';
+if (BOOT_TOKEN) {{
+  try {{ sessionStorage.setItem('mosscode_web_token', BOOT_TOKEN); }} catch (_) {{}}
+  BOOT_META.content = '';
+  if (window.location.search) history.replaceState(null, '', '/');
+}}
+let SESSION_TOKEN = BOOT_TOKEN;
+if (!SESSION_TOKEN) {{
+  try {{ SESSION_TOKEN = sessionStorage.getItem('mosscode_web_token') || ''; }} catch (_) {{}}
+}}
 let STATE = null;
+let probeSeq = 0;
 
 async function api(path, opts = {{}}) {{
-  const headers = Object.assign({{'X-MossCode-Token': CSRF}}, opts.headers || {{}});
+  const headers = Object.assign({{'X-MossCode-Token': SESSION_TOKEN}}, opts.headers || {{}});
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
-  const res = await fetch(path, Object.assign({{credentials: 'same-origin'}}, opts, {{headers}}));
+  const res = await fetch(path, Object.assign({{}}, opts, {{headers}}));
   const data = await res.json().catch(() => ({{}}));
-  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  if (!res.ok) {{
+    const err = new Error(data.error || ('HTTP ' + res.status));
+    err.status = res.status;
+    throw err;
+  }}
   return data;
 }}
 
@@ -221,9 +238,25 @@ function setStatus(id, text, kind = '') {{
   el.className = 'status' + (text ? ' show ' + kind : '');
 }}
 
+function resetDiscovered() {{
+  probeSeq += 1;
+  const sel = document.getElementById('f-discovered');
+  sel.textContent = '';
+  const opt = document.createElement('option');
+  opt.value = '';
+  opt.textContent = '（点击下方“探测连通性”后自动填充）';
+  sel.append(opt);
+}}
+
 function renderProviders() {{
   const box = document.getElementById('provider-list');
   box.textContent = '';
+  if (STATE && STATE.config_error) {{
+    setStatus('config-error', '! ' + STATE.config_error, 'err');
+    box.textContent = '当前配置文件无法解析，修复后再添加或切换默认服务。';
+    return;
+  }}
+  setStatus('config-error', '');
   const list = (STATE && STATE.providers) || [];
   if (!list.length) {{
     box.textContent = '尚未配置任何 Provider，请使用下方 OAuth 登录或表单添加。';
@@ -336,9 +369,20 @@ function syncCredInput() {{
   }}
 }}
 
-document.getElementById('f-cred-method').onchange = syncCredInput;
+document.getElementById('f-cred-method').onchange = () => {{
+  // Clear typed secrets before switching input type so API keys are never revealed as plain text.
+  document.getElementById('f-secret').value = '';
+  syncCredInput();
+  resetDiscovered();
+}};
+document.getElementById('f-protocol').onchange = resetDiscovered;
+document.getElementById('f-url').oninput = resetDiscovered;
+document.getElementById('f-secret').oninput = resetDiscovered;
+
 document.getElementById('f-preset').onchange = () => {{
   const key = document.getElementById('f-preset').value;
+  document.getElementById('f-protocol').disabled = Boolean(key);
+  resetDiscovered();
   const p = ((STATE && STATE.presets) || []).find(x => x.key === key);
   if (!p) return;
   document.getElementById('f-name').value = p.key;
@@ -363,22 +407,26 @@ async function refreshState() {{
   renderProviders();
   renderLocalServers();
   if (!document.getElementById('f-preset').options.length) fillPresets();
+  document.getElementById('f-protocol').disabled = Boolean(document.getElementById('f-preset').value);
   syncCredInput();
 }}
 
 document.getElementById('btn-probe').onclick = async () => {{
+  const mySeq = ++probeSeq;
   setStatus('form-status', '正在探测连通性并拉取 /models…');
   try {{
     const method = document.getElementById('f-cred-method').value;
     const out = await api('/api/probe', {{
       method: 'POST',
       body: JSON.stringify({{
+        preset: document.getElementById('f-preset').value || null,
         protocol: document.getElementById('f-protocol').value,
         base_url: document.getElementById('f-url').value.trim() || null,
         cred_method: method,
         secret: document.getElementById('f-secret').value.trim()
       }})
     }});
+    if (mySeq !== probeSeq) return;
     const sel = document.getElementById('f-discovered');
     sel.textContent = '';
     const models = out.models || [];
@@ -400,6 +448,7 @@ document.getElementById('btn-probe').onclick = async () => {{
     }}
     setStatus('form-status', out.ok ? ('✓ ' + out.detail) : ('! ' + out.error), out.ok ? 'ok' : 'err');
   }} catch (e) {{
+    if (mySeq !== probeSeq) return;
     setStatus('form-status', e.message, 'err');
   }}
 }};
@@ -436,15 +485,25 @@ document.getElementById('btn-or-login').onclick = async () => {{
     const start = await api('/api/auth/openrouter/start', {{method:'POST', body: JSON.stringify({{set_default:true}})}});
     window.open(start.auth_url, '_blank', 'noopener');
     setStatus('oauth-status', '已打开 OpenRouter 授权页；若未自动打开，请手动访问：\\n' + start.auth_url);
+    const deadline = Date.now() + 185000;
     const poll = async () => {{
-      const st = await api('/api/auth/openrouter/status?job=' + encodeURIComponent(start.job_id));
-      if (st.status === 'pending') {{
-        setTimeout(poll, 1200);
-      }} else if (st.status === 'ok') {{
-        setStatus('oauth-status', '✓ OpenRouter 登录成功，已保存 Provider ' + st.name, 'ok');
-        await refreshState();
-      }} else {{
-        setStatus('oauth-status', '! ' + (st.error || '登录失败'), 'err');
+      try {{
+        const st = await api('/api/auth/openrouter/status?job=' + encodeURIComponent(start.job_id));
+        if (st.status === 'pending') {{
+          if (Date.now() < deadline) setTimeout(poll, 1200);
+          else setStatus('oauth-status', '! 等待 OpenRouter 授权超时，请重试。', 'err');
+        }} else if (st.status === 'ok') {{
+          setStatus('oauth-status', '✓ OpenRouter 登录成功，已保存 Provider ' + st.name, 'ok');
+          await refreshState();
+        }} else {{
+          setStatus('oauth-status', '! ' + (st.error || '登录失败'), 'err');
+        }}
+      }} catch (err) {{
+        if (err.status === 404 || err.status === 403 || Date.now() >= deadline) {{
+          setStatus('oauth-status', '! ' + (err.message || '登录任务已失效'), 'err');
+        }} else {{
+          setTimeout(poll, 2000);
+        }}
       }}
     }};
     setTimeout(poll, 1200);
@@ -503,6 +562,7 @@ document.getElementById('btn-cp-login').onclick = async () => {{
 document.getElementById('btn-shutdown').onclick = async () => {{
   try {{
     await api('/api/shutdown', {{method:'POST', body:'{{}}'}});
+    try {{ sessionStorage.removeItem('mosscode_web_token'); }} catch (_) {{}}
     document.body.textContent = 'MossCode 本地配置服务已关闭，现在可以关闭此标签页。';
   }} catch (e) {{
     setStatus('form-status', e.message, 'err');
@@ -536,14 +596,18 @@ class ConfigWebServer:
         self.idle_timeout = float(idle_timeout)
         self.boot_token = secrets.token_urlsafe(32)
         self.session_token = secrets.token_urlsafe(32)
-        self.csrf_token = secrets.token_urlsafe(24)
         self._boot_token_used = False
         self._lock = threading.Lock()
+        # Serializes provider commits, OpenRouter job ownership replacement, and shutdown fencing.
+        self._commit_lock = threading.Lock()
         self._last_activity = time.monotonic()
         self._stop_event = threading.Event()
+        self._started = False
+        self._shutting_down = False
         self._closed = False
+        self._active_or_job_id: str | None = None
         self._or_jobs: dict[str, dict[str, Any]] = {}
-        self._cp_jobs: dict[str, DeviceCodeChallenge] = {}
+        self._cp_jobs: dict[str, tuple[DeviceCodeChallenge, float]] = {}
         self._server = self._build_server(port)
         self.port = int(self._server.server_address[1])
         self.allowed_hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
@@ -570,38 +634,28 @@ class ConfigWebServer:
             return True
         return origin_header.strip().lower() in self.allowed_origins
 
-    def _has_valid_session_cookie(self, cookie_header: str | None) -> bool:
-        if not cookie_header:
-            return False
-        jar = SimpleCookie()
-        try:
-            jar.load(cookie_header)
-        except Exception:
-            return False
-        morsel = jar.get(SESSION_COOKIE)
-        return morsel is not None and hmac.compare_digest(morsel.value, self.session_token)
-
     def _authorized_api(self, headers: Any) -> bool:
         auth = headers.get("Authorization")
         if isinstance(auth, str) and auth.startswith("Bearer "):
             token = auth[len("Bearer ") :].strip()
             with self._lock:
-                # Once exchanged into a browser session cookie, the one-time boot token is retired.
+                # Once consumed by browser bootstrap, the one-time boot token is retired everywhere.
                 if (not self._boot_token_used) and hmac.compare_digest(token, self.boot_token):
                     return True
-        csrf = headers.get("X-MossCode-Token")
-        if not isinstance(csrf, str) or not hmac.compare_digest(csrf, self.csrf_token):
-            return False
-        return self._has_valid_session_cookie(headers.get("Cookie"))
+        tok = headers.get("X-MossCode-Token")
+        return isinstance(tok, str) and bool(tok) and hmac.compare_digest(tok, self.session_token)
 
     def _state_payload(self) -> dict[str, Any]:
         providers_out: list[dict[str, Any]] = []
         default_provider: str | None = None
+        config_error = ""
         if self.config_path.is_file():
-            with suppress(ConfigError, OSError):
+            try:
                 settings = load_settings(self.config_path, self.home)
                 default_provider = settings.default_provider
                 providers_out = [_sanitize_provider(p) for p in settings.providers]
+            except (ConfigError, OSError, UnicodeError) as exc:
+                config_error = f"配置文件无法读取，请先修复 {self.config_path}：{exc}"
         local = asyncio.run(detect_local_servers(timeout=0.35, transport=self.transport))
         problem = (
             self.vault.problem()
@@ -610,6 +664,7 @@ class ConfigWebServer:
         )
         return {
             "config_path": str(self.config_path),
+            "config_error": config_error,
             "default_provider": default_provider,
             "providers": providers_out,
             "keyring_ok": problem is None,
@@ -639,13 +694,26 @@ class ConfigWebServer:
         }
 
     def _handle_probe(self, body: dict[str, Any]) -> tuple[HTTPStatus, dict[str, Any]]:
+        preset_key = body.get("preset")
         protocol = str(body.get("protocol") or "").strip()
         base_url = body.get("base_url")
         if isinstance(base_url, str):
             base_url = base_url.strip() or None
         cred_method = str(body.get("cred_method") or "keyring").strip()
         secret = str(body.get("secret") or "").strip()
-        auth_type = "none" if cred_method == "none" else "api_key"
+
+        preset = PRESETS.get(preset_key) if isinstance(preset_key, str) else None
+        if preset is not None:
+            protocol = preset.protocol
+            if base_url is None and preset.base_url is not None:
+                base_url = preset.base_url
+        if cred_method == "none":
+            auth_type = "none"
+        elif preset is not None and preset.auth_type == "github-copilot":
+            auth_type = "github-copilot"
+        else:
+            auth_type = "api_key"
+
         api_key: str | None = None
         if cred_method == "env":
             import os
@@ -729,17 +797,20 @@ class ConfigWebServer:
                 return HTTPStatus.BAD_REQUEST, {"error": "API 密钥不能为空。"}
             entry["api_key"] = secret
 
-        try:
-            saved_path, saved_name = save_provider_entry(
-                self.home,
-                entry,
-                pending_key=pending_key,
-                set_default=set_default,
-                vault=self.vault,
-                config_path=self.config_path,
-            )
-        except (ConfigError, OSError) as exc:
-            return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+        with self._commit_lock:
+            if self._shutting_down:
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
+            try:
+                saved_path, saved_name = save_provider_entry(
+                    self.home,
+                    entry,
+                    pending_key=pending_key,
+                    set_default=set_default,
+                    vault=self.vault,
+                    config_path=self.config_path,
+                )
+            except (ConfigError, OSError, UnicodeError) as exc:
+                return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
         return HTTPStatus.OK, {"ok": True, "name": saved_name, "path": str(saved_path)}
 
     def _handle_set_default(self, body: dict[str, Any]) -> tuple[HTTPStatus, dict[str, Any]]:
@@ -748,7 +819,10 @@ class ConfigWebServer:
         model_arg = str(model).strip() if isinstance(model, str) and model.strip() else None
         if not provider:
             return HTTPStatus.BAD_REQUEST, {"error": "缺少 provider 名称。"}
-        ok, msg = set_default_model(self.config_path, provider, model_arg, home=self.home)
+        with self._commit_lock:
+            if self._shutting_down:
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
+            ok, msg = set_default_model(self.config_path, provider, model_arg, home=self.home)
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST), {"ok": ok, "message": msg, "error": "" if ok else msg}
 
     def _handle_openrouter_start(self, body: dict[str, Any]) -> tuple[HTTPStatus, dict[str, Any]]:
@@ -767,17 +841,23 @@ class ConfigWebServer:
         job_id = secrets.token_urlsafe(12)
         job: dict[str, Any] = {"status": "pending", "callback": callback, "name": "", "error": ""}
         stale_callbacks: list[LoopbackCallbackServer] = []
-        with self._lock:
-            # Close any previously pending callback servers to avoid accumulating idle loopback sockets.
-            for old_job in self._or_jobs.values():
-                if old_job.get("status") == "pending" and old_job.get("callback") is not None:
-                    stale_callbacks.append(old_job["callback"])
-                    old_job["status"] = "error"
-                    old_job["error"] = "已被新的登录请求取代。"
-            while len(self._or_jobs) >= 8:
-                oldest = next(iter(self._or_jobs))
-                self._or_jobs.pop(oldest, None)
-            self._or_jobs[job_id] = job
+        with self._commit_lock:
+            if self._shutting_down:
+                callback.close()
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
+            with self._lock:
+                # Close any previously pending callback servers and revoke their ownership before admitting the new job.
+                for old_job in self._or_jobs.values():
+                    if old_job.get("status") == "pending":
+                        if old_job.get("callback") is not None:
+                            stale_callbacks.append(old_job["callback"])
+                        old_job["status"] = "error"
+                        old_job["error"] = "已被新的登录请求取代。"
+                while len(self._or_jobs) >= 8:
+                    oldest = next(iter(self._or_jobs))
+                    self._or_jobs.pop(oldest, None)
+                self._or_jobs[job_id] = job
+                self._active_or_job_id = job_id
         for old_cb in stale_callbacks:
             with suppress(Exception):
                 old_cb.close()
@@ -798,20 +878,32 @@ class ConfigWebServer:
                     default_model=OPENROUTER_DEFAULT_MODEL,
                     base_url="https://openrouter.ai/api/v1",
                 )
-                _, saved_name = persist_oauth_result(
-                    result,
-                    home=self.home,
-                    set_default=set_default,
-                    vault=self.vault,
-                    config_path=self.config_path,
-                )
-                with self._lock:
-                    job["status"] = "ok"
-                    job["name"] = saved_name
+                # Serialize ownership check and commit with job replacement and shutdown fencing.
+                with self._commit_lock:
+                    with self._lock:
+                        still_current = (
+                            (not self._shutting_down)
+                            and self._active_or_job_id == job_id
+                            and job["status"] == "pending"
+                        )
+                    if not still_current:
+                        return
+                    _, saved_name = persist_oauth_result(
+                        result,
+                        home=self.home,
+                        set_default=set_default,
+                        vault=self.vault,
+                        config_path=self.config_path,
+                    )
+                    with self._lock:
+                        job["status"] = "ok"
+                        job["name"] = saved_name
             except Exception as exc:
                 with self._lock:
-                    job["status"] = "error"
-                    job["error"] = redact(str(exc))
+                    # Do not overwrite an already-terminal replaced/shutdown status.
+                    if job["status"] == "pending":
+                        job["status"] = "error"
+                        job["error"] = redact(str(exc))
             finally:
                 callback.close()
 
@@ -835,16 +927,23 @@ class ConfigWebServer:
         )
         if problem is not None:
             return HTTPStatus.BAD_REQUEST, {"error": f"系统凭据管理器不可用（{problem}），无法安全保存 OAuth 令牌。"}
+        with self._commit_lock:
+            if self._shutting_down:
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
         try:
             challenge = asyncio.run(start_copilot_device_flow(transport=self.transport))
         except AuthError as exc:
             return HTTPStatus.BAD_GATEWAY, {"error": str(exc)}
         job_id = secrets.token_urlsafe(12)
-        with self._lock:
-            while len(self._cp_jobs) >= 8:
-                oldest = next(iter(self._cp_jobs))
-                self._cp_jobs.pop(oldest, None)
-            self._cp_jobs[job_id] = challenge
+        deadline = time.monotonic() + float(challenge.expires_in)
+        with self._commit_lock:
+            if self._shutting_down:
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭。"}
+            with self._lock:
+                while len(self._cp_jobs) >= 8:
+                    oldest = next(iter(self._cp_jobs))
+                    self._cp_jobs.pop(oldest, None)
+                self._cp_jobs[job_id] = (challenge, deadline)
         return HTTPStatus.OK, {
             "job_id": job_id,
             "user_code": challenge.user_code,
@@ -857,13 +956,28 @@ class ConfigWebServer:
         job_id = str(body.get("job_id") or "").strip()
         set_default = bool(body.get("set_default", True))
         with self._lock:
-            challenge = self._cp_jobs.get(job_id)
-        if challenge is None:
+            entry = self._cp_jobs.get(job_id)
+        if entry is None:
             return HTTPStatus.NOT_FOUND, {"error": "未找到对应的设备码登录任务。"}
+        challenge, deadline = entry
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            with self._lock:
+                self._cp_jobs.pop(job_id, None)
+            return HTTPStatus.OK, {"status": "error", "error": "设备码已过期，请重新发起登录。"}
         try:
-            status, value = asyncio.run(poll_copilot_device_token_once(challenge.device_code, transport=self.transport))
+            status, value = asyncio.run(
+                poll_copilot_device_token_once(
+                    challenge.device_code,
+                    timeout=min(15.0, remaining),
+                    transport=self.transport,
+                )
+            )
             if status in {"pending", "slow_down"}:
                 return HTTPStatus.OK, {"status": status}
+            if status == "timeout":
+                # Keep the job active and advise the browser to slow down per RFC 8628.
+                return HTTPStatus.OK, {"status": "slow_down"}
             if status != "ok" or not value:
                 with self._lock:
                     self._cp_jobs.pop(job_id, None)
@@ -881,20 +995,43 @@ class ConfigWebServer:
                 headers=COPILOT_HEADERS,
                 expires_at=expires_at,
             )
-            _, saved_name = persist_oauth_result(
-                result,
-                home=self.home,
-                set_default=set_default,
-                vault=self.vault,
-                config_path=self.config_path,
-            )
-            with self._lock:
-                self._cp_jobs.pop(job_id, None)
+            with self._commit_lock:
+                with self._lock:
+                    still_valid = (not self._shutting_down) and (job_id in self._cp_jobs)
+                if not still_valid:
+                    return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭，未写入配置。"}
+                _, saved_name = persist_oauth_result(
+                    result,
+                    home=self.home,
+                    set_default=set_default,
+                    vault=self.vault,
+                    config_path=self.config_path,
+                )
+                with self._lock:
+                    self._cp_jobs.pop(job_id, None)
             return HTTPStatus.OK, {"status": "ok", "name": saved_name}
         except AuthError as exc:
             with self._lock:
                 self._cp_jobs.pop(job_id, None)
             return HTTPStatus.OK, {"status": "error", "error": str(exc)}
+
+    def _begin_shutdown(self) -> None:
+        """Fence all in-flight and pending OAuth/config commits before acknowledging shutdown."""
+        callbacks: list[LoopbackCallbackServer] = []
+        with self._commit_lock:
+            with self._lock:
+                self._shutting_down = True
+                self._active_or_job_id = None
+                for job in self._or_jobs.values():
+                    if job.get("callback") is not None:
+                        callbacks.append(job["callback"])
+                    if job.get("status") == "pending":
+                        job["status"] = "error"
+                        job["error"] = "配置服务已关闭。"
+                self._cp_jobs.clear()
+        for cb in callbacks:
+            with suppress(Exception):
+                cb.close()
 
     def _build_server(self, port: int) -> ThreadingHTTPServer:
         parent = self
@@ -910,14 +1047,50 @@ class ConfigWebServer:
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Referrer-Policy", "no-referrer")
 
-            def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+            def _linger_close(self) -> None:
+                """Half-close and drain bounded unread bytes (RFC 9112 §9.6) to avoid TCP RST on early errors."""
+                self.close_connection = True
+                with suppress(OSError):
+                    self.wfile.flush()
+                    self.connection.shutdown(socket.SHUT_WR)
+                deadline = time.monotonic() + 0.25
+                remaining = MAX_BODY_BYTES * 4
+                with suppress(OSError):
+                    while remaining > 0 and time.monotonic() < deadline:
+                        self.connection.settimeout(max(0.01, deadline - time.monotonic()))
+                        chunk = self.connection.recv(min(16384, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+
+            def _send_json(self, status: HTTPStatus, payload: dict[str, Any], *, close_after: bool = False) -> None:
                 raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(int(status))
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(raw)))
+                if close_after:
+                    self.send_header("Connection", "close")
                 self._common_headers()
                 self.end_headers()
                 self.wfile.write(raw)
+                if close_after:
+                    self._linger_close()
+
+            def _send_html_page(self, session_token: str | None) -> None:
+                nonce = secrets.token_urlsafe(16)
+                body = _render_web_page(session_token, nonce)
+                self.send_response(int(HTTPStatus.OK))
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self._common_headers(
+                    csp=(
+                        f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; "
+                        "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; "
+                        "base-uri 'none'; form-action 'self'"
+                    )
+                )
+                self.end_headers()
+                self.wfile.write(body)
 
             def _read_json(self) -> tuple[dict[str, Any] | None, HTTPStatus | None, str]:
                 raw_len = self.headers.get("Content-Length")
@@ -940,14 +1113,13 @@ class ConfigWebServer:
                     return None, HTTPStatus.BAD_REQUEST, "请求体必须是 JSON 对象。"
                 return parsed, None, ""
 
-            def _check_host(self) -> bool:
+            def _check_host(self, *, close_after: bool = False) -> bool:
                 if not parent._valid_host(self.headers.get("Host")):
-                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "拒绝非法 Host 请求。"})
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "拒绝非法 Host 请求。"}, close_after=close_after)
                     return False
                 return True
 
             def do_GET(self) -> None:
-                parent._touch()
                 if not self._check_host():
                     return
                 parsed = urlsplit(self.path)
@@ -962,40 +1134,26 @@ class ConfigWebServer:
                         if not valid:
                             self._send_json(HTTPStatus.FORBIDDEN, {"error": "启动令牌无效或已使用。"})
                             return
-                        self.send_response(int(HTTPStatus.SEE_OTHER))
-                        self.send_header("Location", "/")
-                        self.send_header(
-                            "Set-Cookie",
-                            f"{SESSION_COOKIE}={parent.session_token}; HttpOnly; SameSite=Strict; Path=/",
-                        )
-                        self._common_headers()
-                        self.end_headers()
+                        parent._touch()
+                        # Deliver the origin-scoped session token once without setting any host-wide cookie.
+                        self._send_html_page(parent.session_token)
                         return
-                    if not parent._has_valid_session_cookie(self.headers.get("Cookie")):
+                    with parent._lock:
+                        bootstrapped = parent._boot_token_used
+                    if not bootstrapped:
                         self._send_json(
                             HTTPStatus.FORBIDDEN, {"error": "缺少有效会话令牌，请通过终端输出的完整地址访问。"}
                         )
                         return
-                    nonce = secrets.token_urlsafe(16)
-                    body = _render_web_page(parent.csrf_token, nonce)
-                    self.send_response(int(HTTPStatus.OK))
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self._common_headers(
-                        csp=(
-                            f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; "
-                            "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; "
-                            "base-uri 'none'; form-action 'self'"
-                        )
-                    )
-                    self.end_headers()
-                    self.wfile.write(body)
+                    # Reload shell embeds no token; JS reads its origin-scoped sessionStorage token.
+                    self._send_html_page(None)
                     return
 
                 if parsed.path == "/api/state":
                     if not parent._authorized_api(self.headers):
                         self._send_json(HTTPStatus.FORBIDDEN, {"error": "未授权的 API 请求。"})
                         return
+                    parent._touch()
                     self._send_json(HTTPStatus.OK, parent._state_payload())
                     return
 
@@ -1003,6 +1161,7 @@ class ConfigWebServer:
                     if not parent._authorized_api(self.headers):
                         self._send_json(HTTPStatus.FORBIDDEN, {"error": "未授权的 API 请求。"})
                         return
+                    parent._touch()
                     status, payload = parent._handle_openrouter_status(parsed.query)
                     self._send_json(status, payload)
                     return
@@ -1010,18 +1169,22 @@ class ConfigWebServer:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "未找到请求的资源。"})
 
             def do_POST(self) -> None:
-                parent._touch()
-                if not self._check_host():
+                if not self._check_host(close_after=True):
                     return
                 if not parent._valid_origin(self.headers.get("Origin"), self.headers.get("Sec-Fetch-Site")):
-                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "拒绝跨源请求。"})
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "拒绝跨源请求。"}, close_after=True)
                     return
                 if not parent._authorized_api(self.headers):
-                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "未授权的 API 请求。"})
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "未授权的 API 请求。"}, close_after=True)
                     return
+                parent._touch()
                 body, err_status, err_msg = self._read_json()
                 if err_status is not None or body is None:
-                    self._send_json(err_status or HTTPStatus.BAD_REQUEST, {"error": err_msg})
+                    self._send_json(
+                        err_status or HTTPStatus.BAD_REQUEST,
+                        {"error": err_msg},
+                        close_after=err_status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    )
                     return
 
                 path = urlsplit(self.path).path
@@ -1050,6 +1213,7 @@ class ConfigWebServer:
                     self._send_json(status, payload)
                     return
                 if path == "/api/shutdown":
+                    parent._begin_shutdown()
                     self._send_json(HTTPStatus.OK, {"ok": True})
                     parent._stop_event.set()
                     return
@@ -1062,6 +1226,10 @@ class ConfigWebServer:
         return _LoopbackServer(("127.0.0.1", port), _Handler)
 
     def start(self) -> ConfigWebServer:
+        with self._lock:
+            if self._started or self._closed:
+                return self
+            self._started = True
         self._thread.start()
         return self
 
@@ -1075,22 +1243,20 @@ class ConfigWebServer:
                 break
 
     def close(self) -> None:
+        self._begin_shutdown()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            callbacks = [job["callback"] for job in self._or_jobs.values() if job.get("callback") is not None]
+            was_started = self._started
             self._or_jobs.clear()
-            self._cp_jobs.clear()
         self._stop_event.set()
-        for cb in callbacks:
+        if was_started:
             with suppress(Exception):
-                cb.close()
-        with suppress(Exception):
-            self._server.shutdown()
+                self._server.shutdown()
         with suppress(Exception):
             self._server.server_close()
-        if self._thread.is_alive():
+        if was_started and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
     def __enter__(self) -> ConfigWebServer:

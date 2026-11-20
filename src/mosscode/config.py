@@ -16,6 +16,8 @@ from .context import ContextBudget
 from .prompts import DEFAULT_SYSTEM_PROMPT, stable_prompt
 from .redaction import (
     CLEARTEXT_CREDENTIAL_URL_ERROR,
+    COPILOT_URL_ERROR,
+    is_approved_copilot_url,
     is_cleartext_remote_credential_url,
 )
 from .redaction import (
@@ -496,12 +498,10 @@ def _provider(raw: Any, home: Path | None = None) -> ProviderConfig:
     if auth_type not in {"api_key", "bearer", "none", "github-copilot"}:
         raise ConfigError("auth_type 必须是 api_key、bearer、none 或 github-copilot。")
     if auth_type == "github-copilot":
-        from .auth import COPILOT_HEADERS, _allowed_https_host
+        from .auth import COPILOT_HEADERS
 
-        if url is not None and not (
-            _allowed_https_host(url, {"githubcopilot.com"}, allow_subdomains=True) or is_loopback_url(url)
-        ):
-            raise ConfigError("auth_type: github-copilot 仅允许指向 https://*.githubcopilot.com 或本机回环地址。")
+        if not is_approved_copilot_url(url):
+            raise ConfigError(COPILOT_URL_ERROR)
         merged_headers = dict(COPILOT_HEADERS)
         merged_headers.update(headers)
         data["headers"] = merged_headers

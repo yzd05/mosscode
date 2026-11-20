@@ -86,7 +86,7 @@ moss setup | login | config | doctor | models | key | plugin | sandbox | acp
 
 - 不带 `--web` 时打印当前生效配置文件与 Provider 概要（隐藏所有凭据值）。
 - 带 `--web` 时启动仅监听本机 `127.0.0.1` 的临时 Web 配置面板（支持查看与切换默认 Provider、一键发起 OpenRouter PKCE / GitHub Copilot 设备码登录、本机 Ollama/LM Studio 发现与添加、在线 `/models` 探测与原子保存）。
-- 安全边界：仅接受 `127.0.0.1` / `localhost` 的 `Host` 与同源 `Origin`，通过一次性启动令牌换取 `HttpOnly; SameSite=Strict` 会话 Cookie 并在每次 API 调用校验 CSRF 令牌，附带严格 CSP 与 `Cache-Control: no-store`，且所有配置写入均落盘至用户 `~/.mosscode/config.yaml`（不修改项目级 `.mosscode/config.yaml`）。点击页面“完成并关闭”、按 Ctrl+C 或无操作超时后自动关闭。
+- 安全边界：仅接受 `127.0.0.1` / `localhost` 的 `Host` 与同源 `Origin` / `Sec-Fetch-Site`，通过一次性启动令牌下发仅存于当前端口源 `sessionStorage` 的会话令牌（不设置跨端口共享的 Cookie），每次 API 调用均显式校验 `X-MossCode-Token`，附带严格 CSP 与 `Cache-Control: no-store`，且所有配置写入均落盘至用户 `~/.mosscode/config.yaml`（不修改项目级 `.mosscode/config.yaml`）。点击页面“完成并关闭”、按 Ctrl+C 或无操作超时后自动关闭。
 
 ### doctor
 

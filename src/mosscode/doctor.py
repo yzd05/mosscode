@@ -135,7 +135,7 @@ def _credential(provider) -> tuple[str, str, str]:
         return (
             WARN,
             f"环境变量 {provider.api_key_env} 未设置",
-            "运行 moss login copilot 完成登录，或设置该环境变量"
+            f"设置环境变量 {provider.api_key_env} 后打开新的终端；或运行 moss login copilot --default 新建替代配置并设为默认"
             if is_copilot
             else f"设置环境变量 {provider.api_key_env} 后打开新的终端",
         )
@@ -157,14 +157,18 @@ def _credential(provider) -> tuple[str, str, str]:
         return (
             WARN,
             f"系统凭据管理器 {name} 未找到",
-            "运行 moss login copilot 重新登录" if is_copilot else f"运行 moss key set {name}",
+            f"运行 moss key set {name} 补齐原条目；或运行 moss login copilot --default 新建替代配置并设为默认"
+            if is_copilot
+            else f"运行 moss key set {name}",
         )
     if provider.api_key:
         return OK, "已设置（配置文件中的 api_key）", ""
     return (
         WARN,
         "未配置",
-        "运行 moss login copilot 完成登录" if is_copilot else "在配置中填写 api_key_env 或 api_key_keyring",
+        "在配置中填写 api_key_env 或 api_key_keyring；或运行 moss login copilot --default 新建替代配置并设为默认"
+        if is_copilot
+        else "在配置中填写 api_key_env 或 api_key_keyring",
     )
 
 

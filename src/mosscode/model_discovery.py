@@ -20,7 +20,7 @@ from filelock import Timeout as FileLockTimeout
 
 from .config import OFFICIAL, ConfigError, is_loopback_url, load_settings, render_config
 from .paths import mosscode_home
-from .redaction import is_cleartext_remote_credential_url, redact
+from .redaction import COPILOT_URL_ERROR, is_approved_copilot_url, is_cleartext_remote_credential_url, redact
 
 LOCAL_SERVERS: tuple[tuple[str, str, str, str], ...] = (
     ("ollama", "Ollama", "http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/api/tags"),
@@ -174,6 +174,8 @@ async def probe_provider(
         return ProbeResult(False, error=f"不支持的协议：{protocol}")
     if auth_type == "none" and not is_loopback_url(base_url):
         return ProbeResult(False, error="auth_type: none 仅允许用于本机回环地址。")
+    if auth_type == "github-copilot" and base_url is not None and not is_approved_copilot_url(base_url):
+        return ProbeResult(False, error=COPILOT_URL_ERROR)
     try:
         url = _models_url(protocol, base_url)
     except ValueError as exc:
@@ -201,12 +203,19 @@ async def probe_provider(
             for hk, hv in COPILOT_HEADERS:
                 req_headers.setdefault(hk, hv)
             try:
-                session_token, _, _ = await exchange_copilot_session_token_async(
+                session_token, _, endpoint = await exchange_copilot_session_token_async(
                     api_key,
                     timeout=timeout,
                     transport=transport,
                 )
             except AuthError as exc:
+                return ProbeResult(False, error=str(exc))
+            target_base = base_url or endpoint
+            if not is_approved_copilot_url(target_base):
+                return ProbeResult(False, error=COPILOT_URL_ERROR)
+            try:
+                url = _models_url(protocol, target_base)
+            except ValueError as exc:
                 return ProbeResult(False, error=str(exc))
             req_headers["Authorization"] = f"Bearer {session_token}"
         elif protocol == "anthropic-messages":
@@ -810,10 +819,10 @@ def save_provider_entry(
                 raise
             return path, str(entry["name"])
 
-        original = path.read_text(encoding="utf-8")
         try:
+            original = path.read_text(encoding="utf-8")
             loaded = yaml.safe_load(original)
-        except yaml.YAMLError as exc:
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise ConfigError(f"无法解析现有配置 {path}：{exc}") from None
         if not isinstance(loaded, dict) or not isinstance(loaded.get("providers"), list) or not loaded["providers"]:
             raise ConfigError(f"现有配置 {path} 格式无效（缺少 providers 列表）。")

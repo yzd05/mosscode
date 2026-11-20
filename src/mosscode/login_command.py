@@ -68,22 +68,38 @@ def _status_report(home: Path | None, config_path: Path | None, write: Callable[
     return 0
 
 
-def _logout(name: str, write: Callable[[str], None], err_write: Callable[[str], None]) -> int:
-    if problem := keyring_problem():
+def _logout(
+    name: str,
+    write: Callable[[str], None],
+    err_write: Callable[[str], None],
+    *,
+    vault: Any = None,
+) -> int:
+    problem = (
+        vault.problem() if (vault is not None and callable(getattr(vault, "problem", None))) else keyring_problem()
+    )
+    if problem:
         err_write(f"moss login logout：{problem}。")
         return 1
     try:
-        removed = keyring_delete(name)
+        if vault is not None and callable(getattr(vault, "delete", None)):
+            existed = vault.exists(name) if callable(getattr(vault, "exists", None)) else True
+            if existed:
+                vault.delete(name)
+            removed = bool(existed)
+        else:
+            removed = keyring_delete(name)
     except KeyringError as exc:
         err_write(f"moss login logout：{exc}。")
         return 1
+    label = vault.label() if (vault is not None and callable(getattr(vault, "label", None))) else keyring_label()
     if not removed:
-        write(f"{keyring_label()} 中未找到名为 {name} 的凭据条目。")
+        write(f"{label} 中未找到名为 {name} 的凭据条目。")
         return 1
     from .auth import copilot_token_manager
 
     copilot_token_manager.invalidate()
-    write(f"已从 {keyring_label()} 删除凭据条目 {name}（配置文件本身未修改）。")
+    write(f"已从 {label} 删除凭据条目 {name}（配置文件本身未修改）。")
     return 0
 
 
@@ -133,7 +149,7 @@ def main(
         if not args.logout_name:
             err("moss login logout 需要指定凭据条目名称，例如 moss login logout copilot。")
             return 2
-        return _logout(args.logout_name, write, err)
+        return _logout(args.logout_name, write, err, vault=vault)
 
     target = args.target
     if target is None:

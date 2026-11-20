@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import webbrowser
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -388,7 +389,19 @@ class _ConnectMixin:
             st.update(text)
             self.call_later(self._fit_chat)
 
-        open_browser = getattr(self, "_oauth_browser_opener", webbrowser.open)
+        raw_browser = getattr(self, "_oauth_browser_opener", webbrowser.open)
+
+        def _open_browser_off_loop(url: str) -> None:
+            if not callable(raw_browser):
+                return
+
+            def _launch() -> None:
+                with suppress(Exception):
+                    raw_browser(url)
+
+            # Launch off the TUI event loop so foreground Unix console browsers cannot stall Esc cancellation.
+            threading.Thread(target=_launch, name="mosscode-tui-open-browser", daemon=True).start()
+
         factory = getattr(self, "_oauth_provider_factory", None)
         if callable(factory):
             auth_provider = factory(provider_key)
@@ -398,10 +411,14 @@ class _ConnectMixin:
             auth_provider = GitHubCopilotAuth()
 
         try:
-            result = await auth_provider.login(on_notice=_update_status, open_browser=open_browser, timeout=180.0)
+            result = await auth_provider.login(
+                on_notice=_update_status,
+                open_browser=_open_browser_off_loop,
+                timeout=180.0,
+            )
         except asyncio.CancelledError:
             return
-        except AuthError as exc:
+        except (AuthError, OSError) as exc:
             if getattr(self, "_connect_step", "") != "oauth_waiting":
                 return
             self._connect_choices = [("back", None)]

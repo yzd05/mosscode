@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import threading
 import webbrowser
 from collections.abc import Callable
 from contextlib import suppress
@@ -59,8 +60,13 @@ def main(
             write(f"  {server.url}")
             write("在页面点击“完成并关闭”，或在终端按 Ctrl+C 退出。")
             if not args.no_browser and open_browser is not None:
-                with suppress(Exception):
-                    open_browser(server.url)
+
+                def _launch_browser(url: str = server.url) -> None:
+                    with suppress(Exception):
+                        open_browser(url)
+
+                # Launch off-thread so foreground Unix browsers cannot block shutdown or idle-timeout monitoring.
+                threading.Thread(target=_launch_browser, name="mosscode-open-browser", daemon=True).start()
             try:
                 server.wait_until_stopped()
             except KeyboardInterrupt:
