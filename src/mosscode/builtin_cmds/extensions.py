@@ -11,14 +11,13 @@ from ..agents import claude_model
 from ..agents.runtime import GLOBAL_BAN, WORKSPACE_TOOLS, effective_mode, stats
 from ..agents.tasks import ORIGIN_LABELS, STATUS_LABELS
 from ..commands import CommandContext
-from ..goal import elapsed_text
 from ..hooks.config import SOURCE_LABELS as HOOK_SOURCES
 from ..mcp_surface import describe_mcp_status, format_mcp_capabilities, overview_capability_lines
 from ..messages import ProviderError
 from ..skills import source_label
 from ..todo import render as render_todos
 from ..usage import cost_text
-from .common import _first_line
+from .common import _first_line, format_loop_timing
 
 # MCP --------------------------------------------------------------------------------------
 
@@ -564,17 +563,7 @@ def _loop_task_report(task) -> str:
 
     info = task.loop
     status_label = STATUS_LABELS.get(task.status, task.status)
-    if task.status == "running":
-        if getattr(info, "pending_fire", False):
-            next_text = "等待空闲触发"
-        elif getattr(info, "next_fire", None) is not None:
-            next_text = f"{elapsed_text(max(0.0, info.next_fire - monotonic()))} 后"
-        else:
-            next_text = "排队中"
-    else:
-        next_text = getattr(info, "end_reason", "") or (
-            "已手动停止" if getattr(task, "stopped", False) else status_label
-        )
+    next_text = format_loop_timing(task, monotonic())
     rows = [
         ("来源", ORIGIN_LABELS.get(task.origin, "/loop 定时")),
         ("类型", "定时巡检"),

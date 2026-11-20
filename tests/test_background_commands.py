@@ -1,6 +1,7 @@
 """Background commands: run_in_background, ctrl+b, limits, notifications and who they end with."""
 
 import asyncio
+import contextlib
 import sys
 from types import SimpleNamespace
 
@@ -170,20 +171,28 @@ async def test_ctrl_b_moves_a_running_command_to_the_background(tmp_path, monkey
     registry, tasks, commands = setup(tmp_path)
     script = "import sys,time; print('before', flush=True); print('err', file=sys.stderr, flush=True); time.sleep(60)"
     running = asyncio.create_task(registry.execute(run(command=python_command(script), timeout=60)))
-    await until(lambda: commands.foreground_count() == 1)
-    await until(lambda: b"before" in received["stdout"] and b"err" in received["stderr"])
-    assert commands.detach_foreground() == 1
-    result = await asyncio.wait_for(running, 5)
-    assert not result.is_error and result.details["moved"]
-    assert (
-        "用户按 Ctrl+B 把命令转入了后台：任务 t1" in result.output
-        and "不要用 sleep 或 task_output 的 wait" in result.output
-    )
-    task = tasks.get("t1")
-    assert task.status == "running" and commands.foreground_count() == 0
-    text = task.command.log.path.read_text(encoding="utf-8")
-    assert "before" in text and "stderr:\nerr" in text and "命令已转入后台" in text
-    await tasks.stop("t1")
+    try:
+        await until(lambda: commands.foreground_count() == 1)
+        await until(lambda: b"before" in received["stdout"] and b"err" in received["stderr"])
+        assert commands.detach_foreground() == 1
+        result = await asyncio.wait_for(running, 5)
+        assert not result.is_error and result.details["moved"]
+        assert (
+            "用户按 Ctrl+B 把命令转入了后台：任务 t1" in result.output
+            and "不要用 sleep 或 task_output 的 wait" in result.output
+        )
+        task = tasks.get("t1")
+        assert task.status == "running" and commands.foreground_count() == 0
+        text = task.command.log.path.read_text(encoding="utf-8")
+        assert "before" in text and "stderr:\nerr" in text and "命令已转入后台" in text
+    finally:
+        if not running.done():
+            running.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await running
+        task = tasks.get("t1")
+        if task is not None and task.status == "running":
+            await tasks.stop("t1")
 
 
 async def background_code_page_output(tmp_path, encoding: str, sample: str):
@@ -226,16 +235,24 @@ async def test_ctrl_b_keeps_code_page_output_readable_across_the_move(tmp_path, 
         f"out.write({(later + chr(10)).encode('gbk')!r}); out.flush(); time.sleep(60)"
     )
     running = asyncio.create_task(registry.execute(run(command=python_command(script), timeout=60)))
-    await until(lambda: commands.foreground_count() == 1)
-    await until(lambda: GBK_BYTES in received["stdout"])
-    assert commands.detach_foreground() == 1
-    assert (await asyncio.wait_for(running, 5)).details["moved"]
-    marker.write_text("")
-    log = tasks.get("t1").command.log.path
-    await until(lambda: later in log.read_bytes().decode("utf-8"))
-    text = log.read_bytes().decode("utf-8")
-    assert text.startswith(GBK_LINE) and "命令已转入后台" in text and "\ufffd" not in text
-    await tasks.stop("t1")
+    try:
+        await until(lambda: commands.foreground_count() == 1)
+        await until(lambda: GBK_BYTES in received["stdout"])
+        assert commands.detach_foreground() == 1
+        assert (await asyncio.wait_for(running, 5)).details["moved"]
+        marker.write_text("")
+        log = tasks.get("t1").command.log.path
+        await until(lambda: later in log.read_bytes().decode("utf-8"))
+        text = log.read_bytes().decode("utf-8")
+        assert text.startswith(GBK_LINE) and "命令已转入后台" in text and "\ufffd" not in text
+    finally:
+        if not running.done():
+            running.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await running
+        task = tasks.get("t1")
+        if task is not None and task.status == "running":
+            await tasks.stop("t1")
 
 
 async def test_a_stopped_commands_unfinished_line_still_reaches_the_log(tmp_path, monkeypatch):
@@ -246,12 +263,17 @@ async def test_a_stopped_commands_unfinished_line_still_reaches_the_log(tmp_path
     encoded_prompt = prompt.encode("gbk")
     script = f"import sys,time; sys.stdout.buffer.write({encoded_prompt!r}); sys.stdout.flush(); time.sleep(60)"
     await registry.execute(run(command=python_command(script), run_in_background=True))
-    await until(lambda: encoded_prompt in received["stdout"])
-    log = tasks.get("t1").command.log.path
-    assert prompt not in log.read_bytes().decode("utf-8")
-    await tasks.stop("t1")
-    text = log.read_bytes().decode("utf-8")
-    assert text.startswith(prompt + "\n[MossCode] 命令已被停止。"), text
+    try:
+        await until(lambda: encoded_prompt in received["stdout"])
+        log = tasks.get("t1").command.log.path
+        assert prompt not in log.read_bytes().decode("utf-8")
+        await tasks.stop("t1")
+        text = log.read_bytes().decode("utf-8")
+        assert text.startswith(prompt + "\n[MossCode] 命令已被停止。"), text
+    finally:
+        task = tasks.get("t1")
+        if task is not None and task.status == "running":
+            await tasks.stop("t1")
 
 
 def test_last_lines_read_a_code_page_tail_cut_inside_a_character(tmp_path, monkeypatch):

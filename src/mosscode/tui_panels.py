@@ -211,7 +211,10 @@ class _CommandUIMixin:
             if not self._closing and self._compact_row is not None:
                 await self._end_compact(CANCELLED_COMPACT)
         except ProviderError as exc:
-            await self._local_note(f"! {exc}", OPERATION_COLOR)
+            if not self._closing and self._compact_row is not None:
+                await self._end_compact(f"! {exc}", OPERATION_COLOR)
+            else:
+                await self._local_note(f"! {exc}", OPERATION_COLOR)
         finally:
             self._generating = False
             self._compacting = None

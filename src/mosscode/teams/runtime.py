@@ -536,9 +536,14 @@ class TeamRuntime:
 
     # Stopping one member ---------------------------------------------------------------
 
-    async def stop_member(self, name: str) -> str:
+    async def stop_member(self, name: str, *, expected_team: str | None = None) -> str:
         access = self.access()
         store = self.current
+        if expected_team is not None and store.name != expected_team:
+            raise TeamError(
+                "team_changed",
+                f"当前团队已切换为 {store.name}，已取消停止原团队 {expected_team} 的成员 {name}。",
+            )
         team = await asyncio.to_thread(store.load)
         if team.member(name) is None:
             raise TeamError("unknown_member", f"团队 {team.name} 中没有成员 {name}。")

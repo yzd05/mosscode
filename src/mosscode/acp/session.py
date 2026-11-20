@@ -206,6 +206,7 @@ class AcpSession:
         self._last_reported_mode: str = self.current_mode
         self._initial_commands_sent = False
         self._slash_images: dict[str, Any] = {}
+        self._rename_task: asyncio.Task[None] | None = None
         if self.conversation.mcp_manager is not None:
             register_mcp_prompts_from_manager(self.commands, self.conversation.mcp_manager)
 

@@ -10,7 +10,7 @@ from ..commands import CommandContext
 from ..goal import GOAL, MAX_CONDITION, continue_prompt, elapsed_text
 from ..messages import ProviderError
 from ..usage import approx_tokens
-from .common import _first_line, dispatch
+from .common import _first_line, dispatch, format_loop_timing
 
 # Goal --------------------------------------------------------------------------------
 
@@ -106,17 +106,7 @@ def loop_report(conversation) -> str:
     for task in items:
         info = task.loop
         status_label = STATUS_LABELS.get(task.status, task.status)
-        if task.status == "running":
-            if getattr(info, "pending_fire", False):
-                timing = "等待空闲触发"
-            elif getattr(info, "next_fire", None) is not None:
-                timing = f"下次触发 {elapsed_text(max(0.0, info.next_fire - now))} 后"
-            else:
-                timing = "排队中"
-        else:
-            timing = getattr(info, "end_reason", "") or (
-                "已手动停止" if getattr(task, "stopped", False) else status_label
-            )
+        timing = format_loop_timing(task, now, prefix_next=True)
         preview = _first_line(info.prompt)[:80]
         lines.append(
             f"  {task.id:<4} {status_label}  每 {info.interval_text} · 已运行 {info.runs}/{info.max_runs} 次"

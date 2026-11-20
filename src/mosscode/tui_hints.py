@@ -68,6 +68,7 @@ class _PromptInputMixin:
 
     async def _attach_images(self, event: PromptArea.ImagePaste) -> None:
         field = event.text_area
+        started_typing = self._question_typing
         try:
             if event.files is None:
                 self._hint("正在读取剪贴板…")
@@ -76,6 +77,9 @@ class _PromptInputMixin:
                 content = event.files
             if isinstance(content, list):
                 content = [path for path in content if await asyncio.to_thread(is_image_file, path)] or None
+            if self._question_typing != started_typing:
+                self._hint("输入模式已切换，请重新粘贴")
+                return
             if content is None:
                 if event.otherwise is not None:
                     event.otherwise()
@@ -88,6 +92,9 @@ class _PromptInputMixin:
                 items = [Attachment(await asyncio.to_thread(load_image, path), path.name) for path in content]
         except (ClipboardError, ImageError, OSError) as exc:
             self._hint(f"无法粘贴图片：{exc}")
+            return
+        if self._question_typing != started_typing:
+            self._hint("输入模式已切换，请重新粘贴")
             return
         field.attach(items)
         self._hint(f"已添加 {len(items)} 张图片" if len(items) > 1 else "已添加图片")

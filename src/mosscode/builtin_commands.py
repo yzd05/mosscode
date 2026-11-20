@@ -119,6 +119,8 @@ from .builtin_cmds.teams import _team_reads as _team_reads
 from .builtin_cmds.teams import swarm_report as swarm_report
 from .builtin_cmds.teams import team_report as team_report
 from .commands import Command, CommandRegistry
+from .commands import CommandContext as CommandContext
+from .commands import Parsed as Parsed
 from .permissions import MODE_LABELS as MODE_LABELS
 from .reasoning import LEVEL_LABELS
 

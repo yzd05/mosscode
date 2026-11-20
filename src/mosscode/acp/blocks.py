@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import os
 import re
 from collections.abc import Sequence
@@ -83,7 +84,7 @@ def _uri_paths(uri: str) -> tuple[Path, Path] | None:
         return None
     try:
         lexical = Path(os.path.abspath(raw_path))
-        resolved = lexical.resolve()
+        resolved = Path(raw_path).resolve()
     except (OSError, RuntimeError, ValueError):
         return None
     return lexical, resolved
@@ -92,6 +93,16 @@ def _uri_paths(uri: str) -> tuple[Path, Path] | None:
 def _uri_to_path(uri: str) -> Path | None:
     pair = _uri_paths(uri)
     return pair[1] if pair is not None else None
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower().rstrip(".")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def convert_client_mcp_servers(
@@ -117,11 +128,19 @@ def convert_client_mcp_servers(
                 env=env,
             )
         elif isinstance(item, HttpMcpServer):
-            parsed = urlsplit(item.url)
+            try:
+                parsed = urlsplit(item.url)
+                _ = parsed.port
+            except ValueError:
+                notices.append(f"MCP {item.name} 的 URL 不合法，已跳过。")
+                continue
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 notices.append(f"MCP {item.name} 的 URL 不合法，已跳过。")
                 continue
             headers = {h.name: h.value for h in item.headers}
+            if parsed.scheme == "http" and headers and not _is_loopback_host(parsed.hostname):
+                notices.append(f"MCP {item.name} 在非本机 HTTP 地址上携带了请求头，已跳过（请改用 HTTPS）。")
+                continue
             servers[item.name] = ServerConfig(
                 name=item.name,
                 type="http",

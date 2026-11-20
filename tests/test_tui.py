@@ -1128,3 +1128,23 @@ def test_tui_reexports_all_extracted_tui_views_symbols():
     )
     for name in expected:
         assert getattr(tui, name) is getattr(tui_views, name), name
+
+
+async def test_run_resume_finishes_compact_row_on_provider_error():
+    from mosscode.messages import CompactStarted, ProviderError
+    from mosscode.tui import CompactRow
+
+    conv = Conversation(FakeProvider())
+
+    async def failing_resume(session_id: str):
+        yield CompactStarted(manual=False)
+        raise ProviderError("预算已耗尽")
+
+    conv.resume = failing_resume
+    app = MossCodeApp(conv, "test")
+    async with app.run_test(size=(100, 30)):
+        await app._run_resume("s1")
+        assert app._compact_row is None
+        rows = list(app.query(CompactRow))
+        assert len(rows) == 1 and rows[0].transcript is not None
+        assert "预算已耗尽" in str(rows[0].transcript)

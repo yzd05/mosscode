@@ -178,6 +178,10 @@ class _TeamViewMixin:
 
     def action_stop_member(self) -> None:
         """X twice within STOP_CONFIRM seconds, as /team stop."""
+        teams = getattr(self.conversation, "teams", None)
+        team_name = teams.current.name if teams is not None and teams.current is not None else None
+        if team_name is None:
+            return
         panel = self.query_one("#member-panel", MemberPanel)
         name = panel.selected
         row = next((row for row in panel.rows if row.name == name), None)
@@ -187,24 +191,24 @@ class _TeamViewMixin:
             panel.help(f"成员 {name} 已经停止 · " + PANEL_HELP)
             return
         armed = self._stop_armed
-        if armed is not None and armed[0] == name and self._now() <= armed[1]:
+        if armed is not None and armed[0] == team_name and armed[1] == name and self._now() <= armed[2]:
             self._stop_armed = None
             panel.help(PANEL_HELP)
-            self.call_later(self._stop_member, name)
+            self.call_later(self._stop_member, name, team_name)
             return
-        self._stop_armed = (name, self._now() + STOP_CONFIRM)
+        self._stop_armed = (team_name, name, self._now() + STOP_CONFIRM)
         panel.help(f"再按 x 停止成员 {name}")
         self.set_timer(STOP_CONFIRM + 0.05, self._disarm_stop)
 
     def _disarm_stop(self) -> None:
-        if not self._members_mounted() or self._stop_armed is None or self._now() <= self._stop_armed[1]:
+        if not self._members_mounted() or self._stop_armed is None or self._now() <= self._stop_armed[2]:
             return
         self._stop_armed = None
         self.query_one("#member-panel", MemberPanel).help(PANEL_HELP)
 
-    async def _stop_member(self, name: str) -> None:
+    async def _stop_member(self, name: str, expected_team: str | None = None) -> None:
         try:
-            text = await self.conversation.teams.stop_member(name)
+            text = await self.conversation.teams.stop_member(name, expected_team=expected_team)
         except TeamError as exc:
             await self._local_note("! " + exc.message, OPERATION_COLOR)
             return

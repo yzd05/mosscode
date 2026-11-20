@@ -403,7 +403,7 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
         self._members_task: asyncio.Task | None = None
         self._members_again = False
         self._member_ticks = 0
-        self._stop_armed: tuple[str, float] | None = None  # The member the first x picked, until when.
+        self._stop_armed: tuple[str, str, float] | None = None  # (team, member, deadline) for x-twice stop.
         self._view_lock = asyncio.Lock()
         self._show_details = False  # Ctrl+O expands thinking blocks and full tool outputs/diffs.
         self._last_turn_entries: list[ChatEntry | ToolEntry] = []

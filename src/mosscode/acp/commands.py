@@ -193,7 +193,14 @@ async def handle_local_command(
         if not clean_title:
             await session._send_text("`/rename` 需要参数。用法：`/rename <标题>`")
             return PromptResponse(stop_reason="end_turn"), "", None, None
-        try:
+        prev_rename = getattr(session, "_rename_task", None)
+
+        async def _write_title_serialized() -> None:
+            if prev_rename is not None and not prev_rename.done():
+                try:
+                    await asyncio.shield(prev_rename)
+                except Exception:
+                    pass
             await asyncio.to_thread(
                 write_title,
                 cur_session,
@@ -201,6 +208,12 @@ async def handle_local_command(
                 transcript=getattr(session.conversation, "_transcript", None),
                 cwd=session.cwd,
             )
+
+        rename_task = asyncio.create_task(_write_title_serialized())
+        rename_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        session._rename_task = rename_task
+        try:
+            await asyncio.shield(rename_task)
         except (OSError, ValueError) as exc:
             await session._send_text(f"无法重命名会话：{escape_markdown_inline(str(exc))}")
             return PromptResponse(stop_reason="end_turn"), "", None, None

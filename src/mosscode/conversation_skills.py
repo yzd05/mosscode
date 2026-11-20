@@ -383,12 +383,14 @@ class _ConversationSkillsMixin:
 
         Collapsed turns arrive as their summaries, as the main conversation sends them.
         """
-        history = deepcopy(self._agent.projected())
+        if context == "none":
+            return []
+        projected = self._agent.projected()
         if context == "full":
-            return history
+            return deepcopy(projected)
         if context == "recent":
-            starts = [i for i, m in enumerate(history) if m.role == "user" and m.synthetic is None]
-            return history[starts[-3] :] if starts else []
+            starts = [i for i, m in enumerate(projected) if m.role == "user" and m.synthetic is None]
+            return deepcopy(projected[starts[-3] :]) if starts else []
         return []
 
     def _fork_registry(self, skill: SkillDef, task) -> ToolRegistry | None:

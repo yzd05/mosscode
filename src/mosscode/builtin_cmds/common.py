@@ -5,7 +5,9 @@ from __future__ import annotations
 from rich.cells import cell_len
 from rich.text import Text
 
+from ..agents.tasks import STATUS_LABELS
 from ..commands import KEY_HELP, Command, CommandContext, CommandRegistry, Parsed, argument_problem
+from ..goal import elapsed_text
 from ..messages import ProviderError
 from ..skills import ForkRequest, source_label
 
@@ -152,3 +154,17 @@ async def confirm_tasks(ui, conversation, proceed) -> None:
 
 def _first_line(text: str, empty: str = "（空）") -> str:
     return next((line.strip() for line in text.splitlines() if line.strip()), empty)
+
+
+def format_loop_timing(task, now: float, *, prefix_next: bool = False) -> str:
+    """Format the next-fire countdown or end reason for a /loop task."""
+    info = task.loop
+    status_label = STATUS_LABELS.get(task.status, task.status)
+    if task.status == "running":
+        if getattr(info, "pending_fire", False):
+            return "等待空闲触发"
+        if getattr(info, "next_fire", None) is not None:
+            remaining = f"{elapsed_text(max(0.0, info.next_fire - now))} 后"
+            return f"下次触发 {remaining}" if prefix_next else remaining
+        return "排队中"
+    return getattr(info, "end_reason", "") or ("已手动停止" if getattr(task, "stopped", False) else status_label)
