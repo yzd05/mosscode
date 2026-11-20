@@ -29,9 +29,12 @@ from mosscode.cli_providers import (
     CLIProxyProvider,
     DetectedCLIBackend,
     _check_claude_settings_billing,
+    _claude_settings_paths,
     _cli_env,
     _Deadline,
     _iter_lines_bounded,
+    _linux_pgid_has_live_member,
+    _managed_alive,
     _ManagedProcess,
     _ToolTagFilter,
     _windows_candidate_names,
@@ -497,6 +500,54 @@ async def test_claude_settings_billing_guard_rejects_overrides_and_allows_clean_
         with pytest.raises(ProviderError, match=expected):
             _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)}, settings_paths=[settings_file])
 
+    # Managed settings drop-ins (`managed-settings.d/*.json`) are discovered and evaluated as merged effective policy.
+    managed_root = tmp_path / "managed_root" / "ClaudeCode"
+    dropins = managed_root / "managed-settings.d"
+    dropins.mkdir(parents=True)
+    managed_base = managed_root / "managed-settings.json"
+    managed_base.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+    dropin_10 = dropins / "10-api.json"
+    dropin_10.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "managed-dropin-secret"}}), encoding="utf-8")
+    with monkeypatch.context() as mp:
+        mp.setattr(cli_providers, "_claude_managed_dir", lambda _env: managed_root)
+        discovered = _claude_settings_paths({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
+        assert managed_base in discovered and dropin_10 in discovered
+
+        # Clean user settings + drop-in API key must fail closed without leaking the secret.
+        settings_file.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+        with pytest.raises(ProviderError) as dropin_exc:
+            _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
+        assert "env.ANTHROPIC_API_KEY" in str(dropin_exc.value)
+        assert "managed-dropin-secret" not in str(dropin_exc.value)
+
+        # A later drop-in clearing the override restores a clean effective subscription config.
+        (dropins / "20-clear.json").write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": ""}}), encoding="utf-8")
+        _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
+
+        # Unreadable/non-directory `managed-settings.d` must fail closed.
+        bad_managed = tmp_path / "bad_managed"
+        bad_managed.mkdir()
+        (bad_managed / "managed-settings.d").write_text("not a dir", encoding="utf-8")
+        mp.setattr(cli_providers, "_claude_managed_dir", lambda _env: bad_managed)
+        with pytest.raises(ProviderError, match="受管配置目录"):
+            _claude_settings_paths({"CLAUDE_CONFIG_DIR": str(cfg_dir)})
+
+    # On Windows, legacy unused ProgramData path is NOT checked (only ProgramFiles).
+    if os.name == "nt":
+        pf_dir = tmp_path / "pf"
+        pd_dir = tmp_path / "pd"
+        (pd_dir / "ClaudeCode").mkdir(parents=True)
+        (pd_dir / "ClaudeCode" / "managed-settings.json").write_text(
+            json.dumps({"env": {"ANTHROPIC_API_KEY": "legacy-programdata"}}), encoding="utf-8"
+        )
+        win_paths = _claude_settings_paths(
+            {"CLAUDE_CONFIG_DIR": str(cfg_dir), "ProgramFiles": str(pf_dir), "ProgramData": str(pd_dir)}
+        )
+        assert all("pd" not in p.parts for p in win_paths)
+        _check_claude_settings_billing(
+            {"CLAUDE_CONFIG_DIR": str(cfg_dir), "ProgramFiles": str(pf_dir), "ProgramData": str(pd_dir)}
+        )
+
     # End-to-end: CLIProxyProvider.stream rejects before spawning the subprocess.
     spawned = False
 
@@ -789,6 +840,7 @@ async def test_cli_rejects_non_string_frame_type_and_incomplete_stream_without_t
     for proto, frame, should_succeed, tag in [
         ("cli-claude", {"type": "result"}, False, "c_missing"),
         ("cli-claude", {"type": "result", "subtype": "interrupted"}, False, "c_other"),
+        ("cli-claude", {"type": "result", "subtype": "success", "is_error": 0}, False, "c_zero_err"),
         ("cli-claude", {"type": "result", "subtype": "success"}, True, "c_ok_empty"),
         ("cli-gemini", {"type": "result"}, False, "g_missing"),
         ("cli-gemini", {"type": "result", "status": "cancelled"}, False, "g_other"),
@@ -925,7 +977,10 @@ async def test_cli_timeout_cancellation_and_leader_exit_terminate_descendants(tm
                     if isinstance(event, Delta) and event.text == "READY":
                         desc_pid_orphan = await asyncio.to_thread(probe_orphan.wait_ready)
                         managed = next(iter(provider_orphan._active))
-                        await asyncio.wait_for(managed.proc.wait(), timeout=5.0)
+                        # Poll `returncode` directly so CPython 3.12 doesn't stall waiting for inherited pipes to close.
+                        poll_deadline = asyncio.get_running_loop().time() + 5.0
+                        while managed.proc.returncode is None and asyncio.get_running_loop().time() < poll_deadline:
+                            await asyncio.sleep(0.02)
                         assert managed.proc.returncode == 0
                         captured[-1].at = asyncio.get_running_loop().time() + 0.05
         assert provider_orphan._active == set()
@@ -1065,14 +1120,65 @@ async def test_unconfirmed_teardown_retains_ownership_surfaces_failure_and_handl
     assert provider._active == set()
     assert tracked.cleaned is True
 
-    # 2. Direct cancellation during `_terminate_managed` grace period must escalate via `_kill_tree_sync`
-    #    and MUST NOT mark `managed.cleaned = True`.
+    # 2. Overlapping `close()` calls joining one in-flight teardown task must count only ONE attempt.
+    still_alive = True
+    teardown_started = asyncio.Event()
+    release_teardown = asyncio.Event()
+
+    async def gated_terminate(managed: _ManagedProcess, **_kw) -> bool:
+        teardown_started.set()
+        await release_teardown.wait()
+        return False
+
+    monkeypatch.setattr(cli_providers, "_terminate_managed", gated_terminate)
+    overlapping_managed = _ManagedProcess(proc=tracked.proc, pid=tracked.pid)
+    provider._active.add(overlapping_managed)
+    c1 = asyncio.create_task(provider.close())
+    await asyncio.wait_for(teardown_started.wait(), timeout=2.0)
+    c2 = asyncio.create_task(provider.close())
+    await asyncio.sleep(0.02)
+    release_teardown.set()
+    with pytest.raises(ProviderError, match="未能确认完全退出"):
+        await c1
+    with pytest.raises(ProviderError, match="未能确认完全退出"):
+        await c2
+    assert overlapping_managed.cleanup_attempts == 1
+    assert overlapping_managed in provider._active
+    provider._active.discard(overlapping_managed)
+
+    # 3. Unconfirmed capability help probe retains ownership, blocks duplicate probe, and cleans up via `close()`.
+    monkeypatch.setattr(cli_providers, "_terminate_managed", fast_terminate)
+    noisy_help = _make_exec_wrapper(tmp_path / "help_own", "noisy", 'print("Y" * 8192)')
+    with pytest.raises(ProviderError, match="超过大小上限"):
+        await verify_cli_capabilities(
+            "cli-claude",
+            str(noisy_help),
+            max_help_bytes=512,
+            active_processes=provider._active,
+        )
+    assert len(provider._active) == 1
+    probe_rec = next(iter(provider._active))
+    assert probe_rec.cleaned is False
+    with pytest.raises(ProviderError, match="尚未确认完全退出"):
+        await verify_cli_capabilities("cli-claude", str(noisy_help), active_processes=provider._active)
+    still_alive = False
+    await provider.close()
+    assert provider._active == set() and probe_rec.cleaned is True
+
+    # 4. Direct cancellation during `_terminate_managed` grace period must escalate via `_kill_tree_sync`,
+    #    never invoke real Windows `taskkill`, and MUST NOT mark `managed.cleaned = True`.
     still_alive = True
     kill_called = False
+    taskkill_called = False
+    wait_started = asyncio.Event()
 
     def spy_kill(managed: _ManagedProcess) -> None:
         nonlocal kill_called
         kill_called = True
+
+    def spy_taskkill(_pid: int) -> None:
+        nonlocal taskkill_called
+        taskkill_called = True
 
     class _FakeProc:
         returncode = None
@@ -1084,18 +1190,61 @@ async def test_unconfirmed_teardown_retains_ownership_surfaces_failure_and_handl
             pass
 
         async def wait(self) -> int:
+            wait_started.set()
             await asyncio.sleep(10)
             return 0
 
     monkeypatch.setattr(cli_providers, "_kill_tree_sync", spy_kill)
+    monkeypatch.setattr(cli_providers, "_taskkill_tree_windows", spy_taskkill)
     managed_cancel = _ManagedProcess(proc=_FakeProc(), pid=999999)  # type: ignore[arg-type]
     task = asyncio.create_task(real_terminate(managed_cancel, grace=5.0, kill_wait=5.0))
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(wait_started.wait(), timeout=2.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert kill_called is True
     assert managed_cancel.cleaned is False
+    if os.name == "nt":
+        assert taskkill_called is True
+
+
+def test_managed_alive_windows_job_unknown_and_linux_proc_zombies(tmp_path):
+    # Linux `/proc` inspection distinguishes zombie-only groups from live members and fails closed on unreadable `/proc`.
+    fake_proc = tmp_path / "proc"
+    fake_proc.mkdir()
+    (fake_proc / "101").mkdir()
+    (fake_proc / "101" / "stat").write_text("101 (child (weird) name) Z 1 4242 4242 0\n", encoding="utf-8")
+    assert _linux_pgid_has_live_member(4242, proc_root=fake_proc) is False
+
+    (fake_proc / "102").mkdir()
+    (fake_proc / "102" / "stat").write_text("102 (worker) S 1 4242 4242 0\n", encoding="utf-8")
+    assert _linux_pgid_has_live_member(4242, proc_root=fake_proc) is True
+
+    assert _linux_pgid_has_live_member(4242, proc_root=tmp_path / "missing_proc") is None
+    bad_proc = tmp_path / "bad_proc"
+    (bad_proc / "200").mkdir(parents=True)
+    (bad_proc / "200" / "stat").write_text("corrupt_without_paren\n", encoding="utf-8")
+    assert _linux_pgid_has_live_member(4242, proc_root=bad_proc) is None
+
+    # On Windows, a failed Job Object accounting query (`None`) MUST stay unknown (`True`), never confirmed dead.
+    if os.name == "nt":
+
+        class _ExitedProc:
+            returncode = 0
+
+        class _StubJob:
+            def __init__(self, count: int | None) -> None:
+                self._count = count
+
+            def active_processes(self) -> int | None:
+                return self._count
+
+        m_unknown = _ManagedProcess(proc=_ExitedProc(), pid=1, job=_StubJob(None))  # type: ignore[arg-type]
+        m_live = _ManagedProcess(proc=_ExitedProc(), pid=1, job=_StubJob(2))  # type: ignore[arg-type]
+        m_done = _ManagedProcess(proc=_ExitedProc(), pid=1, job=_StubJob(0))  # type: ignore[arg-type]
+        assert _managed_alive(m_unknown) is True
+        assert _managed_alive(m_live) is True
+        assert _managed_alive(m_done) is False
 
 
 def test_render_cli_prompt_replaces_images_with_placeholders(tmp_path):

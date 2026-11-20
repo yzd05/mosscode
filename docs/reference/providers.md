@@ -121,9 +121,9 @@ Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，�
 ```
 
 - **合规与安全边界**：仅调用硬编码白名单内的官方可执行程序（只从 `PATH` 中的显式绝对目录查找，绝不解析当前工作目录或相对路径，Windows 上自动跳过 `.ps1` 等需外部解释器的脚本扩展名，`shell=False`，不允许项目配置指定任意可执行路径），通过标准输入传入提示词，从不读取或复制外部 CLI 的私有 OAuth 令牌文件。
-- **计费路由隔离**：子进程环境会剥离 `MOSSCODE_*` 内部变量以及对应厂商的 API 密钥/云端路由变量（`cli-claude` 剥离 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_CUSTOM_HEADERS`、`ANTHROPIC_FOUNDRY_*`、`ANTHROPIC_BEDROCK_BASE_URL`、`ANTHROPIC_VERTEX_PROJECT_ID` 与 `CLAUDE_CODE_USE_*`；`cli-codex` 剥离 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等；`cli-gemini` 剥离 `GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_GENAI_USE_VERTEXAI`）；启动 `cli-claude` 前还会校验其会加载的用户级与受管 `settings.json` 中是否存在 `apiKeyHelper`、非订阅 `forceLoginMethod` 或覆盖计费/路由的 `env` 项（存在或配置文件无法解析时 fail-closed 拒绝启动），防止静默把订阅登录切换为按量 API 计费。
+- **计费路由隔离**：子进程环境会剥离 `MOSSCODE_*` 内部变量以及对应厂商的 API 密钥/云端路由变量（`cli-claude` 剥离 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_CUSTOM_HEADERS`、`ANTHROPIC_FOUNDRY_*`、`ANTHROPIC_BEDROCK_BASE_URL`、`ANTHROPIC_VERTEX_PROJECT_ID` 与 `CLAUDE_CODE_USE_*`；`cli-codex` 剥离 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等；`cli-gemini` 剥离 `GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_GENAI_USE_VERTEXAI`）；启动 `cli-claude` 前还会校验其会加载的用户级 `settings.json` 与生效的受管配置（`managed-settings.json` 及 `managed-settings.d/*.json`）中是否存在 `apiKeyHelper`、非订阅 `forceLoginMethod` 或覆盖计费/路由的 `env` 项（存在或配置无法读取/解析时 fail-closed 拒绝启动），防止静默把订阅登录切换为按量 API 计费。
 - **工具调用与只读策略控制**：启动前校验官方 CLI 是否支持必需的厂商侧隔离参数（不支持时 fail-closed 拒绝启用）：`cli-claude` 同时禁用内置工具（`--tools ""`）、外部 MCP 服务器（`--strict-mcp-config`）与项目/本地设置及工作区 Hook（`--setting-sources user`，同时保留用户订阅登录）；`cli-codex` 强制只读沙箱（`--sandbox read-only`）；`cli-gemini` 同时强制 `--approval-mode plan` 与拒绝全部工具的临时 `--policy` 规则文件（覆盖继承的自动编辑设置）。MossCode 通过每轮随机 64 位 Nonce 封装协议桥接自身工具调用，因此所有文件修改、命令执行、权限审批、命令沙箱、检查点与 `/swarm` 黑板协作仍完全由 MossCode 统一管控。
-- **限制**：`cli-*` 协议暂不支持图片输入（自动以占位符替代）、显式 `thinking` 配置与 `/thinking` 档位覆盖（由外部官方 CLI 自行管理）；超时、取消或父进程先行退出时均按进程树完整清理并在确认退出后才释放句柄（Windows 使用 Job Object 并捕获早期子进程，POSIX 使用进程组）。
+- **限制**：`cli-*` 协议暂不支持图片输入（自动以占位符替代）、显式 `thinking` 配置与 `/thinking` 档位覆盖（由外部官方 CLI 自行管理）；超时、取消或父进程先行退出时均按进程树清理（Windows 使用 Job Object 并捕获早期子进程，POSIX 使用进程组）。正常情况下仅在确认进程树退出后才释放追踪记录；若在清理超时内未能确认退出，MossCode 会报错并保留记录供后续 `close()` 重试，最多尝试 3 次仍未确认退出时报错并停止重试（Windows 上同时关闭 Job Object 句柄以触发内核 `KILL_ON_JOB_CLOSE` 并移除记录，避免追踪表无限增长）。
 
 ## 思考强度
 

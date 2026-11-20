@@ -306,21 +306,35 @@ def _cli_env(protocol: str) -> dict[str, str]:
     return env
 
 
+def _claude_managed_dir(env: Mapping[str, str]) -> Path:
+    """Return the documented OS managed-settings root for Claude Code (excluding legacy unused Windows paths)."""
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode")
+    if os.name == "nt":
+        root = env.get("ProgramFiles") or os.environ.get("ProgramFiles") or r"C:\Program Files"
+        return Path(root) / "ClaudeCode"
+    return Path("/etc/claude-code")
+
+
 def _claude_settings_paths(env: Mapping[str, str]) -> list[Path]:
-    """Return user and managed Claude settings files read when `--setting-sources user` is active."""
+    """Return user settings plus active managed settings (`managed-settings.json` and `managed-settings.d/*.json`)."""
     raw_dir = env.get("CLAUDE_CONFIG_DIR", "").strip()
     user_root = Path(raw_dir).expanduser() if raw_dir else Path.home() / ".claude"
     paths = [user_root / "settings.json"]
-    if sys.platform == "darwin":
-        paths.append(Path("/Library/Application Support/ClaudeCode/managed-settings.json"))
-    elif os.name == "nt":
-        for root_var, default_root in (("ProgramFiles", r"C:\Program Files"), ("ProgramData", r"C:\ProgramData")):
-            root = env.get(root_var) or os.environ.get(root_var) or default_root
-            candidate = Path(root) / "ClaudeCode" / "managed-settings.json"
-            if candidate not in paths:
-                paths.append(candidate)
-    else:
-        paths.append(Path("/etc/claude-code/managed-settings.json"))
+    managed_dir = _claude_managed_dir(env)
+    paths.append(managed_dir / "managed-settings.json")
+    dropin_dir = managed_dir / "managed-settings.d"
+    try:
+        entries = sorted(dropin_dir.iterdir(), key=lambda p: p.name)
+    except FileNotFoundError:
+        entries = []
+    except OSError as exc:
+        raise ProviderError(
+            f"无法读取 Claude Code 受管配置目录 {dropin_dir} 以校验计费路由（{redact(str(exc))}），已拒绝启动 cli-claude。"
+        ) from None
+    for entry in entries:
+        if entry.name.lower().endswith(".json"):
+            paths.append(entry)
     return paths
 
 
@@ -332,67 +346,99 @@ def _is_truthy_selector(value: Any) -> bool:
     return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
 
 
+def _load_claude_settings_json(path: Path) -> dict[str, Any] | None:
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as exc:
+        raise ProviderError(
+            f"无法读取 Claude Code 配置文件 {path} 以校验计费路由（{redact(str(exc))}），已拒绝启动 cli-claude。"
+        ) from None
+    try:
+        data = json.loads(raw_text)
+    except ValueError:
+        raise ProviderError(
+            f"Claude Code 配置文件 {path} 不是合法的 JSON，无法确认是否覆盖订阅计费路由，已拒绝启动 cli-claude。"
+        ) from None
+    if not isinstance(data, dict):
+        raise ProviderError(
+            f"Claude Code 配置文件 {path} 根节点必须是 JSON 对象，无法确认计费路由安全，已拒绝启动 cli-claude。"
+        )
+    raw_env = data.get("env")
+    if raw_env is not None and not isinstance(raw_env, dict):
+        raise ProviderError(
+            f"Claude Code 配置文件 {path} 的 env 字段格式无效，无法确认计费路由安全，已拒绝启动 cli-claude。"
+        )
+    return data
+
+
+def _validate_claude_settings_dict(data: Mapping[str, Any], source_label: str) -> None:
+    blocked: list[str] = []
+    for key in _CLAUDE_SETTINGS_BLOCKED_KEYS:
+        val = data.get(key)
+        if val is not None and (not isinstance(val, str) or val.strip() != ""):
+            blocked.append(key)
+    login_method = data.get("forceLoginMethod")
+    if isinstance(login_method, str) and login_method.strip() and login_method.strip().lower() != "claudeai":
+        blocked.append("forceLoginMethod")
+    elif login_method is not None and not isinstance(login_method, str):
+        blocked.append("forceLoginMethod")
+
+    raw_env = data.get("env")
+    if isinstance(raw_env, dict):
+        for key, val in raw_env.items():
+            if not isinstance(key, str):
+                continue
+            upper = key.upper()
+            if upper in _CLAUDE_SCRUB_EXACT:
+                if val is not None and str(val).strip() != "":
+                    blocked.append(f"env.{key}")
+            elif any(upper.startswith(prefix) for prefix in _CLAUDE_SCRUB_PREFIXES):
+                if _is_truthy_selector(val):
+                    blocked.append(f"env.{key}")
+
+    if blocked:
+        keys_text = "、".join(sorted(set(blocked)))
+        raise ProviderError(
+            f"检测到 Claude Code 配置 {source_label} 设置了会覆盖订阅计费路由的项（{keys_text}），"
+            "已拒绝启动 cli-claude；如需使用该 API 配置请改用 follow: claude-code，或先清理这些配置项。"
+        )
+
+
 def _check_claude_settings_billing(
     env: Mapping[str, str],
     *,
     settings_paths: Sequence[Path] | None = None,
 ) -> None:
-    """Fail closed if loaded Claude settings files configure API-key or cloud billing overrides."""
-    paths = _claude_settings_paths(env) if settings_paths is None else settings_paths
+    """Fail closed if user settings or effective managed settings (+ `managed-settings.d/*.json`) override billing."""
+    paths = _claude_settings_paths(env) if settings_paths is None else list(settings_paths)
+    managed_layers: list[tuple[Path, dict[str, Any]]] = []
     for path in paths:
-        try:
-            raw_text = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        data = _load_claude_settings_json(path)
+        if data is None:
             continue
-        except (OSError, UnicodeError) as exc:
-            raise ProviderError(
-                f"无法读取 Claude Code 配置文件 {path} 以校验计费路由（{redact(str(exc))}），已拒绝启动 cli-claude。"
-            ) from None
-        try:
-            data = json.loads(raw_text)
-        except ValueError:
-            raise ProviderError(
-                f"Claude Code 配置文件 {path} 不是合法的 JSON，无法确认是否覆盖订阅计费路由，已拒绝启动 cli-claude。"
-            ) from None
-        if not isinstance(data, dict):
-            raise ProviderError(
-                f"Claude Code 配置文件 {path} 根节点必须是 JSON 对象，无法确认计费路由安全，已拒绝启动 cli-claude。"
-            )
+        if path.name == "managed-settings.json" or path.parent.name == "managed-settings.d":
+            managed_layers.append((path, data))
+        else:
+            _validate_claude_settings_dict(data, str(path))
 
-        blocked: list[str] = []
-        for key in _CLAUDE_SETTINGS_BLOCKED_KEYS:
-            val = data.get(key)
-            if val is not None and (not isinstance(val, str) or val.strip() != ""):
-                blocked.append(key)
-        login_method = data.get("forceLoginMethod")
-        if isinstance(login_method, str) and login_method.strip() and login_method.strip().lower() != "claudeai":
-            blocked.append("forceLoginMethod")
-        elif login_method is not None and not isinstance(login_method, str):
-            blocked.append("forceLoginMethod")
-
-        raw_env = data.get("env")
-        if raw_env is not None:
-            if not isinstance(raw_env, dict):
-                raise ProviderError(
-                    f"Claude Code 配置文件 {path} 的 env 字段格式无效，无法确认计费路由安全，已拒绝启动 cli-claude。"
-                )
-            for key, val in raw_env.items():
-                if not isinstance(key, str):
-                    continue
-                upper = key.upper()
-                if upper in _CLAUDE_SCRUB_EXACT:
-                    if val is not None and str(val).strip() != "":
-                        blocked.append(f"env.{key}")
-                elif any(upper.startswith(prefix) for prefix in _CLAUDE_SCRUB_PREFIXES):
-                    if _is_truthy_selector(val):
-                        blocked.append(f"env.{key}")
-
-        if blocked:
-            keys_text = "、".join(sorted(set(blocked)))
-            raise ProviderError(
-                f"检测到 Claude Code 配置文件 {path} 设置了会覆盖订阅计费路由的项（{keys_text}），"
-                "已拒绝启动 cli-claude；如需使用该 API 配置请改用 follow: claude-code，或先清理这些配置项。"
-            )
+    if managed_layers:
+        effective: dict[str, Any] = {}
+        effective_env: dict[str, Any] = {}
+        has_env = False
+        for _path, layer in managed_layers:
+            for key, val in layer.items():
+                if key == "env":
+                    if isinstance(val, dict):
+                        has_env = True
+                        effective_env.update(val)
+                else:
+                    effective[key] = val
+        if has_env:
+            effective["env"] = effective_env
+        sources = "、".join(str(p) for p, _ in managed_layers)
+        _validate_claude_settings_dict(effective, sources)
 
 
 def _strip_images(messages: Sequence[Message]) -> list[Message]:
@@ -801,9 +847,10 @@ class _CLIStreamParser:
                 self.usage = _parse_claude_usage(self._claude_usage_fields)
             raw_subtype = frame.get("subtype")
             subtype = raw_subtype if isinstance(raw_subtype, str) else ""
-            if frame.get("is_error") is True or subtype.startswith("error"):
+            is_error = frame.get("is_error")
+            if is_error is True or subtype.startswith("error"):
                 self.error_message = _extract_error_text(frame) or "Claude Code CLI 执行失败。"
-            elif subtype == "success" and frame.get("is_error") in (None, False):
+            elif subtype == "success" and (is_error is None or is_error is False):
                 self.saw_terminal_success = True
                 if not self.saw_any_text and isinstance(frame.get("result"), str) and frame["result"]:
                     self.saw_any_text = True
@@ -1225,6 +1272,58 @@ class _ManagedProcess:
     cleaned: bool = False
     cleanup_attempts: int = 0
     teardown_task: asyncio.Task[bool] | None = None
+    probe_key: tuple[str, str] | None = None
+
+
+_UNCONFIRMED_HELP_PROBES: set[_ManagedProcess] = set()
+
+
+def _linux_pgid_has_live_member(pgid: int, *, proc_root: Path = Path("/proc")) -> bool | None:
+    """Inspect Linux `/proc/<pid>/stat` to distinguish live process-group members from unreaped zombies.
+
+    Returns `True` if a live member exists, `False` if only zombies/dead entries (or none) exist,
+    or `None` when liveness cannot be determined (caller must fail closed and retain ownership).
+    """
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return None
+    uncertain = False
+    for entry in entries:
+        name = entry.name
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        try:
+            raw = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError:
+            try:
+                if os.getpgid(pid) == pgid:
+                    uncertain = True
+            except ProcessLookupError:
+                continue
+            except (OSError, AttributeError):
+                uncertain = True
+            continue
+        rparen = raw.rfind(")")
+        if rparen == -1:
+            uncertain = True
+            continue
+        fields = raw[rparen + 1 :].split()
+        if len(fields) < 3:
+            uncertain = True
+            continue
+        state = fields[0]
+        try:
+            member_pgid = int(fields[2])
+        except ValueError:
+            uncertain = True
+            continue
+        if member_pgid == pgid and state not in {"Z", "X", "x"}:
+            return True
+    return None if uncertain else False
 
 
 def _pgid_alive(pgid: int) -> bool:
@@ -1232,24 +1331,29 @@ def _pgid_alive(pgid: int) -> bool:
         return False
     try:
         os.killpg(pgid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except OSError:
-        return False
+        return True
+    if sys.platform.startswith("linux"):
+        live = _linux_pgid_has_live_member(pgid)
+        # Fail closed when `/proc` inspection is inconclusive.
+        return True if live is None else live
+    return True
 
 
 def _managed_alive(managed: _ManagedProcess) -> bool:
-    """True when the leader or any tracked descendant is still alive."""
+    """True when the leader or any tracked descendant is still alive (or status is unknown)."""
     if managed.proc.returncode is None:
         return True
     if os.name == "nt":
         if managed.job is not None:
             active = managed.job.active_processes()
-            if active is not None:
-                return active > 0
+            # Keep job status pending when accounting query fails; a parent-PID tree walk can miss
+            # live grandchildren whose intermediate parent already exited.
+            return True if active is None else active > 0
         return _windows_pid_alive(managed.pid) or bool(_windows_descendant_pids(managed.pid))
     return managed.pgid is not None and _pgid_alive(managed.pgid)
 
@@ -1376,11 +1480,12 @@ async def _terminate_managed(
 
 
 async def _run_teardown(managed: _ManagedProcess) -> bool:
-    """Run or join one shared, cancellation-safe teardown task for `managed`."""
+    """Run or join one shared, cancellation-safe teardown task; count attempts once per created task."""
     if managed.cleaned:
         return True
     task = managed.teardown_task
     if task is None or task.done():
+        managed.cleanup_attempts += 1
         task = asyncio.create_task(_terminate_managed(managed))
         managed.teardown_task = task
 
@@ -1518,10 +1623,33 @@ async def verify_cli_capabilities(
     *,
     timeout: float = 10.0,
     max_help_bytes: int = MAX_HELP_BYTES,
+    active_processes: set[_ManagedProcess] | None = None,
 ) -> None:
     """Verify the installed official CLI advertises required vendor-side safety flags; fail closed otherwise."""
     if protocol not in _REQUIRED_HELP_ARGS:
         raise ProviderError(f"不支持的 CLI 代理协议：{protocol}。")
+    label = CLI_LABELS[protocol]
+    probe_key = (protocol, executable)
+    tracked = _UNCONFIRMED_HELP_PROBES if active_processes is None else active_processes
+
+    # Never launch another probe while an earlier probe for this binary still has unconfirmed teardown.
+    for existing in list(tracked):
+        if existing.probe_key != probe_key:
+            continue
+        if existing.cleaned:
+            tracked.discard(existing)
+            continue
+        in_flight = existing.teardown_task is not None and not existing.teardown_task.done()
+        if not in_flight and not _managed_alive(existing):
+            if existing.job is not None:
+                existing.job.close()
+            existing.cleaned = True
+            tracked.discard(existing)
+            continue
+        raise ProviderError(
+            f"上一次 {label} 能力检测子进程树（PID {existing.pid}）尚未确认完全退出，已拒绝重复启动检测；请先关闭重试清理。"
+        )
+
     try:
         st = os.stat(executable)
         cache_key = (protocol, executable, st.st_mtime_ns, st.st_size)
@@ -1535,7 +1663,6 @@ async def verify_cli_capabilities(
         return
 
     help_args, required_flags = _REQUIRED_HELP_ARGS[protocol]
-    label = CLI_LABELS[protocol]
     spawn_kwargs: dict[str, Any] = {
         "stdin": asyncio.subprocess.DEVNULL,
         "stdout": asyncio.subprocess.PIPE,
@@ -1552,8 +1679,24 @@ async def verify_cli_capabilities(
     except OSError as exc:
         raise ProviderError(f"无法检测 {label} 版本能力：{redact(str(exc))}") from None
 
-    job, _ = _attach_windows_job(proc.pid)
-    managed = _ManagedProcess(proc=proc, pid=proc.pid, job=job, pgid=None if os.name == "nt" else proc.pid)
+    job, job_err = _attach_windows_job(proc.pid)
+    managed = _ManagedProcess(
+        proc=proc,
+        pid=proc.pid,
+        job=job,
+        pgid=None if os.name == "nt" else proc.pid,
+        probe_key=probe_key,
+    )
+    tracked.add(managed)
+    if os.name == "nt" and job is None and job_err is not None:
+        if _windows_pid_alive(proc.pid) or _windows_descendant_pids(proc.pid):
+            try:
+                await _run_teardown(managed)
+            finally:
+                if managed.cleaned:
+                    tracked.discard(managed)
+            raise ProviderError(f"无法为 {label} 能力检测建立 Windows 进程树隔离，已中止执行。") from None
+
     try:
         async with asyncio.timeout(min(timeout, 10.0)):
             stdout_b, stderr_b = await _read_help_bounded(proc, max_bytes=max_help_bytes, label=label)
@@ -1561,10 +1704,14 @@ async def verify_cli_capabilities(
         raise ProviderError(f"检测 {label} 安全参数能力超时，已拒绝启用。") from None
     finally:
         _signal_tree_sync(managed)
-        await _run_teardown(managed)
+        try:
+            await _run_teardown(managed)
+        finally:
+            if managed.cleaned:
+                tracked.discard(managed)
 
     if not managed.cleaned:
-        raise ProviderError(f"检测 {label} 安全参数能力后子进程树未能确认完全退出，已拒绝启用。")
+        raise ProviderError(f"检测 {label} 安全参数能力后子进程树未能确认完全退出，已保留待关闭重试。")
 
     # Do not permanently cache nonzero help exits so transient startup failures recover on retry.
     if proc.returncode != 0:
@@ -1647,13 +1794,13 @@ class CLIProxyProvider:
             if managed.cleaned:
                 self._active.discard(managed)
                 continue
-            if managed.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS:
+            in_flight = managed.teardown_task is not None and not managed.teardown_task.done()
+            if not in_flight and managed.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS:
                 if managed.job is not None:
                     managed.job.close()
                 self._active.discard(managed)
                 failed.append(managed.pid)
                 continue
-            managed.cleanup_attempts += 1
             confirmed = await _run_teardown(managed)
             if confirmed and managed.cleaned:
                 self._active.discard(managed)
@@ -1690,7 +1837,12 @@ class CLIProxyProvider:
         if self._capability_checker is not None:
             await self._capability_checker(protocol, executable)
         elif self._argv_builder is build_cli_argv:
-            await verify_cli_capabilities(protocol, executable, timeout=self.config.timeout)
+            await verify_cli_capabilities(
+                protocol,
+                executable,
+                timeout=self.config.timeout,
+                active_processes=self._active,
+            )
 
         policy_file: Path | None = None
         try:
@@ -1739,7 +1891,6 @@ class CLIProxyProvider:
                 # Fail closed if Windows process-tree containment cannot be established while the process is alive.
                 if _windows_pid_alive(proc.pid) or _windows_descendant_pids(proc.pid):
                     self._active.add(managed)
-                    managed.cleanup_attempts += 1
                     try:
                         await _run_teardown(managed)
                     finally:
@@ -1802,7 +1953,6 @@ class CLIProxyProvider:
                 try:
                     await asyncio.gather(stdin_task, stderr_task, return_exceptions=True)
                 finally:
-                    managed.cleanup_attempts += 1
                     try:
                         await _run_teardown(managed)
                     finally:
