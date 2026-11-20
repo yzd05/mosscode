@@ -9,13 +9,14 @@ import re
 import secrets
 import time
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 from .config import OFFICIAL, ConfigError, is_loopback_url, load_settings, render_config
 from .credentials import SECRET_HEADER, redact
@@ -29,6 +30,7 @@ MAX_RECENT_MODELS = 12
 PREFS_FILE = "model_prefs.json"
 PREFS_LOCK = "model_prefs.json.lock"
 ANTHROPIC_VERSION = "2023-06-01"
+CONFIG_LOCK_TIMEOUT = 10.0
 
 
 @dataclass(frozen=True)
@@ -357,7 +359,7 @@ class ModelPrefsStore:
         """Toggle favorite status for `<provider>/<model>`; returns True if now favorited."""
         key = model_key(provider_name, model)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self._lock_path), timeout=CONFIG_LOCK_TIMEOUT):
             prefs = self._read_unlocked()
             favs = list(prefs.favorites)
             if key in favs:
@@ -373,7 +375,7 @@ class ModelPrefsStore:
         """Record `<provider>/<model>` at the front of the MRU list."""
         key = model_key(provider_name, model)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with FileLock(str(self._lock_path)):
+        with FileLock(str(self._lock_path), timeout=CONFIG_LOCK_TIMEOUT):
             prefs = self._read_unlocked()
             recent = [key, *(item for item in prefs.recent if item != key)][:MAX_RECENT_MODELS]
             self._write_unlocked(ModelPrefs(favorites=prefs.favorites, recent=tuple(recent)))
@@ -466,6 +468,13 @@ def config_lock_path(config_path: Path) -> Path:
     return config_path.with_name(f".{config_path.name}.lock")
 
 
+def keyring_lock_path(home: Path | None = None) -> Path:
+    """Shared cross-process lock serializing credential allocation/commit across all config files."""
+    base = mosscode_home(home)
+    base.mkdir(parents=True, exist_ok=True)
+    return base / ".keyring.lock"
+
+
 def write_temp_file(tmp: Path, content: str, *, private: bool) -> None:
     """Create `tmp` exclusively, enforcing 0600 permissions before writing bytes when `private` on POSIX."""
     if os.name != "nt" and private:
@@ -474,7 +483,8 @@ def write_temp_file(tmp: Path, content: str, *, private: bool) -> None:
             with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
                 stream.write(content)
         except BaseException:
-            tmp.unlink(missing_ok=True)
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
             raise
         return
     with tmp.open("x", encoding="utf-8", newline="") as stream:
@@ -495,22 +505,21 @@ def write_private_backup(source: Path, backup: Path) -> None:
                 stream.write(data)
         os.replace(tmp, backup)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
 
 
 def _keyring_entry_exists(name: str, vault: Any) -> bool:
+    """Fail closed: propagate credential backend lookup errors rather than treating unknown state as free."""
     if vault is not None:
         exists_fn = getattr(vault, "exists", None)
         if callable(exists_fn):
             return bool(exists_fn(name))
         return False
-    from .credentials import KeyringError, keyring_get
+    from .credentials import keyring_get
 
-    try:
-        return keyring_get(name) is not None
-    except KeyringError:
-        return False
+    return keyring_get(name) is not None
 
 
 def allocate_keyring_name(base: str, taken: set[str], vault: Any = None) -> str:
@@ -543,14 +552,19 @@ def set_default_model(
     model: str | None = None,
     *,
     home: Path | None = None,
+    lock_timeout: float = CONFIG_LOCK_TIMEOUT,
 ) -> tuple[bool, str]:
     """Persist `default_provider` (and optionally `model`) into `config_path` atomically."""
     import yaml
 
     if not config_path.is_file():
         return False, f"配置文件不存在：{config_path}"
-    lock = FileLock(str(config_lock_path(config_path)))
-    with lock:
+    lock = FileLock(str(config_lock_path(config_path)), timeout=lock_timeout)
+    try:
+        lock.acquire()
+    except FileLockTimeout:
+        return False, "配置文件正在被其他进程修改，请稍后重试。"
+    try:
         try:
             original = config_path.read_text(encoding="utf-8")
             loaded = yaml.safe_load(original)
@@ -602,8 +616,11 @@ def set_default_model(
                 write_private_backup(config_path, config_path.with_name(config_path.name + ".bak"))
             os.replace(tmp, config_path)
         except (ConfigError, OSError) as exc:
-            tmp.unlink(missing_ok=True)
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
             return False, f"写入默认配置失败：{exc}"
+    finally:
+        lock.release()
     shown = f"{provider_name}/{model}" if model else provider_name
     return True, f"已将 {shown} 设为默认模型（{config_path}）。"
 
@@ -650,6 +667,7 @@ def save_provider_entry(
     set_default: bool = False,
     vault: Any = None,
     config_path: Path | None = None,
+    lock_timeout: float = CONFIG_LOCK_TIMEOUT,
 ) -> tuple[Path, str]:
     """Create or append `provider` in user config atomically, validating via load_settings().
 
@@ -661,7 +679,6 @@ def save_provider_entry(
 
     path = config_path or (mosscode_home(home) / "config.yaml")
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(config_lock_path(path)))
 
     def _unique(base: str, taken: set[str]) -> str:
         if base not in taken:
@@ -671,70 +688,10 @@ def save_provider_entry(
             n += 1
         return f"{base}-{n}"
 
-    with lock:
-        entry = dict(provider)
-        if not path.exists():
-            if "api_key_keyring" in entry and pending_key is not None:
-                entry["api_key_keyring"] = allocate_keyring_name(str(entry["api_key_keyring"]), set(), vault)
-            content = render_config(entry)
-            tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
-            try:
-                write_temp_file(tmp, content, private="api_key" in entry)
-                load_settings(tmp, home)
-            except BaseException:
-                tmp.unlink(missing_ok=True)
-                raise
-            stored_keyring: str | None = None
-            if pending_key is not None:
-                try:
-                    if vault is not None:
-                        vault.store(entry["api_key_keyring"], pending_key)
-                    else:
-                        keyring_set(entry["api_key_keyring"], pending_key)
-                    stored_keyring = str(entry["api_key_keyring"])
-                except KeyringError as exc:
-                    tmp.unlink(missing_ok=True)
-                    raise ConfigError(f"无法保存密钥：{exc}") from None
-            try:
-                os.replace(tmp, path)
-            except BaseException:
-                tmp.unlink(missing_ok=True)
-                if stored_keyring is not None:
-                    rollback_keyring_entry(stored_keyring, vault)
-                raise
-            return path, str(entry["name"])
-
-        original = path.read_text(encoding="utf-8")
-        try:
-            loaded = yaml.safe_load(original)
-        except yaml.YAMLError as exc:
-            raise ConfigError(f"无法解析现有配置 {path}：{exc}") from None
-        if not isinstance(loaded, dict) or not isinstance(loaded.get("providers"), list) or not loaded["providers"]:
-            raise ConfigError(f"现有配置 {path} 格式无效（缺少 providers 列表）。")
-        settings = load_settings(path, home)
-        existing_names = {item.name for item in settings.providers}
-        original_name = str(entry["name"])
-        entry["name"] = _unique(original_name, existing_names)
-        if "api_key_keyring" in entry:
-            taken = existing_names | {
-                item["api_key_keyring"]
-                for item in loaded["providers"]
-                if isinstance(item, dict) and isinstance(item.get("api_key_keyring"), str)
-            }
-            keyring_base = (
-                str(entry["name"]) if str(entry["api_key_keyring"]) == original_name else str(entry["api_key_keyring"])
-            )
-            entry["api_key_keyring"] = (
-                allocate_keyring_name(keyring_base, taken, vault)
-                if pending_key is not None
-                else _unique(keyring_base, taken)
-            )
-
+    def _stage_append(original: str, loaded: dict[str, Any], entry: dict[str, Any]) -> tuple[Path, bool]:
         expected = {**loaded, "providers": [*loaded["providers"], entry]}
         if set_default:
             expected["default_provider"] = entry["name"]
-
-        # Preserve comments via block insert when possible.
         rendered = insert_provider_text(original, entry)
         if rendered is not None and set_default:
             rendered = _replace_default_in_text(rendered, str(entry["name"]), None)
@@ -756,10 +713,117 @@ def save_provider_entry(
             write_temp_file(tmp, rendered, private=has_plaintext)
             load_settings(tmp, home)
         except BaseException:
-            tmp.unlink(missing_ok=True)
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
             raise
+        return tmp, kept
+
+    def _stage_new(entry: dict[str, Any]) -> Path:
+        content = render_config(entry)
+        tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
+        try:
+            write_temp_file(tmp, content, private="api_key" in entry)
+            load_settings(tmp, home)
+        except BaseException:
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
+        return tmp
+
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(FileLock(str(config_lock_path(path)), timeout=lock_timeout))
+        except FileLockTimeout:
+            raise ConfigError("配置文件正在被其他进程修改，请稍后重试。") from None
+
+        entry = dict(provider)
+        if not path.exists():
+            # Validate draft BEFORE consulting or writing the credential backend.
+            tmp = _stage_new(entry)
+            stored_keyring: str | None = None
+            if pending_key is not None:
+                try:
+                    stack.enter_context(FileLock(str(keyring_lock_path(home)), timeout=lock_timeout))
+                except FileLockTimeout:
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    raise ConfigError("凭据管理器正在被其他进程使用，请稍后重试。") from None
+                try:
+                    allocated = allocate_keyring_name(str(entry["api_key_keyring"]), set(), vault)
+                except KeyringError as exc:
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    raise ConfigError(f"无法读取系统凭据管理器：{exc}") from None
+                if allocated != entry["api_key_keyring"]:
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    entry["api_key_keyring"] = allocated
+                    tmp = _stage_new(entry)
+                try:
+                    if vault is not None:
+                        vault.store(entry["api_key_keyring"], pending_key)
+                    else:
+                        keyring_set(entry["api_key_keyring"], pending_key)
+                    stored_keyring = str(entry["api_key_keyring"])
+                except KeyringError as exc:
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    raise ConfigError(f"无法保存密钥：{exc}") from None
+            try:
+                os.replace(tmp, path)
+            except BaseException:
+                if stored_keyring is not None:
+                    rollback_keyring_entry(stored_keyring, vault)
+                with suppress(OSError):
+                    tmp.unlink(missing_ok=True)
+                raise
+            return path, str(entry["name"])
+
+        original = path.read_text(encoding="utf-8")
+        try:
+            loaded = yaml.safe_load(original)
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"无法解析现有配置 {path}：{exc}") from None
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("providers"), list) or not loaded["providers"]:
+            raise ConfigError(f"现有配置 {path} 格式无效（缺少 providers 列表）。")
+        settings = load_settings(path, home)
+        existing_names = {item.name for item in settings.providers}
+        original_name = str(entry["name"])
+        entry["name"] = _unique(original_name, existing_names)
+        taken: set[str] = set()
+        keyring_base = ""
+        if "api_key_keyring" in entry:
+            taken = existing_names | {
+                item["api_key_keyring"]
+                for item in loaded["providers"]
+                if isinstance(item, dict) and isinstance(item.get("api_key_keyring"), str)
+            }
+            keyring_base = (
+                str(entry["name"]) if str(entry["api_key_keyring"]) == original_name else str(entry["api_key_keyring"])
+            )
+            entry["api_key_keyring"] = _unique(keyring_base, taken)
+
+        # Validate candidate YAML BEFORE consulting or writing the credential store.
+        tmp, kept = _stage_append(original, loaded, entry)
         stored_keyring = None
         if pending_key is not None:
+            try:
+                stack.enter_context(FileLock(str(keyring_lock_path(home)), timeout=lock_timeout))
+            except FileLockTimeout:
+                with suppress(OSError):
+                    tmp.unlink(missing_ok=True)
+                raise ConfigError("凭据管理器正在被其他进程使用，请稍后重试。") from None
+            try:
+                allocated = allocate_keyring_name(keyring_base or str(entry["api_key_keyring"]), taken, vault)
+            except KeyringError as exc:
+                with suppress(OSError):
+                    tmp.unlink(missing_ok=True)
+                raise ConfigError(f"无法读取系统凭据管理器：{exc}") from None
+            if allocated != entry["api_key_keyring"]:
+                with suppress(OSError):
+                    tmp.unlink(missing_ok=True)
+                entry["api_key_keyring"] = allocated
+                tmp, kept = _stage_append(original, loaded, entry)
             try:
                 if vault is not None:
                     vault.store(entry["api_key_keyring"], pending_key)
@@ -767,15 +831,17 @@ def save_provider_entry(
                     keyring_set(entry["api_key_keyring"], pending_key)
                 stored_keyring = str(entry["api_key_keyring"])
             except KeyringError as exc:
-                tmp.unlink(missing_ok=True)
+                with suppress(OSError):
+                    tmp.unlink(missing_ok=True)
                 raise ConfigError(f"无法保存密钥：{exc}") from None
         try:
             if not kept:
                 write_private_backup(path, path.with_name(path.name + ".bak"))
             os.replace(tmp, path)
         except BaseException:
-            tmp.unlink(missing_ok=True)
             if stored_keyring is not None:
                 rollback_keyring_entry(stored_keyring, vault)
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
             raise
         return path, str(entry["name"])

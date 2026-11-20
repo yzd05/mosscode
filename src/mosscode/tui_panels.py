@@ -333,6 +333,10 @@ class _CommandUIMixin:
         self.run_worker(dispatch(self._command_context(), parse_input("/rewind", self.commands)), group="rewind")
 
     async def switch_model(self, name: str, model: str | None = None) -> bool:
+        async with self._model_switch_lock:
+            return await self._switch_model_unlocked(name, model)
+
+    async def _switch_model_unlocked(self, name: str, model: str | None = None) -> bool:
         if self.settings is None:
             await self._local_note(f"切换失败：未知 Provider：{name}。")
             return False

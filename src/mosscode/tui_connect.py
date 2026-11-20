@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -482,7 +483,8 @@ class _ConnectMixin:
         home = self._connect_home()
         config_path = self._connect_config_path()
         vault = getattr(self, "_connect_vault", None)
-        try:
+
+        def _commit() -> tuple[Path, str, Any]:
             saved_path, saved_name = save_provider_entry(
                 home,
                 entry,
@@ -491,19 +493,27 @@ class _ConnectMixin:
                 vault=vault,
                 config_path=config_path,
             )
-            reloaded = load_settings(saved_path, home)
+            return saved_path, saved_name, load_settings(saved_path, home)
+
+        try:
+            saved_path, saved_name, reloaded = await asyncio.to_thread(_commit)
         except (ConfigError, OSError) as exc:
-            self._close_connect_panel()
-            await self._local_note(f"! 保存模型配置失败：{exc}", OPERATION_COLOR)
+            # Keep the confirmation panel and draft intact so the user can retry or navigate back.
+            self._connect_status_text = Text(f"! 保存失败：{exc}")
+            st = self.query_one("#connect-status", Static)
+            st.display = True
+            st.update(f"! 保存失败：{exc}")
+            self.call_later(self._fit_chat)
             return
 
         if pending_key:
             remember(pending_key)
         if entry.get("api_key"):
             remember(str(entry["api_key"]))
-        self.settings = reloaded
-        self._configured_providers = reloaded.providers
-        self.conversation.provider_configs = reloaded.providers
+        async with self._model_switch_lock:
+            self.settings = reloaded
+            self._configured_providers = reloaded.providers
+            self.conversation.provider_configs = reloaded.providers
         self._close_connect_panel()
         await self._local_note(f"└ 已保存 Provider {saved_name} 到 {saved_path}。")
         await self.switch_model(saved_name)

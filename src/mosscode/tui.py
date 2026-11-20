@@ -365,6 +365,7 @@ class MossCodeApp(
         self._connect_history = []
         self._connect_choices = []
         self._connect_status_text = Text("")
+        self._model_switch_lock = asyncio.Lock()
         self._hooks_confirmed = False  # Asked once at startup, before session_start.
         # A table of this run's own: skill commands are added here and replaced by /skills reload.
         self.commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
@@ -834,11 +835,25 @@ class MossCodeApp(
             extra = 1 if self.query_one("#model-filter").display else 0
             reserved += 4 + extra + min(8, self._panel_rows)
         if self.query_one("#connect-panel").display:
+            opt_rows = (
+                min(8, max(1, len(self._connect_choices)))
+                if self.query_one("#connect-options").display
+                else (1 if self.query_one("#connect-input").display else 0)
+            )
+            # Two rules, title, help, plus options/input rows; cap #connect-status so choices never clip.
+            fixed = 4 + opt_rows
+            limit = max(fixed, self.size.height - reserved - 1)
+            self.query_one("#connect-panel").styles.max_height = limit
+            status_widget = self.query_one("#connect-status")
             status_rows = 0
-            if self.query_one("#connect-status").display and self._connect_status_text.plain:
+            if status_widget.display and self._connect_status_text.plain:
+                status_cap = max(1, limit - fixed)
+                status_widget.styles.max_height = status_cap
                 width = max(10, self.size.width - self.screen.styles.gutter.width - 2)
-                status_rows = len(self._connect_status_text.wrap(self.console, width))
-            reserved += 6 + status_rows + min(8, max(1, len(self._connect_choices)))
+                status_rows = min(status_cap, len(self._connect_status_text.wrap(self.console, width)))
+            else:
+                status_widget.styles.max_height = None
+            reserved += min(limit, fixed + status_rows)
         if self.query_one("#approval-panel").display:
             # Keep the choices and status reachable in a short terminal; only
             # the preview shrinks. Completed history already lives in scrollback.

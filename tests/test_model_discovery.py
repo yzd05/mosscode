@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import httpx
 import pytest
@@ -270,12 +271,17 @@ def test_set_default_model_preserves_comments_and_validates(tmp_path):
 
 def test_save_provider_entry_validates_before_keyring_and_deduplicates(tmp_path):
     stored: dict[str, str] = {}
+    exists_calls: list[str] = []
 
     class FakeVault:
+        def exists(self, name: str) -> bool:
+            exists_calls.append(name)
+            return name in stored
+
         def store(self, name: str, secret: str) -> None:
             stored[name] = secret
 
-    # Invalid config (non-loopback auth_type=none) must fail before touching keyring or creating file.
+    # Invalid config (non-loopback auth_type=none) must fail before consulting or writing keyring.
     with pytest.raises(ConfigError):
         save_provider_entry(
             tmp_path,
@@ -290,6 +296,7 @@ def test_save_provider_entry_validates_before_keyring_and_deduplicates(tmp_path)
             pending_key="should-not-be-stored",
             vault=FakeVault(),
         )
+    assert exists_calls == []
     assert stored == {}
     assert not (tmp_path / ".mosscode" / "config.yaml").exists()
 
@@ -795,3 +802,144 @@ async def test_picker_session_override_target_and_failed_switch_does_not_persist
         await pilot.pause()
         assert app.provider_name == "alpha"
         assert load_settings(cfg, isolated_home).default_provider == "alpha"
+
+
+def test_keyring_lookup_error_fails_closed_and_lock_timeout_is_bounded(tmp_path):
+    from filelock import FileLock
+
+    from mosscode.credentials import KeyringError
+    from mosscode.model_discovery import config_lock_path
+
+    stored: dict[str, str] = {}
+
+    class BrokenLookupVault:
+        def exists(self, name: str) -> bool:
+            raise KeyringError("backend locked")
+
+        def store(self, name: str, secret: str) -> None:
+            stored[name] = secret
+
+    with pytest.raises(ConfigError, match="无法读取系统凭据管理器"):
+        save_provider_entry(
+            tmp_path,
+            {"name": "deepseek", "preset": "deepseek", "api_key_keyring": "deepseek"},
+            pending_key="never-written",
+            vault=BrokenLookupVault(),
+        )
+    assert stored == {}
+
+    cfg, _ = save_provider_entry(tmp_path, {"name": "ollama", "preset": "ollama", "model": "llama3.1"})
+    held = FileLock(str(config_lock_path(cfg)))
+    held.acquire()
+    try:
+        ok, msg = set_default_model(cfg, "ollama", home=tmp_path, lock_timeout=0.05)
+        assert not ok and "其他进程" in msg
+        with pytest.raises(ConfigError, match="其他进程"):
+            save_provider_entry(
+                tmp_path,
+                {"name": "ollama", "preset": "ollama", "model": "qwen2.5"},
+                lock_timeout=0.05,
+            )
+    finally:
+        held.release()
+
+
+def test_setup_handles_mkdir_failure_and_rolls_back_keyring_even_when_unlink_fails(tmp_path, monkeypatch):
+    from mosscode.setup import setup
+    from test_cli_product import wizard
+
+    # 1. mkdir failure after confirmation returns "failed" instead of raising uncaught OSError.
+    w_dir, out_dir = wizard(["1", "", "2", ""], secret=lambda _: "dir-fail-key")
+    monkeypatch.setattr(Path, "mkdir", lambda *a, **kw: (_ for _ in ()).throw(PermissionError("denied")))
+    assert setup(tmp_path / "blocked", w_dir) == "failed"
+    assert any("无法创建配置目录" in str(line) for line in out_dir)
+    monkeypatch.undo()
+
+    # 2. os.replace failure + unlink failure still rolls back the newly written keyring entry.
+    stored: dict[str, str] = {}
+
+    class RollbackVault:
+        def problem(self):
+            return None
+
+        def label(self):
+            return "测试凭据库"
+
+        def exists(self, name: str) -> bool:
+            return name in stored
+
+        def store(self, name: str, secret: str) -> None:
+            stored[name] = secret
+
+        def delete(self, name: str) -> None:
+            stored.pop(name, None)
+
+    w_rb, out_rb = wizard(["1", "", "1", ""], secret=lambda _: "rollback-secret", vault=RollbackVault())
+    monkeypatch.setattr("mosscode.setup.os.replace", lambda *a, **kw: (_ for _ in ()).throw(OSError("replace boom")))
+    orig_unlink = Path.unlink
+
+    def failing_unlink(self, *a, **kw):
+        if ".yaml.tmp" in self.name:
+            raise OSError("unlink boom")
+        return orig_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    assert setup(tmp_path / "rb", w_rb) == "failed"
+    assert stored == {}
+    assert any("清理失败" in str(line) for line in out_rb)
+
+
+async def test_concurrent_model_switches_are_serialized(isolated_home):
+    import asyncio
+
+    cfg = isolated_home / ".mosscode" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "default_provider: p1\n"
+        "providers:\n"
+        "  - name: p1\n"
+        "    protocol: anthropic-messages\n"
+        "    model: m1\n"
+        "    api_key: k1\n"
+        "  - name: p2\n"
+        "    protocol: openai-chat-completions\n"
+        "    model: m2\n"
+        "    api_key: k2\n"
+        "  - name: p3\n"
+        "    protocol: openai-chat-completions\n"
+        "    model: m3\n"
+        "    api_key: k3\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(cfg, isolated_home)
+
+    class SlowCloseProvider(FakeProvider):
+        def __init__(self, label: str, delay: float = 0.0):
+            super().__init__()
+            self.label = label
+            self.delay = delay
+
+        async def close(self):
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            await super().close()
+
+    first = SlowCloseProvider("p1", delay=0.15)
+    created: dict[str, SlowCloseProvider] = {}
+
+    def factory(config: ProviderConfig):
+        prov = SlowCloseProvider(config.name, delay=0.0)
+        created[config.name] = prov
+        return prov
+
+    conv = Conversation(first)
+    app = MossCodeApp(conv, "p1", settings=settings, model="m1", provider_factory=factory)
+    async with app.run_test(size=(100, 32)):
+        t1 = asyncio.create_task(app.switch_model("p2"))
+        await asyncio.sleep(0.02)
+        t2 = asyncio.create_task(app.switch_model("p3"))
+        results = await asyncio.gather(t1, t2)
+        assert results == [True, True]
+        assert app.provider_name == "p3"
+        assert app.model == "m3"
+        assert conv.provider is created["p3"]

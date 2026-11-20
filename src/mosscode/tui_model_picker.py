@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -243,31 +244,34 @@ class _ModelPickerMixin:
 
     async def _apply_model_choice(self, choice: ModelChoice, *, persist_default: bool = False) -> None:
         self._close_model_panel()
-        if choice.override is None:
-            switched = await self.switch_model(choice.provider_name)
-        else:
-            switched = await self.switch_model(choice.provider_name, choice.override)
-        if not switched or not persist_default:
-            return
-        source = getattr(self.settings, "source", None) if self.settings is not None else None
-        if source is None:
-            await self._local_note("└ 当前配置无关联文件，仅在本次会话生效。")
-            return
-        if is_project_file(source):
-            await self._local_note(f"└ 当前使用的是项目配置 {source}，为避免改动仓库文件，未写入默认模型。")
-            return
-        ok, message = set_default_model(Path(source), choice.provider_name, choice.override)
-        if ok:
-            try:
-                reloaded = load_settings(source)
-                self.settings = replace(
-                    reloaded,
-                    providers=self.settings.providers if self.settings is not None else reloaded.providers,
-                )
-                self._configured_providers = reloaded.providers
-            except Exception:
-                pass
-        await self._local_note(("└ " if ok else "! ") + message)
+        async with self._model_switch_lock:
+            if choice.override is None:
+                switched = await self._switch_model_unlocked(choice.provider_name)
+            else:
+                switched = await self._switch_model_unlocked(choice.provider_name, choice.override)
+            if not switched or not persist_default:
+                return
+            source = getattr(self.settings, "source", None) if self.settings is not None else None
+            if source is None:
+                await self._local_note("└ 当前配置无关联文件，仅在本次会话生效。")
+                return
+            if is_project_file(source):
+                await self._local_note(f"└ 当前使用的是项目配置 {source}，为避免改动仓库文件，未写入默认模型。")
+                return
+            ok, message = await asyncio.to_thread(
+                set_default_model, Path(source), choice.provider_name, choice.override
+            )
+            if ok:
+                try:
+                    reloaded = await asyncio.to_thread(load_settings, source)
+                    self.settings = replace(
+                        reloaded,
+                        providers=self.settings.providers if self.settings is not None else reloaded.providers,
+                    )
+                    self._configured_providers = reloaded.providers
+                except Exception:
+                    pass
+            await self._local_note(("└ " if ok else "! ") + message)
 
     def action_open_models(self) -> None:
         """Alt+M shortcut to open the unified searchable model picker."""

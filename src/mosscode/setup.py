@@ -13,15 +13,19 @@ import re
 import secrets
 import sys
 from collections.abc import Callable, Collection
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 from .config import OFFICIAL as OFFICIAL
 from .model_discovery import (
+    CONFIG_LOCK_TIMEOUT,
     allocate_keyring_name,
     config_lock_path,
+    keyring_lock_path,
     rollback_keyring_entry,
     write_private_backup,
     write_temp_file,
@@ -66,12 +70,9 @@ class SystemVault:
         keyring_set(name, key)
 
     def exists(self, name: str) -> bool:
-        from .credentials import KeyringError, keyring_get
+        from .credentials import keyring_get
 
-        try:
-            return keyring_get(name) is not None
-        except KeyringError:
-            return False
+        return keyring_get(name) is not None
 
     def delete(self, name: str) -> None:
         from .credentials import keyring_delete
@@ -457,10 +458,19 @@ def setup(
     if provider is None:
         wizard.write("没有写入文件。")
         return "cancelled"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        wizard.write(f"无法创建配置目录 {path.parent}：{exc.strerror or exc}。")
+        return "failed"
     # Lock the shared config transaction after user input completes, re-reading the latest file on disk so
     # concurrent TUI updates (e.g. Ctrl+D default changes or /connect) are never overwritten by a stale snapshot.
-    with FileLock(str(config_lock_path(path))):
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(FileLock(str(config_lock_path(path)), timeout=CONFIG_LOCK_TIMEOUT))
+        except (FileLockTimeout, OSError) as exc:
+            wizard.write(f"配置文件正在被其他进程使用或无法加锁：{exc}。")
+            return "failed"
         if path.exists():
             if not add:
                 wizard.write(f"配置已存在：{path}。没有覆盖它。")
@@ -481,17 +491,14 @@ def setup(
                 return "failed"
             latest_names = {item.name for item in latest_settings.providers}
             provider["name"] = _unique_name(provider["name"], latest_names)
+            taken: set[str] = set()
             if "api_key_keyring" in provider:
                 taken = latest_names | {
                     item["api_key_keyring"]
                     for item in latest_raw["providers"]
                     if isinstance(item, dict) and isinstance(item.get("api_key_keyring"), str)
                 }
-                provider["api_key_keyring"] = (
-                    allocate_keyring_name(provider["name"], taken, wizard.vault)
-                    if wizard.pending_key is not None
-                    else _unique_name(provider["name"], taken)
-                )
+                provider["api_key_keyring"] = _unique_name(provider["name"], taken)
             try:
                 prepared, kept = _prepare_append(path, latest_original, latest_raw, provider, home)
             except ConfigError as exc:
@@ -505,10 +512,34 @@ def setup(
                 from .credentials import KeyringError
 
                 try:
+                    stack.enter_context(FileLock(str(keyring_lock_path(home)), timeout=CONFIG_LOCK_TIMEOUT))
+                except (FileLockTimeout, OSError) as exc:
+                    with suppress(OSError):
+                        prepared.unlink(missing_ok=True)
+                    wizard.write(f"凭据管理器正在被其他进程使用或无法加锁：{exc}。没有写入文件。")
+                    return "failed"
+                try:
+                    allocated = allocate_keyring_name(provider["name"], taken, wizard.vault)
+                except KeyringError as exc:
+                    with suppress(OSError):
+                        prepared.unlink(missing_ok=True)
+                    wizard.write(f"无法读取系统凭据管理器：{exc}。没有写入文件。")
+                    return "failed"
+                if allocated != provider["api_key_keyring"]:
+                    with suppress(OSError):
+                        prepared.unlink(missing_ok=True)
+                    provider["api_key_keyring"] = allocated
+                    try:
+                        prepared, kept = _prepare_append(path, latest_original, latest_raw, provider, home)
+                    except (ConfigError, OSError) as exc:
+                        wizard.write(f"追加 Provider 校验失败：{exc} 原有配置文件未修改。")
+                        return "failed"
+                try:
                     wizard.vault.store(provider["api_key_keyring"], wizard.pending_key)
                     stored_keyring = provider["api_key_keyring"]
                 except KeyringError as exc:
-                    prepared.unlink(missing_ok=True)
+                    with suppress(OSError):
+                        prepared.unlink(missing_ok=True)
                     wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
                     return "failed"
             backup = None
@@ -518,29 +549,40 @@ def setup(
                     write_private_backup(path, backup)
                 os.replace(prepared, path)
             except OSError as exc:
-                prepared.unlink(missing_ok=True)
                 if stored_keyring is not None:
                     rollback_keyring_entry(stored_keyring, wizard.vault)
+                cleanup_err: OSError | None = None
+                try:
+                    prepared.unlink(missing_ok=True)
+                except OSError as err:
+                    cleanup_err = err
                 wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+                if cleanup_err is not None:
+                    wizard.write(f"另外，临时文件 {prepared} 清理失败：{cleanup_err.strerror or cleanup_err}。")
                 return "failed"
             wizard.write(f"已向 {path} 追加 Provider {provider['name']}（可用 /model {provider['name']} 切换）。")
             if backup is not None:
                 wizard.write(f"原文件的格式无法逐行保留，已重新生成；原文件（含注释）备份在 {backup}。")
         else:
-            if "api_key_keyring" in provider and wizard.pending_key is not None:
-                provider["api_key_keyring"] = allocate_keyring_name(provider["api_key_keyring"], set(), wizard.vault)
             from .config import render_config
 
-            tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
+            def _stage_first() -> Path:
+                candidate = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
+                try:
+                    write_temp_file(candidate, render_config(provider), private="api_key" in provider)
+                    load_settings(candidate, home)
+                except BaseException:
+                    with suppress(OSError):
+                        candidate.unlink(missing_ok=True)
+                    raise
+                return candidate
+
             try:
-                write_temp_file(tmp, render_config(provider), private="api_key" in provider)
-                load_settings(tmp, home)
+                tmp = _stage_first()
             except ConfigError as exc:
-                tmp.unlink(missing_ok=True)
                 wizard.write(f"配置校验失败：{exc} 没有写入文件。")
                 return "failed"
             except OSError as exc:
-                tmp.unlink(missing_ok=True)
                 wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
                 return "failed"
             stored_keyring = None
@@ -548,19 +590,49 @@ def setup(
                 from .credentials import KeyringError
 
                 try:
+                    stack.enter_context(FileLock(str(keyring_lock_path(home)), timeout=CONFIG_LOCK_TIMEOUT))
+                except (FileLockTimeout, OSError) as exc:
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    wizard.write(f"凭据管理器正在被其他进程使用或无法加锁：{exc}。没有写入文件。")
+                    return "failed"
+                try:
+                    allocated = allocate_keyring_name(provider["api_key_keyring"], set(), wizard.vault)
+                except KeyringError as exc:
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    wizard.write(f"无法读取系统凭据管理器：{exc}。没有写入文件。")
+                    return "failed"
+                if allocated != provider["api_key_keyring"]:
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    provider["api_key_keyring"] = allocated
+                    try:
+                        tmp = _stage_first()
+                    except (ConfigError, OSError) as exc:
+                        wizard.write(f"配置校验失败：{exc} 没有写入文件。")
+                        return "failed"
+                try:
                     wizard.vault.store(provider["api_key_keyring"], wizard.pending_key)
                     stored_keyring = provider["api_key_keyring"]
                 except KeyringError as exc:
-                    tmp.unlink(missing_ok=True)
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
                     wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
                     return "failed"
             try:
                 os.replace(tmp, path)
             except OSError as exc:
-                tmp.unlink(missing_ok=True)
                 if stored_keyring is not None:
                     rollback_keyring_entry(stored_keyring, wizard.vault)
+                cleanup_err = None
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError as err:
+                    cleanup_err = err
                 wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+                if cleanup_err is not None:
+                    wizard.write(f"另外，临时文件 {tmp} 清理失败：{cleanup_err.strerror or cleanup_err}。")
                 return "failed"
             wizard.write(f"已写入 {path}。")
     variable = provider.get("api_key_env")
