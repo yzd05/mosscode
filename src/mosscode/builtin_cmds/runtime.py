@@ -25,10 +25,11 @@ _DATED_MODEL = re.compile(r"-(\d{4}-\d{2}-\d{2}|\d{8})$")
 _NON_CHAT_HINTS = ("-audio-", "gpt-audio", "-realtime-", "computer-use", "-transcribe", "-tts")
 MODEL_DETAILS = (
     "用法：\n"
-    "  /model                  打开提供商或同服务模型选择列表\n"
+    "  /model                  打开可搜索模型选择器（支持 Alt+M 快捷打开、Ctrl+D 设为默认、Ctrl+F 收藏、Ctrl+N 添加服务）\n"
     "  /model <提供商>         切换到已配置的提供商\n"
     "  /model <提供商>/<模型>  复用该提供商的凭据与服务地址，切换到指定模型\n"
-    "  /model <模型>           切换到当前提供商支持的模型目录条目（任意模型名可用 /model :<模型>）"
+    "  /model <模型>           切换到当前提供商支持的模型目录条目（任意模型名可用 /model :<模型>）\n"
+    "  /connect                交互式添加、连通性探测并热切换模型服务"
 )
 
 
@@ -145,6 +146,9 @@ async def _model(ctx: CommandContext, argument: str) -> None:
     if len(providers) < 2 and following is not None:
         await ctx.ui.switch_model(current)  # Nothing to pick: read the followed tool's settings again.
         return
+    if providers and callable(getattr(ctx.ui, "open_model_picker", None)):
+        ctx.ui.open_model_picker()
+        return
     if not providers:
         await ctx.ui.note(
             f"当前模型：{current}"
@@ -195,6 +199,14 @@ async def _model(ctx: CommandContext, argument: str) -> None:
     ctx.ui.choose(
         "切换模型 · 对话历史保留", rows, next((i for i, item in enumerate(providers) if item.name == current), 0), pick
     )
+
+
+async def _connect(ctx: CommandContext, argument: str) -> None:
+    opener = getattr(ctx.ui, "open_connect", None)
+    if callable(opener):
+        opener()
+        return
+    await ctx.ui.note("请运行 `moss setup --add` 添加模型服务，或在终端交互界面中执行 `/connect`。")
 
 
 def _provider_names(ctx: CommandContext):

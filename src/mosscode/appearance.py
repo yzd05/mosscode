@@ -1,16 +1,21 @@
 """Terminal colors, the logo and the startup banner."""
 
+from __future__ import annotations
+
 from importlib.metadata import version
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Group
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
-from textual.theme import Theme
 
 from .commands import KEY_HELP as KEY_HELP
 from .terminal_theme import is_light
+
+if TYPE_CHECKING:
+    from textual.theme import Theme
 
 TEXT_COLOR = "ansi_default"
 LIGHT_BACKGROUND = is_light()
@@ -89,6 +94,8 @@ BACKGROUND = "#ffffff" if LIGHT_BACKGROUND else "#0c0c0c"
 
 
 def moss_themes() -> tuple[Theme, ...]:
+    from textual.theme import Theme
+
     # Theme colors stay the terminal's own foreground; supporting text gets MUTED_COLOR explicitly.
     variables = {
         name: TEXT_COLOR

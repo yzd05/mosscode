@@ -69,6 +69,7 @@ from .builtin_cmds.runtime import MODEL_DETAILS as MODEL_DETAILS
 from .builtin_cmds.runtime import SANDBOX_OFF_OPTIONS as SANDBOX_OFF_OPTIONS
 from .builtin_cmds.runtime import THINKING_CHOICES as THINKING_CHOICES
 from .builtin_cmds.runtime import THINKING_HELP as THINKING_HELP
+from .builtin_cmds.runtime import _connect as _connect
 from .builtin_cmds.runtime import _context_line as _context_line
 from .builtin_cmds.runtime import _do as _do
 from .builtin_cmds.runtime import _image_line as _image_line
@@ -201,6 +202,14 @@ BUILTIN = CommandRegistry(
             handler=_model,
             complete=_provider_names,
             details=MODEL_DETAILS,
+        ),
+        Command(
+            "connect",
+            "交互式添加、测试并切换模型服务",
+            "/connect",
+            "local",
+            aliases=("setup",),
+            handler=_connect,
         ),
         Command(
             "thinking",

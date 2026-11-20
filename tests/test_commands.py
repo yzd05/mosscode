@@ -147,6 +147,7 @@ def test_builtin_registry_has_twenty_four_visible_commands():
         "fork",
         "memory",
         "model",
+        "connect",
         "thinking",
         "plan",
         "do",
@@ -168,6 +169,7 @@ def test_builtin_registry_has_twenty_four_visible_commands():
         "exit",
     ]
     assert BUILTIN.get("/PERMISSION").name == "permissions" and BUILTIN.get("quit").name == "exit"
+    assert BUILTIN.get("setup").name == "connect"
 
 
 def test_parsing():
@@ -192,9 +194,9 @@ def test_completion(tmp_path):
     store.save("project", "style-guide", "feedback", "代码风格", "正文")
     conv = Conversation(FakeProvider(), registry=tools(tmp_path), memory=store)
     ctx = context(conv, Settings((ProviderConfig("only", "anthropic-messages", "m"),), "only"))
-    assert len(BUILTIN.matches(ctx, "/")) == 29
+    assert len(BUILTIN.matches(ctx, "/")) == 30
     hidden = CommandRegistry([*BUILTIN.visible(), Command("debug", "x", "/debug", "local", hidden=True, handler=noop)])
-    assert len(hidden.matches(ctx, "/")) == 29 and hidden.get("/debug") is not None
+    assert len(hidden.matches(ctx, "/")) == 30 and hidden.get("/debug") is not None
     assert [tuple(h) for h in BUILTIN.matches(ctx, "/q")] == [("/exit", "退出 MossCode（别名 /quit）", "/exit")]
     assert [h.value for h in BUILTIN.matches(ctx, "/permissions ")] == [
         "/permissions default",

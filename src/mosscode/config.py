@@ -1,6 +1,7 @@
 """Endpoint configuration is independent of the service's vendor name."""
 
 import hashlib
+import ipaddress
 import math
 import os
 import re
@@ -37,6 +38,25 @@ CREDENTIAL_FIELDS = ("api_key", "api_key_env", "api_key_keyring")
 # Default output limit taken from the catalog at most: some models allow as much output as their whole window,
 # and the reply reserve comes out of the window.
 OUTPUT_CAP = 32_000
+
+
+def is_loopback_url(url: str | None) -> bool:
+    """True when `url` is an HTTP(S) URL without userinfo pointing to loopback (localhost, 127.0.0.0/8, ::1)."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    if parsed.scheme.lower() not in {"http", "https"} or parsed.username or parsed.password or not parsed.hostname:
+        return False
+    normalized = parsed.hostname.strip().lower().rstrip(".")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _validate_env_name(value: str | None) -> None:
@@ -101,6 +121,12 @@ class ProviderConfig:
         return ContextBudget.for_provider(self.context_window, self.max_output_tokens, self.compact_threshold)
 
     def credential(self) -> str:
+        if self.auth_type == "none":
+            if not is_loopback_url(self.base_url):
+                raise ConfigError(
+                    f"{self.name}：auth_type: none 仅允许用于本机回环地址（localhost / 127.0.0.1 / ::1）。"
+                )
+            return "mosscode-local"
         _validate_env_name(self.api_key_env)
         value = _stored(self.api_key_env, self.api_key_keyring, self.api_key, self.name)
         if not value:
@@ -363,6 +389,8 @@ def _credential(item: ProviderConfig | WebSearchConfig) -> str:
         from .follow import SOURCES
 
         return f"{SOURCES[item.follow]} 的设置中的密钥"
+    if getattr(item, "auth_type", None) == "none":
+        return "免密钥（本机回环地址）"
     if item.api_key_env:
         return f"环境变量 {_shown(item.api_key_env)}"
     if item.api_key_keyring:
@@ -464,8 +492,11 @@ def _provider(raw: Any, home: Path | None = None) -> ProviderConfig:
     timeout = data.get("timeout", 60.0)
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ConfigError("timeout 必须是有限的正数秒数。")
-    if data.get("auth_type", "api_key") not in {"api_key", "bearer"}:
-        raise ConfigError("auth_type 必须是 api_key 或 bearer。")
+    auth_type = data.get("auth_type", "api_key")
+    if auth_type not in {"api_key", "bearer", "none"}:
+        raise ConfigError("auth_type 必须是 api_key、bearer 或 none。")
+    if auth_type == "none" and not is_loopback_url(url):
+        raise ConfigError("auth_type: none 仅允许用于本机回环地址（localhost / 127.0.0.1 / ::1）。")
     if type(data.get("stream_usage", False)) is not bool:
         raise ConfigError("stream_usage 必须是布尔值。")
     if type(data.get("include_encrypted_reasoning", True)) is not bool:

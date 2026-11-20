@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 import json
 import re
@@ -13,7 +12,7 @@ from .commands import NAME as COMMAND_NAME
 from .commands import Command, CommandConflict, CommandContext, CommandRegistry
 from .credentials import redact
 from .images import ImageRef, with_alt
-from .mcp_client import tool_name
+from .mcp_config import prompt_command_name, tool_name
 from .messages import IMAGE_MARK, ProviderError, image_mark
 from .permissions import Decision, Operation, normalize_mcp_uri
 from .tools.base import ToolFailure
@@ -29,25 +28,7 @@ class PromptArgumentError(ValueError):
 
 
 def _prompt_command_name(server: str, prompt: str) -> str:
-    from . import mcp_client
-
-    helper = getattr(mcp_client, "prompt_command_name", None)
-    if callable(helper):
-        return helper(server, prompt)
-    s, p = server.lower(), prompt.lower()
-    candidate = f"mcp__{s}__{p}"
-    if (
-        len(candidate) <= 64
-        and re.fullmatch(r"[a-z0-9_-]+", s)
-        and re.fullmatch(r"[a-z0-9_-]+", p)
-        and "__" not in s
-        and "__" not in p
-        and (server, prompt) == (s, p)
-    ):
-        return candidate
-    digest = hashlib.sha256(json.dumps([server, prompt]).encode("utf-8")).hexdigest()[:12]
-    clean = lambda v: re.sub(r"[^a-z0-9_-]", "_", v).strip("_") or "x"
-    return f"mcp__{clean(s)[:16]}__{clean(p)[:22]}_{digest}"
+    return prompt_command_name(server, prompt)
 
 
 def prompt_argument_hint(args_spec: Sequence[Any]) -> str:

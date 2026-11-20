@@ -9,7 +9,7 @@ from dataclasses import replace
 from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import OptionList, Static
+from textual.widgets import Input, OptionList, Static
 
 from .appearance import MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR, compact_notice, startup_banner
 from .builtin_commands import dispatch
@@ -24,6 +24,7 @@ from .runtime_factory import with_model
 from .scrollback import redraw_transcript
 from .tools import shell_label
 from .tools.ask import OTHER as OTHER_ANSWER
+from .tui_model_picker import DEFAULT_PANEL_HELP
 from .tui_views import (
     CANCELLED_COMPACT,
     DECLINED_HINT,
@@ -292,6 +293,14 @@ class _CommandUIMixin:
         await self._clear_screen()
 
     def choose(self, title: str, options, current: int, on_pick, on_cancel=None) -> None:
+        self._model_picker_active = False
+        self._model_picker_choices = []
+        self._model_picker_filtered = []
+        if self.query("#model-filter"):
+            search = self.query_one("#model-filter", Input)
+            search.display = False
+            search.value = ""
+        self.query_one("#model-help", Static).update(DEFAULT_PANEL_HELP)
         picker = self.query_one("#models", OptionList)
         picker.clear_options()
         picker.add_options(list(options))
@@ -395,6 +404,7 @@ class _CommandUIMixin:
             await self._local_note(f"切换失败：{exc}")
             return False
         self.provider_name, self.model = config.name, config.model
+        self._record_recent_model(config.name, config.model)
         if self.query("#banner"):  # Not yet committed to the scrollback: it can still change.
             self.query_one("#banner", Static).update(startup_banner(self.provider_name))
             self._banner_provider = self.provider_name
@@ -417,6 +427,13 @@ class _CommandUIMixin:
 
     def _close_model_panel(self) -> None:
         self._pick = self._on_cancel = None
+        self._model_picker_active = False
+        self._model_picker_choices = []
+        self._model_picker_filtered = []
+        if self.query("#model-filter"):
+            search = self.query_one("#model-filter", Input)
+            search.display = False
+            search.value = ""
         self.query_one("#model-panel").display = False
         self._place_prompt()
         if not self._approval_request and not self._question:
@@ -424,12 +441,31 @@ class _CommandUIMixin:
         self._show_members()
         self.call_later(self._fit_chat)
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "model-filter" and getattr(self, "_model_picker_active", False):
+            self._render_model_picker(event.value)
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "model-filter" and getattr(self, "_model_picker_active", False):
+            choice = self._current_picker_choice()
+            if choice is not None:
+                await self._apply_model_choice(choice)
+        elif event.input.id == "connect-input":
+            await self._handle_connect_input(event.value)
+
     async def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "models":
+            if getattr(self, "_model_picker_active", False):
+                choice = self._current_picker_choice()
+                if choice is not None:
+                    await self._apply_model_choice(choice)
+                return
             pick = self._pick
             self._close_model_panel()
             if pick is not None:
                 await pick(event.option_index)
+        elif event.option_list.id == "connect-options":
+            await self._handle_connect_option(event.option_index)
         elif event.option_list.id == "approval-options" and self._approval_request:
             self._answer_approval(self._approval_request.choices[event.option_index])
         elif event.option_list.id == "question-options" and self._question is not None:

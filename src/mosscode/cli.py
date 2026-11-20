@@ -75,8 +75,27 @@ from .skills import ForkRequest
 from .tools import create_default_registry
 from .tools.background import HEADLESS_TIME_LIMIT
 from .tools.shell import ShellNotFound
-from .tui import ConfigTrustApp, MCPTrustApp, MossCodeApp, PluginTrustApp, ProviderSelectApp, plan_text
 from .usage import request_usage_text
+
+# Lazy-loaded TUI classes so headless `-p` and `--list-providers` skip importing Textual.
+# Kept as module attributes (None until needed or patched by tests) for monkeypatch compatibility.
+ConfigTrustApp = None
+MCPTrustApp = None
+MossCodeApp = None
+PluginTrustApp = None
+ProviderSelectApp = None
+
+
+def _tui_attr(name: str):
+    value = globals().get(name)
+    if value is not None:
+        return value
+    from . import tui
+
+    loaded = getattr(tui, name)
+    globals()[name] = loaded
+    return loaded
+
 
 _MCP_DEFERRED = "__mcp_deferred__"
 
@@ -510,6 +529,8 @@ async def _text_prompt(
                 elif (
                     isinstance(event, ToolProgress) and event.phase == "running" and event.call.name == "exit_plan_mode"
                 ):
+                    from .tui_views import plan_text
+
                     print(f"\n计划：\n{plan_text(event.call.arguments)}", flush=True)
                 elif isinstance(event, ToolProgress) and event.phase == "finished":
                     print(f"\n● {event.call.name} · {event.elapsed:.1f}s\n└ {event.result.output}", flush=True)
@@ -559,7 +580,7 @@ def load_plugins(args, root: Path) -> Installed:
 
         names = [plugin.name for plugin in project.plugins]
         print(trust_text(project))
-        use = bool(PluginTrustApp(names).run(inline=True, mouse=False))
+        use = bool(_tui_attr("PluginTrustApp")(names).run(inline=True, mouse=False))
         if not use:
             return False, ("本次未启用项目插件；下次启动时会再次询问。",)
         try:
@@ -589,7 +610,7 @@ def confirm_project_mcp(args, root: Path, project: ProjectMCP | None = None) -> 
             "或使用 --trust-project-mcp。",
         )
     print(project.text())
-    if not MCPTrustApp(names).run(inline=True, mouse=False):
+    if not _tui_attr("MCPTrustApp")(names).run(inline=True, mouse=False):
         return False, ("本次未启动项目 MCP 服务器；下次启动时会再次询问。",)
     try:
         project.trust()
@@ -627,7 +648,7 @@ def confirm_config(args, settings: Settings) -> tuple[Settings | None, tuple[str
     user = config_candidates()[-1]
     fallback = args.config is None and user.is_file()
     print(project_summary(settings))
-    if ConfigTrustApp(f"改用用户配置 {user}" if fallback else "退出").run(inline=True, mouse=False):
+    if _tui_attr("ConfigTrustApp")(f"改用用户配置 {user}" if fallback else "退出").run(inline=True, mouse=False):
         try:
             confirm_project(settings)
         except OSError as exc:
@@ -697,7 +718,7 @@ def run(args: argparse.Namespace) -> None:
         sandbox = configure_sandbox(settings.sandbox, override=args.sandbox, source=settings.source)
         config = settings.select(args.provider)
         if interactive and args.provider is None and settings.default_provider is None and len(settings.providers) > 1:
-            config = ProviderSelectApp(settings).run(inline=True, mouse=False)
+            config = _tui_attr("ProviderSelectApp")(settings).run(inline=True, mouse=False)
             if config is None:
                 return
         registry = create_default_registry(
@@ -781,7 +802,7 @@ def run(args: argparse.Namespace) -> None:
         else:
             if resume == "" and conversation.unavailable():
                 raise ProviderError(conversation.unavailable())
-            MossCodeApp(
+            _tui_attr("MossCodeApp")(
                 conversation,
                 config.name,
                 settings=settings,

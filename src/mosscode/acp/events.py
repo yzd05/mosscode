@@ -99,6 +99,7 @@ SESSION_MODES: tuple[SessionMode, ...] = (
 # Terminal-only commands or lifecycle commands replaced by ACP host UI.
 EXCLUDED_ACP_COMMANDS = frozenset(
     {
+        "connect",
         "exit",
         "fork",
         "resume",

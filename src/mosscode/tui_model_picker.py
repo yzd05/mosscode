@@ -1,0 +1,297 @@
+"""Unified searchable /model picker with favorites, recents, and one-key default persistence."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from rich.text import Text
+from textual.widgets import Input, OptionList, Static
+
+from .appearance import MUTED_COLOR
+from .builtin_cmds.common import choice_row
+from .builtin_cmds.runtime import _sibling_models
+from .catalog import tokens_label
+from .config import ProviderConfig, is_project_file, load_settings
+from .follow import SOURCES as FOLLOWED
+from .model_discovery import ModelPrefs, ModelPrefsStore, fuzzy_score, model_key, set_default_model
+
+MODEL_PICKER_HELP = "↑ / ↓ 选择 · Enter 切换 · Ctrl+D 设为默认 · Ctrl+F 收藏 · Ctrl+N 添加服务 · Esc 收起"
+DEFAULT_PANEL_HELP = "↑ / ↓ 选择 · Enter 确认 · Esc 收起"
+
+
+@dataclass(frozen=True)
+class ModelChoice:
+    """One selectable provider/model row in the unified model picker."""
+
+    provider_name: str
+    model: str
+    override: str | None  # None selects the provider's configured default model.
+    display_name: str
+    detail: str
+    search_text: str
+    is_current: bool
+    is_default: bool
+    is_favorite: bool
+    recent_rank: int | None
+
+
+class _ModelPickerMixin:
+    """Searchable model picker methods mixed into MossCodeApp."""
+
+    def _prefs_store(self) -> ModelPrefsStore:
+        # Favorites and recents are always user-level (~/.mosscode/model_prefs.json), never written into projects.
+        return ModelPrefsStore()
+
+    def _load_model_prefs(self) -> ModelPrefs:
+        store = self._prefs_store()
+        return store.load() if store is not None else ModelPrefs()
+
+    def _record_recent_model(self, provider_name: str, model: str) -> None:
+        store = self._prefs_store()
+        if store is not None:
+            try:
+                store.record_recent(provider_name, model)
+            except OSError:
+                pass
+
+    def _build_model_choices(self) -> list[ModelChoice]:
+        providers: tuple[ProviderConfig, ...] = self._configured_providers or (
+            self.settings.providers if self.settings is not None else ()
+        )
+        if not providers:
+            return []
+        prefs = self._load_model_prefs()
+        fav_order = {key: idx for idx, key in enumerate(prefs.favorites)}
+        recent_order = {key: idx for idx, key in enumerate(prefs.recent)}
+        default_provider = self.settings.default_provider if self.settings is not None else None
+        active_provider = self.provider_name
+        active_model = self.model or (
+            self.conversation.provider_config.model if self.conversation.provider_config is not None else ""
+        )
+
+        choices: list[ModelChoice] = []
+        seen_keys: set[str] = set()
+        expand_siblings = any(_sibling_models(item, item.model) for item in providers)
+
+        for item in providers:
+            shown_model = (
+                active_model if (item.name == active_provider and active_model and not expand_siblings) else item.model
+            )
+            key = model_key(item.name, shown_model)
+            is_current = item.name == active_provider and (not active_model or shown_model == active_model)
+            is_default = item.name == default_provider
+            is_fav = key in fav_order
+            recent_rank = recent_order.get(key)
+
+            detail_parts = [f"{item.protocol} / {shown_model}"]
+            if item.context_window:
+                detail_parts.append(f"{tokens_label(item.context_window)} 窗口")
+            if item.accepts_images:
+                detail_parts.append("图")
+            if item.follow:
+                detail_parts.append(f"跟随 {FOLLOWED[item.follow]}")
+            if is_default:
+                detail_parts.append("默认")
+            if recent_rank is not None and not is_current:
+                detail_parts.append("最近")
+
+            label = item.name if not expand_siblings else f"{item.name}/{shown_model}"
+            choices.append(
+                ModelChoice(
+                    provider_name=item.name,
+                    model=shown_model,
+                    override=None,
+                    display_name=label,
+                    detail=" · ".join(detail_parts),
+                    search_text=f"{item.name} {shown_model} {item.protocol} {item.preset or ''}",
+                    is_current=is_current,
+                    is_default=is_default,
+                    is_favorite=is_fav,
+                    recent_rank=recent_rank,
+                )
+            )
+            seen_keys.add(key)
+
+            if expand_siblings:
+                siblings = _sibling_models(item, active_model if item.name == active_provider else item.model)
+                for mid, info in siblings:
+                    sib_key = model_key(item.name, mid)
+                    if sib_key in seen_keys:
+                        continue
+                    seen_keys.add(sib_key)
+                    sib_current = item.name == active_provider and mid == active_model
+                    sib_parts = []
+                    if info.context_window:
+                        sib_parts.append(f"{tokens_label(info.context_window)} 窗口")
+                    if info.max_output_tokens:
+                        sib_parts.append(f"输出 {tokens_label(info.max_output_tokens)}")
+                    if info.vision:
+                        sib_parts.append("图")
+                    if info.reasoning:
+                        sib_parts.append("思")
+                    if sib_key in recent_order and not sib_current:
+                        sib_parts.append("最近")
+                    choices.append(
+                        ModelChoice(
+                            provider_name=item.name,
+                            model=mid,
+                            override=mid,
+                            display_name=f"{item.name}/{mid}",
+                            detail=" · ".join(sib_parts) or f"{item.protocol} / {mid}",
+                            search_text=f"{item.name} {mid} {item.protocol} {item.preset or ''}",
+                            is_current=sib_current,
+                            is_default=False,
+                            is_favorite=sib_key in fav_order,
+                            recent_rank=recent_order.get(sib_key),
+                        )
+                    )
+
+        def _sort_key(c: ModelChoice):
+            key = model_key(c.provider_name, c.model)
+            if c.is_favorite:
+                return (0, fav_order.get(key, 999), c.display_name)
+            if c.recent_rank is not None:
+                return (1, c.recent_rank, c.display_name)
+            return (2, 0, "")
+
+        # Keep configured provider order when neither favorites nor recents exist.
+        if prefs.favorites or prefs.recent:
+            choices.sort(key=_sort_key)
+        return choices
+
+    def _format_choice_row(self, choice: ModelChoice) -> Text:
+        prefix = "★ " if choice.is_favorite else ""
+        suffix = "  ✓" if choice.is_current else ""
+        return choice_row(f"{prefix}{choice.display_name}{suffix}", choice.detail, muted_color=self.muted_color)
+
+    def open_model_picker(self) -> None:
+        """Open the unified searchable /model picker inside #model-panel."""
+        if self._approval_request or self._question or self._generating:
+            return
+        if self.query("#connect-panel") and self.query_one("#connect-panel").display:
+            return
+        self._model_picker_choices = self._build_model_choices()
+        if not self._model_picker_choices:
+            self.open_connect()
+            return
+        self._model_picker_active = True
+        self._pick = None
+        self._on_cancel = None
+        search = self.query_one("#model-filter", Input)
+        search.value = ""
+        search.display = True
+        self.query_one("#model-help", Static).update(MODEL_PICKER_HELP)
+        self._render_model_picker("")
+        self._show_panel("切换模型 · 对话历史保留（输入关键词筛选）", len(self._model_picker_filtered))
+        search.focus()
+
+    def _render_model_picker(self, query: str) -> None:
+        all_choices: list[ModelChoice] = getattr(self, "_model_picker_choices", [])
+        if query.strip():
+            scored = []
+            for idx, choice in enumerate(all_choices):
+                score = fuzzy_score(query, choice.search_text)
+                if score is not None:
+                    scored.append((score, -idx, choice))
+            scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            filtered = [item[2] for item in scored]
+        else:
+            filtered = list(all_choices)
+        self._model_picker_filtered = filtered
+        picker = self.query_one("#models", OptionList)
+        picker.clear_options()
+        if filtered:
+            picker.add_options([self._format_choice_row(c) for c in filtered])
+            current_idx = next((i for i, c in enumerate(filtered) if c.is_current), 0)
+            picker.highlighted = current_idx
+        else:
+            picker.add_options([Text("未找到匹配的模型（可按 Ctrl+N 添加新服务）", style=MUTED_COLOR)])
+            picker.highlighted = 0
+        self._panel_rows = max(1, len(filtered))
+        picker.styles.height = min(8, self._panel_rows)
+        self.call_later(self._fit_chat)
+
+    def _current_picker_choice(self) -> ModelChoice | None:
+        if not getattr(self, "_model_picker_active", False):
+            return None
+        filtered: list[ModelChoice] = getattr(self, "_model_picker_filtered", [])
+        if not filtered:
+            return None
+        idx = self.query_one("#models", OptionList).highlighted
+        if idx is None or not (0 <= idx < len(filtered)):
+            return None
+        return filtered[idx]
+
+    async def _apply_model_choice(self, choice: ModelChoice, *, persist_default: bool = False) -> None:
+        self._close_model_panel()
+        if choice.override is None:
+            await self.switch_model(choice.provider_name)
+        else:
+            await self.switch_model(choice.provider_name, choice.override)
+        if not persist_default:
+            return
+        source = getattr(self.settings, "source", None) if self.settings is not None else None
+        if source is None:
+            await self._local_note("└ 当前配置无关联文件，仅在本次会话生效。")
+            return
+        if is_project_file(source):
+            await self._local_note(f"└ 当前使用的是项目配置 {source}，为避免改动仓库文件，未写入默认模型。")
+            return
+        ok, message = set_default_model(Path(source), choice.provider_name, choice.override)
+        if ok:
+            try:
+                reloaded = load_settings(source)
+                self.settings = replace(
+                    reloaded,
+                    providers=self.settings.providers if self.settings is not None else reloaded.providers,
+                )
+                self._configured_providers = reloaded.providers
+            except Exception:
+                pass
+        await self._local_note(("└ " if ok else "! ") + message)
+
+    def action_open_models(self) -> None:
+        """Alt+M shortcut to open the unified searchable model picker."""
+        if self._approval_request or self._question or self._generating:
+            return
+        if self.query("#connect-panel") and self.query_one("#connect-panel").display:
+            return
+        if self.query_one("#model-panel").display:
+            if getattr(self, "_model_picker_active", False):
+                self._close_model_panel()
+            return
+        self.open_model_picker()
+
+    def action_model_set_default(self) -> None:
+        """Ctrl+D inside the model picker: switch and persist as global default."""
+        choice = self._current_picker_choice()
+        if choice is None:
+            return
+        self.run_worker(self._apply_model_choice(choice, persist_default=True), group="model-switch")
+
+    def action_model_toggle_favorite(self) -> None:
+        """Ctrl+F inside the model picker: toggle ★ favorite pinning."""
+        choice = self._current_picker_choice()
+        if choice is None:
+            return
+        store = self._prefs_store()
+        if store is None:
+            self._hint("当前会话未关联用户配置文件，无法保存收藏")
+            return
+        added = store.toggle_favorite(choice.provider_name, choice.model)
+        self._model_picker_choices = self._build_model_choices()
+        query = self.query_one("#model-filter", Input).value
+        self._render_model_picker(query)
+        self._hint(
+            f"已收藏 ★ {choice.provider_name}/{choice.model}"
+            if added
+            else f"已取消收藏 {choice.provider_name}/{choice.model}"
+        )
+
+    def action_model_open_connect(self) -> None:
+        """Ctrl+N inside the model picker: jump straight to /connect wizard."""
+        if not getattr(self, "_model_picker_active", False):
+            return
+        self._close_model_panel()
+        self.open_connect()

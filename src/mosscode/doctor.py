@@ -121,6 +121,8 @@ def _credential(provider) -> tuple[str, str, str]:
         from .follow import SOURCES
 
         return OK, f"跟随 {SOURCES[provider.follow]} 的设置（已读取）", ""
+    if getattr(provider, "auth_type", None) == "none":
+        return OK, "免密钥（本机回环地址）", ""
     if provider.api_key_env:
         if os.environ.get(provider.api_key_env):
             return OK, f"环境变量 {provider.api_key_env} 已设置", ""

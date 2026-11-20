@@ -44,6 +44,33 @@ class MCPSettings:
     notices: tuple[str, ...] = ()
 
 
+def tool_name(server: str, tool: str) -> str:
+    name = f"mcp__{server}__{tool}"
+    if len(name) <= 64 and re.fullmatch(r"[A-Za-z0-9_]+", server + tool) and "__" not in server and "__" not in tool:
+        return name
+    digest = hashlib.sha256(json.dumps([server, tool]).encode()).hexdigest()[:12]
+    clean = lambda value: re.sub(r"[^A-Za-z0-9_]", "_", value)
+    return f"mcp__{clean(server)[:16]}__{clean(tool)[:22]}_{digest}"
+
+
+def prompt_command_name(server: str, prompt: str) -> str:
+    """Deterministic lowercase command name matching commands.NAME (r'[a-z][a-z0-9_-]*', <= 64 chars)."""
+    s, p = server.lower(), prompt.lower()
+    name = f"mcp__{s}__{p}"
+    if (
+        len(name) <= 64
+        and re.fullmatch(r"[a-z0-9_-]+", s)
+        and re.fullmatch(r"[a-z0-9_-]+", p)
+        and "__" not in s
+        and "__" not in p
+        and (server, prompt) == (s, p)
+    ):
+        return name
+    digest = hashlib.sha256(json.dumps([server, prompt]).encode()).hexdigest()[:12]
+    clean = lambda value: re.sub(r"[^a-z0-9_-]", "_", value)
+    return f"mcp__{clean(s)[:16]}__{clean(p)[:22]}_{digest}"
+
+
 def config_paths(root: Path, user_path: Path | None = None):
     return user_path or Path.home() / ".mosscode/mcp.yaml", root / ".mosscode/mcp.yaml"
 

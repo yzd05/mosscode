@@ -22,7 +22,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message as UIMessage
-from textual.widgets import OptionList, Static, TextArea
+from textual.widgets import Input, OptionList, Static, TextArea
 
 from .appearance import (
     BRAND_COLOR,
@@ -597,8 +597,30 @@ class ModelPanel(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static("切换模型 · 对话历史保留", id="model-title", markup=False)
+        search = Input(
+            placeholder="输入关键词筛选模型或服务商（如 sonnet / deepseek / gemini / ollama）…", id="model-filter"
+        )
+        search.display = False
+        yield search
         yield KeyboardOptions(id="models")
         yield Static("↑ / ↓ 选择 · Enter 确认 · Esc 收起", id="model-help")
+
+
+class ConnectPanel(Vertical):
+    """Inline interactive onboarding wizard for /connect (add, probe, and switch model providers)."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("连接模型服务", id="connect-title", markup=False)
+        status = Static("", id="connect-status", markup=False)
+        status.display = False
+        yield status
+        field = Input(placeholder="", id="connect-input")
+        field.display = False
+        yield field
+        options = KeyboardOptions(id="connect-options")
+        options.display = False
+        yield options
+        yield Static("↑ / ↓ 选择 · Enter 确认 · Esc 返回/关闭", id="connect-help", markup=False)
 
 
 class ProviderSelectApp(TerminalApp[ProviderConfig]):

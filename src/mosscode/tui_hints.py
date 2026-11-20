@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.table import Table
 from rich.text import Text
 from textual.css.query import NoMatches
-from textual.widgets import OptionList, Static, TextArea
+from textual.widgets import Input, OptionList, Static, TextArea
 
 from .appearance import MUTED_COLOR, OPERATION_COLOR
 from .clipboard import ClipboardError, is_image_file
@@ -232,6 +232,17 @@ class _PromptInputMixin:
             self._refresh_hints(event.text_area.text)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in {"model_set_default", "model_toggle_favorite", "model_open_connect"}:
+            return bool(getattr(self, "_model_picker_active", False) and self.query_one("#model-panel").display)
+        if action == "move_hint":
+            field = self.focused
+            if (
+                isinstance(field, Input)
+                and field.id == "model-filter"
+                and getattr(self, "_model_picker_active", False)
+                and self.query_one("#model-panel").display
+            ):
+                return True
         if action in {"move_hint", "complete_hint"}:
             field = self.focused
             if not isinstance(field, PromptArea) or field.id != "prompt" or field.disabled:
@@ -250,11 +261,15 @@ class _PromptInputMixin:
         return super().check_action(action, parameters)
 
     def action_move_hint(self, direction: int) -> None:
-        hints = self.query_one("#command-hints", OptionList)
-        if direction < 0:
-            hints.action_cursor_up()
+        field = self.focused
+        if isinstance(field, Input) and field.id == "model-filter":
+            target = self.query_one("#models", OptionList)
         else:
-            hints.action_cursor_down()
+            target = self.query_one("#command-hints", OptionList)
+        if direction < 0:
+            target.action_cursor_up()
+        else:
+            target.action_cursor_down()
 
     def _unique_hint(self) -> Hint | None:
         value = self.query_one("#prompt", PromptArea).value
