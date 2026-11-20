@@ -19,8 +19,8 @@ from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
 from .config import OFFICIAL, ConfigError, is_loopback_url, load_settings, render_config
-from .credentials import SECRET_HEADER, redact
 from .paths import mosscode_home
+from .redaction import is_cleartext_remote_credential_url, redact
 
 LOCAL_SERVERS: tuple[tuple[str, str, str, str], ...] = (
     ("ollama", "Ollama", "http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/api/tags"),
@@ -180,18 +180,19 @@ async def probe_provider(
         return ProbeResult(False, error=str(exc))
 
     req_headers: dict[str, str] = {"Accept": "application/json"}
-    has_secret_header = False
     if headers:
         for k, v in headers.items():
             if isinstance(k, str) and isinstance(v, str):
                 req_headers[k] = v
-                if SECRET_HEADER.search(k) and v.strip():
-                    has_secret_header = True
-    sends_credentials = (auth_type != "none" and bool(api_key)) or has_secret_header
-    if sends_credentials and urlsplit(url).scheme.lower() != "https":
+    if is_cleartext_remote_credential_url(
+        url,
+        auth_type=auth_type,
+        headers=req_headers,
+        has_api_key=bool(api_key),
+    ):
         return ProbeResult(
             False,
-            error="出于安全原因，向非 HTTPS 地址发送凭据的连通性探测已被拒绝，请改用 https://。",
+            error="出于安全原因，向非本机回环的 HTTP 地址发送凭据的连通性探测已被拒绝，请改用 HTTPS（https://）。",
         )
     if auth_type != "none" and api_key:
         if protocol == "anthropic-messages":
@@ -564,6 +565,8 @@ def set_default_model(
         lock.acquire()
     except FileLockTimeout:
         return False, "配置文件正在被其他进程修改，请稍后重试。"
+    except OSError as exc:
+        return False, f"无法打开配置锁文件：{exc}"
     try:
         try:
             original = config_path.read_text(encoding="utf-8")
@@ -621,7 +624,10 @@ def set_default_model(
             return False, f"写入默认配置失败：{exc}"
     finally:
         lock.release()
-    shown = f"{provider_name}/{model}" if model else provider_name
+    persisted_model = model if (model and not target_entry.get("follow")) else None
+    if model and target_entry.get("follow"):
+        return True, f"已将 {provider_name} 设为默认提供商（{config_path}；follow 条目不写入模型覆盖 {model}）。"
+    shown = f"{provider_name}/{persisted_model}" if persisted_model else provider_name
     return True, f"已将 {shown} 设为默认模型（{config_path}）。"
 
 
@@ -748,6 +754,10 @@ def save_provider_entry(
                     with suppress(OSError):
                         tmp.unlink(missing_ok=True)
                     raise ConfigError("凭据管理器正在被其他进程使用，请稍后重试。") from None
+                except OSError:
+                    with suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    raise
                 try:
                     allocated = allocate_keyring_name(str(entry["api_key_keyring"]), set(), vault)
                 except KeyringError as exc:
@@ -813,6 +823,10 @@ def save_provider_entry(
                 with suppress(OSError):
                     tmp.unlink(missing_ok=True)
                 raise ConfigError("凭据管理器正在被其他进程使用，请稍后重试。") from None
+            except OSError:
+                with suppress(OSError):
+                    tmp.unlink(missing_ok=True)
+                raise
             try:
                 allocated = allocate_keyring_name(keyring_base or str(entry["api_key_keyring"]), taken, vault)
             except KeyringError as exc:

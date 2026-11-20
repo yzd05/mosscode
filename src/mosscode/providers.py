@@ -29,6 +29,7 @@ from .messages import (
     as_prompt,
 )
 from .reasoning import ReasoningConfig, Unsupported, thinking_options
+from .redaction import CLEARTEXT_CREDENTIAL_URL_ERROR, is_cleartext_remote_credential_url
 from .usage import parse_usage, usage_data
 
 
@@ -365,6 +366,12 @@ class SDKProvider:
 
     def _client(self) -> Any:
         config = self.config
+        if is_cleartext_remote_credential_url(
+            config.base_url,
+            auth_type=config.auth_type,
+            headers=config.headers,
+        ):
+            raise ProviderError(CLEARTEXT_CREDENTIAL_URL_ERROR)
         options: dict[str, Any] = {"timeout": config.timeout, "max_retries": 0}
         if config.base_url:
             options["base_url"] = config.base_url

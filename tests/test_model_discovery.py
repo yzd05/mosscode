@@ -392,8 +392,9 @@ async def test_searchable_model_picker_filter_favorite_default_and_alt_m(isolate
         models = app.query_one("#models", OptionList)
         assert models.option_count == 1
 
-        # Ctrl+F pins beta as favorite.
+        # Ctrl+F pins beta as favorite (runs off the event loop in a worker).
         await pilot.press("ctrl+f")
+        await app.workers.wait_for_complete()
         await pilot.pause()
         prefs = ModelPrefsStore(isolated_home).load()
         assert prefs.favorites == (model_key("beta", "model-beta"),)
@@ -550,21 +551,28 @@ async def test_probe_provider_enforces_https_for_credentials_and_blocks_redirect
 
     transport = httpx.MockTransport(handler)
 
-    # Cleartext HTTP with API key or secret header must be rejected before making any network request.
+    # Remote cleartext HTTP with API key or secret header must be rejected before making any network request.
     res_http_key = await probe_provider(
         "openai-chat-completions", "http://api.example.com/v1", "secret-12345678", transport=transport
     )
     assert not res_http_key.ok and "HTTPS" in res_http_key.error
     res_http_hdr = await probe_provider(
         "openai-chat-completions",
-        "http://127.0.0.1:11434/v1",
+        "http://api.example.com/v1",
         None,
-        auth_type="none",
+        auth_type="api_key",
         headers={"X-API-Key": "secret-hdr-123"},
         transport=transport,
     )
     assert not res_http_hdr.ok and "HTTPS" in res_http_hdr.error
     assert called == []
+
+    # Loopback HTTP with credentials is explicitly exempted (e.g. local proxies / CC Switch).
+    res_loopback_key = await probe_provider(
+        "openai-chat-completions", "http://127.0.0.1:15721/v1", "local-relay-key", transport=transport
+    )
+    assert res_loopback_key.ok
+    assert called == ["http://127.0.0.1:15721/v1/models"]
 
     # Redirects are never followed (prevents cross-origin x-api-key leak and loopback SSRF).
     res_redir_anth = await probe_provider(
@@ -575,7 +583,11 @@ async def test_probe_provider_enforces_https_for_credentials_and_blocks_redirect
         "openai-chat-completions", "http://127.0.0.1:11434/v1", None, auth_type="none", transport=transport
     )
     assert not res_redir_local.ok and res_redir_local.status_code == 302
-    assert called == ["https://redirect.example.com/v1/models", "http://127.0.0.1:11434/v1/models"]
+    assert called == [
+        "http://127.0.0.1:15721/v1/models",
+        "https://redirect.example.com/v1/models",
+        "http://127.0.0.1:11434/v1/models",
+    ]
 
 
 def test_keyring_collision_allocates_fresh_name_and_rolls_back_on_commit_failure(tmp_path, monkeypatch):
@@ -913,22 +925,26 @@ async def test_concurrent_model_switches_are_serialized(isolated_home):
     )
     settings = load_settings(cfg, isolated_home)
 
-    class SlowCloseProvider(FakeProvider):
-        def __init__(self, label: str, delay: float = 0.0):
+    close_entered = asyncio.Event()
+    allow_close = asyncio.Event()
+
+    class GatedCloseProvider(FakeProvider):
+        def __init__(self, label: str, *, gate: bool = False):
             super().__init__()
             self.label = label
-            self.delay = delay
+            self._gate = gate
 
         async def close(self):
-            if self.delay:
-                await asyncio.sleep(self.delay)
+            if self._gate:
+                close_entered.set()
+                await allow_close.wait()
             await super().close()
 
-    first = SlowCloseProvider("p1", delay=0.15)
-    created: dict[str, SlowCloseProvider] = {}
+    first = GatedCloseProvider("p1", gate=True)
+    created: dict[str, GatedCloseProvider] = {}
 
     def factory(config: ProviderConfig):
-        prov = SlowCloseProvider(config.name, delay=0.0)
+        prov = GatedCloseProvider(config.name)
         created[config.name] = prov
         return prov
 
@@ -936,10 +952,339 @@ async def test_concurrent_model_switches_are_serialized(isolated_home):
     app = MossCodeApp(conv, "p1", settings=settings, model="m1", provider_factory=factory)
     async with app.run_test(size=(100, 32)):
         t1 = asyncio.create_task(app.switch_model("p2"))
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(close_entered.wait(), timeout=2.0)
         t2 = asyncio.create_task(app.switch_model("p3"))
+        await asyncio.sleep(0)
+        assert "p3" not in created
+        allow_close.set()
         results = await asyncio.gather(t1, t2)
         assert results == [True, True]
         assert app.provider_name == "p3"
         assert app.model == "m3"
         assert conv.provider is created["p3"]
+
+
+def test_credentialed_remote_http_rejected_at_config_load_and_client_construction(tmp_path):
+    from mosscode.messages import ProviderError
+    from mosscode.providers import AnthropicProvider, ChatCompletionsProvider
+
+    # 1. Config load rejects saved remote http:// providers that send credentials.
+    remote_http = tmp_path / "remote-http.yaml"
+    remote_http.write_text(
+        yaml.safe_dump(
+            {
+                "providers": [
+                    {
+                        "name": "insecure",
+                        "protocol": "openai-chat-completions",
+                        "base_url": "http://api.example.com/v1",
+                        "model": "gpt-4o",
+                        "api_key": "plain-secret-1234",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="https://"):
+        load_settings(remote_http, tmp_path)
+
+    # 2. Direct SDK client construction enforces the same defense-in-depth check.
+    direct_chat = ProviderConfig(
+        name="direct-chat",
+        protocol="openai-chat-completions",
+        model="gpt-4o",
+        base_url="http://api.example.com/v1",
+        api_key="plain-secret-1234",
+    )
+    with pytest.raises(ProviderError, match="https://"):
+        ChatCompletionsProvider(direct_chat)
+
+    direct_anth = ProviderConfig(
+        name="direct-anth",
+        protocol="anthropic-messages",
+        model="claude-sonnet-4-5",
+        base_url="http://api.example.com",
+        api_key="plain-secret-1234",
+    )
+    with pytest.raises(ProviderError, match="https://"):
+        AnthropicProvider(direct_anth)
+
+    # 3. Documented loopback exception allows local proxies over loopback HTTP with credentials.
+    loopback_cfg = tmp_path / "loopback-http.yaml"
+    loopback_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "providers": [
+                    {
+                        "name": "local-relay",
+                        "protocol": "openai-chat-completions",
+                        "base_url": "http://127.0.0.1:15721/v1",
+                        "model": "gpt-4o",
+                        "api_key": "local-relay-secret",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_settings(loopback_cfg, tmp_path)
+    assert loaded.providers[0].base_url == "http://127.0.0.1:15721/v1"
+
+
+def test_lock_open_permission_error_handled_and_cleans_staged_temp(tmp_path, monkeypatch):
+    from filelock import FileLock
+
+    cfg, _ = save_provider_entry(tmp_path, {"name": "ollama", "preset": "ollama", "model": "llama3.1"})
+
+    # 1. set_default_model catches PermissionError on sibling lock open and returns (False, message).
+    orig_acquire = FileLock.acquire
+
+    def deny_config_lock(self, *args, **kwargs):
+        if str(self.lock_file).endswith(".config.yaml.lock"):
+            raise PermissionError("read-only lock dir")
+        return orig_acquire(self, *args, **kwargs)
+
+    monkeypatch.setattr(FileLock, "acquire", deny_config_lock)
+    ok, msg = set_default_model(cfg, "ollama", home=tmp_path)
+    assert not ok and "无法打开配置锁文件" in msg
+    monkeypatch.undo()
+
+    # 2. save_provider_entry cleans staged temp YAML when keyring lock raises PermissionError (new & append).
+    def deny_keyring_lock(self, *args, **kwargs):
+        if str(self.lock_file).endswith(".keyring.lock"):
+            raise PermissionError("keyring lock denied")
+        return orig_acquire(self, *args, **kwargs)
+
+    monkeypatch.setattr(FileLock, "acquire", deny_keyring_lock)
+    fresh_home = tmp_path / "fresh"
+    with pytest.raises(PermissionError, match="keyring lock denied"):
+        save_provider_entry(
+            fresh_home,
+            {"name": "deepseek", "preset": "deepseek", "api_key_keyring": "deepseek"},
+            pending_key="secret-new",
+        )
+    assert list((fresh_home / ".mosscode").glob(".config-*.yaml.tmp")) == []
+
+    with pytest.raises(PermissionError, match="keyring lock denied"):
+        save_provider_entry(
+            tmp_path,
+            {"name": "deepseek", "preset": "deepseek", "api_key_keyring": "deepseek"},
+            pending_key="secret-append",
+        )
+    assert list((tmp_path / ".mosscode").glob(".config-*.yaml.tmp")) == []
+
+
+async def test_connect_post_commit_reload_failure_retries_without_duplicate_append(isolated_home, monkeypatch):
+    cfg = isolated_home / ".mosscode" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        yaml.safe_dump(
+            {
+                "default_provider": "start",
+                "providers": [
+                    {
+                        "name": "start",
+                        "protocol": "anthropic-messages",
+                        "model": "start-model",
+                        "api_key": "start-key",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = load_settings(cfg, isolated_home)
+    stored: dict[str, str] = {}
+
+    class TrackedVault:
+        def exists(self, name: str) -> bool:
+            return name in stored
+
+        def store(self, name: str, secret: str) -> None:
+            stored[name] = secret
+
+        def delete(self, name: str) -> None:
+            stored.pop(name, None)
+
+    app = MossCodeApp(
+        Conversation(FakeProvider()),
+        "start",
+        settings=settings,
+        model="start-model",
+        provider_factory=lambda _cfg: FakeProvider(),
+    )
+    app._connect_vault = TrackedVault()
+
+    async def no_local(timeout: float = 0.5):
+        return []
+
+    async def fake_probe(protocol, base_url, api_key, **kwargs):
+        return ProbeResult(True, models=("deepseek-chat",), latency_ms=10, detail="ok")
+
+    app._local_server_detector = no_local
+    app._provider_prober = fake_probe
+
+    import mosscode.tui_connect as tui_connect_mod
+
+    orig_load = tui_connect_mod.load_settings
+    fail_once = {"done": False}
+
+    def flaky_load(path, home=None):
+        if not fail_once["done"]:
+            fail_once["done"] = True
+            raise OSError("transient read error")
+        return orig_load(path, home)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _send(app, pilot, "/connect")
+        await pilot.pause()
+        ds_idx = next(i for i, (act, val) in enumerate(app._connect_choices) if act == "preset" and val == "deepseek")
+        await app._handle_connect_option(ds_idx)
+        await pilot.pause()
+        # Use keyring storage so duplicate allocation would be detectable.
+        app._connect_draft.cred_method = "keyring"
+        app._connect_draft.pending_key = "ds-secret-123456"
+        app._connect_draft.model = "deepseek-chat"
+        app._connect_step = "confirm"
+        app._render_connect_confirm()
+
+        monkeypatch.setattr(tui_connect_mod, "load_settings", flaky_load)
+        await app._handle_connect_option(0)  # Save & switch -> commits, then load_settings raises once.
+        await pilot.pause()
+        assert app._connect_step == "reload_failed"
+        assert app._connect_committed == (cfg, "deepseek")
+        assert list(stored) == ["deepseek"]
+
+        # Retrying reloads and switches without appending deepseek-2 or allocating a second keyring entry.
+        await app._handle_connect_option(0)  # retry_reload
+        await pilot.pause()
+        assert not app.query_one("#connect-panel").display
+        assert app.provider_name == "deepseek"
+        reloaded = orig_load(cfg, isolated_home)
+        assert [p.name for p in reloaded.providers] == ["start", "deepseek"]
+        assert list(stored) == ["deepseek"]
+
+
+async def test_picker_follow_override_not_reported_saved_and_external_append_selectable(isolated_home):
+    # Prepare a fake Claude Code settings file for follow: claude-code.
+    claude_dir = isolated_home / ".claude"
+    claude_dir.mkdir(parents=True)
+    (claude_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "env": {
+                    "ANTHROPIC_API_KEY": "cc-secret-12345678",
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-5",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = isolated_home / ".mosscode" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "default_provider: alpha\n"
+        "providers:\n"
+        "  - name: alpha\n"
+        "    protocol: anthropic-messages\n"
+        "    model: model-alpha\n"
+        "    api_key: k-alpha\n"
+        "  - name: cc\n"
+        "    follow: claude-code\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(cfg, isolated_home)
+    app = MossCodeApp(
+        Conversation(FakeProvider()),
+        "alpha",
+        settings=settings,
+        model="model-alpha",
+        provider_factory=lambda _cfg: FakeProvider(),
+    )
+    async with app.run_test(size=(100, 32)) as pilot:
+        # 1. Switch to follow provider with a session model override, then press Ctrl+D on that override row.
+        assert await app.switch_model("cc", "override-m")
+        await pilot.press("alt+m")
+        await pilot.pause()
+        override_row = next(
+            c for c in app._model_picker_filtered if c.provider_name == "cc" and c.override == "override-m"
+        )
+        models = app.query_one("#models", OptionList)
+        models.highlighted = app._model_picker_filtered.index(override_row)
+        await pilot.press("ctrl+d")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        # Default provider must NOT have been changed when rejecting follow override persistence.
+        assert load_settings(cfg, isolated_home).default_provider == "alpha"
+
+        # 2. Another process appends provider `ext` before the user sets `alpha` as default via Ctrl+D.
+        save_provider_entry(
+            isolated_home,
+            {
+                "name": "ext",
+                "protocol": "openai-chat-completions",
+                "model": "ext-model",
+                "api_key": "k-ext",
+            },
+            config_path=cfg,
+        )
+        await pilot.press("alt+m")
+        await pilot.pause()
+        alpha_idx = next(
+            i for i, c in enumerate(app._model_picker_filtered) if c.provider_name == "alpha" and c.override is None
+        )
+        models.highlighted = alpha_idx
+        await pilot.press("ctrl+d")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        # Newly appended `ext` must be present in settings.providers and immediately selectable.
+        assert any(p.name == "ext" for p in app.settings.providers)
+        assert await app.switch_model("ext")
+        assert app.provider_name == "ext"
+
+
+async def test_switch_model_completes_when_old_provider_close_raises(isolated_home):
+    from mosscode.messages import ProviderError
+
+    cfg = isolated_home / ".mosscode" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "default_provider: p1\n"
+        "providers:\n"
+        "  - name: p1\n"
+        "    protocol: anthropic-messages\n"
+        "    model: m1\n"
+        "    api_key: k1\n"
+        "  - name: p2\n"
+        "    protocol: openai-chat-completions\n"
+        "    model: m2\n"
+        "    api_key: k2\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(cfg, isolated_home)
+
+    class FailingCloseProvider(FakeProvider):
+        async def close(self):
+            raise ProviderError("close transport error")
+
+    conv = Conversation(FailingCloseProvider())
+    app = MossCodeApp(
+        conv,
+        "p1",
+        settings=settings,
+        model="m1",
+        provider_factory=lambda _cfg: FakeProvider(),
+    )
+    async with app.run_test(size=(100, 32)):
+        assert await app.switch_model("p2")
+        assert app.provider_name == "p2"
+        assert app.model == "m2"
+
+
+def test_acp_connect_hint_mentions_reconfirming_project_config():
+    from mosscode.acp.formatting import _EXCLUDED_HINTS
+
+    hint = _EXCLUDED_HINTS["connect"]
+    assert "moss" in hint
+    assert "重新确认" in hint

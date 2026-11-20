@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from filelock import Timeout as FileLockTimeout
 from rich.text import Text
 from textual.widgets import Input, OptionList, Static
 
@@ -13,9 +14,10 @@ from .appearance import MUTED_COLOR
 from .builtin_cmds.common import choice_row
 from .builtin_cmds.runtime import _sibling_models
 from .catalog import tokens_label
-from .config import ProviderConfig, is_project_file, load_settings
+from .config import ConfigError, ProviderConfig, Settings, is_project_file, load_settings
 from .follow import SOURCES as FOLLOWED
 from .model_discovery import ModelPrefs, ModelPrefsStore, fuzzy_score, model_key, set_default_model
+from .runtime_factory import with_model
 
 MODEL_PICKER_HELP = "↑ / ↓ 选择 · Enter 切换 · Ctrl+D 设为默认 · Ctrl+F 收藏 · Ctrl+N 添加服务 · Esc 收起"
 DEFAULT_PANEL_HELP = "↑ / ↓ 选择 · Enter 确认 · Esc 收起"
@@ -50,11 +52,16 @@ class _ModelPickerMixin:
 
     def _record_recent_model(self, provider_name: str, model: str) -> None:
         store = self._prefs_store()
-        if store is not None:
+        if store is None:
+            return
+
+        async def _save() -> None:
             try:
-                store.record_recent(provider_name, model)
-            except OSError:
+                await asyncio.to_thread(store.record_recent, provider_name, model)
+            except (OSError, FileLockTimeout):
                 pass
+
+        self.run_worker(_save(), group="model-recent")
 
     def _build_model_choices(self) -> list[ModelChoice]:
         providers: tuple[ProviderConfig, ...] = self._configured_providers or (
@@ -242,6 +249,35 @@ class _ModelPickerMixin:
             return None
         return filtered[idx]
 
+    def _merge_reloaded_providers(
+        self,
+        reloaded: Settings,
+        *,
+        persisted_provider: str,
+    ) -> tuple[ProviderConfig, ...]:
+        """Use `reloaded.providers` as the base so newly appended providers are selectable,
+        preserving intentional session model overrides for providers that still exist.
+        """
+        old_configured = {item.name: item for item in self._configured_providers}
+        old_active = {item.name: item for item in (self.settings.providers if self.settings is not None else ())}
+        merged: list[ProviderConfig] = []
+        for item in reloaded.providers:
+            prev_active = old_active.get(item.name)
+            prev_configured = old_configured.get(item.name)
+            if (
+                item.name != persisted_provider
+                and prev_active is not None
+                and prev_configured is not None
+                and prev_active.model != prev_configured.model
+            ):
+                try:
+                    merged.append(with_model(item, prev_active.model))
+                    continue
+                except ConfigError:
+                    pass
+            merged.append(item)
+        return tuple(merged)
+
     async def _apply_model_choice(self, choice: ModelChoice, *, persist_default: bool = False) -> None:
         self._close_model_panel()
         async with self._model_switch_lock:
@@ -258,17 +294,28 @@ class _ModelPickerMixin:
             if is_project_file(source):
                 await self._local_note(f"└ 当前使用的是项目配置 {source}，为避免改动仓库文件，未写入默认模型。")
                 return
+            configured = next(
+                (item for item in self._configured_providers if item.name == choice.provider_name),
+                None,
+            )
+            if configured is not None and configured.follow and choice.override is not None:
+                await self._local_note(
+                    f"└ {choice.provider_name} 跟随 {FOLLOWED[configured.follow]}，模型覆盖 {choice.override} 仅在本次会话生效，未写入默认配置；如需将该提供商设为默认，请对其主条目按 Ctrl+D。"
+                )
+                return
             ok, message = await asyncio.to_thread(
                 set_default_model, Path(source), choice.provider_name, choice.override
             )
             if ok:
                 try:
                     reloaded = await asyncio.to_thread(load_settings, source)
-                    self.settings = replace(
+                    merged_providers = self._merge_reloaded_providers(
                         reloaded,
-                        providers=self.settings.providers if self.settings is not None else reloaded.providers,
+                        persisted_provider=choice.provider_name,
                     )
+                    self.settings = replace(reloaded, providers=merged_providers)
                     self._configured_providers = reloaded.providers
+                    self.conversation.provider_configs = merged_providers
                 except Exception:
                     pass
             await self._local_note(("└ " if ok else "! ") + message)
@@ -301,7 +348,16 @@ class _ModelPickerMixin:
         if store is None:
             self._hint("当前会话未关联用户配置文件，无法保存收藏")
             return
-        added = store.toggle_favorite(choice.provider_name, choice.model)
+        self.run_worker(self._toggle_favorite_async(store, choice), group="model-prefs", exclusive=True)
+
+    async def _toggle_favorite_async(self, store: ModelPrefsStore, choice: ModelChoice) -> None:
+        try:
+            added = await asyncio.to_thread(store.toggle_favorite, choice.provider_name, choice.model)
+        except (OSError, FileLockTimeout) as exc:
+            self._hint(f"保存收藏失败：{exc}")
+            return
+        if not getattr(self, "_model_picker_active", False):
+            return
         self._model_picker_choices = self._build_model_choices()
         query = self.query_one("#model-filter", Input).value
         self._render_model_picker(query)

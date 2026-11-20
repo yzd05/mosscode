@@ -8,7 +8,6 @@ joining the history. A key the model never sees cannot end up in a reply, a tran
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Mapping
 
 from .redaction import (
@@ -16,6 +15,9 @@ from .redaction import (
 )
 from .redaction import (
     PLACEHOLDER as PLACEHOLDER,
+)
+from .redaction import (
+    SECRET_HEADER as SECRET_HEADER,
 )
 from .redaction import (
     forget_secrets,
@@ -31,8 +33,6 @@ from .redaction import (
 )
 
 SERVICE = "mosscode"  # The service name every entry is saved under.
-# Header names that carry a credential; other headers (versions, beta flags) are left alone.
-SECRET_HEADER = re.compile(r"auth|key|token|secret", re.IGNORECASE)
 
 _names: set[str] = set()
 

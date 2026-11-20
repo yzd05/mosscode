@@ -398,7 +398,8 @@ def _prepare_append(
         write_temp_file(tmp, rendered, private=has_plaintext)
         load_settings(tmp, home)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
     return tmp, kept
 

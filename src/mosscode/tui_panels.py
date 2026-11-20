@@ -407,14 +407,22 @@ class _CommandUIMixin:
         if config.name == self.provider_name and same_model and not again and not force:
             await self._local_note(f"└ 已在使用 {config.name}（{config.model}）。")
             return False
+        provider = None
+        close_error: Exception | None = None
         try:
             provider = self.provider_factory(config)
             await self.conversation.set_provider(
                 provider, config.budget(), (config.name, config.protocol, config.model)
             )
         except (ProviderError, ConfigError) as exc:
-            await self._local_note(f"切换失败：{exc}")
-            return False
+            if provider is None or self.conversation.provider is not provider:
+                await self._local_note(f"切换失败：{exc}")
+                return False
+            close_error = exc
+        except OSError as exc:
+            if provider is None or self.conversation.provider is not provider:
+                raise
+            close_error = exc
         self.provider_name, self.model = config.name, config.model
         self._record_recent_model(config.name, config.model)
         if self.query("#banner"):  # Not yet committed to the scrollback: it can still change.
@@ -429,6 +437,8 @@ class _CommandUIMixin:
             )
         else:
             await self._local_note(f"└ 已切换到 {config.name}（{config.protocol} / {config.model}）；对话历史保留。")
+        if close_error is not None:
+            await self._local_note(f"! 旧模型连接关闭失败：{close_error}", OPERATION_COLOR)
         if note := config.window_note():
             await self._local_note(f"└ {note}")
         if (problem := self.conversation.thinking_problem()) is not None:

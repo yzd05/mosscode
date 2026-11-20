@@ -83,6 +83,7 @@ class _ConnectMixin:
         self._connect_step = "source"
         self._connect_history: list[str] = []
         self._connect_draft = _ConnectDraft()
+        self._connect_committed: tuple[Path, str] | None = None
         self._connect_local_servers: list[DetectedLocalServer] = []
         self._connect_choices: list[tuple[str, Any]] = []
         self._connect_status_text = Text("")
@@ -94,6 +95,7 @@ class _ConnectMixin:
 
     def _close_connect_panel(self) -> None:
         self._connect_step = ""
+        self._connect_committed = None
         self._connect_choices = []
         self._connect_status_text = Text("")
         if self.query("#connect-panel"):
@@ -108,7 +110,7 @@ class _ConnectMixin:
         self.call_later(self._fit_chat)
 
     def _connect_back(self) -> None:
-        if not getattr(self, "_connect_history", None):
+        if getattr(self, "_connect_committed", None) is not None or not getattr(self, "_connect_history", None):
             self._close_connect_panel()
             return
         prev = self._connect_history.pop()
@@ -479,37 +481,62 @@ class _ConnectMixin:
         return entry, draft.pending_key
 
     async def _finish_connect_save(self, *, set_default: bool) -> None:
-        entry, pending_key = self._build_entry_from_draft()
         home = self._connect_home()
-        config_path = self._connect_config_path()
-        vault = getattr(self, "_connect_vault", None)
-
-        def _commit() -> tuple[Path, str, Any]:
-            saved_path, saved_name = save_provider_entry(
-                home,
-                entry,
-                pending_key=pending_key,
-                set_default=set_default,
-                vault=vault,
-                config_path=config_path,
-            )
-            return saved_path, saved_name, load_settings(saved_path, home)
+        committed = getattr(self, "_connect_committed", None)
+        if committed is None:
+            entry, pending_key = self._build_entry_from_draft()
+            config_path = self._connect_config_path()
+            vault = getattr(self, "_connect_vault", None)
+            try:
+                saved_path, saved_name = await asyncio.to_thread(
+                    save_provider_entry,
+                    home,
+                    entry,
+                    pending_key=pending_key,
+                    set_default=set_default,
+                    vault=vault,
+                    config_path=config_path,
+                )
+            except (ConfigError, OSError) as exc:
+                # Commit did not happen: keep draft and confirmation options intact for retry or back.
+                self._connect_status_text = Text(f"! 保存失败：{exc}")
+                st = self.query_one("#connect-status", Static)
+                st.display = True
+                st.update(f"! 保存失败：{exc}")
+                self.call_later(self._fit_chat)
+                return
+            self._connect_committed = (saved_path, saved_name)
+            if pending_key:
+                remember(pending_key)
+            if entry.get("api_key"):
+                remember(str(entry["api_key"]))
+        else:
+            saved_path, saved_name = committed
 
         try:
-            saved_path, saved_name, reloaded = await asyncio.to_thread(_commit)
+            reloaded = await asyncio.to_thread(load_settings, saved_path, home)
         except (ConfigError, OSError) as exc:
-            # Keep the confirmation panel and draft intact so the user can retry or navigate back.
-            self._connect_status_text = Text(f"! 保存失败：{exc}")
-            st = self.query_one("#connect-status", Static)
-            st.display = True
-            st.update(f"! 保存失败：{exc}")
-            self.call_later(self._fit_chat)
+            # Config is already committed on disk: only offer retrying reload/switch, never re-appending.
+            self._connect_step = "reload_failed"
+            self._connect_choices = [
+                ("retry_reload", None),
+                ("close", None),
+            ]
+            rows = [
+                choice_row(
+                    f"重试加载并切换到 {saved_name}",
+                    f"配置已写入 {saved_path}，不会重复追加",
+                    muted_color=self.muted_color,
+                ),
+                choice_row("关闭向导", "保留已写入的配置", muted_color=self.muted_color),
+            ]
+            self._show_connect_list(
+                f"连接模型服务 · {saved_name} 已保存，但刷新配置失败",
+                rows,
+                status=f"! 已写入 {saved_path}，但重新加载失败：{exc}",
+            )
             return
 
-        if pending_key:
-            remember(pending_key)
-        if entry.get("api_key"):
-            remember(str(entry["api_key"]))
         async with self._model_switch_lock:
             self.settings = reloaded
             self._configured_providers = reloaded.providers
@@ -525,10 +552,17 @@ class _ConnectMixin:
         if action in {"local", "follow", "preset", "custom"}:
             # Start a fresh draft on every source selection so abandoned credentials cannot bleed over.
             self._connect_draft = _ConnectDraft()
+            self._connect_committed = None
         draft = self._connect_draft
 
         if action == "back":
             self._connect_back()
+            return
+        if action == "close":
+            self._close_connect_panel()
+            return
+        if action == "retry_reload":
+            await self._finish_connect_save(set_default=False)
             return
         if action == "local":
             srv: DetectedLocalServer = payload

@@ -1,7 +1,6 @@
 """Endpoint configuration is independent of the service's vendor name."""
 
 import hashlib
-import ipaddress
 import math
 import os
 import re
@@ -15,6 +14,13 @@ import yaml
 from .catalog import ModelInfo, load_catalog, lookup, tokens_label
 from .context import ContextBudget
 from .prompts import DEFAULT_SYSTEM_PROMPT, stable_prompt
+from .redaction import (
+    CLEARTEXT_CREDENTIAL_URL_ERROR,
+    is_cleartext_remote_credential_url,
+)
+from .redaction import (
+    is_loopback_url as is_loopback_url,
+)
 
 
 class ConfigError(ValueError):
@@ -38,25 +44,6 @@ CREDENTIAL_FIELDS = ("api_key", "api_key_env", "api_key_keyring")
 # Default output limit taken from the catalog at most: some models allow as much output as their whole window,
 # and the reply reserve comes out of the window.
 OUTPUT_CAP = 32_000
-
-
-def is_loopback_url(url: str | None) -> bool:
-    """True when `url` is an HTTP(S) URL without userinfo pointing to loopback (localhost, 127.0.0.0/8, ::1)."""
-    if not url or not isinstance(url, str):
-        return False
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
-        return False
-    if parsed.scheme.lower() not in {"http", "https"} or parsed.username or parsed.password or not parsed.hostname:
-        return False
-    normalized = parsed.hostname.strip().lower().rstrip(".")
-    if normalized == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        return False
 
 
 def _validate_env_name(value: str | None) -> None:
@@ -497,6 +484,8 @@ def _provider(raw: Any, home: Path | None = None) -> ProviderConfig:
         raise ConfigError("auth_type 必须是 api_key、bearer 或 none。")
     if auth_type == "none" and not is_loopback_url(url):
         raise ConfigError("auth_type: none 仅允许用于本机回环地址（localhost / 127.0.0.1 / ::1）。")
+    if is_cleartext_remote_credential_url(url, auth_type=auth_type, headers=headers):
+        raise ConfigError(CLEARTEXT_CREDENTIAL_URL_ERROR)
     if type(data.get("stream_usage", False)) is not bool:
         raise ConfigError("stream_usage 必须是布尔值。")
     if type(data.get("include_encrypted_reasoning", True)) is not bool:
