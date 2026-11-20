@@ -601,3 +601,13 @@ async def test_model_command_decouples_provider_and_model(tmp_path):
     assert len(ui.calls) == 1 and ui.calls[0][:2] == ("choose", "切换模型 · ds（对话历史保留）")
     await ui.pick(1)
     assert ui.calls[-1][0] == "switch_model" and ui.calls[-1][1] == "ds" and isinstance(ui.calls[-1][2], str)
+
+
+def test_builtin_commands_reexports_command_context_and_parsed():
+    from mosscode.builtin_commands import CommandContext as FacadeContext
+    from mosscode.builtin_commands import Parsed as FacadeParsed
+    from mosscode.commands import CommandContext as OrigContext
+    from mosscode.commands import Parsed as OrigParsed
+
+    assert FacadeContext is OrigContext
+    assert FacadeParsed is OrigParsed

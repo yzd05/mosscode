@@ -1300,3 +1300,222 @@ async def test_background_notifications_synthetic_fork_and_auth_cwd_isolation(tm
         assert notif_msgs[0].synthetic == NOTIFICATION
     finally:
         await cleanup()
+
+
+def test_convert_client_mcp_servers_skips_malformed_and_cleartext_credential_http():
+    from acp.schema import HttpHeader, HttpMcpServer
+
+    from mosscode.acp.blocks import convert_client_mcp_servers
+
+    servers, notices = convert_client_mcp_servers(
+        [
+            HttpMcpServer(name="bad_host", type="http", url="http://[unclosed", headers=[]),
+            HttpMcpServer(
+                name="cleartext_remote",
+                type="http",
+                url="http://example.com/mcp",
+                headers=[HttpHeader(name="Authorization", value="Bearer tok")],
+            ),
+            HttpMcpServer(
+                name="local_http",
+                type="http",
+                url="http://127.0.0.1:8080/mcp",
+                headers=[HttpHeader(name="Authorization", value="Bearer local")],
+            ),
+            HttpMcpServer(
+                name="secure_remote",
+                type="http",
+                url="https://example.com/mcp",
+                headers=[HttpHeader(name="Authorization", value="Bearer ok")],
+            ),
+        ]
+    )
+    assert set(servers) == {"local_http", "secure_remote"}
+    assert len(notices) == 2
+    assert any("bad_host" in n for n in notices)
+    assert any("cleartext_remote" in n and "HTTPS" in n for n in notices)
+
+
+def test_uri_paths_resolves_symlink_before_parent_traversal(tmp_path):
+    import os
+
+    from mosscode.acp.blocks import _uri_paths
+
+    shared = tmp_path / "shared"
+    subdir = shared / "subdir"
+    subdir.mkdir(parents=True)
+    target = shared / "notes.txt"
+    target.write_text("secret", encoding="utf-8")
+    inside = subdir / "inside.txt"
+    inside.write_text("ok", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    link = work / "link"
+    try:
+        link.symlink_to(subdir, target_is_directory=True)
+    except OSError:
+        if sys.platform == "win32":
+            import _winapi
+
+            _winapi.CreateJunction(str(subdir), str(link))
+        else:
+            raise
+
+    direct = _uri_paths(f"{link.as_uri()}/inside.txt")
+    assert direct is not None
+    assert direct[0] == (work / "link" / "inside.txt")
+    assert direct[1] == inside.resolve()
+
+    uri = f"{link.as_uri()}/../notes.txt"
+    pair = _uri_paths(uri)
+    assert pair is not None
+    lexical, resolved = pair
+    assert lexical == (work / "notes.txt")
+    if os.name == "nt":
+        # Windows collapses `..` lexically before following directory symlinks.
+        assert resolved == (work / "notes.txt").resolve()
+    else:
+        assert resolved == target.resolve()
+
+
+async def test_cancelled_acp_rename_does_not_overwrite_later_rename(tmp_path, monkeypatch):
+    import threading
+
+    from mosscode.acp import commands as acp_commands
+    from mosscode.session import read_title, write_title
+
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg_dir = home / ".mosscode"
+    cfg_dir.mkdir(parents=True)
+    cfg_dir.joinpath("config.yaml").write_text(
+        "default_provider: p1\nproviders:\n"
+        "  - name: p1\n    protocol: anthropic-messages\n    model: m1\n    api_key: sk-11111111\n",
+        encoding="utf-8",
+    )
+
+    first_entered = threading.Event()
+    release_first = threading.Event()
+
+    def slow_write_title(session_obj, title, **kwargs):
+        if title == "first-title":
+            first_entered.set()
+            release_first.wait(timeout=5)
+        return write_title(session_obj, title, **kwargs)
+
+    monkeypatch.setattr(acp_commands, "write_title", slow_write_title)
+
+    agent = MossCodeAcpAgent(AcpLaunchOptions(home=home, provider_factory=lambda _c: ScriptedProvider(lambda *a: ())))
+    client = RecordingClient()
+    conn, cleanup = await _connect_agent(agent, client)
+    try:
+        await conn.initialize(protocol_version=1)
+        sess = await conn.new_session(cwd=str(work), mcp_servers=[])
+        acp_session = agent.sessions[sess.session_id]
+
+        t1 = asyncio.create_task(acp_commands.handle_local_command(acp_session, "rename", "first-title"))
+        await asyncio.to_thread(first_entered.wait, 5)
+        t1.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t1
+
+        t2 = asyncio.create_task(acp_commands.handle_local_command(acp_session, "rename", "second-title"))
+        await asyncio.sleep(0.05)
+        assert not t2.done()  # Waits for the in-flight first write before appending.
+        release_first.set()
+        res, _, _, _ = await t2
+        assert res.stop_reason == "end_turn"
+        assert read_title(acp_session.conversation.session.transcript_path) == "second-title"
+    finally:
+        release_first.set()
+        await cleanup()
+
+
+async def test_scheduled_loop_slash_prompt_forwards_mcp_images(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mosscode.acp import commands as acp_commands
+    from mosscode.commands import Command
+    from mosscode.images import ImageRef
+
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg_dir = home / ".mosscode"
+    cfg_dir.mkdir(parents=True)
+    cfg_dir.joinpath("config.yaml").write_text(
+        "default_provider: p1\nproviders:\n"
+        "  - name: p1\n    protocol: anthropic-messages\n    model: m1\n    api_key: sk-11111111\n",
+        encoding="utf-8",
+    )
+
+    recorded: list[tuple[str, str | None, dict | None]] = []
+
+    async def script(turn, messages, provider):
+        yield Delta("text", "ok")
+        yield Completed(Message("assistant", (ContentBlock("text", "ok"),)), "stop")
+
+    agent = MossCodeAcpAgent(AcpLaunchOptions(home=home, provider_factory=lambda _c: ScriptedProvider(script)))
+    client = RecordingClient()
+    conn, cleanup = await _connect_agent(agent, client)
+    try:
+        await conn.initialize(protocol_version=1)
+        sess = await conn.new_session(cwd=str(work), mcp_servers=[])
+        acp_session = agent.sessions[sess.session_id]
+
+        acp_session.commands.register(
+            Command(
+                name="mcp__vision__snap",
+                description="MCP image prompt",
+                usage="/mcp__vision__snap",
+                kind="prompt",
+                template="mcp prompt",
+                handler=lambda _ctx, _arg: None,
+            )
+        )
+        acp_session.commands.register(
+            Command(
+                name="plain_loop",
+                description="Text-only prompt",
+                usage="/plain_loop",
+                kind="prompt",
+                template="check status",
+            )
+        )
+
+        img = ImageRef(
+            name="snap.png",
+            media_type="image/png",
+            width=1,
+            height=1,
+            size=4,
+            alt="[图片 #1]",
+            data=b"\x89PNG",
+        )
+
+        async def fake_expand(_conversation, _cmd, _argument):
+            return "inspect [图片 #1]", "/mcp__vision__snap", {"[图片 #1]": img}
+
+        monkeypatch.setattr(acp_commands, "expand_mcp_prompt", fake_expand)
+
+        original_reply = acp_session.conversation.reply
+
+        def spy_reply(prompt, *, command=None, fork=None, synthetic=None, images=None):
+            recorded.append((prompt, command, dict(images) if images else None))
+            return original_reply(prompt, command=command, fork=fork, synthetic=synthetic, images=images)
+
+        monkeypatch.setattr(acp_session.conversation, "reply", spy_reply)
+
+        acp_session._due_loops.append(
+            (SimpleNamespace(id="l1", stopped=False, status="running"), "/mcp__vision__snap", 1)
+        )
+        acp_session._due_loops.append((SimpleNamespace(id="l2", stopped=False, status="running"), "/plain_loop", 1))
+        _, cancelled = await acp_session._drain_due_loops()
+        assert not cancelled
+        assert recorded == [
+            ("inspect [图片 #1]", "/mcp__vision__snap", {"[图片 #1]": img}),
+            ("check status", "/plain_loop", None),
+        ]
+    finally:
+        await cleanup()

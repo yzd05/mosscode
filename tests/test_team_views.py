@@ -509,3 +509,29 @@ async def test_forwarded_card_in_the_view_and_withdrawn(tmp_path):
         await pause_until(pilot, lambda: not app.query_one("#approval-panel").display)
         assert app._approval_request is None and any("已在它的窗口中回答" in note for note in notes)
         await stop_attached(conv, runner)
+
+
+async def test_x_twice_stop_confirmation_is_bound_to_the_original_team(tmp_path):
+    from mosscode.teams import TeamError
+    from mosscode.tui import MossCodeApp
+
+    async def worker(messages, tools):
+        await asyncio.sleep(30)
+        return response("不会到这里")
+
+    provider, conv = team_conversation(tmp_path, Script(worker=worker))
+    app = MossCodeApp(conv, "Demo")
+    async with app.run_test(size=(100, 30)) as pilot:
+        await conv.teams.create("team-a")
+        await conv.teams.spawn("worker", "general", "做事", isolation="none")
+        panel = app.query_one("#member-panel")
+        await pause_until(pilot, lambda: panel.display and panel.rows)
+        await pilot.press("ctrl+t")
+        await pilot.press("x")
+        await pilot.pause()
+        assert app._stop_armed is not None and app._stop_armed[0] == "team-a"
+
+        with pytest.raises(TeamError, match="当前团队已切换"):
+            await conv.teams.stop_member("worker", expected_team="other-team")
+        assert "worker" in conv.teams.runners
+        await conv.teams.close()

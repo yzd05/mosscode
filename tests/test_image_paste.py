@@ -238,3 +238,23 @@ def test_resumed_user_messages_list_their_images():
     console = Console(width=60, record=True)
     console.print(resumed_rows([message])[0])
     assert "└ [图片 #1] · 40×30 · 2 KB" in console.export_text()
+
+
+async def test_pending_image_paste_skips_attach_if_question_typing_starts(monkeypatch):
+    gate = asyncio.Event()
+
+    async def slow_clipboard():
+        await gate.wait()
+        return png("red", (4, 3))
+
+    monkeypatch.setattr(tui, "read_clipboard_async", slow_clipboard)
+    app = MossCodeApp(Conversation(FakeProvider()), "Demo")
+    async with app.run_test() as pilot:
+        field = app.query_one("#prompt", PromptArea)
+        await pilot.press("alt+v")
+        await pilot.pause()
+        app._question_typing = True
+        gate.set()
+        await settle(app, pilot)
+        assert field.text == "" and not field.attachments
+        assert "输入模式已切换" in status(app)
