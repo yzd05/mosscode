@@ -212,8 +212,19 @@ class Wizard:
 
     def _preset(self, preset, *, existing_names: Collection[str] = (), default: bool = True) -> dict | None:
         from .catalog import lookup
+        from .cli_providers import CLI_BINARIES, CLI_INSTALL_HINTS, CLI_PROTOCOLS
 
-        self.write(f"  {preset.label}：{preset.protocol} · {preset.base_url or OFFICIAL[preset.protocol]}")
+        if preset.protocol in CLI_PROTOCOLS:
+            import shutil
+
+            binary = CLI_BINARIES[preset.protocol]
+            self.write(f"  {preset.label}：{preset.protocol} · 本机官方 CLI（{binary}）")
+            if found := shutil.which(binary):
+                self.write(f"  已检测到本机命令：{found}（复用官方 CLI 登录态，不读取凭据）。")
+            else:
+                self.write(f"  提示：当前 PATH 中未找到 {binary}；{CLI_INSTALL_HINTS[preset.protocol]}。")
+        else:
+            self.write(f"  {preset.label}：{preset.protocol} · {preset.base_url or OFFICIAL[preset.protocol]}")
         model = self.ask("模型名", preset.model)
         alias = preset.catalog_model if model == preset.model else None
         if lookup(model, base_url=preset.base_url, protocol=preset.protocol, alias=alias) is None:
@@ -223,7 +234,9 @@ class Wizard:
             )
         name = _unique_name(preset.key, existing_names)
         provider = {"name": name, "preset": preset.key, "model": model}
-        if preset.auth_type == "none":
+        if preset.auth_type == "cli":
+            self.write("  复用本机官方 CLI 的登录状态（auth_type: cli），无需填写 API 密钥。")
+        elif preset.auth_type == "none":
             self.write("  本地回环服务免 API 密钥（auth_type: none）。")
         elif preset.auth_type == "github-copilot":
             self.write("  提示：推荐使用 moss login copilot 完成 GitHub 设备码登录；此处可继续配置环境变量或凭据条目。")
@@ -345,15 +358,23 @@ def summary(provider: dict, catalog_window: int | None = None, *, default: bool 
         )
         size = known(info) if info else None
         window = f"按模型目录 {tokens_label(size)}" if size else "按 128K 估算"
+    from .cli_providers import CLI_BINARIES, CLI_PROTOCOLS
+
     role = "默认 Provider" if default else f"追加，可用 /model {provider['name']} 切换"
+    if provider["protocol"] in CLI_PROTOCOLS:
+        endpoint_line = f"服务地址 本机官方 CLI（{CLI_BINARIES[provider['protocol']]}）"
+    else:
+        endpoint_line = f"服务地址 {provider.get('base_url') or '官方地址 ' + OFFICIAL[provider['protocol']]}"
     lines = [
         f"名称 {provider['name']}（{role}）" + (f"，预设 {preset.label}" if "preset" in provider else ""),
         f"协议 {provider['protocol']}",
         f"模型 {provider['model']}",
-        f"服务地址 {provider.get('base_url') or '官方地址 ' + OFFICIAL[provider['protocol']]}",
+        endpoint_line,
         f"上下文窗口 {provider.get('context_window') or window}",
     ]
-    if provider.get("auth_type") == "none":
+    if provider.get("auth_type") == "cli" or provider["protocol"] in CLI_PROTOCOLS:
+        lines.append("凭据 复用本机官方 CLI 登录态（不读取凭据）")
+    elif provider.get("auth_type") == "none":
         lines.append("凭据 免密钥（仅本机回环地址）")
     elif "api_key_env" in provider:
         lines.append(f"凭据 环境变量 {provider['api_key_env']}")

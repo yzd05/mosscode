@@ -897,7 +897,11 @@ class ChatCompletionsProvider(SDKProvider):
         yield Completed(Message("assistant", tuple(content), self.config.protocol, (native,), calls), stop, usage)
 
 
-def create_provider(config: ProviderSettings) -> SDKProvider:
+def create_provider(config: ProviderSettings) -> Any:
+    if config.protocol in {"cli-claude", "cli-codex", "cli-gemini"}:
+        from .cli_providers import CLIProxyProvider
+
+        return CLIProxyProvider(config)
     adapters = {
         "anthropic-messages": AnthropicProvider,
         "openai-responses": ResponsesProvider,

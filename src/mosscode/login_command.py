@@ -53,6 +53,10 @@ def _status_report(home: Path | None, config_path: Path | None, write: Callable[
     for provider in settings.providers:
         if provider.auth_type == "github-copilot":
             cred = f"GitHub Copilot 设备码令牌（{provider.api_key_keyring or provider.api_key_env or '配置文件'}）"
+        elif provider.auth_type == "cli":
+            from .cli_providers import CLI_BINARIES
+
+            cred = f"本机官方 CLI（{CLI_BINARIES.get(provider.protocol, provider.protocol)}，复用登录态）"
         elif provider.api_key_keyring:
             cred = f"系统凭据管理器（{provider.api_key_keyring}）"
         elif provider.api_key_env:

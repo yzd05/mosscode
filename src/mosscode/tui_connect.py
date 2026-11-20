@@ -17,6 +17,7 @@ from textual.widgets import Input, OptionList, Static
 from .appearance import OPERATION_COLOR
 from .builtin_cmds.common import choice_row
 from .catalog import lookup, tokens_label
+from .cli_providers import CLI_BINARIES, CLI_LABELS, CLI_PROTOCOLS, DetectedCLIBackend, detect_installed_clis
 from .config import OFFICIAL, ConfigError, is_loopback_url, is_project_file, load_settings
 from .credentials import keyring_label, keyring_problem, protect_providers, remember
 from .follow import SOURCES as FOLLOWED
@@ -231,6 +232,16 @@ class _ConnectMixin:
                     muted_color=self.muted_color,
                 )
             )
+        cli_detector = getattr(self, "_cli_backend_detector", detect_installed_clis)
+        for cli_backend in cli_detector():
+            choices.append(("cli", cli_backend))
+            rows.append(
+                choice_row(
+                    f"{cli_backend.label}（检测到本机已安装）",
+                    f"命令 {cli_backend.binary} · 默认 {cli_backend.default_model} · 复用官方订阅登录",
+                    muted_color=self.muted_color,
+                )
+            )
         choices.append(("oauth_openrouter", None))
         rows.append(
             choice_row(
@@ -249,11 +260,14 @@ class _ConnectMixin:
         )
         for key, preset in PRESETS.items():
             choices.append(("preset", key))
-            detail = f"{preset.base_url or OFFICIAL[preset.protocol]} · 默认 {preset.model}"
-            if preset.auth_type == "none":
-                detail += " · 免密钥"
-            elif preset.auth_type == "github-copilot":
-                detail += " · 设备码令牌"
+            if preset.protocol in CLI_PROTOCOLS:
+                detail = f"本机官方 CLI（{CLI_BINARIES[preset.protocol]}）· 默认 {preset.model} · 复用订阅登录"
+            else:
+                detail = f"{preset.base_url or OFFICIAL[preset.protocol]} · 默认 {preset.model}"
+                if preset.auth_type == "none":
+                    detail += " · 免密钥"
+                elif preset.auth_type == "github-copilot":
+                    detail += " · 设备码令牌"
             rows.append(choice_row(preset.label, detail, muted_color=self.muted_color))
         choices.append(("custom", None))
         rows.append(
@@ -446,7 +460,10 @@ class _ConnectMixin:
         draft = self._connect_draft
         self._connect_step = "probing"
         self.query_one("#connect-title", Static).update(f"连接模型服务 · 正在探测 {draft.name}…")
-        status_msg = f"正在连接 {draft.base_url or OFFICIAL[draft.protocol]} 并拉取可用模型列表…"
+        if draft.protocol in CLI_PROTOCOLS:
+            status_msg = f"正在检测本机 {CLI_LABELS[draft.protocol]}（{CLI_BINARIES[draft.protocol]}）…"
+        else:
+            status_msg = f"正在连接 {draft.base_url or OFFICIAL[draft.protocol]} 并拉取可用模型列表…"
         self._connect_status_text = Text(status_msg)
         st = self.query_one("#connect-status", Static)
         st.display = True
@@ -461,7 +478,7 @@ class _ConnectMixin:
         draft = self._connect_draft
         prober = getattr(self, "_provider_prober", probe_provider)
         key = draft.pending_key or draft.plain_key or (os.environ.get(draft.api_key_env) if draft.api_key_env else None)
-        if draft.auth_type != "none" and not key:
+        if draft.auth_type not in {"none", "cli"} and not key:
             # Env var not set in current shell yet: skip live probe cleanly and let user choose model.
             draft.probe = ProbeResult(
                 True,
@@ -549,9 +566,14 @@ class _ConnectMixin:
 
     def _render_connect_confirm(self) -> None:
         draft = self._connect_draft
-        url_shown = draft.base_url or f"官方地址 {OFFICIAL[draft.protocol]}"
+        if draft.protocol in CLI_PROTOCOLS:
+            url_shown = f"本机 CLI（{CLI_BINARIES[draft.protocol]}）"
+        else:
+            url_shown = draft.base_url or f"官方地址 {OFFICIAL[draft.protocol]}"
         if draft.kind == "follow":
             cred_shown = f"跟随 {FOLLOWED[draft.key]}"
+        elif draft.auth_type == "cli" or draft.cred_method == "cli":
+            cred_shown = "复用本机官方 CLI 登录态（不读取凭据）"
         elif draft.cred_method == "none":
             cred_shown = "免密钥（本机回环）"
         elif draft.cred_method == "keyring":
@@ -582,6 +604,8 @@ class _ConnectMixin:
             entry["preset"] = draft.key
             entry["model"] = draft.model
             preset = PRESETS[draft.key]
+            if draft.auth_type == "cli":
+                return entry, None
             if draft.base_url and draft.base_url != preset.base_url:
                 entry["base_url"] = draft.base_url
             if draft.auth_type == "none":
@@ -596,6 +620,9 @@ class _ConnectMixin:
         else:
             entry["protocol"] = draft.protocol
             entry["model"] = draft.model
+            if draft.auth_type == "cli":
+                entry["auth_type"] = "cli"
+                return entry, None
             if draft.base_url:
                 entry["base_url"] = draft.base_url
             if draft.cred_method == "none":
@@ -701,7 +728,7 @@ class _ConnectMixin:
         if not (0 <= index < len(self._connect_choices)):
             return
         action, payload = self._connect_choices[index]
-        if action in {"local", "follow", "preset", "custom", "oauth_openrouter", "oauth_copilot"}:
+        if action in {"local", "follow", "cli", "preset", "custom", "oauth_openrouter", "oauth_copilot"}:
             # Start a fresh draft on every source selection so abandoned credentials cannot bleed over.
             self._connect_draft = _ConnectDraft()
             self._connect_committed = None
@@ -721,6 +748,24 @@ class _ConnectMixin:
             return
         if action == "oauth_copilot":
             self._start_connect_oauth("copilot")
+            return
+        if action == "cli":
+            cli_backend: DetectedCLIBackend = payload
+            draft.kind = "preset"
+            draft.key = cli_backend.preset_key
+            draft.name = cli_backend.preset_key
+            draft.protocol = cli_backend.protocol
+            draft.base_url = None
+            draft.auth_type = "cli"
+            draft.cred_method = "cli"
+            draft.default_model = cli_backend.default_model
+            draft.probe = ProbeResult(
+                True,
+                models=(cli_backend.default_model,),
+                detail=f"已检测到本机 {cli_backend.label}（{cli_backend.executable}），将复用官方 CLI 登录态",
+            )
+            self._push_connect_step("model")
+            self._render_connect_model()
             return
         if action == "local":
             srv: DetectedLocalServer = payload
@@ -767,7 +812,13 @@ class _ConnectMixin:
             draft.base_url = preset.base_url
             draft.default_model = preset.model
             draft.default_env_name = preset.api_key_env or "OPENAI_API_KEY"
-            if preset.auth_type == "none":
+            if preset.auth_type == "cli":
+                draft.auth_type = "cli"
+                draft.cred_method = "cli"
+                draft.base_url = None
+                self._push_connect_step("probing")
+                self._start_connect_probe()
+            elif preset.auth_type == "none":
                 draft.auth_type = "none"
                 draft.cred_method = "none"
                 self._push_connect_step("base_url")

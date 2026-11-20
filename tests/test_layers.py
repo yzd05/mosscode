@@ -72,6 +72,7 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "mosscode"
 L0_FILES = frozenset(
     {
         "catalog.py",
+        "cli_providers.py",
         "context.py",
         "images.py",
         "limits.py",

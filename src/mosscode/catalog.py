@@ -75,6 +75,9 @@ PROTOCOL_PROVIDERS = {
     "anthropic-messages": ("anthropic",),
     "openai-responses": ("openai",),
     "openai-chat-completions": ("openai",),
+    "cli-claude": ("anthropic",),
+    "cli-codex": ("openai",),
+    "cli-gemini": ("gemini",),
 }
 
 
