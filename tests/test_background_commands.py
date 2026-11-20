@@ -151,12 +151,27 @@ async def test_without_background_commands_the_parameter_is_absent(tmp_path):
     assert (await registry.execute(run(command="x", run_in_background=True))).code == "invalid_arguments"
 
 
-async def test_ctrl_b_moves_a_running_command_to_the_background(tmp_path):
+def _spy_output(monkeypatch):
+    from mosscode.tools.process import Output
+
+    received = {"stdout": bytearray(), "stderr": bytearray()}
+    original = Output.write
+
+    def record(self, stream: str, chunk: bytes) -> None:
+        original(self, stream, chunk)
+        received[stream].extend(chunk)
+
+    monkeypatch.setattr(Output, "write", record)
+    return received
+
+
+async def test_ctrl_b_moves_a_running_command_to_the_background(tmp_path, monkeypatch):
+    received = _spy_output(monkeypatch)
     registry, tasks, commands = setup(tmp_path)
     script = "import sys,time; print('before', flush=True); print('err', file=sys.stderr, flush=True); time.sleep(60)"
     running = asyncio.create_task(registry.execute(run(command=python_command(script), timeout=60)))
     await until(lambda: commands.foreground_count() == 1)
-    await asyncio.sleep(1)  # Let the first lines arrive.
+    await until(lambda: b"before" in received["stdout"] and b"err" in received["stderr"])
     assert commands.detach_foreground() == 1
     result = await asyncio.wait_for(running, 5)
     assert not result.is_error and result.details["moved"]
@@ -179,7 +194,7 @@ async def background_code_page_output(tmp_path, encoding: str, sample: str):
     # Strict UTF-8, as read_file reads it; MossCode's own lines follow in the same encoding.
     text = task.command.log.path.read_bytes().decode("utf-8")
     assert text.startswith((sample + "\r\n") * 3 + "done\n") and "命令结束：退出码 0" in text
-    assert sample in notification(task) and sample in report(task) and "�" not in notification(task)
+    assert sample in notification(task) and sample in report(task) and "\ufffd" not in notification(task)
 
 
 async def test_code_page_output_reaches_the_log_and_notification_as_utf8(tmp_path, monkeypatch):
@@ -202,6 +217,7 @@ async def test_the_windows_console_code_page_reaches_the_log_as_utf8(tmp_path):
 
 async def test_ctrl_b_keeps_code_page_output_readable_across_the_move(tmp_path, monkeypatch):
     monkeypatch.setattr(output_text, "console_encoding", lambda: "gbk")
+    received = _spy_output(monkeypatch)
     registry, tasks, commands = setup(tmp_path)
     marker, later = tmp_path / "go", "正在 Ping 具有 32 字节的数据"
     script = (
@@ -211,24 +227,26 @@ async def test_ctrl_b_keeps_code_page_output_readable_across_the_move(tmp_path, 
     )
     running = asyncio.create_task(registry.execute(run(command=python_command(script), timeout=60)))
     await until(lambda: commands.foreground_count() == 1)
-    await asyncio.sleep(1)  # Let the first line arrive.
+    await until(lambda: GBK_BYTES in received["stdout"])
     assert commands.detach_foreground() == 1
     assert (await asyncio.wait_for(running, 5)).details["moved"]
     marker.write_text("")
     log = tasks.get("t1").command.log.path
     await until(lambda: later in log.read_bytes().decode("utf-8"))
     text = log.read_bytes().decode("utf-8")
-    assert text.startswith(GBK_LINE) and "命令已转入后台" in text and "�" not in text
+    assert text.startswith(GBK_LINE) and "命令已转入后台" in text and "\ufffd" not in text
     await tasks.stop("t1")
 
 
 async def test_a_stopped_commands_unfinished_line_still_reaches_the_log(tmp_path, monkeypatch):
     monkeypatch.setattr(output_text, "console_encoding", lambda: "gbk")
+    received = _spy_output(monkeypatch)
     registry, tasks, _ = setup(tmp_path)
     prompt = "按 q 退出"  # No line break: the decoder holds it until the line ends or the stream does.
-    script = f"import sys,time; sys.stdout.buffer.write({prompt.encode('gbk')!r}); sys.stdout.flush(); time.sleep(60)"
+    encoded_prompt = prompt.encode("gbk")
+    script = f"import sys,time; sys.stdout.buffer.write({encoded_prompt!r}); sys.stdout.flush(); time.sleep(60)"
     await registry.execute(run(command=python_command(script), run_in_background=True))
-    await asyncio.sleep(1.5)  # Let the prompt arrive; it stays held in the decoder.
+    await until(lambda: encoded_prompt in received["stdout"])
     log = tasks.get("t1").command.log.path
     assert prompt not in log.read_bytes().decode("utf-8")
     await tasks.stop("t1")

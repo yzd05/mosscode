@@ -105,6 +105,7 @@ L2_FILES = frozenset(
         "commands.py",
         "config.py",
         "conversation.py",
+        "conversation_skills.py",
         "coordinator.py",
         "credentials.py",
         "follow.py",
@@ -133,6 +134,7 @@ L2_FILES = frozenset(
 
 L2_PACKAGES = (
     "agents/",
+    "builtin_cmds/",
     "hooks/",
     "sandbox/",
     "skills/",
@@ -163,6 +165,9 @@ L3_FILES = frozenset(
         "teams/view.py",
         "terminal_theme.py",
         "tui.py",
+        "tui_hints.py",
+        "tui_panels.py",
+        "tui_teams.py",
         "tui_views.py",
         "windows_inline.py",
     }
