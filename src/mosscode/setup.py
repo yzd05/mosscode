@@ -11,13 +11,21 @@ import ipaddress
 import os
 import re
 import secrets
-import shutil
 import sys
 from collections.abc import Callable, Collection
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from filelock import FileLock
+
 from .config import OFFICIAL as OFFICIAL
+from .model_discovery import (
+    allocate_keyring_name,
+    config_lock_path,
+    rollback_keyring_entry,
+    write_private_backup,
+    write_temp_file,
+)
 from .model_discovery import insert_provider_text as _insert_provider_text
 
 PROTOCOLS = (
@@ -57,6 +65,19 @@ class SystemVault:
 
         keyring_set(name, key)
 
+    def exists(self, name: str) -> bool:
+        from .credentials import KeyringError, keyring_get
+
+        try:
+            return keyring_get(name) is not None
+        except KeyringError:
+            return False
+
+    def delete(self, name: str) -> None:
+        from .credentials import keyring_delete
+
+        keyring_delete(name)
+
 
 def user_config(home: Path | None = None) -> Path:
     return (Path.home() if home is None else home) / ".mosscode" / "config.yaml"
@@ -77,7 +98,10 @@ def _host_name(base_url: str | None) -> str | None:
 
 
 def _url_problem(value: str) -> str | None:
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return "请填写 http:// 或 https:// 开头的有效地址。"
     if parts.scheme not in {"http", "https"} or not parts.hostname:
         return "请填写 http:// 或 https:// 开头的地址。"
     if parts.username or parts.password:
@@ -341,10 +365,7 @@ def write_config(path: Path, provider: dict) -> None:
     from .config import render_config
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8", newline="\n") as stream:
-        stream.write(render_config(provider))
-    if "api_key" in provider and os.name != "nt":
-        path.chmod(0o600)
+    write_temp_file(path, render_config(provider), private="api_key" in provider)
 
 
 def _prepare_append(
@@ -373,10 +394,7 @@ def _prepare_append(
     has_plaintext = any(isinstance(item, dict) and "api_key" in item for item in expected["providers"])
     tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
     try:
-        with tmp.open("x", encoding="utf-8", newline="") as stream:
-            stream.write(rendered)
-        if has_plaintext and os.name != "nt":
-            tmp.chmod(0o600)
+        write_temp_file(tmp, rendered, private=has_plaintext)
         load_settings(tmp, home)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -439,64 +457,112 @@ def setup(
     if provider is None:
         wizard.write("没有写入文件。")
         return "cancelled"
-    if existing_raw is not None:
-        provider["name"] = _unique_name(provider["name"], existing_names)
-        if "api_key_keyring" in provider:
-            # Existing providers may keep their key under any entry name, not only their own provider name.
-            taken = existing_names | {
-                item["api_key_keyring"]
-                for item in existing_raw["providers"]
-                if isinstance(item, dict) and isinstance(item.get("api_key_keyring"), str)
-            }
-            provider["api_key_keyring"] = _unique_name(provider["name"], taken)
-        try:
-            prepared, kept = _prepare_append(path, original, existing_raw, provider, home)
-        except ConfigError as exc:
-            wizard.write(f"追加 Provider 校验失败：{exc} 原有配置文件未修改。")
-            return "failed"
-        except OSError as exc:
-            wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
-            return "failed"
-    if wizard.pending_key is not None:
-        from .credentials import KeyringError
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Lock the shared config transaction after user input completes, re-reading the latest file on disk so
+    # concurrent TUI updates (e.g. Ctrl+D default changes or /connect) are never overwritten by a stale snapshot.
+    with FileLock(str(config_lock_path(path))):
+        if path.exists():
+            if not add:
+                wizard.write(f"配置已存在：{path}。没有覆盖它。")
+                return "exists"
+            try:
+                latest_original = path.read_text(encoding="utf-8")
+                latest_raw = yaml.safe_load(latest_original)
+                latest_settings = load_settings(path, home)
+            except (OSError, yaml.YAMLError, UnicodeError, ConfigError) as exc:
+                wizard.write(f"无法读取现有配置 {path}：{exc}。原有配置文件未修改。")
+                return "failed"
+            if (
+                not isinstance(latest_raw, dict)
+                or not isinstance(latest_raw.get("providers"), list)
+                or not latest_raw["providers"]
+            ):
+                wizard.write(f"现有配置 {path} 格式无效（缺少 providers 列表），无法追加。")
+                return "failed"
+            latest_names = {item.name for item in latest_settings.providers}
+            provider["name"] = _unique_name(provider["name"], latest_names)
+            if "api_key_keyring" in provider:
+                taken = latest_names | {
+                    item["api_key_keyring"]
+                    for item in latest_raw["providers"]
+                    if isinstance(item, dict) and isinstance(item.get("api_key_keyring"), str)
+                }
+                provider["api_key_keyring"] = (
+                    allocate_keyring_name(provider["name"], taken, wizard.vault)
+                    if wizard.pending_key is not None
+                    else _unique_name(provider["name"], taken)
+                )
+            try:
+                prepared, kept = _prepare_append(path, latest_original, latest_raw, provider, home)
+            except ConfigError as exc:
+                wizard.write(f"追加 Provider 校验失败：{exc} 原有配置文件未修改。")
+                return "failed"
+            except OSError as exc:
+                wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+                return "failed"
+            stored_keyring: str | None = None
+            if wizard.pending_key is not None:
+                from .credentials import KeyringError
 
-        try:
-            wizard.vault.store(provider["api_key_keyring"], wizard.pending_key)
-        except KeyringError as exc:
-            if existing_raw is not None:
+                try:
+                    wizard.vault.store(provider["api_key_keyring"], wizard.pending_key)
+                    stored_keyring = provider["api_key_keyring"]
+                except KeyringError as exc:
+                    prepared.unlink(missing_ok=True)
+                    wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
+                    return "failed"
+            backup = None
+            try:
+                if not kept:
+                    backup = path.with_name(path.name + ".bak")
+                    write_private_backup(path, backup)
+                os.replace(prepared, path)
+            except OSError as exc:
                 prepared.unlink(missing_ok=True)
-            wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
-            return "failed"
-    if existing_raw is not None:
-        backup = None
-        try:
-            if not kept:
-                # The file had to be rewritten from the parsed YAML: keep the user's version with its comments.
-                backup = path.with_name(path.name + ".bak")
-                shutil.copyfile(path, backup)
-            os.replace(prepared, path)
-        except OSError as exc:
-            prepared.unlink(missing_ok=True)
-            wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
-            return "failed"
-        wizard.write(f"已向 {path} 追加 Provider {provider['name']}（可用 /model {provider['name']} 切换）。")
-        if backup is not None:
-            wizard.write(f"原文件的格式无法逐行保留，已重新生成；原文件（含注释）备份在 {backup}。")
-    else:
-        try:
-            write_config(path, provider)
-        except FileExistsError:
-            wizard.write(f"配置已存在：{path}。没有覆盖它。")
-            return "exists"
-        except OSError as exc:
-            wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
-            return "failed"
-        try:
-            load_settings(path, home)
-        except ConfigError as exc:
-            wizard.write(f"已写入 {path}，但校验失败：{exc} 请修改文件后再运行 moss。")
-            return "failed"
-        wizard.write(f"已写入 {path}。")
+                if stored_keyring is not None:
+                    rollback_keyring_entry(stored_keyring, wizard.vault)
+                wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+                return "failed"
+            wizard.write(f"已向 {path} 追加 Provider {provider['name']}（可用 /model {provider['name']} 切换）。")
+            if backup is not None:
+                wizard.write(f"原文件的格式无法逐行保留，已重新生成；原文件（含注释）备份在 {backup}。")
+        else:
+            if "api_key_keyring" in provider and wizard.pending_key is not None:
+                provider["api_key_keyring"] = allocate_keyring_name(provider["api_key_keyring"], set(), wizard.vault)
+            from .config import render_config
+
+            tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
+            try:
+                write_temp_file(tmp, render_config(provider), private="api_key" in provider)
+                load_settings(tmp, home)
+            except ConfigError as exc:
+                tmp.unlink(missing_ok=True)
+                wizard.write(f"配置校验失败：{exc} 没有写入文件。")
+                return "failed"
+            except OSError as exc:
+                tmp.unlink(missing_ok=True)
+                wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+                return "failed"
+            stored_keyring = None
+            if wizard.pending_key is not None:
+                from .credentials import KeyringError
+
+                try:
+                    wizard.vault.store(provider["api_key_keyring"], wizard.pending_key)
+                    stored_keyring = provider["api_key_keyring"]
+                except KeyringError as exc:
+                    tmp.unlink(missing_ok=True)
+                    wizard.write(f"无法保存密钥：{exc}。没有写入文件。")
+                    return "failed"
+            try:
+                os.replace(tmp, path)
+            except OSError as exc:
+                tmp.unlink(missing_ok=True)
+                if stored_keyring is not None:
+                    rollback_keyring_entry(stored_keyring, wizard.vault)
+                wizard.write(f"无法写入 {path}：{exc.strerror or exc}。")
+                return "failed"
+            wizard.write(f"已写入 {path}。")
     variable = provider.get("api_key_env")
     if variable and not wizard.environ.get(variable):
         if os.name == "nt":

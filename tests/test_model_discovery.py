@@ -20,6 +20,7 @@ from mosscode.model_discovery import (
     ProbeResult,
     detect_local_servers,
     fuzzy_score,
+    model_key,
     probe_provider,
     save_provider_entry,
     set_default_model,
@@ -215,8 +216,9 @@ async def test_detect_local_servers_discovers_running_endpoints():
 def test_model_prefs_store_favorites_and_mru_cap(tmp_path):
     store = ModelPrefsStore(tmp_path)
     assert store.load().favorites == () and store.load().recent == ()
+    assert model_key("team", "eu/chat") != model_key("team/eu", "chat")
     assert store.toggle_favorite("ds", "deepseek-chat") is True
-    assert store.load().favorites == ("ds/deepseek-chat",)
+    assert store.load().favorites == (model_key("ds", "deepseek-chat"),)
     assert store.toggle_favorite("ds", "deepseek-chat") is False
     assert store.load().favorites == ()
 
@@ -224,7 +226,15 @@ def test_model_prefs_store_favorites_and_mru_cap(tmp_path):
         store.record_recent("p", f"m-{idx}")
     recent = store.load().recent
     assert len(recent) == MAX_RECENT_MODELS
-    assert recent[0] == f"p/m-{MAX_RECENT_MODELS + 4}"
+    assert recent[0] == model_key("p", f"m-{MAX_RECENT_MODELS + 4}")
+
+    # Malformed or null fields degrade gracefully while preserving valid sibling fields.
+    store.path.write_text(json.dumps({"favorites": None, "recent": [model_key("a", "b")]}), encoding="utf-8")
+    loaded = store.load()
+    assert loaded.favorites == () and loaded.recent == (model_key("a", "b"),)
+    store.path.write_text(json.dumps({"favorites": "not-a-list", "recent": 123}), encoding="utf-8")
+    loaded2 = store.load()
+    assert loaded2.favorites == () and loaded2.recent == ()
 
 
 def test_set_default_model_preserves_comments_and_validates(tmp_path):
@@ -343,9 +353,21 @@ async def test_searchable_model_picker_filter_favorite_default_and_alt_m(isolate
         model="model-alpha",
         provider_factory=factory,
     )
+
+    async def no_local_servers(timeout: float = 0.5):
+        return []
+
+    app._local_server_detector = no_local_servers
     async with app.run_test(size=(100, 32)) as pilot:
-        # Ctrl+D/F/N outside picker must not open or trigger picker actions.
-        await pilot.press("ctrl+f", "ctrl+d", "ctrl+n")
+        # Ctrl+D/F/N outside picker must not open picker, and Ctrl+D keeps normal forward-delete in #prompt.
+        prompt = app.query_one("#prompt", PromptArea)
+        prompt.value = "abcd"
+        prompt.move_cursor((0, 1))
+        await pilot.press("ctrl+d")
+        await pilot.pause()
+        assert prompt.value == "acd"
+        prompt.value = ""
+        await pilot.press("ctrl+f", "ctrl+n")
         await pilot.pause()
         assert not app.query_one("#model-panel").display
         assert not app.query_one("#connect-panel").display
@@ -367,7 +389,7 @@ async def test_searchable_model_picker_filter_favorite_default_and_alt_m(isolate
         await pilot.press("ctrl+f")
         await pilot.pause()
         prefs = ModelPrefsStore(isolated_home).load()
-        assert prefs.favorites == ("beta/model-beta",)
+        assert prefs.favorites == (model_key("beta", "model-beta"),)
 
         # Clearing filter puts favorited beta at index 0; down/up moves highlight while filter stays focused.
         filter_input.value = ""
@@ -500,3 +522,276 @@ async def test_connect_wizard_local_ollama_and_preset_hot_reload(isolated_home):
         reloaded = load_settings(cfg, isolated_home)
         assert reloaded.default_provider == "ollama"
         assert any(p.name == "deepseek" for p in reloaded.providers)
+
+
+def test_fuzzy_score_literal_always_outranks_long_subsequence():
+    literal = fuzzy_score("abcdefghijklmnopqrst", "abcdefghijklmnopqrst-v2")
+    subseq = fuzzy_score("abcdefghijklmnopqrst", "abcdefghijklmnopqrs-t")
+    assert literal is not None and subseq is not None and literal > subseq
+
+
+async def test_probe_provider_enforces_https_for_credentials_and_blocks_redirects():
+    called = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append(str(request.url))
+        if str(request.url).startswith("https://redirect.example.com"):
+            return httpx.Response(302, headers={"Location": "https://other.example.com/steal"})
+        if str(request.url).startswith("http://127.0.0.1:11434"):
+            return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data/"})
+        return httpx.Response(200, json={"data": []})
+
+    transport = httpx.MockTransport(handler)
+
+    # Cleartext HTTP with API key or secret header must be rejected before making any network request.
+    res_http_key = await probe_provider(
+        "openai-chat-completions", "http://api.example.com/v1", "secret-12345678", transport=transport
+    )
+    assert not res_http_key.ok and "HTTPS" in res_http_key.error
+    res_http_hdr = await probe_provider(
+        "openai-chat-completions",
+        "http://127.0.0.1:11434/v1",
+        None,
+        auth_type="none",
+        headers={"X-API-Key": "secret-hdr-123"},
+        transport=transport,
+    )
+    assert not res_http_hdr.ok and "HTTPS" in res_http_hdr.error
+    assert called == []
+
+    # Redirects are never followed (prevents cross-origin x-api-key leak and loopback SSRF).
+    res_redir_anth = await probe_provider(
+        "anthropic-messages", "https://redirect.example.com", "anth-key-12345678", transport=transport
+    )
+    assert not res_redir_anth.ok and res_redir_anth.status_code == 302
+    res_redir_local = await probe_provider(
+        "openai-chat-completions", "http://127.0.0.1:11434/v1", None, auth_type="none", transport=transport
+    )
+    assert not res_redir_local.ok and res_redir_local.status_code == 302
+    assert called == ["https://redirect.example.com/v1/models", "http://127.0.0.1:11434/v1/models"]
+
+
+def test_keyring_collision_allocates_fresh_name_and_rolls_back_on_commit_failure(tmp_path, monkeypatch):
+    stored: dict[str, str] = {"deepseek": "existing-other-config-key"}
+
+    class TrackedVault:
+        def exists(self, name: str) -> bool:
+            return name in stored
+
+        def store(self, name: str, secret: str) -> None:
+            stored[name] = secret
+
+        def delete(self, name: str) -> None:
+            stored.pop(name, None)
+
+    vault = TrackedVault()
+    # Existing keyring entry "deepseek" from another config must not be overwritten.
+    path, _ = save_provider_entry(
+        tmp_path,
+        {"name": "deepseek", "preset": "deepseek", "api_key_keyring": "deepseek"},
+        pending_key="new-key-for-this-config",
+        vault=vault,
+    )
+    assert stored["deepseek"] == "existing-other-config-key"
+    assert stored["deepseek-2"] == "new-key-for-this-config"
+    assert load_settings(path, tmp_path).providers[0].api_key_keyring == "deepseek-2"
+
+    # If os.replace fails after storing a new keyring entry, the newly written keyring entry is rolled back.
+    monkeypatch.setattr("mosscode.model_discovery.os.replace", lambda *a, **kw: (_ for _ in ()).throw(OSError("boom")))
+    with pytest.raises(OSError, match="boom"):
+        save_provider_entry(
+            tmp_path,
+            {"name": "kimi", "preset": "kimi", "api_key_keyring": "kimi"},
+            pending_key="rolled-back-key",
+            vault=vault,
+        )
+    assert "kimi" not in stored
+
+
+def test_setup_add_preserves_concurrent_default_update(tmp_path):
+    from mosscode.setup import setup, user_config
+    from test_cli_product import wizard
+
+    cfg = user_config(tmp_path)
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "default_provider: first\n"
+        "providers:\n"
+        "  - name: first\n"
+        "    protocol: openai-chat-completions\n"
+        "    model: m1\n"
+        "    api_key: k1\n"
+        "  - name: second\n"
+        "    protocol: openai-chat-completions\n"
+        "    model: m2\n"
+        "    api_key: k2\n",
+        encoding="utf-8",
+    )
+
+    answers = iter(["1", "", "2", ""])
+    concurrent_done: list[bool] = []
+
+    def read_with_concurrent_default(prompt: str) -> str:
+        val = next(answers)
+        if not concurrent_done and val == "1":
+            # Simulate TUI Ctrl+D updating default_provider while `moss setup --add` waits for input.
+            ok, _ = set_default_model(cfg, "second", home=tmp_path)
+            assert ok
+            concurrent_done.append(True)
+        return val
+
+    w, _ = wizard([], secret=lambda _: "concurrent-key")
+    w.read = read_with_concurrent_default
+    assert setup(tmp_path, w, add=True) == "ready"
+    assert concurrent_done == [True]
+    reloaded = load_settings(cfg, tmp_path)
+    assert reloaded.default_provider == "second"
+    assert any(p.name == "deepseek" for p in reloaded.providers)
+
+
+async def test_connect_wizard_project_config_isolation_back_reset_and_malformed_url(isolated_home, tmp_path):
+    project_cfg = tmp_path / ".mosscode" / "config.yaml"
+    project_cfg.parent.mkdir(parents=True)
+    project_yaml = yaml.safe_dump(
+        {
+            "default_provider": "proj",
+            "providers": [
+                {
+                    "name": "proj",
+                    "protocol": "openai-chat-completions",
+                    "model": "proj-model",
+                    "api_key": "proj-key",
+                }
+            ],
+        }
+    )
+    project_cfg.write_text(project_yaml, encoding="utf-8")
+    settings = load_settings(project_cfg, isolated_home)
+
+    app = MossCodeApp(
+        Conversation(FakeProvider()),
+        "proj",
+        settings=settings,
+        model="proj-model",
+        provider_factory=lambda _cfg: FakeProvider(),
+    )
+
+    async def fake_detect(timeout: float = 0.5):
+        return [DetectedLocalServer("ollama", "Ollama", "http://127.0.0.1:11434/v1", ("llama3.1",))]
+
+    app._local_server_detector = fake_detect
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _send(app, pilot, "/connect")
+        await pilot.pause()
+
+        # 1. Malformed URL in custom flow shows validation error instead of raising ValueError.
+        custom_idx = next(i for i, (act, _) in enumerate(app._connect_choices) if act == "custom")
+        await app._handle_connect_option(custom_idx)
+        await pilot.pause()
+        await app._handle_connect_option(2)  # Chat Completions -> base_url.
+        await pilot.pause()
+        await app._handle_connect_input("http://[")
+        await pilot.pause()
+        assert app._connect_step == "base_url"
+        assert "有效地址" in str(app.query_one("#connect-status", Static).render())
+
+        # 2. Enter keyring credential for DeepSeek, go Back to source, pick local Ollama -> draft resets cleanly.
+        await pilot.press("escape", "escape")
+        await pilot.pause()
+        assert app._connect_step == "source"
+        ds_idx = next(i for i, (act, val) in enumerate(app._connect_choices) if act == "preset" and val == "deepseek")
+        await app._handle_connect_option(ds_idx)
+        await pilot.pause()
+        # Enter secret on keyring/plain path then back out to source.
+        plain_idx = next(i for i, (act, val) in enumerate(app._connect_choices) if act == "cred" and val == "plain")
+        await app._handle_connect_option(plain_idx)
+        await pilot.pause()
+        app._connect_draft.pending_key = "abandoned-secret"
+        await pilot.press("escape", "escape")
+        await pilot.pause()
+        assert app._connect_step == "source"
+        await app._handle_connect_option(0)  # Detected local Ollama.
+        await pilot.pause()
+        assert app._connect_draft.pending_key is None
+
+        # 3. Manual model -> confirm -> Back returns to custom_model preserving input.
+        manual_idx = next(i for i, (act, _) in enumerate(app._connect_choices) if act == "manual_model")
+        await app._handle_connect_option(manual_idx)
+        await pilot.pause()
+        await app._handle_connect_input("my-local-model")
+        await pilot.pause()
+        assert app._connect_step == "confirm"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app._connect_step == "custom_model"
+        assert app.query_one("#connect-input", Input).value == "my-local-model"
+
+        # 4. Saving from a project-config session writes to user ~/.mosscode/config.yaml, not project config!
+        await app._handle_connect_input("my-local-model")
+        await pilot.pause()
+        await app._handle_connect_option(0)
+        await pilot.pause()
+        assert project_cfg.read_text(encoding="utf-8") == project_yaml
+        user_cfg = isolated_home / ".mosscode" / "config.yaml"
+        assert user_cfg.is_file()
+        assert load_settings(user_cfg, isolated_home).providers[0].model == "my-local-model"
+
+
+async def test_picker_session_override_target_and_failed_switch_does_not_persist_default(isolated_home):
+    cfg = isolated_home / ".mosscode" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "default_provider: alpha\n"
+        "providers:\n"
+        "  - name: alpha\n"
+        "    protocol: anthropic-messages\n"
+        "    model: model-a\n"
+        "    api_key: k-a\n"
+        "  - name: broken\n"
+        "    protocol: openai-chat-completions\n"
+        "    model: model-broken\n"
+        "    api_key: k-b\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(cfg, isolated_home)
+
+    def factory(config: ProviderConfig):
+        if config.name == "broken":
+            raise ConfigError("broken provider rejected")
+        return FakeProvider()
+
+    app = MossCodeApp(
+        Conversation(FakeProvider()),
+        "alpha",
+        settings=settings,
+        model="model-a",
+        provider_factory=factory,
+    )
+    async with app.run_test(size=(100, 32)) as pilot:
+        # Session override to uncatalogued model-b must appear as an explicit override row.
+        await _send(app, pilot, "/model :model-b")
+        await pilot.pause()
+        assert app.model == "model-b"
+
+        await pilot.press("alt+m")
+        await pilot.pause()
+        override_row = next(c for c in app._model_picker_filtered if c.model == "model-b")
+        assert override_row.override == "model-b" and override_row.is_current
+        models = app.query_one("#models", OptionList)
+        models.highlighted = app._model_picker_filtered.index(override_row)
+        await pilot.press("ctrl+d")
+        await pilot.pause()
+        await pilot.pause()
+        assert app.model == "model-b"
+        assert load_settings(cfg, isolated_home).providers[0].model == "model-b"
+
+        # Pressing Ctrl+D on a provider whose factory raises ConfigError must NOT overwrite default_provider.
+        await pilot.press("alt+m")
+        await pilot.pause()
+        broken_idx = next(i for i, c in enumerate(app._model_picker_filtered) if c.provider_name == "broken")
+        models.highlighted = broken_idx
+        await pilot.press("ctrl+d")
+        await pilot.pause()
+        await pilot.pause()
+        assert app.provider_name == "alpha"
+        assert load_settings(cfg, isolated_home).default_provider == "alpha"

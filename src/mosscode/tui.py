@@ -364,6 +364,7 @@ class MossCodeApp(
         self._connect_step = ""
         self._connect_history = []
         self._connect_choices = []
+        self._connect_status_text = Text("")
         self._hooks_confirmed = False  # Asked once at startup, before session_start.
         # A table of this run's own: skill commands are added here and replaced by /skills reload.
         self.commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
@@ -833,7 +834,11 @@ class MossCodeApp(
             extra = 1 if self.query_one("#model-filter").display else 0
             reserved += 4 + extra + min(8, self._panel_rows)
         if self.query_one("#connect-panel").display:
-            reserved += 6 + min(8, max(1, len(self._connect_choices)))
+            status_rows = 0
+            if self.query_one("#connect-status").display and self._connect_status_text.plain:
+                width = max(10, self.size.width - self.screen.styles.gutter.width - 2)
+                status_rows = len(self._connect_status_text.wrap(self.console, width))
+            reserved += 6 + status_rows + min(8, max(1, len(self._connect_choices)))
         if self.query_one("#approval-panel").display:
             # Keep the choices and status reachable in a short terminal; only
             # the preview shrinks. Completed history already lives in scrollback.

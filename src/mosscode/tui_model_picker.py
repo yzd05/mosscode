@@ -75,9 +75,7 @@ class _ModelPickerMixin:
         expand_siblings = any(_sibling_models(item, item.model) for item in providers)
 
         for item in providers:
-            shown_model = (
-                active_model if (item.name == active_provider and active_model and not expand_siblings) else item.model
-            )
+            shown_model = item.model
             key = model_key(item.name, shown_model)
             is_current = item.name == active_provider and (not active_model or shown_model == active_model)
             is_default = item.name == default_provider
@@ -112,6 +110,26 @@ class _ModelPickerMixin:
                 )
             )
             seen_keys.add(key)
+
+            if item.name == active_provider and active_model and active_model != item.model:
+                override_key = model_key(item.name, active_model)
+                if override_key not in seen_keys:
+                    seen_keys.add(override_key)
+                    override_parts = [f"{item.protocol} / {active_model}", "当前覆盖"]
+                    choices.append(
+                        ModelChoice(
+                            provider_name=item.name,
+                            model=active_model,
+                            override=active_model,
+                            display_name=f"{item.name}/{active_model}",
+                            detail=" · ".join(override_parts),
+                            search_text=f"{item.name} {active_model} {item.protocol} {item.preset or ''}",
+                            is_current=True,
+                            is_default=False,
+                            is_favorite=override_key in fav_order,
+                            recent_rank=recent_order.get(override_key),
+                        )
+                    )
 
             if expand_siblings:
                 siblings = _sibling_models(item, active_model if item.name == active_provider else item.model)
@@ -226,10 +244,10 @@ class _ModelPickerMixin:
     async def _apply_model_choice(self, choice: ModelChoice, *, persist_default: bool = False) -> None:
         self._close_model_panel()
         if choice.override is None:
-            await self.switch_model(choice.provider_name)
+            switched = await self.switch_model(choice.provider_name)
         else:
-            await self.switch_model(choice.provider_name, choice.override)
-        if not persist_default:
+            switched = await self.switch_model(choice.provider_name, choice.override)
+        if not switched or not persist_default:
             return
         source = getattr(self.settings, "source", None) if self.settings is not None else None
         if source is None:

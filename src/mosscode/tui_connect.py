@@ -13,7 +13,7 @@ from textual.widgets import Input, OptionList, Static
 from .appearance import OPERATION_COLOR
 from .builtin_cmds.common import choice_row
 from .catalog import lookup, tokens_label
-from .config import OFFICIAL, ConfigError, is_loopback_url, load_settings
+from .config import OFFICIAL, ConfigError, is_loopback_url, is_project_file, load_settings
 from .credentials import keyring_label, keyring_problem, remember
 from .follow import SOURCES as FOLLOWED
 from .follow import detected as detected_follow
@@ -57,18 +57,20 @@ class _ConnectMixin:
     def _connect_home(self) -> Path | None:
         settings = self.settings
         source = getattr(settings, "source", None) if settings is not None else None
-        if source is not None and source.name == "config.yaml" and source.parent.name == ".mosscode":
+        if (
+            source is not None
+            and not is_project_file(source)
+            and source.name == "config.yaml"
+            and source.parent.name == ".mosscode"
+        ):
             return source.parent.parent
         return None
 
     def _connect_config_path(self) -> Path | None:
         settings = self.settings
         source = getattr(settings, "source", None) if settings is not None else None
-        if source is not None:
-            from .config import is_project_file
-
-            if not is_project_file(source):
-                return Path(source)
+        if source is not None and not is_project_file(source):
+            return Path(source)
         return None
 
     def open_connect(self) -> None:
@@ -82,6 +84,7 @@ class _ConnectMixin:
         self._connect_draft = _ConnectDraft()
         self._connect_local_servers: list[DetectedLocalServer] = []
         self._connect_choices: list[tuple[str, Any]] = []
+        self._connect_status_text = Text("")
         self.query_one("#connect-panel").display = True
         self._place_prompt()
         self._render_connect_source()
@@ -91,6 +94,7 @@ class _ConnectMixin:
     def _close_connect_panel(self) -> None:
         self._connect_step = ""
         self._connect_choices = []
+        self._connect_status_text = Text("")
         if self.query("#connect-panel"):
             self.query_one("#connect-panel").display = False
             self.query_one("#connect-input", Input).display = False
@@ -120,6 +124,8 @@ class _ConnectMixin:
             self._render_connect_secret()
         elif prev == "model":
             self._render_connect_model()
+        elif prev == "custom_model":
+            self._render_connect_custom_model()
         else:
             self._close_connect_panel()
 
@@ -130,6 +136,7 @@ class _ConnectMixin:
 
     def _show_connect_list(self, title: str, rows: list[Text], status: str = "") -> None:
         self.query_one("#connect-title", Static).update(title)
+        self._connect_status_text = Text(status)
         st = self.query_one("#connect-status", Static)
         st.display = bool(status)
         if status:
@@ -156,6 +163,7 @@ class _ConnectMixin:
         status: str = "",
     ) -> None:
         self.query_one("#connect-title", Static).update(title)
+        self._connect_status_text = Text(status)
         st = self.query_one("#connect-status", Static)
         st.display = bool(status)
         if status:
@@ -307,9 +315,11 @@ class _ConnectMixin:
         draft = self._connect_draft
         self._connect_step = "probing"
         self.query_one("#connect-title", Static).update(f"连接模型服务 · 正在探测 {draft.name}…")
+        status_msg = f"正在连接 {draft.base_url or OFFICIAL[draft.protocol]} 并拉取可用模型列表…"
+        self._connect_status_text = Text(status_msg)
         st = self.query_one("#connect-status", Static)
         st.display = True
-        st.update(f"正在连接 {draft.base_url or OFFICIAL[draft.protocol]} 并拉取可用模型列表…")
+        st.update(status_msg)
         self.query_one("#connect-input", Input).display = False
         self.query_one("#connect-options", OptionList).display = False
         self.query_one("#connect-help", Static).update("探测中… 按 Esc 返回")
@@ -502,6 +512,9 @@ class _ConnectMixin:
         if not (0 <= index < len(self._connect_choices)):
             return
         action, payload = self._connect_choices[index]
+        if action in {"local", "follow", "preset", "custom"}:
+            # Start a fresh draft on every source selection so abandoned credentials cannot bleed over.
+            self._connect_draft = _ConnectDraft()
         draft = self._connect_draft
 
         if action == "back":

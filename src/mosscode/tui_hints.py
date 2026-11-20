@@ -233,13 +233,18 @@ class _PromptInputMixin:
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action in {"model_set_default", "model_toggle_favorite", "model_open_connect"}:
-            return bool(getattr(self, "_model_picker_active", False) and self.query_one("#model-panel").display)
+            return bool(
+                getattr(self, "_model_picker_active", False)
+                and self.query("#model-panel")
+                and self.query_one("#model-panel").display
+            )
         if action == "move_hint":
             field = self.focused
             if (
                 isinstance(field, Input)
                 and field.id == "model-filter"
                 and getattr(self, "_model_picker_active", False)
+                and self.query("#model-panel")
                 and self.query_one("#model-panel").display
             ):
                 return True

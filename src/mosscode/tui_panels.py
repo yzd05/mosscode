@@ -332,14 +332,14 @@ class _CommandUIMixin:
     def _open_rewind(self) -> None:
         self.run_worker(dispatch(self._command_context(), parse_input("/rewind", self.commands)), group="rewind")
 
-    async def switch_model(self, name: str, model: str | None = None) -> None:
+    async def switch_model(self, name: str, model: str | None = None) -> bool:
         if self.settings is None:
             await self._local_note(f"切换失败：未知 Provider：{name}。")
-            return
+            return False
         config = next((item for item in self.settings.providers if item.name == name), None)
         if config is None:
             await self._local_note(f"切换失败：未知 Provider：{name}。")
-            return
+            return False
         configured = next((item for item in self._configured_providers if item.name == name), config)
         if model is not None:
             base = configured
@@ -352,32 +352,38 @@ class _CommandUIMixin:
                 config = with_model(base, model)
             except ConfigError as exc:
                 await self._local_note(f"切换失败：{exc}")
-                return
+                return False
             current_model = self.model or (
                 self.conversation.provider_config.model if self.conversation.provider_config is not None else ""
             )
             if config.name == self.provider_name and config.model == current_model:
                 await self._local_note(f"└ 已在使用 {config.name}（{config.model}）。")
-                return
+                return True
             if await self._switch_model(config, force=True):
                 providers = tuple(config if item.name == name else item for item in self.settings.providers)
                 self.settings = replace(self.settings, providers=providers)
                 self.conversation.provider_configs = providers
-            return
+                return True
+            return False
         if not configured.follow:
+            same_model = not self.model or configured.model == self.model
+            if configured.name == self.provider_name and same_model and configured is config:
+                await self._local_note(f"└ 已在使用 {configured.name}（{configured.model}）。")
+                return True
             if await self._switch_model(configured, force=configured is not config):
                 if configured is not config:
                     # An earlier model override replaced this provider: switching by name restores its configured model.
                     providers = tuple(configured if item.name == name else item for item in self.settings.providers)
                     self.settings = replace(self.settings, providers=providers)
                     self.conversation.provider_configs = providers
-            return
+                return True
+            return False
         # Read again: the tool it follows may have been switched (in CC Switch, say) since MossCode started.
         try:
             config = refreshed(configured)
         except ConfigError as exc:
             await self._local_note(f"切换失败：{exc}")
-            return
+            return False
         from .credentials import remember
 
         remember(config.api_key)  # A key switched to in that tool since startup is kept out of output too.
@@ -388,6 +394,8 @@ class _CommandUIMixin:
             self._configured_providers = tuple(
                 config if item.name == name else item for item in self._configured_providers
             )
+            return True
+        return False
 
     async def _switch_model(self, config: ProviderConfig, *, again: bool = False, force: bool = False) -> bool:
         """again: the current provider, read again from the tool it follows."""

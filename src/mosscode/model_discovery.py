@@ -7,9 +7,9 @@ import json
 import os
 import re
 import secrets
-import shutil
 import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,7 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 from filelock import FileLock
 
 from .config import OFFICIAL, ConfigError, is_loopback_url, load_settings, render_config
-from .credentials import redact
+from .credentials import SECRET_HEADER, redact
 from .paths import mosscode_home
 
 LOCAL_SERVERS: tuple[tuple[str, str, str, str], ...] = (
@@ -62,31 +62,35 @@ class ModelPrefs:
 
 
 def model_key(provider_name: str, model: str) -> str:
-    """Canonical preference key: `<provider>/<model>`."""
-    return f"{provider_name}/{model}"
+    """Collision-free canonical preference key keeping provider and model identities separate."""
+    return json.dumps([provider_name, model], ensure_ascii=False, separators=(",", ":"))
 
 
 def fuzzy_score(query: str, text: str) -> int | None:
     """Score how well `query` matches `text` (higher is better), or None when unmatched.
 
-    Supports multi-token queries (every whitespace-separated token must match) and
-    ranks exact/prefix/substring hits ahead of ordered character subsequences.
+    Supports multi-token queries (every whitespace-separated token must match). Any query where
+    all tokens match literally (exact/substring) strictly outranks subsequence matches regardless
+    of query length.
     """
     tokens = [tok for tok in query.casefold().split() if tok]
     if not tokens:
         return 0
     haystack = text.casefold()
-    total = 0
+    all_literal = True
+    literal_total = 0
+    subseq_total = 0
     for token in tokens:
         if haystack == token:
-            total += 1000
+            literal_total += 1_000_000
             continue
         idx = haystack.find(token)
         if idx != -1:
             # Prefer matches at start or after a separator ('/', '-', '_', ' ').
-            boundary = 200 if idx == 0 or haystack[idx - 1] in "/-_ ." else 0
-            total += 400 + boundary - min(idx, 120)
+            boundary = 300_000 if idx == 0 or haystack[idx - 1] in "/-_ ." else 0
+            literal_total += 200_000 + boundary - min(idx, 1000)
             continue
+        all_literal = False
         pos = 0
         streak = 0
         sub_score = 0
@@ -96,13 +100,16 @@ def fuzzy_score(query: str, text: str) -> int | None:
                 return None
             if found == pos:
                 streak += 1
-                sub_score += 12 + streak * 4
+                sub_score += 12 + min(streak, 8) * 4
             else:
                 streak = 0
                 sub_score += 8 if found == 0 or haystack[found - 1] in "/-_ ." else 3
             pos = found + 1
-        total += sub_score - min(pos, 100)
-    return total
+        subseq_total += min(10_000, max(1, sub_score - min(pos, 100)))
+    if all_literal:
+        return 10_000_000 + literal_total
+    # Cap mixed/subsequence score strictly below all-literal matches.
+    return min(9_000_000, subseq_total + min(literal_total, 5_000_000))
 
 
 def _models_url(protocol: str, base_url: str | None) -> str:
@@ -119,12 +126,10 @@ def _models_url(protocol: str, base_url: str | None) -> str:
 
 
 def _ollama_tags_url(base_url: str | None) -> str | None:
-    if not base_url:
+    if not base_url or not is_loopback_url(base_url):
         return None
     parsed = urlsplit(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        return None
-    if parsed.port == 11434 or is_loopback_url(base_url) and "ollama" in base_url.lower():
+    if parsed.port == 11434 or "ollama" in base_url.lower():
         return urlunsplit((parsed.scheme, parsed.netloc, "/api/tags", "", ""))
     return None
 
@@ -173,8 +178,19 @@ async def probe_provider(
         return ProbeResult(False, error=str(exc))
 
     req_headers: dict[str, str] = {"Accept": "application/json"}
+    has_secret_header = False
     if headers:
-        req_headers.update({k: v for k, v in headers.items() if isinstance(k, str) and isinstance(v, str)})
+        for k, v in headers.items():
+            if isinstance(k, str) and isinstance(v, str):
+                req_headers[k] = v
+                if SECRET_HEADER.search(k) and v.strip():
+                    has_secret_header = True
+    sends_credentials = (auth_type != "none" and bool(api_key)) or has_secret_header
+    if sends_credentials and urlsplit(url).scheme.lower() != "https":
+        return ProbeResult(
+            False,
+            error="出于安全原因，向非 HTTPS 地址发送凭据的连通性探测已被拒绝，请改用 https://。",
+        )
     if auth_type != "none" and api_key:
         if protocol == "anthropic-messages":
             req_headers.setdefault("anthropic-version", ANTHROPIC_VERSION)
@@ -185,11 +201,25 @@ async def probe_provider(
         else:
             req_headers["Authorization"] = f"Bearer {api_key}"
 
+    # Never auto-follow redirects: prevents leaking x-api-key cross-origin and keeps keyless probes on loopback.
+    trust_env = auth_type != "none"
     started = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=timeout, transport=transport, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            transport=transport,
+            follow_redirects=False,
+            trust_env=trust_env,
+        ) as client:
             response = await client.get(url, headers=req_headers)
             elapsed = int((time.perf_counter() - started) * 1000)
+            if 300 <= response.status_code < 400:
+                return ProbeResult(
+                    False,
+                    latency_ms=elapsed,
+                    status_code=response.status_code,
+                    error=f"服务端返回重定向（HTTP {response.status_code}），为保护凭据与本地回环边界未自动跟随，请填写最终地址。",
+                )
             if response.status_code in {401, 403}:
                 return ProbeResult(
                     False,
@@ -277,6 +307,22 @@ class ModelPrefsStore:
         self.path = base / PREFS_FILE
         self._lock_path = base / PREFS_LOCK
 
+    @staticmethod
+    def _parse_key_list(raw_items: Any) -> tuple[str, ...]:
+        if not isinstance(raw_items, list):
+            return ()
+        out: list[str] = []
+        for item in raw_items:
+            if isinstance(item, str) and item.strip():
+                out.append(item)
+            elif (
+                isinstance(item, list)
+                and len(item) == 2
+                and all(isinstance(part, str) and part.strip() for part in item)
+            ):
+                out.append(model_key(item[0], item[1]))
+        return tuple(out)
+
     def _read_unlocked(self) -> ModelPrefs:
         if not self.path.is_file():
             return ModelPrefs()
@@ -286,8 +332,8 @@ class ModelPrefsStore:
             return ModelPrefs()
         if not isinstance(raw, dict):
             return ModelPrefs()
-        favs = tuple(x for x in raw.get("favorites", ()) if isinstance(x, str) and x.strip())
-        recent = tuple(x for x in raw.get("recent", ()) if isinstance(x, str) and x.strip())
+        favs = self._parse_key_list(raw.get("favorites"))
+        recent = self._parse_key_list(raw.get("recent"))
         return ModelPrefs(favorites=favs, recent=recent[:MAX_RECENT_MODELS])
 
     def _write_unlocked(self, prefs: ModelPrefs) -> None:
@@ -415,6 +461,82 @@ def _replace_default_in_text(original: str, provider_name: str, model: str | Non
     return newline.join(lines) + newline
 
 
+def config_lock_path(config_path: Path) -> Path:
+    """Shared cross-process lock file for all writers touching `config_path`."""
+    return config_path.with_name(f".{config_path.name}.lock")
+
+
+def write_temp_file(tmp: Path, content: str, *, private: bool) -> None:
+    """Create `tmp` exclusively, enforcing 0600 permissions before writing bytes when `private` on POSIX."""
+    if os.name != "nt" and private:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                stream.write(content)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        return
+    with tmp.open("x", encoding="utf-8", newline="") as stream:
+        stream.write(content)
+
+
+def write_private_backup(source: Path, backup: Path) -> None:
+    """Atomically back up `source` to `backup` with private 0600 permissions on POSIX before writing bytes."""
+    data = source.read_bytes()
+    tmp = backup.with_name(f".{backup.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        if os.name != "nt":
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+        else:
+            with tmp.open("xb") as stream:
+                stream.write(data)
+        os.replace(tmp, backup)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _keyring_entry_exists(name: str, vault: Any) -> bool:
+    if vault is not None:
+        exists_fn = getattr(vault, "exists", None)
+        if callable(exists_fn):
+            return bool(exists_fn(name))
+        return False
+    from .credentials import KeyringError, keyring_get
+
+    try:
+        return keyring_get(name) is not None
+    except KeyringError:
+        return False
+
+
+def allocate_keyring_name(base: str, taken: set[str], vault: Any = None) -> str:
+    """Allocate a keyring entry name unused by both `taken` YAML entries and the active credential store."""
+    candidate = base
+    suffix = 2
+    while candidate in taken or _keyring_entry_exists(candidate, vault):
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def rollback_keyring_entry(name: str, vault: Any = None) -> None:
+    """Best-effort cleanup of a newly stored keyring entry if committing config fails."""
+    if vault is not None:
+        delete_fn = getattr(vault, "delete", None)
+        if callable(delete_fn):
+            with suppress(Exception):
+                delete_fn(name)
+        return
+    from .credentials import keyring_delete
+
+    with suppress(Exception):
+        keyring_delete(name)
+
+
 def set_default_model(
     config_path: Path,
     provider_name: str,
@@ -427,7 +549,7 @@ def set_default_model(
 
     if not config_path.is_file():
         return False, f"配置文件不存在：{config_path}"
-    lock = FileLock(str(config_path.with_name(f".{config_path.name}.lock")))
+    lock = FileLock(str(config_lock_path(config_path)))
     with lock:
         try:
             original = config_path.read_text(encoding="utf-8")
@@ -474,13 +596,10 @@ def set_default_model(
         has_plaintext = any(isinstance(item, dict) and "api_key" in item for item in expected["providers"])
         tmp = config_path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
         try:
-            with tmp.open("x", encoding="utf-8", newline="") as stream:
-                stream.write(rendered)
-            if has_plaintext and os.name != "nt":
-                tmp.chmod(0o600)
+            write_temp_file(tmp, rendered, private=has_plaintext)
             load_settings(tmp, home)
             if not kept:
-                shutil.copyfile(config_path, config_path.with_name(config_path.name + ".bak"))
+                write_private_backup(config_path, config_path.with_name(config_path.name + ".bak"))
             os.replace(tmp, config_path)
         except (ConfigError, OSError) as exc:
             tmp.unlink(missing_ok=True)
@@ -542,7 +661,7 @@ def save_provider_entry(
 
     path = config_path or (mosscode_home(home) / "config.yaml")
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(path.with_name(f".{path.name}.lock")))
+    lock = FileLock(str(config_lock_path(path)))
 
     def _unique(base: str, taken: set[str]) -> str:
         if base not in taken:
@@ -555,23 +674,24 @@ def save_provider_entry(
     with lock:
         entry = dict(provider)
         if not path.exists():
+            if "api_key_keyring" in entry and pending_key is not None:
+                entry["api_key_keyring"] = allocate_keyring_name(str(entry["api_key_keyring"]), set(), vault)
             content = render_config(entry)
             tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
             try:
-                with tmp.open("x", encoding="utf-8", newline="") as stream:
-                    stream.write(content)
-                if "api_key" in entry and os.name != "nt":
-                    tmp.chmod(0o600)
+                write_temp_file(tmp, content, private="api_key" in entry)
                 load_settings(tmp, home)
             except BaseException:
                 tmp.unlink(missing_ok=True)
                 raise
+            stored_keyring: str | None = None
             if pending_key is not None:
                 try:
                     if vault is not None:
                         vault.store(entry["api_key_keyring"], pending_key)
                     else:
                         keyring_set(entry["api_key_keyring"], pending_key)
+                    stored_keyring = str(entry["api_key_keyring"])
                 except KeyringError as exc:
                     tmp.unlink(missing_ok=True)
                     raise ConfigError(f"无法保存密钥：{exc}") from None
@@ -579,6 +699,8 @@ def save_provider_entry(
                 os.replace(tmp, path)
             except BaseException:
                 tmp.unlink(missing_ok=True)
+                if stored_keyring is not None:
+                    rollback_keyring_entry(stored_keyring, vault)
                 raise
             return path, str(entry["name"])
 
@@ -591,14 +713,22 @@ def save_provider_entry(
             raise ConfigError(f"现有配置 {path} 格式无效（缺少 providers 列表）。")
         settings = load_settings(path, home)
         existing_names = {item.name for item in settings.providers}
-        entry["name"] = _unique(str(entry["name"]), existing_names)
+        original_name = str(entry["name"])
+        entry["name"] = _unique(original_name, existing_names)
         if "api_key_keyring" in entry:
             taken = existing_names | {
                 item["api_key_keyring"]
                 for item in loaded["providers"]
                 if isinstance(item, dict) and isinstance(item.get("api_key_keyring"), str)
             }
-            entry["api_key_keyring"] = _unique(str(entry["api_key_keyring"]), taken)
+            keyring_base = (
+                str(entry["name"]) if str(entry["api_key_keyring"]) == original_name else str(entry["api_key_keyring"])
+            )
+            entry["api_key_keyring"] = (
+                allocate_keyring_name(keyring_base, taken, vault)
+                if pending_key is not None
+                else _unique(keyring_base, taken)
+            )
 
         expected = {**loaded, "providers": [*loaded["providers"], entry]}
         if set_default:
@@ -623,28 +753,29 @@ def save_provider_entry(
         has_plaintext = any(isinstance(item, dict) and "api_key" in item for item in expected["providers"])
         tmp = path.with_name(f".config-{secrets.token_hex(4)}.yaml.tmp")
         try:
-            with tmp.open("x", encoding="utf-8", newline="") as stream:
-                stream.write(rendered)
-            if has_plaintext and os.name != "nt":
-                tmp.chmod(0o600)
+            write_temp_file(tmp, rendered, private=has_plaintext)
             load_settings(tmp, home)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+        stored_keyring = None
         if pending_key is not None:
             try:
                 if vault is not None:
                     vault.store(entry["api_key_keyring"], pending_key)
                 else:
                     keyring_set(entry["api_key_keyring"], pending_key)
+                stored_keyring = str(entry["api_key_keyring"])
             except KeyringError as exc:
                 tmp.unlink(missing_ok=True)
                 raise ConfigError(f"无法保存密钥：{exc}") from None
         try:
             if not kept:
-                shutil.copyfile(path, path.with_name(path.name + ".bak"))
+                write_private_backup(path, path.with_name(path.name + ".bak"))
             os.replace(tmp, path)
         except BaseException:
             tmp.unlink(missing_ok=True)
+            if stored_keyring is not None:
+                rollback_keyring_entry(stored_keyring, vault)
             raise
         return path, str(entry["name"])
