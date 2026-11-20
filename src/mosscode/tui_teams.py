@@ -81,7 +81,12 @@ class _TeamViewMixin:
             panel.collapse(now)
             self._focus_home()
         panel.show(rows, asking, now)
-        shown = not view.display and not self.query_one("#model-panel").display and (panel.expanded or panel.live)
+        shown = (
+            not view.display
+            and not self.query_one("#model-panel").display
+            and not self.query_one("#connect-panel").display
+            and (panel.expanded or panel.live)
+        )
         if panel.display != shown:
             panel.display = shown
             if not shown and self.focused is self.query_one("#member-list"):
@@ -128,6 +133,7 @@ class _TeamViewMixin:
             return
         card = (
             self.query_one("#model-panel").display
+            or self.query_one("#connect-panel").display
             or self.query_one("#approval-panel").display
             or (self.query_one("#question-panel").display and not self._question_typing)
         )
@@ -147,7 +153,12 @@ class _TeamViewMixin:
 
     def action_members(self) -> None:
         """Ctrl+T opens the panel to pick from, and closes it (or the member view) again."""
-        if self._approval_request or self._question or self.query_one("#model-panel").display:
+        if (
+            self._approval_request
+            or self._question
+            or self.query_one("#model-panel").display
+            or self.query_one("#connect-panel").display
+        ):
             return
         if self.query_one("#member-view").display:
             self._close_view(to_panel=False)

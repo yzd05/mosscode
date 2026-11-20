@@ -16,6 +16,7 @@ class Preset:
     model: str
     api_key_env: str
     catalog_model: str | None = None  # The catalog's name for the default model, when the vendor's differs.
+    auth_type: str | None = None  # Set to "none" for keyless local loopback servers.
 
 
 PRESETS = {
@@ -54,6 +55,14 @@ PRESETS = {
             "DASHSCOPE_API_KEY",
         ),
         Preset(
+            "gemini",
+            "Google Gemini",
+            "openai-chat-completions",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.5-flash",
+            "GEMINI_API_KEY",
+        ),
+        Preset(
             "openrouter",
             "OpenRouter",
             "openai-chat-completions",
@@ -66,6 +75,25 @@ PRESETS = {
             "anthropic", "Anthropic（Claude）", "anthropic-messages", None, "claude-sonnet-5-5", "ANTHROPIC_API_KEY"
         ),
         Preset("openai", "OpenAI", "openai-responses", None, "gpt-5.6", "OPENAI_API_KEY"),
+        Preset(
+            "ollama",
+            "Ollama（本地免密钥）",
+            "openai-chat-completions",
+            "http://127.0.0.1:11434/v1",
+            "llama3.1",
+            "",
+            auth_type="none",
+        ),
+        Preset(
+            "lmstudio",
+            "LM Studio（本地免密钥）",
+            "openai-chat-completions",
+            "http://127.0.0.1:1234/v1",
+            "llama3.1",
+            "",
+            "ollama/llama3.1",
+            auth_type="none",
+        ),
     )
 }
 CREDENTIALS = ("api_key", "api_key_env", "api_key_keyring")
@@ -86,6 +114,8 @@ def expand(raw: dict) -> dict:
         data.setdefault("catalog_model", preset.catalog_model)
     if preset.base_url is not None:
         data.setdefault("base_url", preset.base_url)
-    if not any(data.get(field) for field in CREDENTIALS):
+    if preset.auth_type is not None:
+        data.setdefault("auth_type", preset.auth_type)
+    if preset.api_key_env and data.get("auth_type") != "none" and not any(data.get(field) for field in CREDENTIALS):
         data["api_key_env"] = preset.api_key_env
     return data

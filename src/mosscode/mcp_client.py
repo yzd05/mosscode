@@ -7,10 +7,8 @@ prompts as soon as it is ready, so a slow server never holds up the prompt or th
 import asyncio
 import base64
 import errno
-import hashlib
 import json
 import os
-import re
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -30,6 +28,8 @@ from referencing import Registry
 
 from .images import ImageError, image_ref, load_image
 from .mcp_config import MCPSettings, ServerConfig
+from .mcp_config import prompt_command_name as prompt_command_name
+from .mcp_config import tool_name as tool_name
 from .mcp_stdio import adaptive_stdio_client
 from .messages import ToolDefinition
 from .permissions import normalize_mcp_uri
@@ -75,33 +75,6 @@ class MCPPromptInfo:
     command_name: str  # Slash command name without leading '/', matching r"[a-z][a-z0-9_-]*"
     description: str = ""
     arguments: tuple[MCPPromptArg, ...] = ()
-
-
-def tool_name(server: str, tool: str) -> str:
-    name = f"mcp__{server}__{tool}"
-    if len(name) <= 64 and re.fullmatch(r"[A-Za-z0-9_]+", server + tool) and "__" not in server and "__" not in tool:
-        return name
-    digest = hashlib.sha256(json.dumps([server, tool]).encode()).hexdigest()[:12]
-    clean = lambda value: re.sub(r"[^A-Za-z0-9_]", "_", value)
-    return f"mcp__{clean(server)[:16]}__{clean(tool)[:22]}_{digest}"
-
-
-def prompt_command_name(server: str, prompt: str) -> str:
-    """Deterministic lowercase command name matching commands.NAME (r'[a-z][a-z0-9_-]*', <= 64 chars)."""
-    s, p = server.lower(), prompt.lower()
-    name = f"mcp__{s}__{p}"
-    if (
-        len(name) <= 64
-        and re.fullmatch(r"[a-z0-9_-]+", s)
-        and re.fullmatch(r"[a-z0-9_-]+", p)
-        and "__" not in s
-        and "__" not in p
-        and (server, prompt) == (s, p)
-    ):
-        return name
-    digest = hashlib.sha256(json.dumps([server, prompt]).encode()).hexdigest()[:12]
-    clean = lambda value: re.sub(r"[^a-z0-9_-]", "_", value)
-    return f"mcp__{clean(s)[:16]}__{clean(p)[:22]}_{digest}"
 
 
 def _decode_images(items: list[tuple[str, str]], accepts: bool, store) -> tuple[tuple, list[str]]:

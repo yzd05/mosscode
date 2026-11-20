@@ -4,13 +4,14 @@ Provider 配置、协议、重试与无界面输出。
 
 ## 添加配置
 
-在 `config.yaml` 的 `providers` 列表追加配置即可接入兼容已有协议的服务（也可以运行 `moss setup --add` 交互式追加）。同一服务的不同模型无需在 YAML 中重复配置：对话中可直接用 `/model <提供商>/<模型>` 或 `/model <模型>` 复用该提供商的凭据与 `base_url` 切换模型；经常切换或需要独立参数的模型也可以分别配置不同 `name`。
+在 `config.yaml` 的 `providers` 列表追加配置即可接入兼容已有协议的服务：在终端交互界面中推荐直接输入 `/connect`（支持自动发现本机服务、在线探测连通性与 `/models` 列表，保存后立即热重载切换）；也可以在命令行运行 `moss setup --add` 通过问答交互追加写入配置。同一服务的不同模型无需在 YAML 中重复配置：对话中可直接用 `/model`（或按 `Alt+M`）打开可搜索选择器，或用 `/model <提供商>/<模型>`、`/model <模型>`（目录未收录模型用 `/model :<模型>`）复用该提供商的凭据与 `base_url` 切换模型；经常切换或需要独立参数的模型也可以分别配置不同 `name`。
 
-凭据字段三选一：
+凭据字段四选一：
 
-- `api_key_keyring: deepseek`（推荐）：密钥保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），用 `moss key set deepseek` 保存，配置只写名称，见[命令行](cli.md#key)。保存后立即生效，不用重开终端。
+- `api_key_keyring: deepseek`（推荐）：密钥保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），用 `moss key set deepseek` 或 `/connect` 保存，配置只写名称，见[命令行](cli.md#key)。保存后立即生效，不用重开终端。
 - `api_key_env: DEEPSEEK_API_KEY`：填写环境变量名称，并在启动进程的环境中设置该变量。例如 PowerShell 中先执行 `$env:DEEPSEEK_API_KEY = '你的密钥'` 再启动应用。`api_key_env` 不能填写 `sk-...`；误填时会给出字段说明，错误中不回显该值。
 - `api_key: '你的密钥'`：明文写在配置文件中。
+- `auth_type: none`（仅限本机回环地址）：适用于本机运行的 Ollama、LM Studio、vLLM 等无密钥兼容服务。出于安全边界限制，仅当 `base_url` 主机为 `localhost`、`127.0.0.1` 或 `::1` 时允许免密钥，指向非本机地址时拒绝加载（fail-closed）。
 
 Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key`）。
 
@@ -44,6 +45,9 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
 | `openrouter` | openai-chat-completions | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-5.5` | `OPENROUTER_API_KEY` |
 | `anthropic` | anthropic-messages | 官方地址 | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY` |
 | `openai` | openai-responses | 官方地址 | `gpt-5.6` | `OPENAI_API_KEY` |
+| `gemini` | openai-chat-completions | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` | `GEMINI_API_KEY` |
+| `ollama` | openai-chat-completions | `http://127.0.0.1:11434/v1` | `llama3.1` | 免密钥（`auth_type: none`） |
+| `lmstudio` | openai-chat-completions | `http://127.0.0.1:1234/v1` | `llama3.1` | 免密钥（`auth_type: none`） |
 
 配置中写出的字段优先，预设只填配置没写的部分；写了 `api_key`、`api_key_env` 或 `api_key_keyring` 时不再使用预设的变量名。默认模型都在[模型目录](#模型目录)中，上下文窗口和价格随之而来。
 
@@ -71,6 +75,7 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
 - **模型运行的命令看不到其他密钥**：`execute_command` 和 Skill 工具启动的进程另外去掉两类变量：名称含 TOKEN、SECRET、PASSWORD、PASSWD、PASSPHRASE、CREDENTIAL、API_KEY、ACCESS_KEY、PRIVATE_KEY、COOKIE或以 `_KEY`、`_PAT` 结尾的（不区分大小写）；值形似私钥、JWT、常见服务令牌（`ghp_`、`github_pat_`、`glpat-`、`xox…-`、`sk-`、`npm_`、`AKIA`、`AIza` 开头）或带密码的 URL（如 `postgres://user:pass@host`）的。代理变量（`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`）和 MossCode 为命令设置的 `MOSSCODE_*` 保留。命令确实需要某个变量时，在 `config.yaml` 中写 `command_env: {keep: [GITHUB_TOKEN]}`（变量名可用 `*`）；要额外去掉的写在 `command_env.drop`。`keep` 只在用户配置 `~/.mosscode/config.yaml` 中生效，项目的 `.mosscode/config.yaml` 只能追加 `drop`，见 [项目配置只能收紧](sandbox.md#项目配置只能收紧)。Hook 和 `!` 命令是你自己的命令，不受这一条影响。
 - **输出中的密钥被隐藏**：MossCode 知道的每个密钥（明文 `api_key`、环境变量的值、凭据管理器中的值，以及名称含 auth、key、token、secret 的 `headers` 值），完整出现在工具结果、`!` 命令输出、Hook 输出、`@` 附件或你输入的消息中时，替换为 `[已隐藏的密钥]`，然后才显示、发给模型、写入会话存档或大结果文件。少于 8 个字符的值不替换。
 - **不会写回占位符**：`write_file` 的内容或 `edit_file` 的 `new_text` 含有 `[已隐藏的密钥]` 时拒绝执行，避免模型把读到的占位符写回文件、覆盖真正的密钥。
+- **凭据仅走 HTTPS（本机回环例外）**：为防止密钥明文传输，所有需要携带凭据（`api_key`、`api_key_env`、`api_key_keyring` 或名称含 `auth`/`key`/`token`/`secret` 的自定义 `headers`）的远程服务 `base_url` 必须使用 `https://`，配置加载、模型客户端构造与 `/connect` 连通性探测都会拒绝远程 `http://`。仅当 `base_url` 指向本机回环地址（`localhost`、`127.0.0.1`、`::1` 且不含 URL 嵌入凭据）时允许使用 `http://`，以便本机运行的 Ollama、LM Studio 或本地代理（如 CC Switch）正常工作。
 - **明文提示**：配置文件位于项目目录中且含有明文 `api_key` 时，启动时提示改用 `moss key set`。
 - **项目配置先确认**：项目的 `.mosscode/config.yaml` 可以把服务地址指向任何主机，并引用你保存的凭据；它在你看过服务地址和凭据名称并确认之后才会被使用，内容变化后重新确认，见 [项目配置需要确认](cli.md#项目配置需要确认)。
 

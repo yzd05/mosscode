@@ -41,6 +41,7 @@ _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 _EXCLUDED_HINTS: dict[str, str] = {
+    "connect": "模型服务连接向导仅用于终端交互界面；若当前工作区存在已确认的项目级 `.mosscode/config.yaml`，请将新服务写入该文件并在当前工作区运行一次 `moss` 重新确认更新后的项目配置（编辑会改变文件校验摘要）；否则可在终端运行 `moss setup --add` 或编辑 `~/.mosscode/config.yaml`。完成后新建 ACP 会话并在编辑器中切换 Model。",
     "exit": "请直接关闭编辑器的会话标签页或聊天面板；ACP 服务端会随连接断开自动清理。",
     "fork": "会话分支切换仅用于终端交互界面；在编辑器中可新建会话或通过历史面板切换。",
     "resume": "请点击编辑器聊天面板右上角的历史会话图标切换或恢复过往会话。",

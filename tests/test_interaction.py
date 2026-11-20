@@ -441,7 +441,7 @@ async def test_model_switch_by_argument_and_panel_keeps_history():
         second = created[0][1]
         assert [m.text for m in second.requests[0]] == ["hello", "partial", "again"] and len(first.requests) == 1
         await send(app, pilot, "/model")
-        assert app.query_one("#model-panel").display and app.query_one("#models").has_focus
+        assert app.query_one("#model-panel").display and app.query_one("#model-filter").has_focus
         await pilot.press("up", "enter")
         await pilot.pause()
         assert not app.query_one("#model-panel").display and app.query_one("#prompt", PromptArea).has_focus

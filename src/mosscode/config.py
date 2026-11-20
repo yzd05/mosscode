@@ -14,6 +14,13 @@ import yaml
 from .catalog import ModelInfo, load_catalog, lookup, tokens_label
 from .context import ContextBudget
 from .prompts import DEFAULT_SYSTEM_PROMPT, stable_prompt
+from .redaction import (
+    CLEARTEXT_CREDENTIAL_URL_ERROR,
+    is_cleartext_remote_credential_url,
+)
+from .redaction import (
+    is_loopback_url as is_loopback_url,
+)
 
 
 class ConfigError(ValueError):
@@ -101,6 +108,12 @@ class ProviderConfig:
         return ContextBudget.for_provider(self.context_window, self.max_output_tokens, self.compact_threshold)
 
     def credential(self) -> str:
+        if self.auth_type == "none":
+            if not is_loopback_url(self.base_url):
+                raise ConfigError(
+                    f"{self.name}：auth_type: none 仅允许用于本机回环地址（localhost / 127.0.0.1 / ::1）。"
+                )
+            return "mosscode-local"
         _validate_env_name(self.api_key_env)
         value = _stored(self.api_key_env, self.api_key_keyring, self.api_key, self.name)
         if not value:
@@ -363,6 +376,8 @@ def _credential(item: ProviderConfig | WebSearchConfig) -> str:
         from .follow import SOURCES
 
         return f"{SOURCES[item.follow]} 的设置中的密钥"
+    if getattr(item, "auth_type", None) == "none":
+        return "免密钥（本机回环地址）"
     if item.api_key_env:
         return f"环境变量 {_shown(item.api_key_env)}"
     if item.api_key_keyring:
@@ -464,8 +479,13 @@ def _provider(raw: Any, home: Path | None = None) -> ProviderConfig:
     timeout = data.get("timeout", 60.0)
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ConfigError("timeout 必须是有限的正数秒数。")
-    if data.get("auth_type", "api_key") not in {"api_key", "bearer"}:
-        raise ConfigError("auth_type 必须是 api_key 或 bearer。")
+    auth_type = data.get("auth_type", "api_key")
+    if auth_type not in {"api_key", "bearer", "none"}:
+        raise ConfigError("auth_type 必须是 api_key、bearer 或 none。")
+    if auth_type == "none" and not is_loopback_url(url):
+        raise ConfigError("auth_type: none 仅允许用于本机回环地址（localhost / 127.0.0.1 / ::1）。")
+    if is_cleartext_remote_credential_url(url, auth_type=auth_type, headers=headers):
+        raise ConfigError(CLEARTEXT_CREDENTIAL_URL_ERROR)
     if type(data.get("stream_usage", False)) is not bool:
         raise ConfigError("stream_usage 必须是布尔值。")
     if type(data.get("include_encrypted_reasoning", True)) is not bool:

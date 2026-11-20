@@ -38,7 +38,7 @@ from .catalog import tokens_label
 from .choice_list import KeyboardOptions
 from .clipboard import read_clipboard_async
 from .commands import CommandRegistry, Hint, parse_input, unknown_note
-from .config import Settings
+from .config import ProviderConfig, Settings
 from .conversation import Conversation, MemoryUpdated, Notice
 from .coordinator import BADGE as COORDINATOR_BADGE
 from .goal import GOAL, GoalStep, elapsed_text
@@ -73,7 +73,9 @@ from .scrollback import StreamingMarkdown, TranscriptMarkdown, commit_transcript
 from .teams.runtime import MemberRow
 from .todo import completed as todos_completed
 from .tools import shell_label
+from .tui_connect import _ConnectMixin
 from .tui_hints import _PromptInputMixin
+from .tui_model_picker import _ModelPickerMixin
 from .tui_panels import _CommandUIMixin
 from .tui_teams import _TeamViewMixin
 from .tui_views import (
@@ -98,6 +100,7 @@ from .tui_views import (
     ChatEntry,
     CompactRow,
     ConfigTrustApp,
+    ConnectPanel,
     MCPTrustApp,
     ModelPanel,
     PlanEntry,
@@ -143,6 +146,7 @@ __all__ = [
     "ChatEntry",
     "CompactRow",
     "ConfigTrustApp",
+    "ConnectPanel",
     "DECLINED_HINT",
     "DETAIL_ROWS",
     "DIFF_ROWS",
@@ -202,7 +206,9 @@ __all__ = [
 ]
 
 
-class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalApp[None]):
+class MossCodeApp(
+    _PromptInputMixin, _CommandUIMixin, _ModelPickerMixin, _ConnectMixin, _TeamViewMixin, TerminalApp[None]
+):
     TITLE = "MossCode"
     SUB_TITLE = ""
     muted_color = MUTED_COLOR
@@ -255,9 +261,21 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
     #command-help { height: 1; margin-bottom: 1; color: MUTED_COLOR !important; padding: 0 1; }
     #model-panel { width: 1fr; height: auto; padding: 0 1; border-top: solid RULE_COLOR; border-bottom: solid RULE_COLOR; }
     #model-title, #model-help { height: 1; }
-    #model-help, #approval-help, #question-help, #member-help { color: MUTED_COLOR !important; }
+    #model-filter { height: 1; border: none; padding: 0; background: $background; margin: 0; }
+    #model-filter:focus { border: none; background-tint: transparent; }
+    #model-help, #approval-help, #question-help, #member-help, #connect-help { color: MUTED_COLOR !important; }
     #models { height: auto; max-height: 8; border: none; padding: 0; }
     #models > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
+    #connect-panel {
+        width: 1fr; height: auto; padding: 0 1;
+        border-top: solid OPERATION_COLOR; border-bottom: solid OPERATION_COLOR;
+    }
+    #connect-title, #connect-help { height: 1; }
+    #connect-status { height: auto; color: MUTED_COLOR !important; }
+    #connect-input { height: 1; border: none; padding: 0; background: $background; margin: 0; }
+    #connect-input:focus { border: none; background-tint: transparent; }
+    #connect-options { height: auto; max-height: 8; border: none; padding: 0; }
+    #connect-options > .option-list--option-highlighted { color: COMMAND_HIGHLIGHT_COLOR !important; text-style: bold; }
     /* A card waiting for an answer takes the prompt's place, between two rules as the prompt is. */
     #approval-panel {
         height: auto; max-height: 16; padding: 0 1;
@@ -312,6 +330,10 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
         Binding("ctrl+b", "background", priority=True, show=False),
         Binding("ctrl+o", "toggle_details", "展开详情", priority=True, show=False),
         Binding("ctrl+t", "members", priority=True, show=False),
+        Binding("alt+m", "open_models", priority=True, show=False),
+        Binding("ctrl+d", "model_set_default", priority=True, show=False),
+        Binding("ctrl+f", "model_toggle_favorite", priority=True, show=False),
+        Binding("ctrl+n", "model_open_connect", priority=True, show=False),
         Binding("enter", "complete_hint(False)", priority=True, show=False),
     ]
 
@@ -336,6 +358,14 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
         self._panel_rows = 0
         self._pick = None  # The open picker's on_pick (CommandUI.choose).
         self._on_cancel = None  # Its on_cancel, run by Esc.
+        self._model_picker_active = False
+        self._model_picker_choices = []
+        self._model_picker_filtered = []
+        self._connect_step = ""
+        self._connect_history = []
+        self._connect_choices = []
+        self._connect_status_text = Text("")
+        self._model_switch_lock = asyncio.Lock()
         self._hooks_confirmed = False  # Asked once at startup, before session_start.
         # A table of this run's own: skill commands are added here and replaced by /skills reload.
         self.commands = commands if commands is not None else BUILTIN.with_skills(conversation.skills)[0]
@@ -345,6 +375,11 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
         self.settings, self.model = settings, model
         # As configured: /model <name>/<model> replaces a provider for this session, /model <name> brings it back.
         self._configured_providers = settings.providers if settings is not None else ()
+        # Track the exact ProviderConfig installed in the active client separately from reloaded config entries.
+        self._installed_provider_config: ProviderConfig | None = conversation.provider_config or next(
+            (item for item in self._configured_providers if item.name == provider_name),
+            None,
+        )
         if provider_factory is None:
             from .providers import create_provider as provider_factory
         self.provider_factory = provider_factory
@@ -439,6 +474,9 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
         panel = ModelPanel(id="model-panel")
         panel.display = False
         yield panel
+        connect = ConnectPanel(id="connect-panel")
+        connect.display = False
+        yield connect
         with Vertical(id="approval-panel") as approval:
             approval.display = False
             yield Static("", id="approval-detail", markup=False)
@@ -615,6 +653,7 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
             or self.conversation.busy
             or self._approval_request is not None
             or self._question is not None
+            or (self.query("#connect-panel") and self.query_one("#connect-panel").display)
             or (self.conversation.goal is not None and self.conversation.goal.active)
             or self.conversation.notifications
         )
@@ -798,7 +837,28 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
                 1 if self._todo_shown is None else min(6, len(str(todo_panel(self._todo_shown)).splitlines()))
             )
         if self.query_one("#model-panel").display:
-            reserved += 4 + min(8, self._panel_rows)
+            extra = 1 if self.query_one("#model-filter").display else 0
+            reserved += 4 + extra + min(8, self._panel_rows)
+        if self.query_one("#connect-panel").display:
+            opt_rows = (
+                min(8, max(1, len(self._connect_choices)))
+                if self.query_one("#connect-options").display
+                else (1 if self.query_one("#connect-input").display else 0)
+            )
+            # Two rules, title, help, plus options/input rows; cap #connect-status so choices never clip.
+            fixed = 4 + opt_rows
+            limit = max(fixed, self.size.height - reserved - 1)
+            self.query_one("#connect-panel").styles.max_height = limit
+            status_widget = self.query_one("#connect-status")
+            status_rows = 0
+            if status_widget.display and self._connect_status_text.plain:
+                status_cap = max(1, limit - fixed)
+                status_widget.styles.max_height = status_cap
+                width = max(10, self.size.width - self.screen.styles.gutter.width - 2)
+                status_rows = min(status_cap, len(self._connect_status_text.wrap(self.console, width)))
+            else:
+                status_widget.styles.max_height = None
+            reserved += min(limit, fixed + status_rows)
         if self.query_one("#approval-panel").display:
             # Keep the choices and status reachable in a short terminal; only
             # the preview shrinks. Completed history already lives in scrollback.
@@ -1392,7 +1452,13 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
 
     def action_cycle_mode(self) -> None:
         registry = self.conversation.registry
-        if registry is None or self._approval_request or self._question or self.query_one("#model-panel").display:
+        if (
+            registry is None
+            or self._approval_request
+            or self._question
+            or self.query_one("#model-panel").display
+            or self.query_one("#connect-panel").display
+        ):
             return
         if self._generating:
             self._hint_until = monotonic() + 2
@@ -1419,6 +1485,9 @@ class MossCodeApp(_PromptInputMixin, _CommandUIMixin, _TeamViewMixin, TerminalAp
             return
         if self.query_one("#member-panel", MemberPanel).expanded:
             self._collapse_members()
+            return
+        if self.query_one("#connect-panel").display:
+            self._connect_back()
             return
         if self.query_one("#model-panel").display:
             cancel = self._on_cancel

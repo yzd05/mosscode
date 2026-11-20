@@ -9,13 +9,14 @@ from dataclasses import replace
 from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import OptionList, Static
+from textual.widgets import Input, OptionList, Static
 
 from .appearance import MUTED_COLOR, OPERATION_COLOR, PARAMETER_COLOR, compact_notice, startup_banner
 from .builtin_commands import dispatch
 from .commands import CommandContext, Parsed, parse_input, unknown_note
 from .config import ConfigError, ProviderConfig, refreshed
 from .conversation import Notice, Resumed
+from .credentials import protect_providers
 from .follow import SOURCES as FOLLOWED
 from .member_ui import MemberPanel
 from .messages import IMAGE_MARK, CompactFailed, CompactFinished, CompactStarted, Message, ProviderError
@@ -24,6 +25,7 @@ from .runtime_factory import with_model
 from .scrollback import redraw_transcript
 from .tools import shell_label
 from .tools.ask import OTHER as OTHER_ANSWER
+from .tui_model_picker import DEFAULT_PANEL_HELP
 from .tui_views import (
     CANCELLED_COMPACT,
     DECLINED_HINT,
@@ -292,6 +294,14 @@ class _CommandUIMixin:
         await self._clear_screen()
 
     def choose(self, title: str, options, current: int, on_pick, on_cancel=None) -> None:
+        self._model_picker_active = False
+        self._model_picker_choices = []
+        self._model_picker_filtered = []
+        if self.query("#model-filter"):
+            search = self.query_one("#model-filter", Input)
+            search.display = False
+            search.value = ""
+        self.query_one("#model-help", Static).update(DEFAULT_PANEL_HELP)
         picker = self.query_one("#models", OptionList)
         picker.clear_options()
         picker.add_options(list(options))
@@ -323,55 +333,64 @@ class _CommandUIMixin:
     def _open_rewind(self) -> None:
         self.run_worker(dispatch(self._command_context(), parse_input("/rewind", self.commands)), group="rewind")
 
-    async def switch_model(self, name: str, model: str | None = None) -> None:
+    async def switch_model(self, name: str, model: str | None = None) -> bool:
+        async with self._model_switch_lock:
+            return await self._switch_model_unlocked(name, model)
+
+    async def _switch_model_unlocked(self, name: str, model: str | None = None) -> bool:
         if self.settings is None:
             await self._local_note(f"切换失败：未知 Provider：{name}。")
-            return
+            return False
         config = next((item for item in self.settings.providers if item.name == name), None)
         if config is None:
             await self._local_note(f"切换失败：未知 Provider：{name}。")
-            return
+            return False
         configured = next((item for item in self._configured_providers if item.name == name), config)
+        installed = getattr(self, "_installed_provider_config", None) or self.conversation.provider_config
         if model is not None:
             base = configured
             try:
                 if base.follow:
                     base = refreshed(base)
-                    from .credentials import remember
-
-                    remember(base.api_key)
+                    protect_providers((base,), include_keyring=False)
                 config = with_model(base, model)
             except ConfigError as exc:
                 await self._local_note(f"切换失败：{exc}")
-                return
+                return False
             current_model = self.model or (
                 self.conversation.provider_config.model if self.conversation.provider_config is not None else ""
             )
-            if config.name == self.provider_name and config.model == current_model:
+            same_runtime = installed is None or installed == config
+            if config.name == self.provider_name and config.model == current_model and same_runtime:
                 await self._local_note(f"└ 已在使用 {config.name}（{config.model}）。")
-                return
+                return True
             if await self._switch_model(config, force=True):
                 providers = tuple(config if item.name == name else item for item in self.settings.providers)
                 self.settings = replace(self.settings, providers=providers)
                 self.conversation.provider_configs = providers
-            return
+                return True
+            return False
         if not configured.follow:
-            if await self._switch_model(configured, force=configured is not config):
+            same_model = not self.model or configured.model == self.model
+            same_runtime = installed is None or installed == configured
+            if configured.name == self.provider_name and same_model and configured is config and same_runtime:
+                await self._local_note(f"└ 已在使用 {configured.name}（{configured.model}）。")
+                return True
+            if await self._switch_model(configured, force=(configured is not config or not same_runtime)):
                 if configured is not config:
                     # An earlier model override replaced this provider: switching by name restores its configured model.
                     providers = tuple(configured if item.name == name else item for item in self.settings.providers)
                     self.settings = replace(self.settings, providers=providers)
                     self.conversation.provider_configs = providers
-            return
+                return True
+            return False
         # Read again: the tool it follows may have been switched (in CC Switch, say) since MossCode started.
         try:
             config = refreshed(configured)
         except ConfigError as exc:
             await self._local_note(f"切换失败：{exc}")
-            return
-        from .credentials import remember
-
-        remember(config.api_key)  # A key switched to in that tool since startup is kept out of output too.
+            return False
+        protect_providers((config,), include_keyring=False)
         if await self._switch_model(config, again=config.name == self.provider_name):
             providers = tuple(config if item.name == name else item for item in self.settings.providers)
             self.settings = replace(self.settings, providers=providers)
@@ -379,6 +398,8 @@ class _CommandUIMixin:
             self._configured_providers = tuple(
                 config if item.name == name else item for item in self._configured_providers
             )
+            return True
+        return False
 
     async def _switch_model(self, config: ProviderConfig, *, again: bool = False, force: bool = False) -> bool:
         """again: the current provider, read again from the tool it follows."""
@@ -386,15 +407,26 @@ class _CommandUIMixin:
         if config.name == self.provider_name and same_model and not again and not force:
             await self._local_note(f"└ 已在使用 {config.name}（{config.model}）。")
             return False
+        protect_providers((config,), include_keyring=False)
+        provider = None
+        close_error: Exception | None = None
         try:
             provider = self.provider_factory(config)
             await self.conversation.set_provider(
                 provider, config.budget(), (config.name, config.protocol, config.model)
             )
         except (ProviderError, ConfigError) as exc:
-            await self._local_note(f"切换失败：{exc}")
-            return False
+            if provider is None or self.conversation.provider is not provider:
+                await self._local_note(f"切换失败：{exc}")
+                return False
+            close_error = exc
+        except OSError as exc:
+            if provider is None or self.conversation.provider is not provider:
+                raise
+            close_error = exc
+        self._installed_provider_config = config
         self.provider_name, self.model = config.name, config.model
+        self._record_recent_model(config.name, config.model)
         if self.query("#banner"):  # Not yet committed to the scrollback: it can still change.
             self.query_one("#banner", Static).update(startup_banner(self.provider_name))
             self._banner_provider = self.provider_name
@@ -407,6 +439,8 @@ class _CommandUIMixin:
             )
         else:
             await self._local_note(f"└ 已切换到 {config.name}（{config.protocol} / {config.model}）；对话历史保留。")
+        if close_error is not None:
+            await self._local_note(f"! 旧模型连接关闭失败：{close_error}", OPERATION_COLOR)
         if note := config.window_note():
             await self._local_note(f"└ {note}")
         if (problem := self.conversation.thinking_problem()) is not None:
@@ -417,6 +451,13 @@ class _CommandUIMixin:
 
     def _close_model_panel(self) -> None:
         self._pick = self._on_cancel = None
+        self._model_picker_active = False
+        self._model_picker_choices = []
+        self._model_picker_filtered = []
+        if self.query("#model-filter"):
+            search = self.query_one("#model-filter", Input)
+            search.display = False
+            search.value = ""
         self.query_one("#model-panel").display = False
         self._place_prompt()
         if not self._approval_request and not self._question:
@@ -424,12 +465,31 @@ class _CommandUIMixin:
         self._show_members()
         self.call_later(self._fit_chat)
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "model-filter" and getattr(self, "_model_picker_active", False):
+            self._render_model_picker(event.value)
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "model-filter" and getattr(self, "_model_picker_active", False):
+            choice = self._current_picker_choice()
+            if choice is not None:
+                await self._apply_model_choice(choice)
+        elif event.input.id == "connect-input":
+            await self._handle_connect_input(event.value)
+
     async def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "models":
+            if getattr(self, "_model_picker_active", False):
+                choice = self._current_picker_choice()
+                if choice is not None:
+                    await self._apply_model_choice(choice)
+                return
             pick = self._pick
             self._close_model_panel()
             if pick is not None:
                 await pick(event.option_index)
+        elif event.option_list.id == "connect-options":
+            await self._handle_connect_option(event.option_index)
         elif event.option_list.id == "approval-options" and self._approval_request:
             self._answer_approval(self._approval_request.choices[event.option_index])
         elif event.option_list.id == "question-options" and self._question is not None:

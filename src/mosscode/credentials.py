@@ -8,14 +8,17 @@ joining the history. A key the model never sees cannot end up in a reply, a tran
 from __future__ import annotations
 
 import os
-import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from .redaction import (
     MIN_SECRET as MIN_SECRET,
 )
 from .redaction import (
     PLACEHOLDER as PLACEHOLDER,
+)
+from .redaction import (
+    SECRET_HEADER as SECRET_HEADER,
 )
 from .redaction import (
     forget_secrets,
@@ -31,8 +34,6 @@ from .redaction import (
 )
 
 SERVICE = "mosscode"  # The service name every entry is saved under.
-# Header names that carry a credential; other headers (versions, beta flags) are left alone.
-SECRET_HEADER = re.compile(r"auth|key|token|secret", re.IGNORECASE)
 
 _names: set[str] = set()
 
@@ -56,17 +57,14 @@ def forget_all() -> None:
     forget_secrets()
 
 
-def protect(settings) -> None:
-    """Register the keys a configuration names; keys in the credential manager are read now so all are known."""
-    from .command_env import configure  # It imports this module.
-
-    configure(settings.command_env_keep, settings.command_env_drop)
-    for config in (*settings.providers, *((settings.web_search,) if settings.web_search else ())):
+def protect_providers(providers: Iterable[Any], *, include_keyring: bool = True) -> None:
+    """Register provider env var names and secret values without modifying command_env keep/drop policy."""
+    for config in providers:
         hide_variable(config.api_key_env)
         if config.api_key_env:
             remember(os.environ.get(config.api_key_env))
         remember(config.api_key)
-        if config.api_key_keyring:
+        if include_keyring and config.api_key_keyring:
             try:
                 remember(keyring_get(config.api_key_keyring))
             except KeyringError:
@@ -74,6 +72,14 @@ def protect(settings) -> None:
         for header, value in getattr(config, "headers", {}).items():
             if SECRET_HEADER.search(header):
                 remember(value)
+
+
+def protect(settings) -> None:
+    """Register the keys a configuration names; keys in the credential manager are read now so all are known."""
+    from .command_env import configure  # It imports this module.
+
+    configure(settings.command_env_keep, settings.command_env_drop)
+    protect_providers((*settings.providers, *((settings.web_search,) if settings.web_search else ())))
 
 
 def child_environment(env: Mapping[str, str] | None) -> dict[str, str] | None:

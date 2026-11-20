@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .agents import AgentCatalog
 from .builtin_commands import BUILTIN
@@ -14,7 +14,6 @@ from .commands import CommandRegistry
 from .config import OUTPUT_CAP, ConfigError, ProviderConfig, Settings, catalog_window, refreshed
 from .conversation import Conversation
 from .hooks import HookEngine
-from .mcp_client import MCPManager
 from .mcp_config import MCPConfigError, MCPSettings, ProjectMCP, ServerConfig, load_mcp_settings, project_mcp
 from .mcp_surface import register_mcp_resource_tools
 from .memory import MemoryStore
@@ -26,6 +25,9 @@ from .session import Session
 from .skills import SkillCatalog
 from .tools import create_default_registry
 from .tools.base import ToolRegistry
+
+if TYPE_CHECKING:
+    from .mcp_client import MCPManager
 
 UNTRUSTED_PLUGINS_HINT = (
     "项目插件 {names} 未经确认，未加载；请在交互界面中启动一次并确认，或使用 --trust-project-plugins。"
@@ -242,11 +244,17 @@ def build_mcp_manager(
             servers=tuple(merged_by_name.values()),
             notices=(*base_mcp.notices, *mcp_notices, *extra_notices),
         )
-        manager = MCPManager(root, mcp_settings) if mcp_settings.servers or mcp_settings.notices else None
-        return manager, ()
+        if not (mcp_settings.servers or mcp_settings.notices):
+            return None, ()
+        from .mcp_client import MCPManager
 
-    manager = MCPManager(root, base_mcp) if base_mcp.servers or base_mcp.notices else None
-    return manager, tuple(mcp_notices)
+        return MCPManager(root, mcp_settings), ()
+
+    if not (base_mcp.servers or base_mcp.notices):
+        return None, tuple(mcp_notices)
+    from .mcp_client import MCPManager
+
+    return MCPManager(root, base_mcp), tuple(mcp_notices)
 
 
 def build_memory_options(

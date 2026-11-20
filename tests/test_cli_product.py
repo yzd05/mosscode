@@ -190,9 +190,13 @@ def wizard(answers, *, secret=None, environ=None, vault=None):
 
 
 def test_setup_writes_an_environment_variable_config(tmp_path):
+    from mosscode.presets import PRESETS
+
+    custom = str(len(PRESETS) + 1)
     # Invalid answers are asked again: protocol 9, an ftp address, a window of "abc".
     w, out = wizard(
-        ["8", "9", "1", "ftp://x", "", "claude-model", "abc", "200k", "", "", ""], environ={"ANTHROPIC_API_KEY": "set"}
+        [custom, "9", "1", "ftp://x", "", "claude-model", "abc", "200k", "", "", ""],
+        environ={"ANTHROPIC_API_KEY": "set"},
     )
     assert setup(tmp_path, w) == "ready"
     settings = load_settings(user_config(tmp_path))
@@ -205,7 +209,10 @@ def test_setup_writes_an_environment_variable_config(tmp_path):
 
 
 def test_setup_names_a_compatible_service_after_its_host(tmp_path):
-    w, out = wizard(["8", "3", "https://api.deepseek.com", "deepseek-chat", "", "", "", ""])
+    from mosscode.presets import PRESETS
+
+    custom = str(len(PRESETS) + 1)
+    w, out = wizard([custom, "3", "https://api.deepseek.com", "deepseek-chat", "", "", "", ""])
     assert setup(tmp_path, w) == "written"  # The variable is not set yet: say how, do not start.
     provider = load_settings(user_config(tmp_path)).providers[0]
     assert (provider.name, provider.api_key_env) == ("deepseek", "DEEPSEEK_API_KEY")
@@ -213,12 +220,17 @@ def test_setup_names_a_compatible_service_after_its_host(tmp_path):
     assert any(expected_env_hint in str(line) for line in out)
     asked = out.index("2/5 服务地址 base_url（回车使用官方地址 https://api.openai.com/v1）：")
     assert any("api.deepseek.com" in str(line) for line in out[:asked])  # The hint comes before the question.
-    assert run_setup(tmp_path / "other", wizard(["8", "3", "https://api.deepseek.com", "m", "", "", "", ""])[0]) is None
+    assert (
+        run_setup(tmp_path / "other", wizard([custom, "3", "https://api.deepseek.com", "m", "", "", "", ""])[0]) is None
+    )
 
 
 def test_setup_with_a_typed_key_never_shows_it(tmp_path):
+    from mosscode.presets import PRESETS
+
+    custom = str(len(PRESETS) + 1)
     secret = "sk-test-do-not-show-123"
-    w, out = wizard(["8", "2", "", "gpt-model", "", "2", ""], secret=lambda question: secret)
+    w, out = wizard([custom, "2", "", "gpt-model", "", "2", ""], secret=lambda question: secret)
     assert run_setup(tmp_path, w) == user_config(tmp_path)
     shown = "\n".join(map(str, out))
     assert secret not in shown and "明文" in shown and "已设置" in shown
@@ -227,10 +239,13 @@ def test_setup_with_a_typed_key_never_shows_it(tmp_path):
 
 
 def test_setup_never_overwrites_and_writes_nothing_when_left(tmp_path):
+    from mosscode.presets import PRESETS
+
+    custom = str(len(PRESETS) + 1)
     path = user_config(tmp_path)
-    w, _ = wizard(["8", "1", "", KeyboardInterrupt()])
+    w, _ = wizard([custom, "1", "", KeyboardInterrupt()])
     assert setup(tmp_path, w) == "cancelled" and not path.exists()
-    w, _ = wizard(["8", "1", "", "m", "", "", "", "n"])
+    w, _ = wizard([custom, "1", "", "m", "", "", "", "n"])
     assert setup(tmp_path, w) == "cancelled" and not path.exists()
     path.parent.mkdir(parents=True)
     path.write_text("mine", encoding="utf-8")
@@ -351,8 +366,11 @@ def test_doctor_shows_the_catalog_entry_or_how_to_name_one(tmp_path):
 
 
 def test_setup_offers_the_catalog_window_without_writing_it(tmp_path):
+    from mosscode.presets import PRESETS
+
+    custom = str(len(PRESETS) + 1)
     use_catalog("deepseek/deepseek-v4-flash")
-    w, out = wizard(["8", "3", "https://api.deepseek.com", "deepseek-v4-flash", "", "", "", ""])
+    w, out = wizard([custom, "3", "https://api.deepseek.com", "deepseek-v4-flash", "", "", "", ""])
     setup(tmp_path, w)
     assert "4/5 上下文窗口 Token 数，如 200k（回车采用模型目录中的 1M）：" in out
     assert "  上下文窗口 未填写，按模型目录 1M" in out
@@ -361,8 +379,11 @@ def test_setup_offers_the_catalog_window_without_writing_it(tmp_path):
 
 
 def test_setup_says_when_the_model_is_not_in_the_catalog(tmp_path):
+    from mosscode.presets import PRESETS
+
+    custom = str(len(PRESETS) + 1)
     use_catalog("deepseek/deepseek-v4-flash")
-    w, out = wizard(["8", "3", "https://api.deepseek.com", "flash", "", "", "", ""])
+    w, out = wizard([custom, "3", "https://api.deepseek.com", "flash", "", "", "", ""])
     setup(tmp_path, w)
     assert any("模型目录中没有 flash" in str(line) and "catalog_model" in str(line) for line in out)
     assert "4/5 上下文窗口 Token 数，如 200k（回车按 128K 估算）：" in out
