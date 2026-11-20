@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import ast
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
@@ -241,6 +241,208 @@ def _resolve_relative_base(cur_mod: str, is_pkg: bool, level: int, rel: str, lin
     return pkg_parts[: len(pkg_parts) - up]
 
 
+_ScopeStack = list[tuple[dict[str, str | None], bool]]
+
+
+def _target_names(node: ast.AST | None) -> list[str]:
+    if node is None:
+        return []
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for elt in node.elts:
+            names.extend(_target_names(elt))
+        return names
+    if isinstance(node, ast.Starred):
+        return _target_names(node.value)
+    return []
+
+
+def _arg_names(args: ast.arguments) -> list[str]:
+    names = [arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    if args.vararg is not None:
+        names.append(args.vararg.arg)
+    if args.kwarg is not None:
+        names.append(args.kwarg.arg)
+    return names
+
+
+def _lookup_binding(scopes: _ScopeStack, name: str) -> str | None:
+    for idx in range(len(scopes) - 1, -1, -1):
+        bindings, is_class = scopes[idx]
+        if is_class and idx != len(scopes) - 1:
+            continue
+        if name in bindings:
+            return bindings[name]
+    return None
+
+
+def _resolve_loader_expr(expr: ast.expr, scopes: _ScopeStack) -> str | None:
+    if isinstance(expr, ast.Name):
+        return _lookup_binding(scopes, expr.id)
+    if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name):
+        base = _lookup_binding(scopes, expr.value.id)
+        if base == "importlib" and expr.attr == "import_module":
+            return "import_module"
+        if base == "builtins" and expr.attr == "__import__":
+            return "__import__"
+    return None
+
+
+def _collect_scope_bindings(
+    stmts: list[ast.stmt],
+    *,
+    outer_scopes: _ScopeStack,
+    param_names: Iterable[str] = (),
+    is_class: bool = False,
+) -> dict[str, str | None]:
+    non_local: set[str] = set()
+    scope_nodes: list[ast.AST] = []
+
+    def _walk_scope(node: ast.AST) -> None:
+        scope_nodes.append(node)
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            non_local.update(node.names)
+            return
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+                ast.Lambda,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
+            return
+        for child in ast.iter_child_nodes(node):
+            _walk_scope(child)
+
+    for stmt in stmts:
+        _walk_scope(stmt)
+
+    bindings: dict[str, str | None] = {name: None for name in param_names}
+    assigns: list[ast.Assign] = []
+
+    for node in scope_nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname is None:
+                    top = alias.name.split(".", 1)[0]
+                    if top in non_local:
+                        continue
+                    if top in {"importlib", "builtins"}:
+                        bindings[top] = top
+                    else:
+                        bindings.setdefault(top, None)
+                else:
+                    if alias.asname in non_local:
+                        continue
+                    if alias.name in {"importlib", "builtins"}:
+                        bindings[alias.asname] = alias.name
+                    else:
+                        bindings.setdefault(alias.asname, None)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module == "importlib":
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    local = alias.asname or alias.name
+                    if local in non_local:
+                        continue
+                    if alias.name == "import_module":
+                        bindings[local] = "import_module"
+                    else:
+                        bindings.setdefault(local, None)
+            elif node.level == 0 and node.module == "builtins":
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    local = alias.asname or alias.name
+                    if local in non_local:
+                        continue
+                    if alias.name == "__import__":
+                        bindings[local] = "__import__"
+                    else:
+                        bindings.setdefault(local, None)
+            else:
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    local = alias.asname or alias.name
+                    if local not in non_local:
+                        bindings.setdefault(local, None)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name not in non_local:
+                bindings.setdefault(node.name, None)
+        elif isinstance(node, ast.Assign):
+            assigns.append(node)
+            for target in node.targets:
+                for name in _target_names(target):
+                    if name not in non_local:
+                        bindings.setdefault(name, None)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            for name in _target_names(node.target):
+                if name not in non_local:
+                    bindings.setdefault(name, None)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            for name in _target_names(node.target):
+                if name not in non_local:
+                    bindings.setdefault(name, None)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                for name in _target_names(item.optional_vars):
+                    if name not in non_local:
+                        bindings.setdefault(name, None)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name and node.name not in non_local:
+                bindings.setdefault(node.name, None)
+        elif isinstance(node, ast.NamedExpr):
+            if node.target.id not in non_local:
+                bindings.setdefault(node.target.id, None)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name and node.name not in non_local:
+                bindings.setdefault(node.name, None)
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest and node.rest not in non_local:
+                bindings.setdefault(node.rest, None)
+
+    probe_scopes = [*outer_scopes, (bindings, is_class)]
+    changed = True
+    while changed:
+        changed = False
+        for assign in assigns:
+            loader_kind = _resolve_loader_expr(assign.value, probe_scopes)
+            if loader_kind is None:
+                continue
+            for target in assign.targets:
+                if isinstance(target, ast.Name) and target.id not in non_local and bindings.get(target.id) is None:
+                    bindings[target.id] = loader_kind
+                    changed = True
+
+    return bindings
+
+
+def _extract_call_arg(node: ast.Call, pos: int, kw_name: str) -> ast.expr | None:
+    if len(node.args) > pos:
+        return node.args[pos]
+    return next((kw.value for kw in node.keywords if kw.arg == kw_name), None)
+
+
+def _is_local_globals_call(expr: ast.expr | None) -> bool:
+    return (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Name)
+        and expr.func.id == "globals"
+        and not expr.args
+        and not expr.keywords
+    )
+
+
 def _resolve_dynamic_import_call(
     node: ast.Call,
     cur_mod: str,
@@ -248,65 +450,290 @@ def _resolve_dynamic_import_call(
     rel: str,
     src_layer: int | None,
     root_package: str,
-    importlib_aliases: set[str],
-    import_module_aliases: set[str],
-    builtins_aliases: set[str],
-    builtin_import_aliases: set[str],
+    scopes: _ScopeStack,
     mod_to_rel: dict[str, str],
     namespace_pkgs: set[str],
     found: set[tuple[int, str]],
 ) -> None:
-    func = node.func
-    kind: str | None = None
-    if isinstance(func, ast.Name):
-        if func.id in import_module_aliases:
-            kind = "import_module"
-        elif func.id in builtin_import_aliases:
-            kind = "__import__"
-    elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        if func.value.id in importlib_aliases and func.attr == "import_module":
-            kind = "import_module"
-        elif func.value.id in builtins_aliases and func.attr == "__import__":
-            kind = "__import__"
-    if kind is None:
+    kind = _resolve_loader_expr(node.func, scopes)
+    if kind not in {"import_module", "__import__"}:
         return
 
-    name_arg = node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg == "name"), None)
+    if any(isinstance(arg, ast.Starred) for arg in node.args) or any(kw.arg is None for kw in node.keywords):
+        if src_layer is not None and src_layer < 3:
+            raise ValueError(
+                f"Dynamic import with unpacked arguments is forbidden in guarded layer {rel}:{node.lineno}"
+            )
+        return
+
+    name_arg = _extract_call_arg(node, 0, "name")
     if not isinstance(name_arg, ast.Constant) or not isinstance(name_arg.value, str):
         if src_layer is not None and src_layer < 3:
             raise ValueError(f"Dynamic non-literal import is forbidden in guarded layer {rel}:{node.lineno}")
         return
     raw_target = name_arg.value
 
+    if kind == "import_module":
+        if raw_target.startswith("."):
+            pkg_arg = _extract_call_arg(node, 1, "package")
+            if isinstance(pkg_arg, ast.Constant) and isinstance(pkg_arg.value, str):
+                pkg_mod = pkg_arg.value
+            elif isinstance(pkg_arg, ast.Name) and pkg_arg.id == "__package__":
+                pkg_mod = cur_mod if is_pkg else cur_mod.rsplit(".", 1)[0]
+            else:
+                if src_layer is not None and src_layer < 3:
+                    raise ValueError(f"Relative import_module requires a literal package in {rel}:{node.lineno}")
+                return
+            if pkg_mod != root_package and not pkg_mod.startswith(f"{root_package}."):
+                return
+            dots = len(raw_target) - len(raw_target.lstrip("."))
+            tail = raw_target[dots:]
+            base = _resolve_relative_base(pkg_mod, True, dots, rel, node.lineno)
+            if tail:
+                base.extend(tail.split("."))
+            target_mod = ".".join(base)
+            _record_module_and_ancestors(target_mod, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
+            return
+
+        if raw_target == root_package or raw_target.startswith(f"{root_package}."):
+            _record_module_and_ancestors(raw_target, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
+        return
+
+    # kind == "__import__"
     if raw_target.startswith("."):
-        if kind != "import_module":
-            raise ValueError(f"Relative dynamic __import__ is unsupported in {rel}:{node.lineno}")
-        pkg_arg = (
-            node.args[1]
-            if len(node.args) > 1
-            else next((kw.value for kw in node.keywords if kw.arg == "package"), None)
-        )
-        if isinstance(pkg_arg, ast.Constant) and isinstance(pkg_arg.value, str):
-            pkg_mod = pkg_arg.value
-        elif isinstance(pkg_arg, ast.Name) and pkg_arg.id == "__package__":
-            pkg_mod = cur_mod if is_pkg else cur_mod.rsplit(".", 1)[0]
-        else:
+        raise ValueError(f"Relative dynamic __import__ with leading dots is unsupported in {rel}:{node.lineno}")
+
+    level_arg = _extract_call_arg(node, 4, "level")
+    if level_arg is None:
+        level = 0
+    elif (
+        isinstance(level_arg, ast.Constant)
+        and isinstance(level_arg.value, int)
+        and not isinstance(level_arg.value, bool)
+    ):
+        level = level_arg.value
+    else:
+        if src_layer is not None and src_layer < 3:
+            raise ValueError(f"Dynamic __import__ level must be a literal integer in guarded layer {rel}:{node.lineno}")
+        return
+    if level < 0:
+        raise ValueError(f"Invalid negative __import__ level in {rel}:{node.lineno}")
+
+    if level > 0:
+        globals_arg = _extract_call_arg(node, 1, "globals")
+        if not _is_local_globals_call(globals_arg):
             if src_layer is not None and src_layer < 3:
-                raise ValueError(f"Relative import_module requires a literal package in {rel}:{node.lineno}")
+                raise ValueError(f"Relative __import__ requires globals() in guarded layer {rel}:{node.lineno}")
             return
-        if pkg_mod != root_package and not pkg_mod.startswith(f"{root_package}."):
-            return
-        dots = len(raw_target) - len(raw_target.lstrip("."))
-        tail = raw_target[dots:]
-        base = _resolve_relative_base(pkg_mod, True, dots, rel, node.lineno)
-        if tail:
-            base.extend(tail.split("."))
+        base = _resolve_relative_base(cur_mod, is_pkg, level, rel, node.lineno)
+        if raw_target:
+            base.extend(raw_target.split("."))
         target_mod = ".".join(base)
+    else:
+        if raw_target != root_package and not raw_target.startswith(f"{root_package}."):
+            return
+        target_mod = raw_target
+
+    fromlist_arg = _extract_call_arg(node, 3, "fromlist")
+    if fromlist_arg is None or (isinstance(fromlist_arg, ast.Constant) and fromlist_arg.value is None):
         _record_module_and_ancestors(target_mod, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
         return
 
-    if raw_target == root_package or raw_target.startswith(f"{root_package}."):
-        _record_module_and_ancestors(raw_target, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
+    if isinstance(fromlist_arg, (ast.Tuple, ast.List, ast.Set)) and all(
+        isinstance(elt, ast.Constant) and isinstance(elt.value, str) for elt in fromlist_arg.elts
+    ):
+        items = [elt.value for elt in fromlist_arg.elts if isinstance(elt, ast.Constant) and isinstance(elt.value, str)]
+        if not items:
+            _record_module_and_ancestors(target_mod, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
+            return
+        if target_mod not in mod_to_rel and target_mod not in namespace_pkgs:
+            raise ValueError(f"Unresolved internal import in {rel}:{node.lineno}: {target_mod}")
+        if target_mod != root_package:
+            _record_module_and_ancestors(target_mod, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
+        for item in items:
+            candidate = f"{target_mod}.{item}" if item != "*" else target_mod
+            if item != "*" and (candidate in mod_to_rel or candidate in namespace_pkgs):
+                _record_module_and_ancestors(candidate, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
+            elif target_mod in mod_to_rel:
+                found.add((node.lineno, mod_to_rel[target_mod]))
+            else:
+                raise ValueError(f"Unresolved internal import in {rel}:{node.lineno}: {candidate}")
+        return
+
+    if src_layer is not None and src_layer < 3:
+        raise ValueError(
+            f"Dynamic __import__ fromlist must be a literal sequence of strings in guarded layer {rel}:{node.lineno}"
+        )
+    if target_mod in mod_to_rel or target_mod in namespace_pkgs:
+        _record_module_and_ancestors(target_mod, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
+
+
+class _InternalImportVisitor(ast.NodeVisitor):
+    def __init__(
+        self,
+        *,
+        cur_mod: str,
+        is_pkg: bool,
+        rel: str,
+        src_layer: int | None,
+        root_package: str,
+        mod_to_rel: dict[str, str],
+        namespace_pkgs: set[str],
+        found: set[tuple[int, str]],
+    ) -> None:
+        self._cur_mod = cur_mod
+        self._is_pkg = is_pkg
+        self._rel = rel
+        self._src_layer = src_layer
+        self._root_package = root_package
+        self._mod_to_rel = mod_to_rel
+        self._namespace_pkgs = namespace_pkgs
+        self._found = found
+        self._scopes: _ScopeStack = [({"__import__": "__import__"}, False)]
+
+    def visit_Module(self, node: ast.Module) -> None:
+        mod_bindings = _collect_scope_bindings(node.body, outer_scopes=self._scopes, is_class=False)
+        self._scopes.append((mod_bindings, False))
+        try:
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            self._scopes.pop()
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for dec in node.decorator_list:
+            self.visit(dec)
+        for expr in (*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)):
+            self.visit(expr)
+        for arg in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+            *(a for a in (node.args.vararg, node.args.kwarg) if a is not None),
+        ):
+            if arg.annotation is not None:
+                self.visit(arg.annotation)
+        if node.returns is not None:
+            self.visit(node.returns)
+        fn_bindings = _collect_scope_bindings(
+            node.body,
+            outer_scopes=self._scopes,
+            param_names=_arg_names(node.args),
+            is_class=False,
+        )
+        self._scopes.append((fn_bindings, False))
+        try:
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            self._scopes.pop()
+
+    visit_FunctionDef = _visit_function
+    visit_AsyncFunctionDef = _visit_function
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for expr in (*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)):
+            self.visit(expr)
+        self._scopes.append(({name: None for name in _arg_names(node.args)}, False))
+        try:
+            self.visit(node.body)
+        finally:
+            self._scopes.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for dec in node.decorator_list:
+            self.visit(dec)
+        for base in node.bases:
+            self.visit(base)
+        for kw in node.keywords:
+            self.visit(kw)
+        cls_bindings = _collect_scope_bindings(node.body, outer_scopes=self._scopes, is_class=True)
+        self._scopes.append((cls_bindings, True))
+        try:
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            self._scopes.pop()
+
+    def _visit_comprehension(self, generators: list[ast.comprehension], exprs: list[ast.expr]) -> None:
+        if generators:
+            self.visit(generators[0].iter)
+        comp_bindings: dict[str, str | None] = {}
+        for gen in generators:
+            for name in _target_names(gen.target):
+                comp_bindings[name] = None
+        self._scopes.append((comp_bindings, False))
+        try:
+            for idx, gen in enumerate(generators):
+                if idx > 0:
+                    self.visit(gen.iter)
+                self.visit(gen.target)
+                for cond in gen.ifs:
+                    self.visit(cond)
+            for expr in exprs:
+                self.visit(expr)
+        finally:
+            self._scopes.pop()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, [node.key, node.value])
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name == self._root_package or alias.name.startswith(f"{self._root_package}."):
+                _record_module_and_ancestors(
+                    alias.name, node.lineno, self._rel, self._mod_to_rel, self._namespace_pkgs, self._found
+                )
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.level > 0:
+            base = _resolve_relative_base(self._cur_mod, self._is_pkg, node.level, self._rel, node.lineno)
+            if node.module:
+                base.extend(node.module.split("."))
+            target = ".".join(base)
+        elif node.module and (node.module == self._root_package or node.module.startswith(f"{self._root_package}.")):
+            target = node.module
+        else:
+            return
+
+        if target not in self._mod_to_rel and target not in self._namespace_pkgs:
+            raise ValueError(f"Unresolved internal import in {self._rel}:{node.lineno}: {target}")
+        for anc_rel in _ancestor_package_files(target, self._mod_to_rel):
+            self._found.add((node.lineno, anc_rel))
+        for alias in node.names:
+            candidate = f"{target}.{alias.name}" if alias.name != "*" else target
+            if alias.name != "*" and (candidate in self._mod_to_rel or candidate in self._namespace_pkgs):
+                _record_module_and_ancestors(
+                    candidate, node.lineno, self._rel, self._mod_to_rel, self._namespace_pkgs, self._found
+                )
+            elif target in self._mod_to_rel:
+                self._found.add((node.lineno, self._mod_to_rel[target]))
+            else:
+                raise ValueError(f"Unresolved internal import in {self._rel}:{node.lineno}: {candidate}")
+
+    def visit_Call(self, node: ast.Call) -> None:
+        _resolve_dynamic_import_call(
+            node,
+            self._cur_mod,
+            self._is_pkg,
+            self._rel,
+            self._src_layer,
+            self._root_package,
+            self._scopes,
+            self._mod_to_rel,
+            self._namespace_pkgs,
+            self._found,
+        )
+        self.generic_visit(node)
 
 
 def _internal_imports(
@@ -327,73 +754,17 @@ def _internal_imports(
     for anc_rel in _ancestor_package_files(cur_mod, mod_to_rel):
         found.add((1, anc_rel))
 
-    importlib_aliases: set[str] = set()
-    import_module_aliases: set[str] = set()
-    builtins_aliases: set[str] = set()
-    builtin_import_aliases: set[str] = {"__import__"}
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                local = alias.asname or alias.name
-                if alias.name == "importlib":
-                    importlib_aliases.add(local)
-                elif alias.name == "builtins":
-                    builtins_aliases.add(local)
-                if alias.name == root_package or alias.name.startswith(f"{root_package}."):
-                    _record_module_and_ancestors(alias.name, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module == "importlib":
-                for alias in node.names:
-                    if alias.name == "import_module":
-                        import_module_aliases.add(alias.asname or alias.name)
-                continue
-            if node.level == 0 and node.module == "builtins":
-                for alias in node.names:
-                    if alias.name == "__import__":
-                        builtin_import_aliases.add(alias.asname or alias.name)
-                continue
-            if node.level > 0:
-                base = _resolve_relative_base(cur_mod, is_pkg, node.level, rel, node.lineno)
-                if node.module:
-                    base.extend(node.module.split("."))
-                target = ".".join(base)
-            elif node.module and (node.module == root_package or node.module.startswith(f"{root_package}.")):
-                target = node.module
-            else:
-                continue
-
-            if target not in mod_to_rel and target not in namespace_pkgs:
-                raise ValueError(f"Unresolved internal import in {rel}:{node.lineno}: {target}")
-            for anc_rel in _ancestor_package_files(target, mod_to_rel):
-                found.add((node.lineno, anc_rel))
-            for alias in node.names:
-                candidate = f"{target}.{alias.name}" if alias.name != "*" else target
-                if alias.name != "*" and (candidate in mod_to_rel or candidate in namespace_pkgs):
-                    _record_module_and_ancestors(candidate, node.lineno, rel, mod_to_rel, namespace_pkgs, found)
-                elif target in mod_to_rel:
-                    found.add((node.lineno, mod_to_rel[target]))
-                else:
-                    raise ValueError(f"Unresolved internal import in {rel}:{node.lineno}: {candidate}")
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            _resolve_dynamic_import_call(
-                node,
-                cur_mod,
-                is_pkg,
-                rel,
-                src_layer,
-                root_package,
-                importlib_aliases,
-                import_module_aliases,
-                builtins_aliases,
-                builtin_import_aliases,
-                mod_to_rel,
-                namespace_pkgs,
-                found,
-            )
-
+    visitor = _InternalImportVisitor(
+        cur_mod=cur_mod,
+        is_pkg=is_pkg,
+        rel=rel,
+        src_layer=src_layer,
+        root_package=root_package,
+        mod_to_rel=mod_to_rel,
+        namespace_pkgs=namespace_pkgs,
+        found=found,
+    )
+    visitor.visit(tree)
     return found
 
 
@@ -456,8 +827,14 @@ def _extract_allowlist(source: str) -> frozenset[tuple[str, str]]:
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             target, value = node.targets[0].id, node.value
         if target == "ALLOWLIST" and value is not None:
-            inner = value.args[0] if isinstance(value, ast.Call) and len(value.args) == 1 else value
-            entries = ast.literal_eval(inner)
+            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "frozenset":
+                if not value.args and not value.keywords:
+                    return frozenset()
+                if len(value.args) == 1 and not value.keywords:
+                    entries = ast.literal_eval(value.args[0])
+                    return frozenset((str(src), str(dst)) for src, dst in entries)
+                raise ValueError("Unsupported ALLOWLIST frozenset call")
+            entries = ast.literal_eval(value)
             return frozenset((str(src), str(dst)) for src, dst in entries)
     raise ValueError("ALLOWLIST definition not found")
 
@@ -469,6 +846,52 @@ def _verify_allowlist_shrink_only(
     added = sorted(current - baseline)
     if added:
         raise AssertionError(f"ALLOWLIST is shrink-only; new or swapped entries are forbidden: {added}")
+
+
+def _import_time_imports(source: str, filename: str = "__init__.py") -> list[ast.AST]:
+    """Collect import statements and dynamic import calls executed eagerly at module import time."""
+    tree = ast.parse(source, filename=filename)
+    found: list[ast.AST] = []
+
+    def _walk_eager(node: ast.AST) -> None:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            found.append(node)
+            return
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                _walk_eager(dec)
+            for expr in (*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)):
+                _walk_eager(expr)
+            for arg in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+                *(a for a in (node.args.vararg, node.args.kwarg) if a is not None),
+            ):
+                if arg.annotation is not None:
+                    _walk_eager(arg.annotation)
+            if node.returns is not None:
+                _walk_eager(node.returns)
+            return
+        if isinstance(node, ast.Lambda):
+            for expr in (*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)):
+                _walk_eager(expr)
+            return
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+                found.append(node)
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in {"importlib", "builtins"}
+                and node.func.attr in {"import_module", "__import__"}
+            ):
+                found.append(node)
+        for child in ast.iter_child_nodes(node):
+            _walk_eager(child)
+
+    _walk_eager(tree)
+    return found
 
 
 def test_every_module_has_an_explicit_layer() -> None:
@@ -489,9 +912,21 @@ def test_every_module_has_an_explicit_layer() -> None:
 
 def test_root_package_init_has_no_top_level_imports() -> None:
     """mosscode/__init__.py is executed before every submodule import and must stay lazily initialized."""
-    tree = ast.parse((SRC_ROOT / "__init__.py").read_text(encoding="utf-8"), filename="__init__.py")
-    top_level_imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
-    assert not top_level_imports, "mosscode/__init__.py must not execute top-level imports"
+    init_source = (SRC_ROOT / "__init__.py").read_text(encoding="utf-8")
+    eager_imports = _import_time_imports(init_source, filename="__init__.py")
+    assert not eager_imports, "mosscode/__init__.py must not execute imports at module import time"
+
+    # Guard must catch imports hidden in module-level control flow, class bodies, or eager dynamic calls,
+    # while allowing deferred imports inside function bodies.
+    assert not _import_time_imports("def __getattr__(name):\n    from .launcher import version\n    return version\n")
+    for bad_snippet in (
+        "if True:\n    from . import config\n",
+        "try:\n    import mosscode.config\nexcept ImportError:\n    pass\n",
+        "class Holder:\n    from . import config\n",
+        "__import__('mosscode.config')\n",
+        "def f(x=__import__('mosscode.config')):\n    return x\n",
+    ):
+        assert _import_time_imports(bad_snippet), f"Expected import-time violation for: {bad_snippet!r}"
 
 
 def test_no_unapproved_upward_layer_dependencies() -> None:
@@ -521,6 +956,7 @@ def test_layer_guard_scanner_accepts_valid_edges_and_rejects_violations(tmp_path
     (pkg / "config.py").write_text("from .messages import Message\n", encoding="utf-8")
     (pkg / "tools" / "__init__.py").write_text("from ..config import Message\n", encoding="utf-8")
     (pkg / "tools" / "base.py").write_text("class BaseTool:\n    pass\n", encoding="utf-8")
+    (pkg / "tools" / "ui.py").write_text("class ToolView:\n    pass\n", encoding="utf-8")
 
     layers = {
         "__init__.py": 3,
@@ -530,12 +966,31 @@ def test_layer_guard_scanner_accepts_valid_edges_and_rejects_violations(tmp_path
         "config.py": 2,
         "tools/__init__.py": 2,
         "tools/base.py": 1,
+        "tools/ui.py": 3,
     }
     base_allowlist = frozenset({("tools/base.py", "tools/__init__.py")})
 
-    # Clean graph passes, including valid relative import and external importlib.import_module.
+    # Clean graph passes, including valid relative import, scoped aliases, and external importlib.import_module.
     upward = _scan_upward_edges(pkg, layers.get, root_package="pkg")
     _verify_upward_edges(upward, base_allowlist, layers.get)
+
+    # Scoped loader alias in one function does not falsely flag a same-named parameter/local in another function,
+    # and valid level=0 / level=1 __import__ targeting same-layer modules is accepted.
+    (pkg / "reasoning.py").write_text(
+        "def helper():\n"
+        "    from importlib import import_module as load\n"
+        "    return load('json')\n"
+        "\n"
+        "def callback(load, arg):\n"
+        "    return load(arg)\n"
+        "\n"
+        "__import__('pkg.messages', globals(), locals(), ('Message',), 0)\n"
+        "__import__('messages', globals(), locals(), ('Message',), 1)\n"
+        "__import__('', globals(), locals(), ('messages',), 1)\n",
+        encoding="utf-8",
+    )
+    upward_scoped = _scan_upward_edges(pkg, layers.get, root_package="pkg")
+    _verify_upward_edges(upward_scoped, base_allowlist, layers.get)
 
     # Stale allowlist entry fails.
     with pytest.raises(AssertionError, match="Remove resolved entries"):
@@ -556,15 +1011,38 @@ def test_layer_guard_scanner_accepts_valid_edges_and_rejects_violations(tmp_path
         _verify_upward_edges(upward_nested, base_allowlist, layers.get)
     (pkg / "compaction.py").write_text("from .messages import Message\n", encoding="utf-8")
 
-    # Literal lazy imports via importlib.import_module and __import__ are caught.
+    # Literal lazy imports via importlib.import_module and __import__ (including relative level & fromlist) are caught.
     for snippet in (
         "import importlib\nimportlib.import_module('pkg.config')\n",
         "from importlib import import_module as load\nload('.config', __package__)\n",
+        "def outer():\n    from importlib import import_module as load\n    def inner():\n        return load('pkg.config')\n",
         "__import__('pkg.config')\n",
+        "__import__('config', globals(), level=1)\n",
+        "__import__('', globals(), None, ('config',), 1)\n",
     ):
         (pkg / "reasoning.py").write_text(snippet, encoding="utf-8")
         upward_lazy = _scan_upward_edges(pkg, layers.get, root_package="pkg")
-        assert ("reasoning.py", "config.py") in upward_lazy
+        assert ("reasoning.py", "config.py") in upward_lazy, f"Missed upward edge in: {snippet!r}"
+
+    # __import__ loading an upward submodule via fromlist (keyword or positional) is caught,
+    # and dynamic non-literal fromlist or non-globals() relative __import__ is rejected in guarded layers.
+    for snippet in (
+        "__import__('pkg.tools', fromlist=('ui',))\n",
+        "__import__('pkg.tools', None, None, ('ui',))\n",
+    ):
+        (pkg / "config.py").write_text(snippet, encoding="utf-8")
+        (pkg / "reasoning.py").write_text("from .messages import Message\n", encoding="utf-8")
+        upward_fromlist = _scan_upward_edges(pkg, layers.get, root_package="pkg")
+        assert ("config.py", "tools/ui.py") in upward_fromlist, f"Missed fromlist edge in: {snippet!r}"
+
+    (pkg / "config.py").write_text("names = ('ui',)\n__import__('pkg.tools', fromlist=names)\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="fromlist must be a literal sequence"):
+        _scan_upward_edges(pkg, layers.get, root_package="pkg")
+    (pkg / "config.py").write_text("from .messages import Message\n", encoding="utf-8")
+
+    (pkg / "reasoning.py").write_text("__import__('config', level=1)\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Relative __import__ requires globals"):
+        _scan_upward_edges(pkg, layers.get, root_package="pkg")
 
     # Invalid module path is rejected instead of matching a valid prefix.
     (pkg / "reasoning.py").write_text("import pkg.messages.missing\n", encoding="utf-8")
@@ -578,15 +1056,21 @@ def test_layer_guard_scanner_accepts_valid_edges_and_rejects_violations(tmp_path
 
 
 def test_allowlist_shrink_only_baseline_check() -> None:
-    baseline = _extract_allowlist(Path(__file__).read_text(encoding="utf-8"))
-    assert baseline == ALLOWLIST
+    assert _extract_allowlist(Path(__file__).read_text(encoding="utf-8")) == ALLOWLIST
+    assert _extract_allowlist("ALLOWLIST: frozenset[tuple[str, str]] = frozenset()\n") == frozenset()
 
-    # Removing an entry is allowed.
-    shrunk = frozenset(sorted(baseline)[1:])
-    _verify_allowlist_shrink_only(shrunk, baseline)
+    baseline = frozenset({("a.py", "b.py"), ("c.py", "d.py")})
 
-    # Swapping one entry for a different upward edge is rejected even if size stays equal.
-    swapped = (baseline - {("agent.py", "prompts.py")}) | {("agent.py", "config.py")}
+    # Keeping the same set, removing an entry, or emptying ALLOWLIST are all allowed.
+    _verify_allowlist_shrink_only(baseline, baseline)
+    _verify_allowlist_shrink_only(frozenset({("c.py", "d.py")}), baseline)
+    _verify_allowlist_shrink_only(frozenset(), baseline)
+
+    # Adding a new entry or swapping an existing entry for a different upward edge is rejected.
+    with pytest.raises(AssertionError, match="shrink-only"):
+        _verify_allowlist_shrink_only(baseline | {("e.py", "f.py")}, baseline)
+
+    swapped = (baseline - {("a.py", "b.py")}) | {("a.py", "x.py")}
     with pytest.raises(AssertionError, match="shrink-only"):
         _verify_allowlist_shrink_only(swapped, baseline)
 
