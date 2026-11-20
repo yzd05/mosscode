@@ -94,6 +94,15 @@ PRESETS = {
             "ollama/llama3.1",
             auth_type="none",
         ),
+        Preset(
+            "copilot",
+            "GitHub Copilot（设备码登录）",
+            "openai-chat-completions",
+            "https://api.githubcopilot.com",
+            "gpt-4.1",
+            "GITHUB_COPILOT_TOKEN",
+            auth_type="github-copilot",
+        ),
     )
 }
 CREDENTIALS = ("api_key", "api_key_env", "api_key_keyring")

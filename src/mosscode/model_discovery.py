@@ -20,7 +20,7 @@ from filelock import Timeout as FileLockTimeout
 
 from .config import OFFICIAL, ConfigError, is_loopback_url, load_settings, render_config
 from .paths import mosscode_home
-from .redaction import is_cleartext_remote_credential_url, redact
+from .redaction import COPILOT_URL_ERROR, is_approved_copilot_url, is_cleartext_remote_credential_url, redact
 
 LOCAL_SERVERS: tuple[tuple[str, str, str, str], ...] = (
     ("ollama", "Ollama", "http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/api/tags"),
@@ -43,6 +43,7 @@ class ProbeResult:
     detail: str = ""
     error: str = ""
     status_code: int | None = None
+    resolved_base_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,8 @@ async def probe_provider(
         return ProbeResult(False, error=f"不支持的协议：{protocol}")
     if auth_type == "none" and not is_loopback_url(base_url):
         return ProbeResult(False, error="auth_type: none 仅允许用于本机回环地址。")
+    if auth_type == "github-copilot" and base_url is not None and not is_approved_copilot_url(base_url):
+        return ProbeResult(False, error=COPILOT_URL_ERROR)
     try:
         url = _models_url(protocol, base_url)
     except ValueError as exc:
@@ -194,8 +197,31 @@ async def probe_provider(
             False,
             error="出于安全原因，向非本机回环的 HTTP 地址发送凭据的连通性探测已被拒绝，请改用 HTTPS（https://）。",
         )
+    resolved_base_url: str | None = None
     if auth_type != "none" and api_key:
-        if protocol == "anthropic-messages":
+        if auth_type == "github-copilot":
+            from .auth import COPILOT_HEADERS, AuthError, exchange_copilot_session_token_async
+
+            for hk, hv in COPILOT_HEADERS:
+                req_headers.setdefault(hk, hv)
+            try:
+                session_token, _, endpoint = await exchange_copilot_session_token_async(
+                    api_key,
+                    timeout=timeout,
+                    transport=transport,
+                )
+            except AuthError as exc:
+                return ProbeResult(False, error=str(exc))
+            target_base = base_url or endpoint
+            if not is_approved_copilot_url(target_base):
+                return ProbeResult(False, error=COPILOT_URL_ERROR)
+            resolved_base_url = target_base
+            try:
+                url = _models_url(protocol, target_base)
+            except ValueError as exc:
+                return ProbeResult(False, error=str(exc))
+            req_headers["Authorization"] = f"Bearer {session_token}"
+        elif protocol == "anthropic-messages":
             req_headers.setdefault("anthropic-version", ANTHROPIC_VERSION)
             if auth_type == "bearer":
                 req_headers["Authorization"] = f"Bearer {api_key}"
@@ -204,8 +230,11 @@ async def probe_provider(
         else:
             req_headers["Authorization"] = f"Bearer {api_key}"
 
-    # Never auto-follow redirects: prevents leaking x-api-key cross-origin and keeps keyless probes on loopback.
-    trust_env = auth_type != "none"
+    if auth_type == "github-copilot" and not is_approved_copilot_url(url):
+        return ProbeResult(False, error=COPILOT_URL_ERROR)
+
+    # Never auto-follow redirects and never route loopback probes through environment proxies.
+    trust_env = auth_type != "none" and not is_loopback_url(url)
     started = time.perf_counter()
     try:
         async with httpx.AsyncClient(
@@ -243,7 +272,14 @@ async def probe_provider(
                     except Exception:
                         pass
                 detail = f"已连通（{elapsed}ms），发现 {len(models)} 个模型" if models else f"已连通（{elapsed}ms）"
-                return ProbeResult(True, models=models, latency_ms=elapsed, detail=detail, status_code=200)
+                return ProbeResult(
+                    True,
+                    models=models,
+                    latency_ms=elapsed,
+                    detail=detail,
+                    status_code=200,
+                    resolved_base_url=resolved_base_url,
+                )
             if response.status_code in {404, 405, 501}:
                 # Some compatible relays do not expose /models even though chat completions work.
                 tags_url = _ollama_tags_url(base_url)
@@ -253,7 +289,14 @@ async def probe_provider(
                         if tags_resp.status_code == 200:
                             models = _parse_model_ids(tags_resp.json())
                             detail = f"已连通（{elapsed}ms），发现 {len(models)} 个本地模型"
-                            return ProbeResult(True, models=models, latency_ms=elapsed, detail=detail, status_code=200)
+                            return ProbeResult(
+                                True,
+                                models=models,
+                                latency_ms=elapsed,
+                                detail=detail,
+                                status_code=200,
+                                resolved_base_url=resolved_base_url,
+                            )
                     except Exception:
                         pass
                 return ProbeResult(
@@ -261,6 +304,7 @@ async def probe_provider(
                     latency_ms=elapsed,
                     status_code=response.status_code,
                     detail=f"服务端可达（{elapsed}ms，该服务未提供 /models 列表，请手动选择或填写模型名）",
+                    resolved_base_url=resolved_base_url,
                 )
             return ProbeResult(
                 False,
@@ -796,10 +840,10 @@ def save_provider_entry(
                 raise
             return path, str(entry["name"])
 
-        original = path.read_text(encoding="utf-8")
         try:
+            original = path.read_text(encoding="utf-8")
             loaded = yaml.safe_load(original)
-        except yaml.YAMLError as exc:
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise ConfigError(f"无法解析现有配置 {path}：{exc}") from None
         if not isinstance(loaded, dict) or not isinstance(loaded.get("providers"), list) or not loaded["providers"]:
             raise ConfigError(f"现有配置 {path} 格式无效（缺少 providers 列表）。")

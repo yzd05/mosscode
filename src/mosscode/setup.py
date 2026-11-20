@@ -225,6 +225,9 @@ class Wizard:
         provider = {"name": name, "preset": preset.key, "model": model}
         if preset.auth_type == "none":
             self.write("  本地回环服务免 API 密钥（auth_type: none）。")
+        elif preset.auth_type == "github-copilot":
+            self.write("  提示：推荐使用 moss login copilot 完成 GitHub 设备码登录；此处可继续配置环境变量或凭据条目。")
+            self._credential(provider, "凭据", preset.api_key_env)
         else:
             self._credential(provider, "凭据", preset.api_key_env)
         self.write("")

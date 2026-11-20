@@ -4,16 +4,16 @@ Provider 配置、协议、重试与无界面输出。
 
 ## 添加配置
 
-在 `config.yaml` 的 `providers` 列表追加配置即可接入兼容已有协议的服务：在终端交互界面中推荐直接输入 `/connect`（支持自动发现本机服务、在线探测连通性与 `/models` 列表，保存后立即热重载切换）；也可以在命令行运行 `moss setup --add` 通过问答交互追加写入配置。同一服务的不同模型无需在 YAML 中重复配置：对话中可直接用 `/model`（或按 `Alt+M`）打开可搜索选择器，或用 `/model <提供商>/<模型>`、`/model <模型>`（目录未收录模型用 `/model :<模型>`）复用该提供商的凭据与 `base_url` 切换模型；经常切换或需要独立参数的模型也可以分别配置不同 `name`。
+在 `config.yaml` 的 `providers` 列表追加配置即可接入兼容已有协议的服务：在终端交互界面中推荐直接输入 `/connect`（支持自动发现本机服务、OpenRouter OAuth PKCE / GitHub Copilot 设备码浏览器一键登录、在线探测连通性与 `/models` 列表，保存后立即热重载切换）；也可以在命令行运行 `moss login`（浏览器 OAuth 登录）、`moss config --web`（本机临时 Web 配置面板）或 `moss setup --add`（终端问答）写入用户级配置。同一服务的不同模型无需在 YAML 中重复配置：对话中可直接用 `/model`（或按 `Alt+M`）打开可搜索选择器，或用 `/model <提供商>/<模型>`、`/model <模型>`（目录未收录模型用 `/model :<模型>`）复用该提供商的凭据与 `base_url` 切换模型；经常切换或需要独立参数的模型也可以分别配置不同 `name`。
 
 凭据字段四选一：
 
-- `api_key_keyring: deepseek`（推荐）：密钥保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），用 `moss key set deepseek` 或 `/connect` 保存，配置只写名称，见[命令行](cli.md#key)。保存后立即生效，不用重开终端。
+- `api_key_keyring: deepseek`（推荐）：密钥保存在系统凭据管理器中（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），用 `moss key set deepseek`、`moss login`、`moss config --web` 或 `/connect` 保存，配置只写名称，见[命令行](cli.md#key)。保存后立即生效，不用重开终端。
 - `api_key_env: DEEPSEEK_API_KEY`：填写环境变量名称，并在启动进程的环境中设置该变量。例如 PowerShell 中先执行 `$env:DEEPSEEK_API_KEY = '你的密钥'` 再启动应用。`api_key_env` 不能填写 `sk-...`；误填时会给出字段说明，错误中不回显该值。
 - `api_key: '你的密钥'`：明文写在配置文件中。
 - `auth_type: none`（仅限本机回环地址）：适用于本机运行的 Ollama、LM Studio、vLLM 等无密钥兼容服务。出于安全边界限制，仅当 `base_url` 主机为 `localhost`、`127.0.0.1` 或 `::1` 时允许免密钥，指向非本机地址时拒绝加载（fail-closed）。
 
-Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key`）。
+Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key`）；使用 GitHub Copilot 设备码登录的端点设 `auth_type: github-copilot`（由 `preset: copilot` 自动填充，运行时自动将保存的 GitHub OAuth 令牌换取并刷新短期 Copilot 会话令牌）。
 
 ```yaml
   - name: my-gateway-model-a
@@ -48,6 +48,7 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
 | `gemini` | openai-chat-completions | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` | `GEMINI_API_KEY` |
 | `ollama` | openai-chat-completions | `http://127.0.0.1:11434/v1` | `llama3.1` | 免密钥（`auth_type: none`） |
 | `lmstudio` | openai-chat-completions | `http://127.0.0.1:1234/v1` | `llama3.1` | 免密钥（`auth_type: none`） |
+| `copilot` | openai-chat-completions | `https://api.githubcopilot.com` | `gpt-4.1` | `GITHUB_COPILOT_TOKEN`（推荐 `moss login copilot` 存凭据管理器，`auth_type: github-copilot`） |
 
 配置中写出的字段优先，预设只填配置没写的部分；写了 `api_key`、`api_key_env` 或 `api_key_keyring` 时不再使用预设的变量名。默认模型都在[模型目录](#模型目录)中，上下文窗口和价格随之而来。
 

@@ -15,6 +15,26 @@ SECRET_HEADER = re.compile(r"auth|key|token|secret", re.IGNORECASE)
 CLEARTEXT_CREDENTIAL_URL_ERROR = (
     "为防止密钥明文传输，带凭据的远程服务 base_url 必须使用 https://（仅本机回环地址允许 http://）。"
 )
+COPILOT_URL_ERROR = (
+    "auth_type: github-copilot 仅允许使用 HTTPS 连接到 https://*.githubcopilot.com 或 HTTPS 本机回环中继。"
+)
+
+
+def is_approved_copilot_url(url: str | None) -> bool:
+    """True only for HTTPS URLs without userinfo targeting githubcopilot.com (or subdomains) or HTTPS loopback."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
+        return False
+    host = parsed.hostname.strip().lower().rstrip(".")
+    if host == "githubcopilot.com" or host.endswith(".githubcopilot.com"):
+        return True
+    return is_loopback_url(url)
+
 
 _values: set[str] = set()
 
