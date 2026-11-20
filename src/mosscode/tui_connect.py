@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import webbrowser
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -84,6 +86,7 @@ class _ConnectMixin:
         self._connect_history: list[str] = []
         self._connect_draft = _ConnectDraft()
         self._connect_committed: tuple[Path, str] | None = None
+        self._connect_oauth_cancel: Any = None
         self._connect_local_servers: list[DetectedLocalServer] = []
         self._connect_choices: list[tuple[str, Any]] = []
         self._connect_status_text = Text("")
@@ -93,7 +96,17 @@ class _ConnectMixin:
         self.run_worker(self._discover_local_for_connect(), group="connect-local", exclusive=True)
         self.call_later(self._fit_chat)
 
+    def _cancel_connect_oauth(self) -> None:
+        cancel = getattr(self, "_connect_oauth_cancel", None)
+        self._connect_oauth_cancel = None
+        if callable(cancel):
+            with suppress(Exception):
+                cancel()
+        with suppress(Exception):
+            self.workers.cancel_group(self, "connect-oauth")
+
     def _close_connect_panel(self) -> None:
+        self._cancel_connect_oauth()
         self._connect_step = ""
         self._connect_committed = None
         self._connect_choices = []
@@ -110,6 +123,8 @@ class _ConnectMixin:
         self.call_later(self._fit_chat)
 
     def _connect_back(self) -> None:
+        if getattr(self, "_connect_step", "") == "oauth_waiting":
+            self._cancel_connect_oauth()
         if getattr(self, "_connect_committed", None) is not None or not getattr(self, "_connect_history", None):
             self._close_connect_panel()
             return
@@ -133,7 +148,7 @@ class _ConnectMixin:
             self._close_connect_panel()
 
     def _push_connect_step(self, next_step: str) -> None:
-        if self._connect_step and self._connect_step != "probing":
+        if self._connect_step and self._connect_step not in {"probing", "oauth_waiting"}:
             self._connect_history.append(self._connect_step)
         self._connect_step = next_step
 
@@ -215,11 +230,29 @@ class _ConnectMixin:
                     muted_color=self.muted_color,
                 )
             )
+        choices.append(("oauth_openrouter", None))
+        rows.append(
+            choice_row(
+                "OpenRouter（浏览器一键登录 · OAuth PKCE）",
+                "浏览器授权并加密存入系统凭据管理器",
+                muted_color=self.muted_color,
+            )
+        )
+        choices.append(("oauth_copilot", None))
+        rows.append(
+            choice_row(
+                "GitHub Copilot（浏览器设备码登录）",
+                "使用 GitHub Copilot 订阅并自动刷新会话令牌",
+                muted_color=self.muted_color,
+            )
+        )
         for key, preset in PRESETS.items():
             choices.append(("preset", key))
             detail = f"{preset.base_url or OFFICIAL[preset.protocol]} · 默认 {preset.model}"
             if preset.auth_type == "none":
                 detail += " · 免密钥"
+            elif preset.auth_type == "github-copilot":
+                detail += " · 设备码令牌"
             rows.append(choice_row(preset.label, detail, muted_color=self.muted_color))
         choices.append(("custom", None))
         rows.append(
@@ -313,6 +346,84 @@ class _ConnectMixin:
                 password=True,
                 status=error or note,
             )
+
+    def _start_connect_oauth(self, provider_key: str) -> None:
+        vault = getattr(self, "_connect_vault", None)
+        problem = (
+            vault.problem() if (vault is not None and callable(getattr(vault, "problem", None))) else keyring_problem()
+        )
+        if problem is not None:
+            self._connect_status_text = Text(
+                f"! 系统凭据管理器不可用（{problem}），默认拒绝明文保存 OAuth 凭据；请配置凭据管理器或运行 moss login {provider_key} --plaintext。"
+            )
+            st = self.query_one("#connect-status", Static)
+            st.display = True
+            st.update(self._connect_status_text)
+            self.call_later(self._fit_chat)
+            return
+
+        self._push_connect_step("oauth_waiting")
+        label = "OpenRouter" if provider_key == "openrouter" else "GitHub Copilot"
+        self.query_one("#connect-title", Static).update(f"连接模型服务 · 正在等待 {label} 浏览器授权…")
+        status_msg = f"正在初始化 {label} 浏览器登录…"
+        self._connect_status_text = Text(status_msg)
+        st = self.query_one("#connect-status", Static)
+        st.display = True
+        st.update(status_msg)
+        self.query_one("#connect-input", Input).display = False
+        self.query_one("#connect-options", OptionList).display = False
+        self.query_one("#connect-help", Static).update("等待浏览器完成授权… 按 Esc 取消返回")
+        self.call_later(self._fit_chat)
+        self.run_worker(self._run_connect_oauth(provider_key), group="connect-oauth", exclusive=True)
+
+    async def _run_connect_oauth(self, provider_key: str) -> None:
+        from .auth import AuthError, GitHubCopilotAuth, OpenRouterPKCEAuth
+
+        def _update_status(text: str) -> None:
+            if getattr(self, "_connect_step", "") != "oauth_waiting":
+                return
+            self._connect_status_text = Text(text)
+            st = self.query_one("#connect-status", Static)
+            st.display = True
+            st.update(text)
+            self.call_later(self._fit_chat)
+
+        open_browser = getattr(self, "_oauth_browser_opener", webbrowser.open)
+        factory = getattr(self, "_oauth_provider_factory", None)
+        if callable(factory):
+            auth_provider = factory(provider_key)
+        elif provider_key == "openrouter":
+            auth_provider = OpenRouterPKCEAuth()
+        else:
+            auth_provider = GitHubCopilotAuth()
+
+        try:
+            result = await auth_provider.login(on_notice=_update_status, open_browser=open_browser, timeout=180.0)
+        except asyncio.CancelledError:
+            return
+        except AuthError as exc:
+            if getattr(self, "_connect_step", "") != "oauth_waiting":
+                return
+            self._connect_choices = [("back", None)]
+            rows = [choice_row("返回选择其他服务", "", muted_color=self.muted_color)]
+            self._connect_step = "oauth_failed"
+            self._show_connect_list(f"连接模型服务 · {provider_key} 登录失败", rows, status=f"! {exc}")
+            return
+
+        if getattr(self, "_connect_step", "") != "oauth_waiting":
+            return
+        preset = PRESETS[result.preset]
+        draft = self._connect_draft
+        draft.kind = "preset"
+        draft.key = preset.key
+        draft.name = preset.key
+        draft.protocol = preset.protocol
+        draft.base_url = result.base_url or preset.base_url
+        draft.default_model = result.default_model
+        draft.auth_type = result.auth_type
+        draft.cred_method = "keyring"
+        draft.pending_key = result.credential
+        self._start_connect_probe()
 
     def _start_connect_probe(self) -> None:
         draft = self._connect_draft
@@ -573,7 +684,7 @@ class _ConnectMixin:
         if not (0 <= index < len(self._connect_choices)):
             return
         action, payload = self._connect_choices[index]
-        if action in {"local", "follow", "preset", "custom"}:
+        if action in {"local", "follow", "preset", "custom", "oauth_openrouter", "oauth_copilot"}:
             # Start a fresh draft on every source selection so abandoned credentials cannot bleed over.
             self._connect_draft = _ConnectDraft()
             self._connect_committed = None
@@ -587,6 +698,12 @@ class _ConnectMixin:
             return
         if action == "retry_reload":
             await self._finish_connect_save(set_default=False)
+            return
+        if action == "oauth_openrouter":
+            self._start_connect_oauth("openrouter")
+            return
+        if action == "oauth_copilot":
+            self._start_connect_oauth("copilot")
             return
         if action == "local":
             srv: DetectedLocalServer = payload
@@ -638,6 +755,8 @@ class _ConnectMixin:
                 draft.cred_method = "none"
                 self._push_connect_step("base_url")
                 self._render_connect_base_url()
+            elif preset.auth_type == "github-copilot":
+                self._start_connect_oauth("copilot")
             else:
                 draft.auth_type = "api_key"
                 self._push_connect_step("credential")

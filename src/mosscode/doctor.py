@@ -123,10 +123,22 @@ def _credential(provider) -> tuple[str, str, str]:
         return OK, f"跟随 {SOURCES[provider.follow]} 的设置（已读取）", ""
     if getattr(provider, "auth_type", None) == "none":
         return OK, "免密钥（本机回环地址）", ""
+    is_copilot = getattr(provider, "auth_type", None) == "github-copilot"
     if provider.api_key_env:
         if os.environ.get(provider.api_key_env):
-            return OK, f"环境变量 {provider.api_key_env} 已设置", ""
-        return WARN, f"环境变量 {provider.api_key_env} 未设置", f"设置环境变量 {provider.api_key_env} 后打开新的终端"
+            label = (
+                f"GitHub Copilot 令牌（环境变量 {provider.api_key_env} 已设置）"
+                if is_copilot
+                else f"环境变量 {provider.api_key_env} 已设置"
+            )
+            return OK, label, ""
+        return (
+            WARN,
+            f"环境变量 {provider.api_key_env} 未设置",
+            "运行 moss login copilot 完成登录，或设置该环境变量"
+            if is_copilot
+            else f"设置环境变量 {provider.api_key_env} 后打开新的终端",
+        )
     if provider.api_key_keyring:
         from .credentials import KeyringError, keyring_get
 
@@ -136,11 +148,24 @@ def _credential(provider) -> tuple[str, str, str]:
         except KeyringError as exc:
             return WARN, f"系统凭据管理器 {name} 无法读取", str(exc)
         if found:
-            return OK, f"系统凭据管理器 {name} 已设置", ""
-        return WARN, f"系统凭据管理器 {name} 未找到", f"运行 moss key set {name}"
+            label = (
+                f"GitHub Copilot 令牌（系统凭据管理器 {name} 已设置）"
+                if is_copilot
+                else f"系统凭据管理器 {name} 已设置"
+            )
+            return OK, label, ""
+        return (
+            WARN,
+            f"系统凭据管理器 {name} 未找到",
+            "运行 moss login copilot 重新登录" if is_copilot else f"运行 moss key set {name}",
+        )
     if provider.api_key:
         return OK, "已设置（配置文件中的 api_key）", ""
-    return WARN, "未配置", "在配置中填写 api_key_env 或 api_key_keyring"
+    return (
+        WARN,
+        "未配置",
+        "运行 moss login copilot 完成登录" if is_copilot else "在配置中填写 api_key_env 或 api_key_keyring",
+    )
 
 
 def _web_search(config) -> Item:

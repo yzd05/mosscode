@@ -114,6 +114,19 @@ class ProviderConfig:
                     f"{self.name}：auth_type: none 仅允许用于本机回环地址（localhost / 127.0.0.1 / ::1）。"
                 )
             return "mosscode-local"
+        if self.auth_type == "github-copilot":
+            _validate_env_name(self.api_key_env)
+            github_token = _stored(self.api_key_env, self.api_key_keyring, self.api_key, self.name)
+            if not github_token:
+                raise ConfigError(
+                    f"{self.name}：未找到 GitHub Copilot 授权令牌，请运行 moss login copilot 完成设备码登录。"
+                )
+            from .auth import AuthError, copilot_token_manager
+
+            try:
+                return copilot_token_manager.get_session_token(github_token)
+            except AuthError as exc:
+                raise ConfigError(f"{self.name}：{exc}") from None
         _validate_env_name(self.api_key_env)
         value = _stored(self.api_key_env, self.api_key_keyring, self.api_key, self.name)
         if not value:
@@ -480,8 +493,19 @@ def _provider(raw: Any, home: Path | None = None) -> ProviderConfig:
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ConfigError("timeout 必须是有限的正数秒数。")
     auth_type = data.get("auth_type", "api_key")
-    if auth_type not in {"api_key", "bearer", "none"}:
-        raise ConfigError("auth_type 必须是 api_key、bearer 或 none。")
+    if auth_type not in {"api_key", "bearer", "none", "github-copilot"}:
+        raise ConfigError("auth_type 必须是 api_key、bearer、none 或 github-copilot。")
+    if auth_type == "github-copilot":
+        from .auth import COPILOT_HEADERS, _allowed_https_host
+
+        if url is not None and not (
+            _allowed_https_host(url, {"githubcopilot.com"}, allow_subdomains=True) or is_loopback_url(url)
+        ):
+            raise ConfigError("auth_type: github-copilot 仅允许指向 https://*.githubcopilot.com 或本机回环地址。")
+        merged_headers = dict(COPILOT_HEADERS)
+        merged_headers.update(headers)
+        data["headers"] = merged_headers
+        headers = merged_headers
     if auth_type == "none" and not is_loopback_url(url):
         raise ConfigError("auth_type: none 仅允许用于本机回环地址（localhost / 127.0.0.1 / ::1）。")
     if is_cleartext_remote_credential_url(url, auth_type=auth_type, headers=headers):

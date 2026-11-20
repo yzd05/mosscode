@@ -99,6 +99,7 @@ L1_FILES = frozenset(
 L2_FILES = frozenset(
     {
         "agent_policies.py",
+        "auth.py",
         "builtin_commands.py",
         "checkpoints.py",
         "command_env.py",
@@ -152,9 +153,12 @@ L3_FILES = frozenset(
         "choice_list.py",
         "cli.py",
         "clipboard.py",
+        "config_command.py",
+        "config_web.py",
         "doctor.py",
         "key_command.py",
         "launcher.py",
+        "login_command.py",
         "member_ui.py",
         "models_command.py",
         "plugin_command.py",

@@ -6,6 +6,7 @@
 
 ### 新增
 
+- **浏览器一键登录（`moss login`）与本地临时 Web 配置面板（`moss config --web`）**：新增 `AuthProvider` 认证抽象，支持 **OpenRouter OAuth 2.0 PKCE（S256）** 与 **GitHub Copilot 设备码登录（RFC 8628）**（支持 `preset: copilot` / `auth_type: github-copilot` 与 30 分钟会话令牌自动刷新，并集成至终端 `/connect` 向导；凭据管理器不可用时 fail-closed 不默认降级明文）；新增仅绑定 `127.0.0.1` 的带一次性令牌与 CSRF / Host / Origin / CSP 保护的本地可视化配置页 `moss config --web`。
 - **TUI 模型接入向导（`/connect`）与可搜索模型选择器（`/model` / `Alt+M`）**：新增交互式 `/connect`（别名 `/setup`）面板，自动探测本机运行中的 Ollama / LM Studio、检测外部工具配置或通过厂商预设/自定义端点接入，支持掩码密钥录入、在线 `/models` 探测、原子写盘（无损保留原 YAML 注释）与热重载立即切换；`/model` 升级为带实时模糊搜索、收藏置顶（`Ctrl+F`）、最近使用（MRU）、一键设为全局默认（`Ctrl+D`）和快捷跳转添加服务（`Ctrl+N`）的统一选择器。
 - **更多厂商预设与本机免密钥模型**：新增 `gemini`、`ollama`、`lmstudio` 内置预设；支持 `auth_type: none` 免密钥模式，并严格限定仅本机回环地址（`localhost` / `127.0.0.1` / `::1`）生效（fail-closed）。
 

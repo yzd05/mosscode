@@ -195,7 +195,21 @@ async def probe_provider(
             error="出于安全原因，向非本机回环的 HTTP 地址发送凭据的连通性探测已被拒绝，请改用 HTTPS（https://）。",
         )
     if auth_type != "none" and api_key:
-        if protocol == "anthropic-messages":
+        if auth_type == "github-copilot":
+            from .auth import COPILOT_HEADERS, AuthError, exchange_copilot_session_token_async
+
+            for hk, hv in COPILOT_HEADERS:
+                req_headers.setdefault(hk, hv)
+            try:
+                session_token, _, _ = await exchange_copilot_session_token_async(
+                    api_key,
+                    timeout=timeout,
+                    transport=transport,
+                )
+            except AuthError as exc:
+                return ProbeResult(False, error=str(exc))
+            req_headers["Authorization"] = f"Bearer {session_token}"
+        elif protocol == "anthropic-messages":
             req_headers.setdefault("anthropic-version", ANTHROPIC_VERSION)
             if auth_type == "bearer":
                 req_headers["Authorization"] = f"Bearer {api_key}"

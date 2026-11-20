@@ -4,7 +4,7 @@
 
 ```text
 moss [选项] [PROMPT]
-moss setup | doctor | models | key | plugin | sandbox | acp
+moss setup | login | config | doctor | models | key | plugin | sandbox | acp
 ```
 
 ## 启动方式
@@ -66,6 +66,27 @@ moss setup | doctor | models | key | plugin | sandbox | acp
 - `moss setup --add` 在已有的 `~/.mosscode/config.yaml` 中追加一项新的 Provider，保留原有的 `default_provider` 和其他顶层设置；新名称与已有 Provider 重名时自动编号（如 `deepseek-2`，对应的凭据管理器条目也使用该编号名称，不会覆盖旧密钥），校验通过后原子替换文件。配置文件尚不存在时，`--add` 直接按首次初始化写入。
 - 按 Ctrl+C 或在确认时回答 n，不写入或修改任何文件。
 - 交互启动找不到任何配置时（没有 `--config`，且在终端中），`moss` 自动进入同样的引导，写入且凭据可用后直接进入界面。`-p`、`--list-providers` 和非终端仍然报错。
+
+### login
+
+`moss login [openrouter|copilot|status|logout]` 通过浏览器完成 OAuth 授权，并将凭据加密存入系统凭据管理器（写入 `~/.mosscode/config.yaml`）：
+
+| 写法 | 行为 |
+| --- | --- |
+| `moss login openrouter` | 启动 OpenRouter OAuth 2.0 PKCE（S256）流程，监听仅限本机 `127.0.0.1` 的一次性随机回调地址，换取用户专属 API 密钥并保存 |
+| `moss login copilot` | 启动 GitHub Copilot RFC 8628 设备码登录，验证 Copilot 订阅并配置 `auth_type: github-copilot`，运行时自动刷新短期会话令牌 |
+| `moss login status` | 查看当前生效配置中各 Provider 的凭据来源（从不输出密钥或令牌值） |
+| `moss login logout <名称>` | 从系统凭据管理器中删除指定名称的凭据条目（不修改 `config.yaml`） |
+
+常用选项：`--no-browser`（仅打印链接不自动打开浏览器）、`--name 名称`、`--model 模型`、`--default`（设为全局默认）、`--timeout 秒数`。当系统凭据管理器不可用时，默认拒绝降级为明文写入（fail-closed）；仅在显式传入 `--plaintext` 或设置环境变量 `MOSSCODE_ALLOW_PLAINTEXT_OAUTH=1` 时允许明文写入用户配置文件。
+
+### config
+
+`moss config [--web] [--port 端口] [--no-browser] [--idle-timeout 秒数]`：
+
+- 不带 `--web` 时打印当前生效配置文件与 Provider 概要（隐藏所有凭据值）。
+- 带 `--web` 时启动仅监听本机 `127.0.0.1` 的临时 Web 配置面板（支持查看与切换默认 Provider、一键发起 OpenRouter PKCE / GitHub Copilot 设备码登录、本机 Ollama/LM Studio 发现与添加、在线 `/models` 探测与原子保存）。
+- 安全边界：仅接受 `127.0.0.1` / `localhost` 的 `Host` 与同源 `Origin`，通过一次性启动令牌换取 `HttpOnly; SameSite=Strict` 会话 Cookie 并在每次 API 调用校验 CSRF 令牌，附带严格 CSP 与 `Cache-Control: no-store`，且所有配置写入均落盘至用户 `~/.mosscode/config.yaml`（不修改项目级 `.mosscode/config.yaml`）。点击页面“完成并关闭”、按 Ctrl+C 或无操作超时后自动关闭。
 
 ### doctor
 

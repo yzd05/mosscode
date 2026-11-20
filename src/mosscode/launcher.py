@@ -13,13 +13,18 @@ from pathlib import Path
 from .version import version as version
 
 OUTPUT_FORMATS = ("text", "json", "stream-json")
-SUBCOMMANDS = ("setup", "doctor", "models", "key", "plugin", "sandbox", "acp")
+SUBCOMMANDS = ("setup", "login", "config", "doctor", "models", "key", "plugin", "sandbox", "acp")
 NAMES = ("moss", "mosscode")
-USAGE = "%(prog)s [选项] [PROMPT]\n       %(prog)s setup | doctor | models | key | plugin | sandbox | acp"
+USAGE = (
+    "%(prog)s [选项] [PROMPT]\n       %(prog)s setup | login | config | doctor | models | key | plugin | sandbox | acp"
+)
 DESCRIPTION = "MossCode：终端中的 coding agent。在项目目录中运行即可开始。"
 EXAMPLES = """\
 子命令：
   setup [--add]         创建用户级配置 ~/.mosscode/config.yaml，或追加 Provider
+  login [openrouter|copilot|status|logout]
+                        通过浏览器 OAuth PKCE 或设备码登录模型服务
+  config [--web]        查看配置概要，或启动仅限本机访问的临时 Web 配置面板
   doctor [--ping]       检查安装、配置和依赖工具；默认不发送请求，加 --ping 探测连通性
   models [关键词|update] 查找模型目录中的窗口和价格，或下载最新目录
   key set|delete 名称    在系统凭据管理器中保存或删除 API 密钥
@@ -35,7 +40,7 @@ EXAMPLES = """\
   Get-Content error.log | moss -p "解释这个错误"
   moss -c                                恢复本项目最近的会话
 
-moss 与 mosscode 是同一个命令。要把 setup、doctor、models、key、plugin、sandbox 或 acp 当作消息发送，写成 moss -- doctor。
+moss 与 mosscode 是同一个命令。要把 setup、login、config、doctor、models、key、plugin、sandbox 或 acp 当作消息发送，写成 moss -- doctor。
 """
 
 
@@ -175,6 +180,14 @@ def _subcommand(name: str, argv: list[str]) -> int:
         from .setup import main as setup
 
         return setup(argv)
+    if name == "login":
+        from .login_command import main as login
+
+        return login(argv)
+    if name == "config":
+        from .config_command import main as config
+
+        return config(argv)
     if name == "models":
         from .models_command import main as models
 
