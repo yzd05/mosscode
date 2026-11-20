@@ -10,8 +10,8 @@ from mosscode.agents import AgentCatalog, AgentError, parse_agent
 from mosscode.agents.runtime import FORK_PLACEHOLDER, effective_mode
 from mosscode.agents.tasks import Task
 from mosscode.hooks import HookEngine
-from mosscode.messages import NOTIFICATION, REMINDER, ApprovalRequest, Delta, TasksNotified, Usage
-from mosscode.permissions import PermissionPolicy, stricter
+from mosscode.messages import NOTIFICATION, REMINDER, Delta, TasksNotified, Usage
+from mosscode.permissions import ApprovalRequest, PermissionPolicy, stricter
 from mosscode.prompts import PREFIX_KINDS
 from mosscode.tools import create_default_registry
 from mosscode.tools.execution import partition_calls

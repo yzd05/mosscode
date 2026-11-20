@@ -7,11 +7,10 @@ keep a byte-identical prefix for prompt caching.
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from .context import estimate_text
 from .messages import Message, ToolResult
-from .session import Session
 
 RESULT_TOKENS = 12_500
 MESSAGE_TOKENS = 50_000
@@ -21,6 +20,13 @@ HEAD, TAIL = 2_000, 1_000
 EXEMPT = frozenset({"read_file"})
 READ_FLOOR = 2_000  # Tokens every read of a batch may keep, whatever the batch adds up to.
 NOTE_TOKENS = 60  # Room for the closing note of a shortened read.
+
+
+@runtime_checkable
+class ResultStore(Protocol):
+    """Storage boundary for persisting oversized tool results outside the message history."""
+
+    def persist_result(self, call_id: str, text: str) -> Path: ...
 
 
 def preview(text: str, tokens: int, path: Path | None) -> str:
@@ -39,7 +45,7 @@ def preview(text: str, tokens: int, path: Path | None) -> str:
     )
 
 
-def store(text: str, details: dict[str, Any], session: Session | None, call_id: str) -> tuple[str, dict[str, Any]]:
+def store(text: str, details: dict[str, Any], session: ResultStore | None, call_id: str) -> tuple[str, dict[str, Any]]:
     tokens = estimate_text(text)
     path = None
     if session is not None:
@@ -53,7 +59,7 @@ def store(text: str, details: dict[str, Any], session: Session | None, call_id: 
 
 
 def bound_result(
-    name: str, call_id: str, text: str, details: dict[str, Any], session: Session | None
+    name: str, call_id: str, text: str, details: dict[str, Any], session: ResultStore | None
 ) -> tuple[str, dict[str, Any]]:
     """One result over the threshold is stored."""
     if name in EXEMPT or estimate_text(text) <= RESULT_TOKENS:
@@ -95,7 +101,7 @@ def shorten_read(result: ToolResult, tokens: int) -> ToolResult:
     return replace(result, output="\n".join([*lines[:kept], note]), details=details)
 
 
-def bound_message(message: Message, session: Session | None) -> Message:
+def bound_message(message: Message, session: ResultStore | None) -> Message:
     """One batch over the combined budget: reads are cut to shorter pages, then other results stored, largest first."""
     results = list(message.tool_results)
     sizes = [estimate_text(r.model_text()) for r in results]

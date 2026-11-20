@@ -6,11 +6,13 @@ a model the catalog does not list is sent the parameters and the service decides
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
-from .config import ProviderConfig
+if TYPE_CHECKING:
+    from .catalog import ModelInfo
 
 LEVELS = ("off", "low", "medium", "high")
 DEFAULT = "default"
@@ -30,6 +32,32 @@ class Unsupported(Exception):
     """The current model cannot take this level; the message says why."""
 
 
+@runtime_checkable
+class ReasoningConfig(Protocol):
+    """Minimal provider configuration fields needed to map /thinking levels."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def protocol(self) -> str: ...
+
+    @property
+    def base_url(self) -> str | None: ...
+
+    @property
+    def thinking(self) -> Mapping[str, Any] | None: ...
+
+    @property
+    def max_output_tokens(self) -> int: ...
+
+    @property
+    def reasoning(self) -> bool | None: ...
+
+    @property
+    def catalog(self) -> ModelInfo | None: ...
+
+
 @dataclass(frozen=True)
 class ThinkingOptions:
     options: dict[str, Any] = field(default_factory=dict)  # Merged into the request.
@@ -37,7 +65,7 @@ class ThinkingOptions:
     note: str = ""  # A difference from what was asked, e.g. medium treated as high.
 
 
-def _deepseek(config: ProviderConfig) -> bool:
+def _deepseek(config: ReasoningConfig) -> bool:
     info = config.catalog
     if info is not None and info.provider == "deepseek":
         return True
@@ -45,7 +73,7 @@ def _deepseek(config: ProviderConfig) -> bool:
     return host == "api.deepseek.com"
 
 
-def _check(config: ProviderConfig) -> None:
+def _check(config: ReasoningConfig) -> None:
     if config.reasoning is False:
         raise Unsupported(f"提供商 {config.name} 配置了 reasoning: false")
     info = config.catalog
@@ -53,7 +81,7 @@ def _check(config: ProviderConfig) -> None:
         raise Unsupported(f"模型目录（{info.name}）中这个模型不支持思考")
 
 
-def _effort_off(config: ProviderConfig) -> tuple[str, str]:
+def _effort_off(config: ReasoningConfig) -> tuple[str, str]:
     """The OpenAI effort for off, and a note when the model cannot turn thinking off completely."""
     info = config.catalog
     # The catalog marks the models that take "none"; a file without the thinking fields says nothing.
@@ -64,7 +92,7 @@ def _effort_off(config: ProviderConfig) -> tuple[str, str]:
     raise Unsupported("这个模型不能关闭思考；可以用 /thinking low 降到最低")
 
 
-def thinking_options(config: ProviderConfig, level: str) -> ThinkingOptions:
+def thinking_options(config: ReasoningConfig, level: str) -> ThinkingOptions:
     """What a request to this provider carries for level; raises Unsupported when it cannot take it."""
     if level not in LEVELS:
         raise ValueError(level)

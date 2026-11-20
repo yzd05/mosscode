@@ -5,19 +5,20 @@ import json
 import random
 import sys
 import threading
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import replace
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-from .config import ProviderConfig
 from .images import ImageRef
 from .messages import (
+    PREFIX_KINDS,
     Completed,
     ContentBlock,
     Delta,
     Message,
+    PromptRequest,
     ProviderError,
     Retrying,
     StreamEvent,
@@ -25,10 +26,48 @@ from .messages import (
     ToolDefinition,
     ToolProgress,
     Usage,
+    as_prompt,
 )
-from .prompts import PREFIX_KINDS, PromptRequest, as_prompt
-from .reasoning import Unsupported, thinking_options
+from .reasoning import ReasoningConfig, Unsupported, thinking_options
 from .usage import parse_usage, usage_data
+
+
+@runtime_checkable
+class ProviderSettings(ReasoningConfig, Protocol):
+    """Protocol-level endpoint settings required by SDK providers."""
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+    @property
+    def auth_type(self) -> str: ...
+
+    @property
+    def timeout(self) -> float: ...
+
+    @property
+    def max_retries(self) -> int: ...
+
+    @property
+    def stream_usage(self) -> bool: ...
+
+    @property
+    def max_tokens_field(self) -> str: ...
+
+    @property
+    def include_encrypted_reasoning(self) -> bool: ...
+
+    @property
+    def prompt_cache(self) -> bool | None: ...
+
+    @property
+    def accepts_images(self) -> bool: ...
+
+    def credential(self) -> str: ...
+
 
 # Anthropic tightens its per-image limits above 20 images a request, and old screenshots rarely still matter.
 IMAGE_LIMIT = 20
@@ -296,7 +335,7 @@ def _safe_error(exc) -> ProviderError:
 
 
 class SDKProvider:
-    def __init__(self, config: ProviderConfig, client: Any = None) -> None:
+    def __init__(self, config: ProviderSettings, client: Any = None) -> None:
         self.config = config
         self.thinking: str | None = None  # The /thinking level; None sends what the configuration says.
         self.client = client if client is not None else self._client()
@@ -794,7 +833,7 @@ class ChatCompletionsProvider(SDKProvider):
         yield Completed(Message("assistant", tuple(content), self.config.protocol, (native,), calls), stop, usage)
 
 
-def create_provider(config: ProviderConfig) -> SDKProvider:
+def create_provider(config: ProviderSettings) -> SDKProvider:
     adapters = {
         "anthropic-messages": AnthropicProvider,
         "openai-responses": ResponsesProvider,
