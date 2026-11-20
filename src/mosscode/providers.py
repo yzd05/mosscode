@@ -412,9 +412,10 @@ class SDKProvider:
                 "trust_env": not loopback,
             }
             if loopback:
-                # Anthropic's DefaultAsyncHttpxClient builds explicit env proxy mounts unless `transport` is passed.
+                # Anthropic's DefaultAsyncHttpxClient builds explicit env proxy mounts unless `transport` is passed,
+                # and AsyncHTTPTransport itself defaults to trust_env=True (reading SSL_CERT_FILE / proxies).
                 http_mod = sys.modules[http_cls.__bases__[0].__module__.split(".")[0]]
-                http_kwargs["transport"] = http_mod.AsyncHTTPTransport()
+                http_kwargs["transport"] = http_mod.AsyncHTTPTransport(trust_env=False)
             http_client = http_cls(**http_kwargs)
             options["http_client"] = http_client
         if config.protocol == "anthropic-messages":

@@ -404,17 +404,21 @@ def test_copilot_token_manager_caches_and_refreshes_near_expiry():
         mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=prime_then_reject)
     assert mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=fake_exchange) == "session-primed-fresh"
 
-    # Successful exchange must NOT resurrect a session cleared by invalidate() while exchange was in flight.
-    mgr.prime("ghu_abc12345", "session-before-logout", 3000.0, COPILOT_API_BASE)
-    clock[0] = 2950.0
+    # Successful exchange must NOT resurrect a session cleared by token-specific OR global invalidate() mid-refresh.
+    for clear_all in (False, True):
+        mgr.prime("ghu_abc12345", "session-before-logout", 3000.0, COPILOT_API_BASE)
+        clock[0] = 2950.0
 
-    def invalidate_then_succeed(_gh: str) -> tuple[str, float, str]:
-        mgr.invalidate("ghu_abc12345")
-        return "session-stale-after-logout", 5000.0, COPILOT_API_BASE
+        def invalidate_then_succeed(_gh: str, *, _all: bool = clear_all) -> tuple[str, float, str]:
+            if _all:
+                mgr.invalidate()
+            else:
+                mgr.invalidate("ghu_abc12345")
+            return "session-stale-after-logout", 5000.0, COPILOT_API_BASE
 
-    with pytest.raises(AuthError, match="已失效"):
-        mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=invalidate_then_succeed)
-    assert mgr._cache.get(mgr._cache_key("ghu_abc12345")) is None
+        with pytest.raises(AuthError, match="已失效"):
+            mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=invalidate_then_succeed)
+        assert mgr._cache.get(mgr._cache_key("ghu_abc12345")) is None
 
     # Successful older exchange must NOT overwrite a newer session installed by prime() during exchange.
     mgr.prime("ghu_abc12345", "session-expiring", 3000.0, COPILOT_API_BASE)
@@ -567,8 +571,9 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
     from mosscode.providers import AnthropicProvider
 
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9999")
-    monkeypatch.delenv("NO_PROXY", raising=False)
-    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:9999")
+    for var in ("ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(var, raising=False)
 
     anthropic_copilot_cfg = ProviderConfig(
         name="copilot-anthropic",
@@ -582,13 +587,19 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
     try:
         assert real_anthropic_sdk._owned_http_client is not None
         assert real_anthropic_sdk._owned_http_client.follow_redirects is False
-        # Remote Copilot URL retains environment proxy routing.
-        assert bool(real_anthropic_sdk._owned_http_client._mounts)
+        # Remote Copilot URL selects the configured HTTPS proxy transport.
+        http_mod = sys.modules[real_anthropic_sdk._owned_http_client.__class__.__bases__[0].__module__.split(".")[0]]
+        remote_transport = real_anthropic_sdk._owned_http_client._transport_for_url(
+            http_mod.URL("https://api.githubcopilot.com")
+        )
+        proxy_url = getattr(remote_transport._pool, "_proxy_url", None)
+        assert proxy_url is not None and proxy_url.host == b"127.0.0.1" and proxy_url.port == 9999
     finally:
         await real_anthropic_sdk.close()
     assert real_anthropic_sdk._owned_http_client.is_closed
 
-    # Approved HTTPS loopback Copilot relay must bypass Anthropic's environment proxy mounts.
+    # Approved HTTPS loopback Copilot relay bypasses proxy mounts AND transport trust_env (e.g. broken SSL_CERT_FILE).
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/mosscode-missing-ca.pem")
     anthropic_loopback_cfg = ProviderConfig(
         name="copilot-anthropic-loopback",
         protocol="anthropic-messages",
@@ -602,6 +613,10 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
         assert real_anthropic_loopback._owned_http_client is not None
         assert real_anthropic_loopback._owned_http_client.follow_redirects is False
         assert real_anthropic_loopback._owned_http_client._mounts == {}
+        loopback_transport = real_anthropic_loopback._owned_http_client._transport_for_url(
+            http_mod.URL("https://127.0.0.1:8443")
+        )
+        assert getattr(loopback_transport._pool, "_proxy_url", None) is None
     finally:
         await real_anthropic_loopback.close()
     assert real_anthropic_loopback._owned_http_client.is_closed
@@ -1369,6 +1384,7 @@ def test_config_web_reload_epoch_and_pre_github_reservation_fences_openrouter(tm
     stored: dict[str, str] = {}
     or_exchange_entered = threading.Event()
     release_or_exchange = threading.Event()
+    or_exchange_returned_200 = threading.Event()
     gh_device_entered = threading.Event()
     release_gh_device = threading.Event()
 
@@ -1390,6 +1406,7 @@ def test_config_web_reload_epoch_and_pre_github_reservation_fences_openrouter(tm
         if url == "https://openrouter.ai/api/v1/auth/keys":
             or_exchange_entered.set()
             assert release_or_exchange.wait(timeout=5.0)
+            or_exchange_returned_200.set()
             return httpx.Response(200, json={"key": "or-must-not-commit"})
         if url == "https://github.com/login/device/code":
             gh_device_entered.set()
@@ -1399,6 +1416,8 @@ def test_config_web_reload_epoch_and_pre_github_reservation_fences_openrouter(tm
 
     with ConfigWebServer(home=tmp_path, vault=MemoryVault(), transport=httpx.MockTransport(handler)) as srv:
         # Bootstrap gets epoch=1; reloading GET / gets epoch=2 so generation=1 works immediately after reload.
+        # Note: reloading alone does not cancel an in-flight login; the stale-start fence boundary is the first
+        # newer OAuth reservation in (epoch, generation) order.
         st1, _, html1 = _http_req(srv.port, "GET", f"/?token={srv.boot_token}")
         assert st1 == 200 and '<meta name="oauth-epoch" content="1">' in html1.decode("utf-8")
         st2, _, html2 = _http_req(srv.port, "GET", "/")
@@ -1439,7 +1458,7 @@ def test_config_web_reload_epoch_and_pre_github_reservation_fences_openrouter(tm
         t_cp.start()
         try:
             assert gh_device_entered.wait(timeout=5.0)
-            # Delayed start from previous page epoch=1 (even with higher gen=9) is rejected with 409 Conflict.
+            # Once epoch=2 has reserved ownership, any delayed start from epoch=1 (even with higher gen=9) gets 409.
             st_old_epoch, _, _ = _http_req(
                 srv.port,
                 "POST",
@@ -1454,6 +1473,7 @@ def test_config_web_reload_epoch_and_pre_github_reservation_fences_openrouter(tm
             release_or_exchange.set()
             worker_or.join(timeout=5.0)
             assert not worker_or.is_alive()
+            assert or_exchange_returned_200.is_set(), "OpenRouter mock must reach its HTTP 200 response path"
         finally:
             release_or_exchange.set()
             release_gh_device.set()
