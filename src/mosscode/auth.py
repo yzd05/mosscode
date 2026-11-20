@@ -738,18 +738,23 @@ class CopilotTokenManager:
             key_lock = self._refresh_locks.setdefault(key, threading.Lock())
         with key_lock:
             with self._lock:
-                cached = self._cache.get(key)
-                if cached is not None and now() < cached[1] - self._refresh_margin:
-                    return cached[0]
+                observed = self._cache.get(key)
+                if observed is not None and now() < observed[1] - self._refresh_margin:
+                    return observed[0]
             try:
                 token, expires_at, endpoint = exchange(github_token)
             except AuthError as exc:
-                if exc.transient and cached is not None and now() < cached[1]:
-                    # Keep serving the unexpired session for the same GitHub credential on transient network/5xx faults.
-                    return cached[0]
-                if not exc.transient:
+                if exc.transient:
                     with self._lock:
-                        self._cache.pop(key, None)
+                        current = self._cache.get(key)
+                    # Recheck live cache under lock so a token removed by invalidate() is never resurrected.
+                    if current is not None and now() < current[1]:
+                        return current[0]
+                else:
+                    with self._lock:
+                        # Evict only the observed snapshot so a newer prime() installed during exchange stays intact.
+                        if observed is not None and self._cache.get(key) == observed:
+                            self._cache.pop(key, None)
                 raise
             with self._lock:
                 self._cache[key] = (token, expires_at, endpoint)

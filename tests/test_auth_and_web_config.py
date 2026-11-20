@@ -98,6 +98,7 @@ async def test_loopback_callback_server_security_single_use_and_close_before_sta
     closer.start()
     closer.join(timeout=5.0)
     assert not closer.is_alive(), "close() must not block before start()"
+    assert unstarted._server.socket.fileno() == -1
 
     # If thread startup raises, _started stays False, the socket closes, and a later close() never deadlocks.
     failed = LoopbackCallbackServer()
@@ -105,6 +106,7 @@ async def test_loopback_callback_server_security_single_use_and_close_before_sta
     with pytest.raises(RuntimeError, match="thread boom"):
         failed.start()
     assert not failed._started and failed._closed
+    assert failed._server.socket.fileno() == -1
     closer2 = threading.Thread(target=failed.close, daemon=True)
     closer2.start()
     closer2.join(timeout=5.0)
@@ -380,6 +382,28 @@ def test_copilot_token_manager_caches_and_refreshes_near_expiry():
     with pytest.raises(AuthError, match="timeout"):
         mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=transient_fail)
 
+    # If invalidate() runs while a refresh is in flight and exchange times out, do NOT resurrect the removed token.
+    mgr.prime("ghu_abc12345", "session-live", 3000.0, COPILOT_API_BASE)
+    clock[0] = 2950.0  # inside 120s refresh window, still unexpired
+
+    def invalidate_then_timeout(_gh: str) -> tuple[str, float, str]:
+        mgr.invalidate("ghu_abc12345")
+        raise AuthError("transient timeout after invalidate", transient=True)
+
+    with pytest.raises(AuthError, match="transient timeout after invalidate"):
+        mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=invalidate_then_timeout)
+
+    # If prime() installs a fresh session while an older refresh is in flight and that refresh fails auth, keep the primed one.
+    mgr.prime("ghu_abc12345", "session-old", 3000.0, COPILOT_API_BASE)
+
+    def prime_then_reject(_gh: str) -> tuple[str, float, str]:
+        mgr.prime("ghu_abc12345", "session-primed-fresh", 4000.0, COPILOT_API_BASE)
+        raise AuthError("stale unauthorized", transient=False)
+
+    with pytest.raises(AuthError, match="stale unauthorized"):
+        mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=prime_then_reject)
+    assert mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=fake_exchange) == "session-primed-fresh"
+
 
 async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_retry_loop(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.yaml"
@@ -469,6 +493,7 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
         transport=httpx.MockTransport(probe_handler),
     )
     assert probe_res.ok and probe_res.models == ("gpt-4.1", "claude-sonnet-4")
+    assert probe_res.resolved_base_url == "https://api.individual.githubcopilot.com"
 
     # SDKProvider.stream() refreshes client.api_key inside the retry loop on each attempt.
     tokens = iter(["session-attempt-1", "session-attempt-2"])
@@ -504,7 +529,7 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
     assert seen_keys == ["session-attempt-1", "session-attempt-2"]
     assert events[-1] == "used:session-attempt-2"
 
-    # Real Copilot SDK client disables redirects so session tokens cannot be forwarded to unapproved hosts.
+    # Real Copilot SDK clients (both OpenAI and Anthropic protocols) disable redirects without TypeError.
     monkeypatch.setattr(copilot_token_manager, "get_session_token", lambda _gh: "tid=live_session_no_redirect")
     real_sdk = ChatCompletionsProvider(prov_cfg)
     try:
@@ -513,6 +538,24 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
     finally:
         await real_sdk.close()
     assert real_sdk._owned_http_client.is_closed
+
+    from mosscode.providers import AnthropicProvider
+
+    anthropic_copilot_cfg = ProviderConfig(
+        name="copilot-anthropic",
+        protocol="anthropic-messages",
+        model="claude-sonnet-4",
+        base_url="https://api.githubcopilot.com",
+        api_key="ghu_live_token_123456",
+        auth_type="github-copilot",
+    )
+    real_anthropic_sdk = AnthropicProvider(anthropic_copilot_cfg)
+    try:
+        assert real_anthropic_sdk._owned_http_client is not None
+        assert real_anthropic_sdk._owned_http_client.follow_redirects is False
+    finally:
+        await real_anthropic_sdk.close()
+    assert real_anthropic_sdk._owned_http_client.is_closed
 
     # Transient refresh failure when no unexpired cache exists retries cleanly inside stream().
     refresh_attempts = 0
@@ -673,6 +716,7 @@ def test_config_web_server_security_boundaries_and_full_api(tmp_path):
     closer.start()
     closer.join(timeout=5.0)
     assert not closer.is_alive(), "close() must not block before start()"
+    assert unstarted._server.socket.fileno() == -1
 
     stored: dict[str, str] = {}
 
@@ -731,17 +775,18 @@ def test_config_web_server_security_boundaries_and_full_api(tmp_path):
         transport=httpx.MockTransport(mock_http),
     ) as srv:
         # 1. Unauthorized GET / and /api/state are rejected (403) and do NOT reset idle activity.
-        srv._last_activity = 100.0
+        baseline = time.monotonic() - 100.0
+        srv._last_activity = baseline
         st_unauth, hdrs_unauth, _ = _http_req(srv.port, "GET", "/")
         assert st_unauth == 403
         assert hdrs_unauth.get("x-frame-options") == "DENY"
         assert hdrs_unauth.get("x-content-type-options") == "nosniff"
         assert hdrs_unauth.get("cache-control") == "no-store"
-        assert srv._last_activity == 100.0
+        assert srv._last_activity == baseline
 
         st_api_unauth, _, _ = _http_req(srv.port, "GET", "/api/state")
         assert st_api_unauth == 403
-        assert srv._last_activity == 100.0
+        assert srv._last_activity == baseline
 
         # 2. Anti-DNS-rebinding: non-loopback Host header is rejected even with valid boot token.
         st_rebinding, _, _ = _http_req(
@@ -752,13 +797,13 @@ def test_config_web_server_security_boundaries_and_full_api(tmp_path):
             host_header="evil.example.com",
         )
         assert st_rebinding == 403
-        assert srv._last_activity == 100.0
+        assert srv._last_activity == baseline
 
         # 3. Single-use boot token returns origin-scoped HTML with NO host-wide Set-Cookie!
         st_boot, hdrs_boot, raw_html = _http_req(srv.port, "GET", f"/?token={srv.boot_token}")
         assert st_boot == 200
         assert "set-cookie" not in hdrs_boot
-        assert srv._last_activity > 100.0
+        assert srv._last_activity > baseline
         csp = hdrs_boot.get("content-security-policy", "")
         assert "script-src 'nonce-" in csp and "frame-ancestors 'none'" in csp
         html_text = raw_html.decode("utf-8")
@@ -873,7 +918,9 @@ def test_config_web_server_security_boundaries_and_full_api(tmp_path):
             ).encode("utf-8"),
         )
         assert st_cp_probe == 200
-        assert json.loads(body_cp_probe)["models"] == ["gpt-4.1"]
+        cp_probe_json = json.loads(body_cp_probe)
+        assert cp_probe_json["models"] == ["gpt-4.1"]
+        assert cp_probe_json["resolved_base_url"] == "https://api.enterprise.githubcopilot.com"
 
         # 8. Save preset Ollama with blank URL falls back to preset loopback URL (while remote none URL is rejected).
         st_ollama_bad, _, _ = _http_req(
@@ -1129,6 +1176,144 @@ def test_config_web_copilot_poll_rejects_duplicate_concurrent_poll_without_dropp
         assert not t_a.is_alive()
         assert poll_a_res == [(200, {"status": "ok", "name": "copilot"})]
         assert stored == {"copilot": "ghu_single_flight_secret"}
+
+
+def test_config_web_oauth_cross_provider_fencing_generation_ordering_and_exchange_retry(tmp_path):
+    stored: dict[str, str] = {}
+    cp_exchange_entered = threading.Event()
+    release_cp_exchange = threading.Event()
+    access_token_calls = 0
+    session_exchange_calls = 0
+
+    class MemoryVault:
+        def problem(self):
+            return None
+
+        def exists(self, name: str) -> bool:
+            return name in stored
+
+        def store(self, name: str, secret: str) -> None:
+            stored[name] = secret
+
+        def delete(self, name: str) -> None:
+            stored.pop(name, None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal access_token_calls, session_exchange_calls
+        url = str(request.url)
+        if url == "https://github.com/login/device/code":
+            return httpx.Response(
+                200,
+                json={
+                    "device_code": "retry_dev_code",
+                    "user_code": "RET1-2345",
+                    "verification_uri": "https://github.com/login/device",
+                    "expires_in": 300,
+                    "interval": 5,
+                },
+            )
+        if url == "https://github.com/login/oauth/access_token":
+            access_token_calls += 1
+            return httpx.Response(200, json={"access_token": f"ghu_tok_{access_token_calls}"})
+        if url == "https://api.github.com/copilot_internal/v2/token":
+            session_exchange_calls += 1
+            if session_exchange_calls == 1:
+                # Transient 503 during first session exchange must retain the OAuth token for retry.
+                return httpx.Response(503, json={"error": "upstream unavailable"})
+            if session_exchange_calls == 2:
+                return httpx.Response(200, json={"token": "tid=retried_ok", "expires_at": int(time.time()) + 1800})
+            # Third exchange pauses so we can switch providers to OpenRouter mid-exchange.
+            cp_exchange_entered.set()
+            assert release_cp_exchange.wait(timeout=5.0)
+            return httpx.Response(200, json={"token": "tid=stale_cp", "expires_at": int(time.time()) + 1800})
+        if url == "https://openrouter.ai/api/v1/auth/keys":
+            return httpx.Response(200, json={"key": "or-newer-provider-key"})
+        return httpx.Response(404)
+
+    with ConfigWebServer(home=tmp_path, vault=MemoryVault(), transport=httpx.MockTransport(handler)) as srv:
+        auth_hdrs = {"Authorization": f"Bearer {srv.boot_token}", "Origin": f"http://127.0.0.1:{srv.port}"}
+
+        # 1. Transient 503 during Copilot session exchange retains github_token and retries ONLY session exchange.
+        st_s1, _, body_s1 = _http_req(
+            srv.port, "POST", "/api/auth/copilot/start", headers=auth_hdrs, body=b'{"generation":2}'
+        )
+        assert st_s1 == 200
+        cp_job_1 = json.loads(body_s1)["job_id"]
+
+        # Older out-of-order generation=1 start is rejected with 409 Conflict before replacing job 1.
+        st_stale_gen, _, _ = _http_req(
+            srv.port, "POST", "/api/auth/openrouter/start", headers=auth_hdrs, body=b'{"generation":1}'
+        )
+        assert st_stale_gen == 409
+
+        st_p1, _, body_p1 = _http_req(
+            srv.port,
+            "POST",
+            "/api/auth/copilot/poll",
+            headers=auth_hdrs,
+            body=json.dumps({"job_id": cp_job_1, "set_default": True}).encode("utf-8"),
+        )
+        assert st_p1 == 200 and json.loads(body_p1) == {"status": "slow_down"}
+        assert access_token_calls == 1 and session_exchange_calls == 1
+
+        st_p2, _, body_p2 = _http_req(
+            srv.port,
+            "POST",
+            "/api/auth/copilot/poll",
+            headers=auth_hdrs,
+            body=json.dumps({"job_id": cp_job_1, "set_default": True}).encode("utf-8"),
+        )
+        assert st_p2 == 200 and json.loads(body_p2) == {"status": "ok", "name": "copilot"}
+        # Device-code endpoint was NOT polled a second time; only session exchange retried.
+        assert access_token_calls == 1 and session_exchange_calls == 2
+        assert stored["copilot"] == "ghu_tok_1"
+
+        # 2. Cross-provider fencing: Copilot poll in-flight -> user switches to OpenRouter -> stale Copilot is fenced!
+        st_s2, _, body_s2 = _http_req(
+            srv.port, "POST", "/api/auth/copilot/start", headers=auth_hdrs, body=b'{"generation":3}'
+        )
+        assert st_s2 == 200
+        cp_job_2 = json.loads(body_s2)["job_id"]
+        poll2_out: list[tuple[int, dict]] = []
+
+        def run_cp2() -> None:
+            st, _, raw = _http_req(
+                srv.port,
+                "POST",
+                "/api/auth/copilot/poll",
+                headers=auth_hdrs,
+                body=json.dumps({"job_id": cp_job_2, "set_default": True}).encode("utf-8"),
+            )
+            poll2_out.append((st, json.loads(raw)))
+
+        t_cp2 = threading.Thread(target=run_cp2, daemon=True)
+        t_cp2.start()
+        try:
+            assert cp_exchange_entered.wait(timeout=5.0)
+            st_or, _, body_or = _http_req(
+                srv.port,
+                "POST",
+                "/api/auth/openrouter/start",
+                headers=auth_hdrs,
+                body=b'{"set_default":true,"generation":4}',
+            )
+            assert st_or == 200
+            or_job = json.loads(body_or)
+            cb = urllib.parse.urlsplit(
+                urllib.parse.parse_qs(urllib.parse.urlsplit(or_job["auth_url"]).query)["callback_url"][0]
+            )
+            assert _http_req(cb.port or 80, "GET", f"{cb.path}?code=or_wins")[0] == 200
+            srv._or_jobs[or_job["job_id"]]["thread"].join(timeout=5.0)
+            assert load_settings(srv.config_path, tmp_path).default_provider == "openrouter"
+        finally:
+            release_cp_exchange.set()
+            t_cp2.join(timeout=5.0)
+        assert not t_cp2.is_alive()
+        assert poll2_out[0][0] == 200 and poll2_out[0][1]["status"] == "error" and "取代" in poll2_out[0][1]["error"]
+        # OpenRouter stayed default and stale Copilot poll did not overwrite the saved Copilot token.
+        assert load_settings(srv.config_path, tmp_path).default_provider == "openrouter"
+        assert stored["copilot"] == "ghu_tok_1"
+        assert stored["openrouter"] == "or-newer-provider-key"
 
 
 # ---------------------------------------------------------------------------

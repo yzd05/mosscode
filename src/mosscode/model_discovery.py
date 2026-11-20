@@ -43,6 +43,7 @@ class ProbeResult:
     detail: str = ""
     error: str = ""
     status_code: int | None = None
+    resolved_base_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ async def probe_provider(
             False,
             error="出于安全原因，向非本机回环的 HTTP 地址发送凭据的连通性探测已被拒绝，请改用 HTTPS（https://）。",
         )
+    resolved_base_url: str | None = None
     if auth_type != "none" and api_key:
         if auth_type == "github-copilot":
             from .auth import COPILOT_HEADERS, AuthError, exchange_copilot_session_token_async
@@ -213,6 +215,7 @@ async def probe_provider(
             target_base = base_url or endpoint
             if not is_approved_copilot_url(target_base):
                 return ProbeResult(False, error=COPILOT_URL_ERROR)
+            resolved_base_url = target_base
             try:
                 url = _models_url(protocol, target_base)
             except ValueError as exc:
@@ -269,7 +272,14 @@ async def probe_provider(
                     except Exception:
                         pass
                 detail = f"已连通（{elapsed}ms），发现 {len(models)} 个模型" if models else f"已连通（{elapsed}ms）"
-                return ProbeResult(True, models=models, latency_ms=elapsed, detail=detail, status_code=200)
+                return ProbeResult(
+                    True,
+                    models=models,
+                    latency_ms=elapsed,
+                    detail=detail,
+                    status_code=200,
+                    resolved_base_url=resolved_base_url,
+                )
             if response.status_code in {404, 405, 501}:
                 # Some compatible relays do not expose /models even though chat completions work.
                 tags_url = _ollama_tags_url(base_url)
@@ -279,7 +289,14 @@ async def probe_provider(
                         if tags_resp.status_code == 200:
                             models = _parse_model_ids(tags_resp.json())
                             detail = f"已连通（{elapsed}ms），发现 {len(models)} 个本地模型"
-                            return ProbeResult(True, models=models, latency_ms=elapsed, detail=detail, status_code=200)
+                            return ProbeResult(
+                                True,
+                                models=models,
+                                latency_ms=elapsed,
+                                detail=detail,
+                                status_code=200,
+                                resolved_base_url=resolved_base_url,
+                            )
                     except Exception:
                         pass
                 return ProbeResult(
@@ -287,6 +304,7 @@ async def probe_provider(
                     latency_ms=elapsed,
                     status_code=response.status_code,
                     detail=f"服务端可达（{elapsed}ms，该服务未提供 /models 列表，请手动选择或填写模型名）",
+                    resolved_base_url=resolved_base_url,
                 )
             return ProbeResult(
                 False,

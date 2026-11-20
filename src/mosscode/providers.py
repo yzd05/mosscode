@@ -398,10 +398,14 @@ class SDKProvider:
 
         http_client: Any = None
         if config.auth_type == "github-copilot":
-            import httpx
-
             # Disable redirects so a Copilot session token can never be forwarded to an unapproved host.
-            http_client = httpx.AsyncClient(
+            # Use each SDK's own DefaultAsyncHttpxClient so anthropic (httpx2) and openai both accept it.
+            http_cls = (
+                anthropic.DefaultAsyncHttpxClient
+                if config.protocol == "anthropic-messages"
+                else openai.DefaultAsyncHttpxClient
+            )
+            http_client = http_cls(
                 timeout=config.timeout,
                 follow_redirects=False,
                 trust_env=not is_loopback_url(effective_base_url),
