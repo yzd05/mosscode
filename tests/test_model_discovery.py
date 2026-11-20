@@ -1447,3 +1447,59 @@ async def test_reloaded_endpoint_change_rebuilds_active_client_and_hides_new_env
         # Newly loaded api_key_env must be stripped from subprocess environments even with a non-heuristic name.
         env_out = child_environment({"SERVICE_ACCESS": "opaque-non-heuristic-val", "PATH": "/bin"})
         assert env_out is not None and "SERVICE_ACCESS" not in env_out
+
+
+async def test_connect_wizard_preserves_same_named_project_provider_when_merging(isolated_home, tmp_path):
+    project_cfg = tmp_path / ".mosscode" / "config.yaml"
+    project_cfg.parent.mkdir(parents=True)
+    project_yaml = yaml.safe_dump(
+        {
+            "default_provider": "ollama",
+            "providers": [
+                {
+                    "name": "ollama",
+                    "preset": "ollama",
+                    "model": "project-ollama-model",
+                }
+            ],
+        }
+    )
+    project_cfg.write_text(project_yaml, encoding="utf-8")
+    settings = load_settings(project_cfg, isolated_home)
+
+    app = MossCodeApp(
+        Conversation(FakeProvider()),
+        "ollama",
+        settings=settings,
+        model="project-ollama-model",
+        provider_factory=lambda _cfg: FakeProvider(),
+    )
+
+    async def fake_detect(timeout: float = 0.5):
+        return [DetectedLocalServer("ollama", "Ollama", "http://127.0.0.1:11434/v1", ("user-ollama-model",))]
+
+    app._local_server_detector = fake_detect
+    async with app.run_test(size=(100, 32)) as pilot:
+        await _send(app, pilot, "/connect")
+        await pilot.pause()
+        await app._handle_connect_option(0)  # Detected local Ollama -> model step.
+        await pilot.pause()
+        await app._handle_connect_option(0)  # user-ollama-model -> confirm step.
+        await pilot.pause()
+        await app._handle_connect_option(0)  # Save & switch.
+        await pilot.pause()
+
+        # Project config stays untouched and its original `ollama` provider stays selectable.
+        assert project_cfg.read_text(encoding="utf-8") == project_yaml
+        user_cfg = isolated_home / ".mosscode" / "config.yaml"
+        assert user_cfg.is_file()
+        assert [p.name for p in load_settings(user_cfg, isolated_home).providers] == ["ollama-2"]
+        assert {p.name: p.model for p in app.settings.providers} == {
+            "ollama": "project-ollama-model",
+            "ollama-2": "user-ollama-model",
+        }
+        assert app.provider_name == "ollama-2"
+        assert app.model == "user-ollama-model"
+        assert await app.switch_model("ollama")
+        assert app.provider_name == "ollama"
+        assert app.model == "project-ollama-model"

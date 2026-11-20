@@ -673,6 +673,7 @@ def save_provider_entry(
     set_default: bool = False,
     vault: Any = None,
     config_path: Path | None = None,
+    extra_taken_names: set[str] | frozenset[str] | None = None,
     lock_timeout: float = CONFIG_LOCK_TIMEOUT,
 ) -> tuple[Path, str]:
     """Create or append `provider` in user config atomically, validating via load_settings().
@@ -743,7 +744,13 @@ def save_provider_entry(
             raise ConfigError("配置文件正在被其他进程修改，请稍后重试。") from None
 
         entry = dict(provider)
+        extra_taken = set(extra_taken_names or ())
         if not path.exists():
+            original_name = str(entry["name"])
+            if extra_taken:
+                entry["name"] = _unique(original_name, extra_taken)
+                if "api_key_keyring" in entry and str(entry["api_key_keyring"]) == original_name:
+                    entry["api_key_keyring"] = str(entry["name"])
             # Validate draft BEFORE consulting or writing the credential backend.
             tmp = _stage_new(entry)
             stored_keyring: str | None = None
@@ -759,7 +766,7 @@ def save_provider_entry(
                         tmp.unlink(missing_ok=True)
                     raise
                 try:
-                    allocated = allocate_keyring_name(str(entry["api_key_keyring"]), set(), vault)
+                    allocated = allocate_keyring_name(str(entry["api_key_keyring"]), extra_taken, vault)
                 except KeyringError as exc:
                     with suppress(OSError):
                         tmp.unlink(missing_ok=True)
@@ -797,7 +804,7 @@ def save_provider_entry(
         if not isinstance(loaded, dict) or not isinstance(loaded.get("providers"), list) or not loaded["providers"]:
             raise ConfigError(f"现有配置 {path} 格式无效（缺少 providers 列表）。")
         settings = load_settings(path, home)
-        existing_names = {item.name for item in settings.providers}
+        existing_names = {item.name for item in settings.providers} | extra_taken
         original_name = str(entry["name"])
         entry["name"] = _unique(original_name, existing_names)
         taken: set[str] = set()

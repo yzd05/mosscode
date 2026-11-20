@@ -487,6 +487,13 @@ class _ConnectMixin:
             entry, pending_key = self._build_entry_from_draft()
             config_path = self._connect_config_path()
             vault = getattr(self, "_connect_vault", None)
+            current_source = getattr(self.settings, "source", None) if self.settings is not None else None
+            extra_taken: set[str] | None = None
+            if self.settings is not None and current_source is not None and is_project_file(current_source):
+                # Avoid colliding with project providers when saving into user config during a project-config session.
+                extra_taken = {item.name for item in self.settings.providers} | {
+                    item.name for item in self._configured_providers
+                }
             try:
                 saved_path, saved_name = await asyncio.to_thread(
                     save_provider_entry,
@@ -496,6 +503,7 @@ class _ConnectMixin:
                     set_default=set_default,
                     vault=vault,
                     config_path=config_path,
+                    extra_taken_names=extra_taken,
                 )
             except (ConfigError, OSError) as exc:
                 # Commit did not happen: keep draft and confirmation options intact for retry or back.
@@ -546,16 +554,12 @@ class _ConnectMixin:
         async with self._model_switch_lock:
             current_source = getattr(self.settings, "source", None) if self.settings is not None else None
             if self.settings is not None and current_source is not None and is_project_file(current_source):
-                # Preserve the active project config and its providers; only merge the newly saved user provider.
+                # Preserve all project providers; `saved_name` was allocated disjoint from them before commit.
                 saved_entry = next((item for item in reloaded.providers if item.name == saved_name), None)
                 if saved_entry is not None:
-                    base_active = [item for item in self.settings.providers if item.name != saved_name]
-                    base_active.append(saved_entry)
-                    base_configured = [item for item in self._configured_providers if item.name != saved_name]
-                    base_configured.append(saved_entry)
-                    merged_active = tuple(base_active)
+                    merged_active = (*self.settings.providers, saved_entry)
                     self.settings = replace(self.settings, providers=merged_active)
-                    self._configured_providers = tuple(base_configured)
+                    self._configured_providers = (*self._configured_providers, saved_entry)
                     self.conversation.provider_configs = merged_active
             else:
                 self.settings = reloaded
