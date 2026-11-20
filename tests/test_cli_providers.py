@@ -587,8 +587,8 @@ async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonz
             await first
     assert replace_spawns == 2
 
-    # `CLIProxyProvider.close()` cancels and awaits in-flight capability probes before returning,
-    # preventing any post-shutdown subprocess spawn.
+    # `CLIProxyProvider.close()` cancels and awaits in-flight capability probes started via `stream()`
+    # before returning, preventing any post-shutdown subprocess spawn.
     close_gemini = _make_exec_wrapper(
         bin_dir, "close-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
     )
@@ -606,26 +606,129 @@ async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonz
         ProviderConfig("g", "cli-gemini", "gemini-2.5-flash", auth_type="cli"),
         which=lambda _b: str(close_gemini),
     )
+
+    async def _drive_stream(prov: CLIProxyProvider) -> None:
+        async for _event in prov.stream([Message("user", "hi")], ""):
+            pass
+
     with monkeypatch.context() as mp:
         mp.setattr(asyncio, "create_subprocess_exec", hanging_exec)
-        caller = asyncio.create_task(
-            verify_cli_capabilities(
-                "cli-gemini",
-                str(close_gemini),
-                active_processes=prov_close._active,
-                probe_tasks=prov_close._active_probes,
-            )
-        )
+        caller = asyncio.create_task(_drive_stream(prov_close))
         await asyncio.wait_for(probe_blocked.wait(), timeout=2.0)
         caller.cancel()
         with pytest.raises(asyncio.CancelledError):
             await caller
-        # Shielded probe is still in-flight until `close()` cancels and awaits it.
+        # Shielded probe started through `stream()` stays tracked until `close()` cancels and awaits it.
         assert len(prov_close._active_probes) == 1
         await prov_close.close()
         assert prov_close._active_probes == set()
         assert prov_close._active == set()
         assert post_close_spawn is False
+        # Subsequent stream calls on a closed provider fail immediately without spawning.
+        with pytest.raises(ProviderError, match="已关闭"):
+            await _drive_stream(prov_close)
+        assert post_close_spawn is False
+
+    # Missing executable fingerprint must fail closed without spawning or accepting an unverified probe;
+    # a transient stat failure recovers within the attempt budget once a real fingerprint is obtained.
+    missing_path = bin_dir / "missing-gemini"
+    missing_spawns = 0
+
+    async def spy_missing_exec(*args, **kwargs):
+        nonlocal missing_spawns
+        missing_spawns += 1
+        return await real_exec(*args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(asyncio, "create_subprocess_exec", spy_missing_exec)
+        with pytest.raises(ProviderError, match="无法读取.*可执行文件状态"):
+            await verify_cli_capabilities("cli-gemini", str(missing_path))
+    assert missing_spawns == 0
+
+    transient_gemini = _make_exec_wrapper(
+        bin_dir, "transient-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
+    )
+    real_fp = cli_providers._executable_fingerprint
+    fp_calls = 0
+    transient_spawns = 0
+
+    def flaky_fp(path: str):
+        nonlocal fp_calls
+        fp_calls += 1
+        if fp_calls == 1:
+            return None
+        return real_fp(path)
+
+    async def count_transient_exec(*args, **kwargs):
+        nonlocal transient_spawns
+        transient_spawns += 1
+        return await real_exec(*args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(cli_providers, "_executable_fingerprint", flaky_fp)
+        mp.setattr(asyncio, "create_subprocess_exec", count_transient_exec)
+        await verify_cli_capabilities("cli-gemini", str(transient_gemini))
+    assert transient_spawns == 1
+
+    # Shutdown racing with a finished probe waiter must invalidate both preflight retries (after a binary update
+    # returned False and cleared `_active_probes`) and main CLI launches (after a successful probe cleared `_active_probes`).
+    real_shield = asyncio.shield
+
+    async def _assert_close_race(case_name: str, *, trigger_update: bool) -> None:
+        race_bin = _make_exec_wrapper(
+            bin_dir,
+            f"race-{case_name}",
+            'print("Usage: gemini -p --approval-mode plan --policy file.toml")',
+        )
+        waiter_paused = asyncio.Event()
+        allow_waiter_resume = asyncio.Event()
+        race_spawns = 0
+        observed_probe_result: list[bool] = []
+
+        async def race_exec(*args, **kwargs):
+            nonlocal race_spawns
+            race_spawns += 1
+            return await real_exec(*args, **kwargs)
+
+        async def race_read_help(proc, *, max_bytes: int, label: str):
+            out = await real_read_help(proc, max_bytes=max_bytes, label=label)
+            if trigger_update and race_spawns == 1:
+                st = race_bin.stat()
+                os.utime(race_bin, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            return out
+
+        async def paused_shield(aw):
+            is_probe = aw in prov_race._active_probes
+            res = await real_shield(aw)
+            if is_probe:
+                observed_probe_result.append(res)
+                waiter_paused.set()
+                await allow_waiter_resume.wait()
+            return res
+
+        prov_race = CLIProxyProvider(
+            ProviderConfig("g", "cli-gemini", "gemini-2.5-flash", auth_type="cli"),
+            which=lambda _b, target=str(race_bin): target,
+        )
+        with monkeypatch.context() as mp:
+            mp.setattr(asyncio, "create_subprocess_exec", race_exec)
+            mp.setattr(cli_providers, "_read_help_bounded", race_read_help)
+            mp.setattr(asyncio, "shield", paused_shield)
+            stream_task = asyncio.create_task(_drive_stream(prov_race))
+            await asyncio.wait_for(waiter_paused.wait(), timeout=5.0)
+            # The probe task has already finished and cleared `_active_probes` before `close()` runs.
+            assert observed_probe_result == [not trigger_update]
+            assert prov_race._active_probes == set()
+            await prov_race.close()
+            allow_waiter_resume.set()
+            with pytest.raises(ProviderError, match="已关闭"):
+                await stream_task
+        assert race_spawns == 1
+        assert prov_race._active_probes == set()
+        assert prov_race._active == set()
+
+    await _assert_close_race("retry-after-update", trigger_update=True)
+    await _assert_close_race("launch-after-success", trigger_update=False)
 
     retry_gemini = _make_exec_wrapper(
         bin_dir, "retry-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'

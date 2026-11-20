@@ -141,7 +141,7 @@ MAX_CLEANUP_ATTEMPTS = 3
 READ_CHUNK_BYTES = 64 * 1024
 UNSUPPORTED_IMAGE = "当前模型不支持图片，已省略"
 _CAPABILITY_CACHE: dict[tuple[str, str, int, int], str | None] = {}
-_INFLIGHT_HELP_PROBES: dict[tuple[int, str, str], tuple[tuple[int, int] | None, asyncio.Task[bool]]] = {}
+_INFLIGHT_HELP_PROBES: dict[tuple[int, str, str], tuple[tuple[int, int], asyncio.Task[bool]]] = {}
 
 
 @dataclass(frozen=True)
@@ -1657,8 +1657,11 @@ async def _run_probe_subprocess(
     tracked: set[_ManagedProcess],
     probe_key: tuple[str, str],
     label: str,
+    is_closed: Callable[[], bool] | None = None,
 ) -> tuple[int | None, bytes, bytes]:
     """Run one bounded capability/version probe subprocess and retain its handle if teardown is unconfirmed."""
+    if is_closed is not None and is_closed():
+        raise ProviderError(f"{label} 提供方已关闭，已取消安全参数能力检测。")
     spawn_kwargs: dict[str, Any] = {
         "stdin": asyncio.subprocess.DEVNULL,
         "stdout": asyncio.subprocess.PIPE,
@@ -1694,6 +1697,8 @@ async def _run_probe_subprocess(
             raise ProviderError(f"无法为 {label} 能力检测建立 Windows 进程树隔离，已中止执行。") from None
 
     try:
+        if is_closed is not None and is_closed():
+            raise ProviderError(f"{label} 提供方已关闭，已取消安全参数能力检测。")
         async with asyncio.timeout(min(timeout, 10.0)):
             stdout_b, stderr_b = await _read_help_bounded(proc, max_bytes=max_help_bytes, label=label)
     except TimeoutError:
@@ -1723,16 +1728,17 @@ async def _execute_capability_probe(
     protocol: str,
     executable: str,
     *,
-    expected_fp: tuple[int, int] | None,
+    expected_fp: tuple[int, int],
     timeout: float,
     max_help_bytes: int,
     tracked: set[_ManagedProcess],
     probe_key: tuple[str, str],
+    is_closed: Callable[[], bool] | None = None,
 ) -> bool:
     """Run capability/version checks; return False without caching if the executable changed mid-probe."""
     help_args, required_flags = _REQUIRED_HELP_ARGS[protocol]
     label = CLI_LABELS[protocol]
-    cache_key = (protocol, executable, expected_fp[0], expected_fp[1]) if expected_fp is not None else None
+    cache_key = (protocol, executable, expected_fp[0], expected_fp[1])
 
     returncode, stdout_b, stderr_b = await _run_probe_subprocess(
         protocol,
@@ -1743,9 +1749,10 @@ async def _execute_capability_probe(
         tracked=tracked,
         probe_key=probe_key,
         label=label,
+        is_closed=is_closed,
     )
 
-    if expected_fp is not None and _executable_fingerprint(executable) != expected_fp:
+    if _executable_fingerprint(executable) != expected_fp:
         return False
 
     # Do not permanently cache nonzero help exits so transient startup failures recover on retry.
@@ -1759,7 +1766,7 @@ async def _execute_capability_probe(
             f"当前安装的 {label} 不支持必需的安全隔离参数（缺少 {'、'.join(missing)}），"
             f"为防止绕过 MossCode 权限与审批，已拒绝启用 {protocol}；请升级官方 CLI 后重试。"
         )
-        if cache_key is not None and _executable_fingerprint(executable) == expected_fp:
+        if _executable_fingerprint(executable) == expected_fp:
             _CAPABILITY_CACHE[cache_key] = err
         raise ProviderError(err)
 
@@ -1773,8 +1780,9 @@ async def _execute_capability_probe(
             tracked=tracked,
             probe_key=probe_key,
             label=label,
+            is_closed=is_closed,
         )
-        if expected_fp is not None and _executable_fingerprint(executable) != expected_fp:
+        if _executable_fingerprint(executable) != expected_fp:
             return False
         if ver_rc != 0:
             raise ProviderError(f"无法验证 Windows {label} 版本（退出码 {ver_rc}），已拒绝启用。")
@@ -1791,14 +1799,13 @@ async def _execute_capability_probe(
                 f"Windows 平台要求官方 {label} 版本 >= 2.1.75（当前检测为 {shown}），"
                 "以避免旧版本读取遗留 ProgramData 受管配置（GHSA-5cwg-9f6j-9jvx）；请升级官方 CLI 后重试。"
             )
-            if cache_key is not None and _executable_fingerprint(executable) == expected_fp:
+            if _executable_fingerprint(executable) == expected_fp:
                 _CAPABILITY_CACHE[cache_key] = err
             raise ProviderError(err)
 
-    if expected_fp is not None and _executable_fingerprint(executable) != expected_fp:
+    if _executable_fingerprint(executable) != expected_fp:
         return False
-    if cache_key is not None:
-        _CAPABILITY_CACHE[cache_key] = None
+    _CAPABILITY_CACHE[cache_key] = None
     return True
 
 
@@ -1810,6 +1817,7 @@ async def verify_cli_capabilities(
     max_help_bytes: int = MAX_HELP_BYTES,
     active_processes: set[_ManagedProcess] | None = None,
     probe_tasks: set[asyncio.Task[Any]] | None = None,
+    is_closed: Callable[[], bool] | None = None,
 ) -> None:
     """Verify the installed official CLI advertises required vendor-side safety flags; fail closed otherwise."""
     if protocol not in _REQUIRED_HELP_ARGS:
@@ -1819,9 +1827,25 @@ async def verify_cli_capabilities(
     tracked = _UNCONFIRMED_HELP_PROBES if active_processes is None else active_processes
     inflight_key = (id(tracked), protocol, executable)
 
-    for _attempt in range(3):
+    def _check_not_closed() -> None:
+        if is_closed is not None and is_closed():
+            raise ProviderError(f"{label} 提供方已关闭，已取消安全参数能力检测。")
+
+    async def _await_probe(task: asyncio.Task[bool]) -> bool:
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if is_closed is not None and is_closed():
+                current = asyncio.current_task()
+                if current is None or current.cancelling() == 0:
+                    raise ProviderError(f"{label} 提供方已关闭，已取消安全参数能力检测。") from None
+            raise
+        _check_not_closed()
+        return result
+
+    for attempt in range(3):
+        _check_not_closed()
         fp = _executable_fingerprint(executable)
-        cache_key = (protocol, executable, fp[0], fp[1]) if fp is not None else None
 
         # Join a live reservation BEFORE checking `tracked`, so callers arriving after `tracked.add(managed)`
         # share the active probe rather than falsely tripping the unconfirmed-teardown rejection.
@@ -1829,15 +1853,15 @@ async def verify_cli_capabilities(
         if existing_entry is not None:
             existing_fp, existing_task = existing_entry
             if not existing_task.done():
-                if existing_fp is not None and fp is not None and existing_fp == fp:
-                    consistent = await asyncio.shield(existing_task)
+                if fp is not None and existing_fp == fp:
+                    consistent = await _await_probe(existing_task)
                     if consistent and _executable_fingerprint(executable) == fp:
                         return
                     continue
                 try:
-                    await asyncio.shield(existing_task)
+                    await _await_probe(existing_task)
                 except ProviderError:
-                    pass
+                    _check_not_closed()
                 continue
 
         # No active probe owns this binary: reject leftover unconfirmed processes from an earlier failure.
@@ -1858,7 +1882,15 @@ async def verify_cli_capabilities(
                 f"上一次 {label} 能力检测子进程树（PID {existing.pid}）尚未确认完全退出，已拒绝重复启动检测；请先关闭重试清理。"
             )
 
-        if cache_key is not None and cache_key in _CAPABILITY_CACHE:
+        if fp is None:
+            # Never start or accept a capability probe without a starting fingerprint; retry briefly if updating.
+            if attempt < 2:
+                await asyncio.sleep(0)
+                continue
+            raise ProviderError(f"无法读取 {label} 可执行文件状态，无法验证安全参数能力，已拒绝启用。")
+
+        cache_key = (protocol, executable, fp[0], fp[1])
+        if cache_key in _CAPABILITY_CACHE:
             cached_err = _CAPABILITY_CACHE[cache_key]
             if cached_err is not None:
                 raise ProviderError(cached_err)
@@ -1874,6 +1906,7 @@ async def verify_cli_capabilities(
                 max_help_bytes=max_help_bytes,
                 tracked=tracked,
                 probe_key=probe_key,
+                is_closed=is_closed,
             )
         )
         _INFLIGHT_HELP_PROBES[inflight_key] = (fp, probe_task)
@@ -1895,10 +1928,11 @@ async def verify_cli_capabilities(
                 done_task.exception()
 
         probe_task.add_done_callback(_release_probe)
-        consistent = await asyncio.shield(probe_task)
-        if consistent and (fp is None or _executable_fingerprint(executable) == fp):
+        consistent = await _await_probe(probe_task)
+        if consistent and _executable_fingerprint(executable) == fp:
             return
 
+    _check_not_closed()
     raise ProviderError(f"检测 {label} 安全参数能力期间可执行文件持续变化，无法确认一致版本，已拒绝启用。")
 
 
@@ -1958,8 +1992,11 @@ class CLIProxyProvider:
         self._claude_settings_paths = claude_settings_paths
         self._active: set[_ManagedProcess] = set()
         self._active_probes: set[asyncio.Task[Any]] = set()
+        self._closed: bool = False
 
     async def close(self) -> None:
+        # Record shutdown before draining so waiters resuming from a finished probe cannot retry or launch.
+        self._closed = True
         # Cancel and await provider-owned capability probes before collecting remaining process records,
         # so no probe can spawn or hold a subprocess after close() returns.
         while self._active_probes:
@@ -2007,6 +2044,8 @@ class CLIProxyProvider:
         protocol = self.config.protocol
         binary = CLI_BINARIES[protocol]
         label = CLI_LABELS[protocol]
+        if self._closed:
+            raise ProviderError(f"{label} 提供方已关闭，无法启动新请求。")
         executable = self._which(binary)
         if not executable or not Path(executable).is_absolute():
             raise ProviderError(f"PATH 绝对目录中未找到官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。")
@@ -2025,7 +2064,11 @@ class CLIProxyProvider:
                 timeout=self.config.timeout,
                 active_processes=self._active,
                 probe_tasks=self._active_probes,
+                is_closed=lambda: self._closed,
             )
+
+        if self._closed:
+            raise ProviderError(f"{label} 提供方已关闭，已取消启动子进程。")
 
         policy_file: Path | None = None
         try:
@@ -2080,6 +2123,18 @@ class CLIProxyProvider:
                         if managed.cleaned:
                             self._active.discard(managed)
                     raise ProviderError(f"无法为 {label} 建立 Windows 进程树隔离，已中止执行。") from None
+
+            if self._closed:
+                self._active.add(managed)
+                _signal_tree_sync(managed)
+                try:
+                    await _run_teardown(managed)
+                finally:
+                    if managed.cleaned:
+                        self._active.discard(managed)
+                if not managed.cleaned:
+                    raise ProviderError(f"{label} 提供方已关闭，且新启动的子进程树未能确认完全退出，已保留待关闭重试。")
+                raise ProviderError(f"{label} 提供方已关闭，已中止新启动的子进程。")
 
             self._active.add(managed)
             stdin_task = asyncio.create_task(_write_stdin(proc.stdin, prompt_bytes))
