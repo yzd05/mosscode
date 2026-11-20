@@ -1430,3 +1430,92 @@ async def test_cancelled_acp_rename_does_not_overwrite_later_rename(tmp_path, mo
     finally:
         release_first.set()
         await cleanup()
+
+
+async def test_scheduled_loop_slash_prompt_forwards_mcp_images(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mosscode.acp import commands as acp_commands
+    from mosscode.commands import Command
+    from mosscode.images import ImageRef
+
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg_dir = home / ".mosscode"
+    cfg_dir.mkdir(parents=True)
+    cfg_dir.joinpath("config.yaml").write_text(
+        "default_provider: p1\nproviders:\n"
+        "  - name: p1\n    protocol: anthropic-messages\n    model: m1\n    api_key: sk-11111111\n",
+        encoding="utf-8",
+    )
+
+    recorded: list[tuple[str, str | None, dict | None]] = []
+
+    async def script(turn, messages, provider):
+        yield Delta("text", "ok")
+        yield Completed(Message("assistant", (ContentBlock("text", "ok"),)), "stop")
+
+    agent = MossCodeAcpAgent(AcpLaunchOptions(home=home, provider_factory=lambda _c: ScriptedProvider(script)))
+    client = RecordingClient()
+    conn, cleanup = await _connect_agent(agent, client)
+    try:
+        await conn.initialize(protocol_version=1)
+        sess = await conn.new_session(cwd=str(work), mcp_servers=[])
+        acp_session = agent.sessions[sess.session_id]
+
+        acp_session.commands.register(
+            Command(
+                name="mcp__vision__snap",
+                description="MCP image prompt",
+                usage="/mcp__vision__snap",
+                kind="prompt",
+                template="mcp prompt",
+                handler=lambda _ctx, _arg: None,
+            )
+        )
+        acp_session.commands.register(
+            Command(
+                name="plain_loop",
+                description="Text-only prompt",
+                usage="/plain_loop",
+                kind="prompt",
+                template="check status",
+            )
+        )
+
+        img = ImageRef(
+            name="snap.png",
+            media_type="image/png",
+            width=1,
+            height=1,
+            size=4,
+            alt="[图片 #1]",
+            data=b"\x89PNG",
+        )
+
+        async def fake_expand(_conversation, _cmd, _argument):
+            return "inspect [图片 #1]", "/mcp__vision__snap", {"[图片 #1]": img}
+
+        monkeypatch.setattr(acp_commands, "expand_mcp_prompt", fake_expand)
+
+        original_reply = acp_session.conversation.reply
+
+        def spy_reply(prompt, *, command=None, fork=None, synthetic=None, images=None):
+            recorded.append((prompt, command, dict(images) if images else None))
+            return original_reply(prompt, command=command, fork=fork, synthetic=synthetic, images=images)
+
+        monkeypatch.setattr(acp_session.conversation, "reply", spy_reply)
+
+        acp_session._due_loops.append(
+            (SimpleNamespace(id="l1", stopped=False, status="running"), "/mcp__vision__snap", 1)
+        )
+        acp_session._due_loops.append((SimpleNamespace(id="l2", stopped=False, status="running"), "/plain_loop", 1))
+        _, cancelled = await acp_session._drain_due_loops()
+        assert not cancelled
+        assert recorded == [
+            ("inspect [图片 #1]", "/mcp__vision__snap", {"[图片 #1]": img}),
+            ("check status", "/plain_loop", None),
+        ]
+    finally:
+        await cleanup()

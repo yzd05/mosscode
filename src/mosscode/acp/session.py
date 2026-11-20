@@ -205,7 +205,6 @@ class AcpSession:
         self._update_tasks: set[asyncio.Task[Any]] = set()
         self._last_reported_mode: str = self.current_mode
         self._initial_commands_sent = False
-        self._slash_images: dict[str, Any] = {}
         self._rename_task: asyncio.Task[None] | None = None
         if self.conversation.mcp_manager is not None:
             register_mcp_prompts_from_manager(self.commands, self.conversation.mcp_manager)
@@ -599,13 +598,18 @@ class AcpSession:
                 f"{escape_markdown_inline(first_line[:100])}\n"
             )
             if loop_prompt.lstrip().startswith("/"):
-                immediate, cmd_text, cmd_label, cmd_fork = await self._handle_slash_command(loop_prompt)
+                immediate, cmd_text, cmd_label, cmd_fork, cmd_images = await self._handle_slash_command(loop_prompt)
                 if self._cancelled:
                     return last_stopped, True
-                if immediate is not None or not cmd_text:
+                if immediate is not None or (not cmd_text and not cmd_images):
                     continue
                 last_stopped, was_cancelled = await self._consume_reply_stream(
-                    self.conversation.reply(cmd_text, command=cmd_label, fork=cmd_fork)
+                    self.conversation.reply(
+                        cmd_text,
+                        command=cmd_label,
+                        fork=cmd_fork,
+                        images=cmd_images or None,
+                    )
                 )
                 if was_cancelled:
                     return last_stopped, True
@@ -925,7 +929,7 @@ class AcpSession:
         self,
         text: str,
         context_parts: Sequence[str] = (),
-    ) -> tuple[PromptResponse | None, str, str | None, ForkRequest | None]:
+    ) -> tuple[PromptResponse | None, str, str | None, ForkRequest | None, dict[str, Any]]:
         return await handle_slash_command(self, text, context_parts)
 
     async def _handle_local_command(
@@ -1039,17 +1043,16 @@ class AcpSession:
                 command_label: str | None = None
                 fork_req: ForkRequest | None = None
                 text = combined_text
-                self._slash_images = {}
+                slash_images: dict[str, Any] = {}
                 if not images and user_text.lstrip().startswith("/"):
-                    immediate, text, command_label, fork_req = await self._handle_slash_command(
+                    immediate, text, command_label, fork_req, slash_images = await self._handle_slash_command(
                         user_text, context_parts
                     )
                     if self._cancelled:
                         return await self._finish_prompt(PromptResponse(stop_reason="cancelled"))
                     if immediate is not None:
                         return await self._finish_prompt(immediate)
-                merged_images: dict[str, Any] = {**images, **self._slash_images}
-                self._slash_images = {}
+                merged_images: dict[str, Any] = {**images, **slash_images}
                 self._flush_deferred_approvals()
                 await self._flush_team_notes()
                 if self._due_loops:

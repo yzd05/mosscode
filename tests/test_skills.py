@@ -1288,6 +1288,71 @@ async def test_fork_in_the_tui(tmp_path, places):
     await conversation.close()
 
 
+async def test_fork_history_copy_scope_and_isolation(tmp_path, places, monkeypatch):
+    import mosscode.conversation_skills as conversation_skills
+    from mosscode.messages import ContentBlock, Message
+    from test_agent import response
+
+    turns = [
+        response("答0"),
+        response("答1"),
+        response("答2"),
+        response("答3"),
+    ]
+    _, conversation = scripted(tmp_path, places, *turns)
+    try:
+        for text in "一二三四":
+            await drain(conversation.reply(text))
+        # Attach mutable native metadata so isolation checks verify deep copy.
+        conversation._agent.history[0] = Message(
+            "user",
+            (ContentBlock("text", "一"),),
+            native=({"marker": ["main"]},),
+        )
+        conversation._agent.history[2] = Message(
+            "user",
+            (ContentBlock("text", "二"),),
+            native=({"marker": ["recent"]},),
+        )
+
+        projected_calls = 0
+        original_projected = conversation._agent.projected
+
+        def tracked_projected():
+            nonlocal projected_calls
+            projected_calls += 1
+            return original_projected()
+
+        copied_batches: list[list[str]] = []
+        original_deepcopy = conversation_skills.deepcopy
+
+        def tracked_deepcopy(value):
+            copied_batches.append(texts_of(value))
+            return original_deepcopy(value)
+
+        monkeypatch.setattr(conversation._agent, "projected", tracked_projected)
+        monkeypatch.setattr(conversation_skills, "deepcopy", tracked_deepcopy)
+
+        assert conversation._fork_history("none") == []
+        assert projected_calls == 0
+        assert copied_batches == []
+
+        recent = conversation._fork_history("recent")
+        assert projected_calls == 1
+        assert texts_of(recent) == ["二", "答1", "三", "答2", "四", "答3"]
+        assert copied_batches == [["二", "答1", "三", "答2", "四", "答3"]]
+        recent[0].native[0]["marker"].append("mutated-recent")
+        assert conversation._agent.history[2].native[0]["marker"] == ["recent"]
+
+        full = conversation._fork_history("full")
+        assert projected_calls == 2
+        assert texts_of(full) == ["一", "答0", "二", "答1", "三", "答2", "四", "答3"]
+        full[0].native[0]["marker"].append("mutated-full")
+        assert conversation._agent.history[0].native[0]["marker"] == ["main"]
+    finally:
+        await conversation.close()
+
+
 def test_headless_fork_uses_its_model(monkeypatch, capsys, tmp_path):
     from mosscode import cli
     from test_cli import setup_cli

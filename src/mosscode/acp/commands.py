@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from collections.abc import Sequence
 from contextlib import aclosing
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from acp import RequestError
 from acp.schema import AllowedOutcome, PermissionOption, PromptResponse, ToolCallUpdate
@@ -66,7 +66,7 @@ async def handle_slash_command(
     session: AcpSession,
     text: str,
     context_parts: Sequence[str] = (),
-) -> tuple[PromptResponse | None, str, str | None, ForkRequest | None]:
+) -> tuple[PromptResponse | None, str, str | None, ForkRequest | None, dict[str, Any]]:
     """Handle slash commands isolated from attached context blocks (`!` inputs stay plain messages)."""
 
     def _with_context(base: str) -> str:
@@ -77,14 +77,14 @@ async def handle_slash_command(
     if parsed.kind == "empty":
         extra = "\n".join(p.strip() for p in context_parts if p and p.strip())
         if extra:
-            return None, extra, None, None
-        return PromptResponse(stop_reason="end_turn"), "", None, None
+            return None, extra, None, None, {}
+        return PromptResponse(stop_reason="end_turn"), "", None, None, {}
     if parsed.kind in {"message", "shell"}:
         msg_text = parsed.text if parsed.kind == "message" else text
-        return None, _with_context(msg_text), None, None
+        return None, _with_context(msg_text), None, None, {}
     if parsed.kind == "unknown":
         await session._send_text(escape_markdown_inline(unknown_note(parsed, session.commands)))
-        return PromptResponse(stop_reason="end_turn"), "", None, None
+        return PromptResponse(stop_reason="end_turn"), "", None, None, {}
 
     cmd = parsed.command
     assert cmd is not None
@@ -99,13 +99,13 @@ async def handle_slash_command(
                 await session._send_text(
                     "ACP 会话中请在启动 `moss acp` 时使用 `--sandbox` 或 `--no-sandbox` 控制命令沙箱。"
                 )
-            return PromptResponse(stop_reason="end_turn"), "", None, None
+            return PromptResponse(stop_reason="end_turn"), "", None, None, {}
         await session._send_text(format_help_markdown(session.commands, cmd.name, session.conversation.skills))
-        return PromptResponse(stop_reason="end_turn"), "", None, None
+        return PromptResponse(stop_reason="end_turn"), "", None, None, {}
 
     if problem := argument_problem(cmd, parsed.argument):
         await session._send_text(escape_markdown_inline(problem))
-        return PromptResponse(stop_reason="end_turn"), "", None, None
+        return PromptResponse(stop_reason="end_turn"), "", None, None, {}
 
     if cmd.kind == "prompt":
         if is_mcp_prompt_command(cmd):
@@ -113,31 +113,30 @@ async def handle_slash_command(
                 expanded, cmd_label, mcp_images = await expand_mcp_prompt(session.conversation, cmd, parsed.argument)
             except (PromptArgumentError, ProviderError) as exc:
                 await session._send_text(escape_markdown_inline(str(exc)))
-                return PromptResponse(stop_reason="end_turn"), "", None, None
-            session._slash_images = mcp_images
-            return None, _with_context(expanded), cmd_label, None
-        return None, _with_context(cmd.expand(parsed.argument)), typed(cmd, parsed.argument), None
+                return PromptResponse(stop_reason="end_turn"), "", None, None, {}
+            return None, _with_context(expanded), cmd_label, None, dict(mcp_images)
+        return None, _with_context(cmd.expand(parsed.argument)), typed(cmd, parsed.argument), None, {}
 
     if cmd.kind == "skill":
         try:
             skill, rendered, notices = session.conversation.prepare_skill(cmd.skill, parsed.argument)
         except ProviderError as exc:
             await session._send_text(escape_markdown_inline(str(exc)))
-            return PromptResponse(stop_reason="end_turn"), "", None, None
+            return PromptResponse(stop_reason="end_turn"), "", None, None, {}
         if notices:
             await session._send_text(format_notices_markdown(notices))
         cmd_label = typed(cmd, parsed.argument)
         combined_rendered = _with_context(rendered)
         if skill.mode == "fork":
-            return None, combined_rendered, cmd_label, ForkRequest(skill, combined_rendered)
-        return None, combined_rendered, cmd_label, None
+            return None, combined_rendered, cmd_label, ForkRequest(skill, combined_rendered), {}
+        return None, combined_rendered, cmd_label, None, {}
 
     immediate, local_prompt, local_label, local_fork = await session._handle_local_command(cmd.name, args)
     if immediate is None and local_prompt:
         local_prompt = _with_context(local_prompt)
         if local_fork is not None:
             local_fork = ForkRequest(local_fork.skill, local_prompt)
-    return immediate, local_prompt, local_label, local_fork
+    return immediate, local_prompt, local_label, local_fork, {}
 
 
 async def handle_local_command(
