@@ -227,8 +227,11 @@ async def probe_provider(
         else:
             req_headers["Authorization"] = f"Bearer {api_key}"
 
-    # Never auto-follow redirects: prevents leaking x-api-key cross-origin and keeps keyless probes on loopback.
-    trust_env = auth_type != "none"
+    if auth_type == "github-copilot" and not is_approved_copilot_url(url):
+        return ProbeResult(False, error=COPILOT_URL_ERROR)
+
+    # Never auto-follow redirects and never route loopback probes through environment proxies.
+    trust_env = auth_type != "none" and not is_loopback_url(url)
     started = time.perf_counter()
     try:
         async with httpx.AsyncClient(

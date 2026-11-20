@@ -35,6 +35,7 @@ from .redaction import (
     COPILOT_URL_ERROR,
     is_approved_copilot_url,
     is_cleartext_remote_credential_url,
+    is_loopback_url,
     redact,
 )
 from .usage import parse_usage, usage_data
@@ -346,6 +347,7 @@ class SDKProvider:
     def __init__(self, config: ProviderSettings, client: Any = None) -> None:
         self.config = config
         self.thinking: str | None = None  # The /thinking level; None sends what the configuration says.
+        self._owned_http_client: Any = None
         self.client = client if client is not None else self._client()
         # base64 by image name (a content hash): history images are sent again every turn.
         self._encoded: dict[str, str] = {}
@@ -391,16 +393,36 @@ class SDKProvider:
         key = config.credential()
         if config.protocol == "anthropic-messages":
             import anthropic
+        else:
+            import openai
 
+        http_client: Any = None
+        if config.auth_type == "github-copilot":
+            import httpx
+
+            # Disable redirects so a Copilot session token can never be forwarded to an unapproved host.
+            http_client = httpx.AsyncClient(
+                timeout=config.timeout,
+                follow_redirects=False,
+                trust_env=not is_loopback_url(effective_base_url),
+            )
+            options["http_client"] = http_client
+        if config.protocol == "anthropic-messages":
             if config.auth_type == "bearer":
-                return anthropic.AsyncAnthropic(api_key=None, auth_token=key, **options)
-            return anthropic.AsyncAnthropic(api_key=key, **options)
-        import openai
-
-        return openai.AsyncOpenAI(api_key=key, **options)
+                client = anthropic.AsyncAnthropic(api_key=None, auth_token=key, **options)
+            else:
+                client = anthropic.AsyncAnthropic(api_key=key, **options)
+        else:
+            client = openai.AsyncOpenAI(api_key=key, **options)
+        self._owned_http_client = http_client
+        return client
 
     async def close(self) -> None:
-        await self.client.close()
+        try:
+            await self.client.close()
+        finally:
+            if self._owned_http_client is not None and not self._owned_http_client.is_closed:
+                await self._owned_http_client.aclose()
 
     retry_base_delay = 1.0
 
@@ -425,6 +447,12 @@ class SDKProvider:
                 except ProviderError:
                     raise
                 except Exception as exc:
+                    if getattr(exc, "transient", False) and not produced and attempt < self.config.max_retries:
+                        delay = _retry_delay(exc, attempt, self.retry_base_delay)
+                        attempt += 1
+                        yield Retrying(attempt, self.config.max_retries, delay, "Copilot 会话令牌刷新暂时不可用")
+                        await asyncio.sleep(delay)
+                        continue
                     raise ProviderError(f"刷新 GitHub Copilot 会话令牌失败：{redact(str(exc))}") from None
             try:
                 async with aclosing(self._stream(messages, system, tools, allow_tools=allow_tools)) as events:

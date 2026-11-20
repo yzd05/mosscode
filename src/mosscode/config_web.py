@@ -218,6 +218,8 @@ if (!SESSION_TOKEN) {{
 }}
 let STATE = null;
 let probeSeq = 0;
+let modelFromDiscovery = false;
+let oauthGen = 0;
 
 async function api(path, opts = {{}}) {{
   const headers = Object.assign({{'X-MossCode-Token': SESSION_TOKEN}}, opts.headers || {{}});
@@ -240,6 +242,10 @@ function setStatus(id, text, kind = '') {{
 
 function resetDiscovered() {{
   probeSeq += 1;
+  if (modelFromDiscovery) {{
+    document.getElementById('f-model').value = '';
+    modelFromDiscovery = false;
+  }}
   const sel = document.getElementById('f-discovered');
   sel.textContent = '';
   const opt = document.createElement('option');
@@ -378,6 +384,7 @@ document.getElementById('f-cred-method').onchange = () => {{
 document.getElementById('f-protocol').onchange = resetDiscovered;
 document.getElementById('f-url').oninput = resetDiscovered;
 document.getElementById('f-secret').oninput = resetDiscovered;
+document.getElementById('f-model').oninput = () => {{ modelFromDiscovery = false; }};
 
 document.getElementById('f-preset').onchange = () => {{
   const key = document.getElementById('f-preset').value;
@@ -389,6 +396,7 @@ document.getElementById('f-preset').onchange = () => {{
   document.getElementById('f-protocol').value = p.protocol;
   document.getElementById('f-url').value = p.base_url || '';
   document.getElementById('f-model').value = p.model;
+  modelFromDiscovery = false;
   document.getElementById('f-cred-method').value = p.auth_type === 'none' ? 'none' : (STATE.keyring_ok ? 'keyring' : 'env');
   if (document.getElementById('f-cred-method').value === 'env') {{
     document.getElementById('f-secret').value = p.api_key_env || '';
@@ -398,7 +406,10 @@ document.getElementById('f-preset').onchange = () => {{
   syncCredInput();
 }};
 document.getElementById('f-discovered').onchange = (e) => {{
-  if (e.target.value) document.getElementById('f-model').value = e.target.value;
+  if (e.target.value) {{
+    document.getElementById('f-model').value = e.target.value;
+    modelFromDiscovery = true;
+  }}
 }};
 
 async function refreshState() {{
@@ -439,6 +450,7 @@ document.getElementById('btn-probe').onclick = async () => {{
       }}
       if (!document.getElementById('f-model').value.trim()) {{
         document.getElementById('f-model').value = models[0];
+        modelFromDiscovery = true;
       }}
     }} else {{
       const opt = document.createElement('option');
@@ -480,18 +492,31 @@ document.getElementById('btn-save').onclick = () => saveForm(false);
 document.getElementById('btn-save-default').onclick = () => saveForm(true);
 
 document.getElementById('btn-or-login').onclick = async () => {{
+  const myGen = ++oauthGen;
   setStatus('oauth-status', '正在启动 OpenRouter PKCE 授权…');
   try {{
     const start = await api('/api/auth/openrouter/start', {{method:'POST', body: JSON.stringify({{set_default:true}})}});
+    if (myGen !== oauthGen) return;
     window.open(start.auth_url, '_blank', 'noopener');
     setStatus('oauth-status', '已打开 OpenRouter 授权页；若未自动打开，请手动访问：\\n' + start.auth_url);
     const deadline = Date.now() + 185000;
+    let sawExchanging = false;
+    let exchangeDeadline = 0;
     const poll = async () => {{
+      if (myGen !== oauthGen) return;
       try {{
         const st = await api('/api/auth/openrouter/status?job=' + encodeURIComponent(start.job_id));
+        if (myGen !== oauthGen) return;
         if (st.status === 'pending') {{
           if (Date.now() < deadline) setTimeout(poll, 1200);
           else setStatus('oauth-status', '! 等待 OpenRouter 授权超时，请重试。', 'err');
+        }} else if (st.status === 'exchanging') {{
+          if (!sawExchanging) {{
+            sawExchanging = true;
+            exchangeDeadline = Date.now() + 60000;
+          }}
+          setStatus('oauth-status', '已收到 OpenRouter 回调，正在交换密钥并保存配置…');
+          setTimeout(poll, 800);
         }} else if (st.status === 'ok') {{
           setStatus('oauth-status', '✓ OpenRouter 登录成功，已保存 Provider ' + st.name, 'ok');
           await refreshState();
@@ -499,7 +524,8 @@ document.getElementById('btn-or-login').onclick = async () => {{
           setStatus('oauth-status', '! ' + (st.error || '登录失败'), 'err');
         }}
       }} catch (err) {{
-        if (err.status === 404 || err.status === 403 || Date.now() >= deadline) {{
+        if (myGen !== oauthGen) return;
+        if (err.status === 404 || err.status === 403 || (!sawExchanging && Date.now() >= deadline) || (sawExchanging && Date.now() >= exchangeDeadline)) {{
           setStatus('oauth-status', '! ' + (err.message || '登录任务已失效'), 'err');
         }} else {{
           setTimeout(poll, 2000);
@@ -508,14 +534,17 @@ document.getElementById('btn-or-login').onclick = async () => {{
     }};
     setTimeout(poll, 1200);
   }} catch (e) {{
+    if (myGen !== oauthGen) return;
     setStatus('oauth-status', e.message, 'err');
   }}
 }};
 
 document.getElementById('btn-cp-login').onclick = async () => {{
+  const myGen = ++oauthGen;
   setStatus('oauth-status', '正在请求 GitHub Copilot 设备码…');
   try {{
     const start = await api('/api/auth/copilot/start', {{method:'POST', body: JSON.stringify({{}})}});
+    if (myGen !== oauthGen) return;
     const box = document.getElementById('oauth-status');
     box.textContent = '';
     box.className = 'status show';
@@ -533,11 +562,13 @@ document.getElementById('btn-cp-login').onclick = async () => {{
     box.append(p1, code, document.createElement('br'), link);
     let intervalMs = Math.max(2000, (start.interval || 5) * 1000);
     const poll = async () => {{
+      if (myGen !== oauthGen) return;
       try {{
         const st = await api('/api/auth/copilot/poll', {{
           method:'POST',
           body: JSON.stringify({{job_id: start.job_id, set_default: true}})
         }});
+        if (myGen !== oauthGen) return;
         if (st.status === 'pending') {{
           setTimeout(poll, intervalMs);
         }} else if (st.status === 'slow_down') {{
@@ -550,11 +581,13 @@ document.getElementById('btn-cp-login').onclick = async () => {{
           setStatus('oauth-status', '! ' + (st.error || '登录失败'), 'err');
         }}
       }} catch (err) {{
+        if (myGen !== oauthGen) return;
         setStatus('oauth-status', '! ' + err.message, 'err');
       }}
     }};
     setTimeout(poll, intervalMs);
   }} catch (e) {{
+    if (myGen !== oauthGen) return;
     setStatus('oauth-status', e.message, 'err');
   }}
 }};
@@ -608,6 +641,7 @@ class ConfigWebServer:
         self._active_or_job_id: str | None = None
         self._or_jobs: dict[str, dict[str, Any]] = {}
         self._cp_jobs: dict[str, tuple[DeviceCodeChallenge, float]] = {}
+        self._cp_in_flight: set[str] = set()
         self._server = self._build_server(port)
         self.port = int(self._server.server_address[1])
         self.allowed_hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
@@ -705,7 +739,7 @@ class ConfigWebServer:
         preset = PRESETS.get(preset_key) if isinstance(preset_key, str) else None
         if preset is not None:
             protocol = preset.protocol
-            if base_url is None and preset.base_url is not None:
+            if base_url is None and preset.base_url is not None and preset.auth_type != "github-copilot":
                 base_url = preset.base_url
         if cred_method == "none":
             auth_type = "none"
@@ -757,13 +791,15 @@ class ConfigWebServer:
             return HTTPStatus.BAD_REQUEST, {"error": "Provider 名称和模型名不能为空。"}
         if cred_method not in {"keyring", "env", "plain", "none"}:
             return HTTPStatus.BAD_REQUEST, {"error": "不支持的凭据保存方式。"}
-        if cred_method == "none" and not is_loopback_url(base_url):
+
+        preset = PRESETS.get(preset_key) if isinstance(preset_key, str) else None
+        effective_url = base_url if base_url is not None else (preset.base_url if preset is not None else None)
+        if cred_method == "none" and not is_loopback_url(effective_url):
             return HTTPStatus.BAD_REQUEST, {"error": "免密钥模式仅允许用于本机回环地址。"}
 
         entry: dict[str, Any] = {"name": name, "model": model}
-        if isinstance(preset_key, str) and preset_key in PRESETS:
-            preset = PRESETS[preset_key]
-            entry["preset"] = preset_key
+        if preset is not None:
+            entry["preset"] = preset.key
             if base_url and base_url != preset.base_url:
                 entry["base_url"] = base_url
         else:
@@ -848,7 +884,7 @@ class ConfigWebServer:
             with self._lock:
                 # Close any previously pending callback servers and revoke their ownership before admitting the new job.
                 for old_job in self._or_jobs.values():
-                    if old_job.get("status") == "pending":
+                    if old_job.get("status") in {"pending", "exchanging"}:
                         if old_job.get("callback") is not None:
                             stale_callbacks.append(old_job["callback"])
                         old_job["status"] = "error"
@@ -865,6 +901,9 @@ class ConfigWebServer:
         def _worker() -> None:
             try:
                 code = asyncio.run(callback.wait_for_code(timeout=180.0))
+                with self._lock:
+                    if job["status"] == "pending":
+                        job["status"] = "exchanging"
                 api_key = asyncio.run(
                     exchange_openrouter_code(code, verifier, callback.callback_url, transport=self.transport)
                 )
@@ -884,7 +923,7 @@ class ConfigWebServer:
                         still_current = (
                             (not self._shutting_down)
                             and self._active_or_job_id == job_id
-                            and job["status"] == "pending"
+                            and job["status"] in {"pending", "exchanging"}
                         )
                     if not still_current:
                         return
@@ -901,13 +940,16 @@ class ConfigWebServer:
             except Exception as exc:
                 with self._lock:
                     # Do not overwrite an already-terminal replaced/shutdown status.
-                    if job["status"] == "pending":
+                    if job["status"] in {"pending", "exchanging"}:
                         job["status"] = "error"
                         job["error"] = redact(str(exc))
             finally:
                 callback.close()
 
-        threading.Thread(target=_worker, name=f"mosscode-or-{job_id[:6]}", daemon=True).start()
+        worker = threading.Thread(target=_worker, name=f"mosscode-or-{job_id[:6]}", daemon=True)
+        with self._lock:
+            job["thread"] = worker
+        worker.start()
         return HTTPStatus.OK, {"job_id": job_id, "auth_url": auth_url}
 
     def _handle_openrouter_status(self, query: str) -> tuple[HTTPStatus, dict[str, Any]]:
@@ -957,63 +999,73 @@ class ConfigWebServer:
         set_default = bool(body.get("set_default", True))
         with self._lock:
             entry = self._cp_jobs.get(job_id)
-        if entry is None:
-            return HTTPStatus.NOT_FOUND, {"error": "未找到对应的设备码登录任务。"}
-        challenge, deadline = entry
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            with self._lock:
-                self._cp_jobs.pop(job_id, None)
-            return HTTPStatus.OK, {"status": "error", "error": "设备码已过期，请重新发起登录。"}
+            if entry is None:
+                return HTTPStatus.NOT_FOUND, {"error": "未找到对应的设备码登录任务。"}
+            if job_id in self._cp_in_flight:
+                # Only one poll may own a Copilot device job at a time so duplicates cannot drop a live session exchange.
+                return HTTPStatus.OK, {"status": "pending"}
+            self._cp_in_flight.add(job_id)
         try:
-            status, value = asyncio.run(
-                poll_copilot_device_token_once(
-                    challenge.device_code,
-                    timeout=min(15.0, remaining),
-                    transport=self.transport,
-                )
-            )
-            if status in {"pending", "slow_down"}:
-                return HTTPStatus.OK, {"status": status}
-            if status == "timeout":
-                # Keep the job active and advise the browser to slow down per RFC 8628.
-                return HTTPStatus.OK, {"status": "slow_down"}
-            if status != "ok" or not value:
+            challenge, deadline = entry
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 with self._lock:
                     self._cp_jobs.pop(job_id, None)
-                return HTTPStatus.OK, {"status": "error", "error": value or "授权失败。"}
-            _, expires_at, endpoint = asyncio.run(exchange_copilot_session_token_async(value, transport=self.transport))
-            from .auth import COPILOT_DEFAULT_MODEL, COPILOT_HEADERS, OAuthLoginResult
+                return HTTPStatus.OK, {"status": "error", "error": "设备码已过期，请重新发起登录。"}
+            try:
+                status, value = asyncio.run(
+                    poll_copilot_device_token_once(
+                        challenge.device_code,
+                        timeout=min(15.0, remaining),
+                        transport=self.transport,
+                    )
+                )
+                if status in {"pending", "slow_down"}:
+                    return HTTPStatus.OK, {"status": status}
+                if status == "timeout":
+                    # Keep the job active and advise the browser to slow down per RFC 8628.
+                    return HTTPStatus.OK, {"status": "slow_down"}
+                if status != "ok" or not value:
+                    with self._lock:
+                        self._cp_jobs.pop(job_id, None)
+                    return HTTPStatus.OK, {"status": "error", "error": value or "授权失败。"}
+                _, expires_at, endpoint = asyncio.run(
+                    exchange_copilot_session_token_async(value, transport=self.transport)
+                )
+                from .auth import COPILOT_DEFAULT_MODEL, COPILOT_HEADERS, OAuthLoginResult
 
-            result = OAuthLoginResult(
-                provider_key="copilot",
-                preset="copilot",
-                credential=value,
-                auth_type="github-copilot",
-                default_model=COPILOT_DEFAULT_MODEL,
-                base_url=endpoint,
-                headers=COPILOT_HEADERS,
-                expires_at=expires_at,
-            )
-            with self._commit_lock:
-                with self._lock:
-                    still_valid = (not self._shutting_down) and (job_id in self._cp_jobs)
-                if not still_valid:
-                    return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭，未写入配置。"}
-                _, saved_name = persist_oauth_result(
-                    result,
-                    home=self.home,
-                    set_default=set_default,
-                    vault=self.vault,
-                    config_path=self.config_path,
+                result = OAuthLoginResult(
+                    provider_key="copilot",
+                    preset="copilot",
+                    credential=value,
+                    auth_type="github-copilot",
+                    default_model=COPILOT_DEFAULT_MODEL,
+                    base_url=endpoint,
+                    headers=COPILOT_HEADERS,
+                    expires_at=expires_at,
                 )
+                with self._commit_lock:
+                    with self._lock:
+                        still_valid = (not self._shutting_down) and (job_id in self._cp_jobs)
+                    if not still_valid:
+                        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "配置服务正在关闭，未写入配置。"}
+                    _, saved_name = persist_oauth_result(
+                        result,
+                        home=self.home,
+                        set_default=set_default,
+                        vault=self.vault,
+                        config_path=self.config_path,
+                    )
+                    with self._lock:
+                        self._cp_jobs.pop(job_id, None)
+                return HTTPStatus.OK, {"status": "ok", "name": saved_name}
+            except AuthError as exc:
                 with self._lock:
                     self._cp_jobs.pop(job_id, None)
-            return HTTPStatus.OK, {"status": "ok", "name": saved_name}
-        except AuthError as exc:
+                return HTTPStatus.OK, {"status": "error", "error": str(exc)}
+        finally:
             with self._lock:
-                self._cp_jobs.pop(job_id, None)
-            return HTTPStatus.OK, {"status": "error", "error": str(exc)}
+                self._cp_in_flight.discard(job_id)
 
     def _begin_shutdown(self) -> None:
         """Fence all in-flight and pending OAuth/config commits before acknowledging shutdown."""
@@ -1025,7 +1077,7 @@ class ConfigWebServer:
                 for job in self._or_jobs.values():
                     if job.get("callback") is not None:
                         callbacks.append(job["callback"])
-                    if job.get("status") == "pending":
+                    if job.get("status") in {"pending", "exchanging"}:
                         job["status"] = "error"
                         job["error"] = "配置服务已关闭。"
                 self._cp_jobs.clear()
@@ -1214,8 +1266,10 @@ class ConfigWebServer:
                     return
                 if path == "/api/shutdown":
                     parent._begin_shutdown()
-                    self._send_json(HTTPStatus.OK, {"ok": True})
-                    parent._stop_event.set()
+                    try:
+                        self._send_json(HTTPStatus.OK, {"ok": True})
+                    finally:
+                        parent._stop_event.set()
                     return
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "未找到请求的接口。"})
 
@@ -1229,8 +1283,15 @@ class ConfigWebServer:
         with self._lock:
             if self._started or self._closed:
                 return self
+            try:
+                self._thread.start()
+            except BaseException:
+                self._closed = True
+                self._stop_event.set()
+                with suppress(Exception):
+                    self._server.server_close()
+                raise
             self._started = True
-        self._thread.start()
         return self
 
     def wait_until_stopped(self) -> None:

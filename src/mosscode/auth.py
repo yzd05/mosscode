@@ -56,6 +56,10 @@ AUTH_PROVIDERS: dict[str, str] = {
 class AuthError(Exception):
     """User-facing OAuth/authentication failure with secrets stripped."""
 
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
+
 
 @dataclass(frozen=True)
 class OAuthLoginResult:
@@ -275,8 +279,15 @@ class LoopbackCallbackServer:
         with self._lock:
             if self._started or self._closed:
                 return self
+            try:
+                self._thread.start()
+            except BaseException:
+                self._closed = True
+                self._notify_waiters_locked()
+                with suppress(Exception):
+                    self._server.server_close()
+                raise
             self._started = True
-        self._thread.start()
         return self
 
     def close(self) -> None:
@@ -592,6 +603,8 @@ def _parse_copilot_session_response(
         raise AuthError(
             f"GitHub Copilot 令牌交换失败（HTTP {status_code}）：请确认当前 GitHub 账号已开通 GitHub Copilot 订阅，或重新运行 moss login copilot。"
         )
+    if status_code == 429 or status_code >= 500:
+        raise AuthError(f"GitHub Copilot 令牌交换暂时不可用（HTTP {status_code}）。", transient=True)
     if status_code != 200:
         raise AuthError(f"GitHub Copilot 令牌交换失败（HTTP {status_code}）。")
     if not isinstance(payload, dict):
@@ -644,7 +657,12 @@ def exchange_copilot_session_token(
                 },
             )
     except httpx.TimeoutException:
-        raise AuthError("获取 GitHub Copilot 会话令牌超时，请检查网络。") from None
+        raise AuthError("获取 GitHub Copilot 会话令牌超时，请检查网络。", transient=True) from None
+    except httpx.TransportError as exc:
+        raise AuthError(
+            f"获取 GitHub Copilot 会话令牌连接失败：{_safe_error_text(exc, github_token)}",
+            transient=True,
+        ) from None
     except Exception as exc:
         raise AuthError(f"获取 GitHub Copilot 会话令牌失败：{_safe_error_text(exc, github_token)}") from None
     try:
@@ -675,7 +693,12 @@ async def exchange_copilot_session_token_async(
                 },
             )
     except httpx.TimeoutException:
-        raise AuthError("获取 GitHub Copilot 会话令牌超时，请检查网络。") from None
+        raise AuthError("获取 GitHub Copilot 会话令牌超时，请检查网络。", transient=True) from None
+    except httpx.TransportError as exc:
+        raise AuthError(
+            f"获取 GitHub Copilot 会话令牌连接失败：{_safe_error_text(exc, github_token)}",
+            transient=True,
+        ) from None
     except Exception as exc:
         raise AuthError(f"获取 GitHub Copilot 会话令牌失败：{_safe_error_text(exc, github_token)}") from None
     try:
@@ -718,7 +741,16 @@ class CopilotTokenManager:
                 cached = self._cache.get(key)
                 if cached is not None and now() < cached[1] - self._refresh_margin:
                     return cached[0]
-            token, expires_at, endpoint = exchange(github_token)
+            try:
+                token, expires_at, endpoint = exchange(github_token)
+            except AuthError as exc:
+                if exc.transient and cached is not None and now() < cached[1]:
+                    # Keep serving the unexpired session for the same GitHub credential on transient network/5xx faults.
+                    return cached[0]
+                if not exc.transient:
+                    with self._lock:
+                        self._cache.pop(key, None)
+                raise
             with self._lock:
                 self._cache[key] = (token, expires_at, endpoint)
             return token

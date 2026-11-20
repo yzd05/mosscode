@@ -91,10 +91,24 @@ def test_pkce_pair_and_auth_url_follow_rfc7636():
     assert qs["callback_url"] == ["http://127.0.0.1:43210/callback/abc"]
 
 
-async def test_loopback_callback_server_security_single_use_and_close_before_start():
+async def test_loopback_callback_server_security_single_use_and_close_before_start(monkeypatch):
     # Closing without starting must not hang and must release the bound socket.
     unstarted = LoopbackCallbackServer()
-    unstarted.close()
+    closer = threading.Thread(target=unstarted.close, daemon=True)
+    closer.start()
+    closer.join(timeout=5.0)
+    assert not closer.is_alive(), "close() must not block before start()"
+
+    # If thread startup raises, _started stays False, the socket closes, and a later close() never deadlocks.
+    failed = LoopbackCallbackServer()
+    monkeypatch.setattr(failed._thread, "start", lambda: (_ for _ in ()).throw(RuntimeError("thread boom")))
+    with pytest.raises(RuntimeError, match="thread boom"):
+        failed.start()
+    assert not failed._started and failed._closed
+    closer2 = threading.Thread(target=failed.close, daemon=True)
+    closer2.start()
+    closer2.join(timeout=5.0)
+    assert not closer2.is_alive(), "close() must not block after failed start()"
 
     with LoopbackCallbackServer() as cb:
         # DNS-rebinding Host header is rejected with 403.
@@ -162,11 +176,16 @@ async def test_openrouter_pkce_full_login_uses_documented_keys_exchange_endpoint
     assert result.provider_key == "openrouter"
     assert result.preset == "openrouter"
     assert result.credential == "or-live-secret-key-987654"
-    assert seen_payloads[-1] == {
-        "code": "valid_pkce_code",
-        "code_verifier": seen_payloads[-1]["code_verifier"],
-        "code_challenge_method": "S256",
-    }
+    captured_qs = urllib.parse.parse_qs(urllib.parse.urlsplit(opened_urls[0]).query)
+    recomputed_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(seen_payloads[-1]["code_verifier"].encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    assert recomputed_challenge == captured_qs["code_challenge"][0]
+    assert seen_payloads[-1]["code"] == "valid_pkce_code"
+    assert seen_payloads[-1]["code_challenge_method"] == "S256"
+    assert set(seen_payloads[-1]) == {"code", "code_verifier", "code_challenge_method"}
 
 
 # ---------------------------------------------------------------------------
@@ -336,9 +355,30 @@ def test_copilot_token_manager_caches_and_refreshes_near_expiry():
     clock[0] = 1400.0
     assert mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=fake_exchange) == "session-1"
     assert calls == 1
-    clock[0] = 1500.0
+
+    # Transient failure during proactive early refresh reuses the still-unexpired session for the same token.
+    clock[0] = 1500.0  # 100s left (< 120s margin, still unexpired before 1600.0)
+
+    def transient_fail(_gh: str) -> tuple[str, float, str]:
+        raise AuthError("timeout", transient=True)
+
+    assert mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=transient_fail) == "session-1"
+
+    # Non-transient auth rejection (e.g. 401/403) MUST NOT reuse the cached session and invalidates it.
+    def auth_fail(_gh: str) -> tuple[str, float, str]:
+        raise AuthError("unauthorized", transient=False)
+
+    with pytest.raises(AuthError, match="unauthorized"):
+        mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=auth_fail)
+
+    # Next healthy exchange repopulates the cache cleanly.
     assert mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=fake_exchange) == "session-2"
     assert calls == 2
+
+    # Once actually expired, a transient failure cannot reuse the expired token.
+    clock[0] = 2200.0
+    with pytest.raises(AuthError, match="timeout"):
+        mgr.get_session_token("ghu_abc12345", now=lambda: clock[0], exchange=transient_fail)
 
 
 async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_retry_loop(tmp_path, monkeypatch):
@@ -372,6 +412,37 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
         transport=httpx.MockTransport(lambda _r: pytest.fail("must not send network request")),
     )
     assert not untrusted_probe.ok and "githubcopilot.com" in untrusted_probe.error
+
+    # Header-only Copilot probe with base_url=None and api_key=None MUST NOT fall through to api.openai.com.
+    header_only_probe = await probe_provider(
+        "openai-chat-completions",
+        None,
+        None,
+        auth_type="github-copilot",
+        headers={"Authorization": "Bearer caller-secret-header"},
+        transport=httpx.MockTransport(lambda _r: pytest.fail("must not send header-only Copilot probe to default URL")),
+    )
+    assert not header_only_probe.ok and "githubcopilot.com" in header_only_probe.error
+
+    # Credential-bearing loopback probes must disable env proxy routing (trust_env=False).
+    seen_trust_env: list[bool] = []
+    real_async_client = httpx.AsyncClient
+
+    class RecordingAsyncClient(real_async_client):
+        def __init__(self, *args, **kwargs):
+            seen_trust_env.append(bool(kwargs.get("trust_env", True)))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", RecordingAsyncClient)
+    loopback_res = await probe_provider(
+        "openai-chat-completions",
+        "http://127.0.0.1:11434/v1",
+        "local-key-123456",
+        auth_type="api_key",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(200, json={"data": [{"id": "llama3.1"}]})),
+    )
+    assert loopback_res.ok and seen_trust_env == [False]
+    monkeypatch.setattr(httpx, "AsyncClient", real_async_client)
 
     # Probe with base_url=None uses the exchange-returned Copilot endpoint, never api.openai.com.
     def probe_handler(request: httpx.Request) -> httpx.Response:
@@ -432,6 +503,38 @@ async def test_copilot_probe_enforces_destination_and_stream_refreshes_inside_re
     events = [ev async for ev in sdk.stream([], "sys")]
     assert seen_keys == ["session-attempt-1", "session-attempt-2"]
     assert events[-1] == "used:session-attempt-2"
+
+    # Real Copilot SDK client disables redirects so session tokens cannot be forwarded to unapproved hosts.
+    monkeypatch.setattr(copilot_token_manager, "get_session_token", lambda _gh: "tid=live_session_no_redirect")
+    real_sdk = ChatCompletionsProvider(prov_cfg)
+    try:
+        assert real_sdk._owned_http_client is not None
+        assert real_sdk._owned_http_client.follow_redirects is False
+    finally:
+        await real_sdk.close()
+    assert real_sdk._owned_http_client.is_closed
+
+    # Transient refresh failure when no unexpired cache exists retries cleanly inside stream().
+    refresh_attempts = 0
+
+    def flaky_refresh(_gh: str) -> str:
+        nonlocal refresh_attempts
+        refresh_attempts += 1
+        if refresh_attempts == 1:
+            raise AuthError("temporary exchange timeout", transient=True)
+        return "session-after-transient-refresh"
+
+    monkeypatch.setattr(copilot_token_manager, "get_session_token", flaky_refresh)
+    sdk2 = ChatCompletionsProvider(prov_cfg, client=fake_client)
+    sdk2.retry_base_delay = 0.0
+
+    async def ok_stream(*args, **kwargs):
+        yield f"ok:{fake_client.api_key}"
+
+    sdk2._stream = ok_stream  # type: ignore[method-assign]
+    events2 = [ev async for ev in sdk2.stream([], "sys")]
+    assert refresh_attempts == 2
+    assert events2[-1] == "ok:session-after-transient-refresh"
 
 
 # ---------------------------------------------------------------------------
@@ -536,10 +639,12 @@ def test_config_command_web_shuts_down_even_when_browser_opener_blocks(tmp_path)
 
     release_browser = threading.Event()
     browser_started = threading.Event()
+    browser_exited = threading.Event()
 
     def blocking_browser(url: str) -> None:
         browser_started.set()
         release_browser.wait(timeout=5.0)
+        browser_exited.set()
 
     out: list[str] = []
     try:
@@ -551,6 +656,7 @@ def test_config_command_web_shuts_down_even_when_browser_opener_blocks(tmp_path)
         )
         assert rc == 0
         assert browser_started.is_set()
+        assert not browser_exited.is_set(), "config_main must return while browser opener is still blocked"
     finally:
         release_browser.set()
 
@@ -563,7 +669,10 @@ def test_config_command_web_shuts_down_even_when_browser_opener_blocks(tmp_path)
 def test_config_web_server_security_boundaries_and_full_api(tmp_path):
     # Closing before start() must not hang and must release the bound socket.
     unstarted = ConfigWebServer(home=tmp_path)
-    unstarted.close()
+    closer = threading.Thread(target=unstarted.close, daemon=True)
+    closer.start()
+    closer.join(timeout=5.0)
+    assert not closer.is_alive(), "close() must not block before start()"
 
     stored: dict[str, str] = {}
 
@@ -587,8 +696,15 @@ def test_config_web_server_security_boundaries_and_full_api(tmp_path):
         if url == "https://api.deepseek.com/models":
             return httpx.Response(200, json={"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]})
         if url == "https://api.github.com/copilot_internal/v2/token":
-            return httpx.Response(200, json={"token": "tid=web_session_999", "expires_at": int(time.time()) + 1800})
-        if url == "https://api.githubcopilot.com/models":
+            return httpx.Response(
+                200,
+                json={
+                    "token": "tid=web_session_999",
+                    "expires_at": int(time.time()) + 1800,
+                    "endpoints": {"api": "https://api.enterprise.githubcopilot.com"},
+                },
+            )
+        if url == "https://api.enterprise.githubcopilot.com/models":
             assert request.headers.get("Authorization") == "Bearer tid=web_session_999"
             return httpx.Response(200, json={"data": [{"id": "gpt-4.1"}]})
         if url == "https://github.com/login/device/code":
@@ -759,7 +875,41 @@ def test_config_web_server_security_boundaries_and_full_api(tmp_path):
         assert st_cp_probe == 200
         assert json.loads(body_cp_probe)["models"] == ["gpt-4.1"]
 
-        # 8. Save provider via /api/providers -> stored in keyring, never leaked in /api/state.
+        # 8. Save preset Ollama with blank URL falls back to preset loopback URL (while remote none URL is rejected).
+        st_ollama_bad, _, _ = _http_req(
+            srv.port,
+            "POST",
+            "/api/providers",
+            headers=auth_hdrs,
+            body=json.dumps(
+                {
+                    "preset": "ollama",
+                    "name": "ollama-bad",
+                    "base_url": "https://remote.example.com/v1",
+                    "model": "llama3.1",
+                    "cred_method": "none",
+                }
+            ).encode("utf-8"),
+        )
+        assert st_ollama_bad == 400
+        st_ollama_ok, _, body_ollama_ok = _http_req(
+            srv.port,
+            "POST",
+            "/api/providers",
+            headers=auth_hdrs,
+            body=json.dumps(
+                {
+                    "preset": "ollama",
+                    "name": "ollama",
+                    "base_url": "",
+                    "model": "llama3.1",
+                    "cred_method": "none",
+                }
+            ).encode("utf-8"),
+        )
+        assert st_ollama_ok == 200 and json.loads(body_ollama_ok)["name"] == "ollama"
+
+        # 8b. Save provider via /api/providers -> stored in keyring, never leaked in /api/state.
         st_save, _, body_save = _http_req(
             srv.port,
             "POST",
@@ -856,6 +1006,12 @@ def test_config_web_superseded_openrouter_job_cannot_commit_after_replacement(tm
         assert _http_req(cb_a.port or 80, "GET", f"{cb_a.path}?code=code_a")[0] == 200
         assert exchange_a_entered.wait(timeout=5.0)
 
+        # While job A is exchanging the code, status reports "exchanging" (distinguished from "pending").
+        _, _, st_a_ex_raw = _http_req(
+            srv.port, "GET", f"/api/auth/openrouter/status?job={job_a['job_id']}", headers=auth_hdrs
+        )
+        assert json.loads(st_a_ex_raw)["status"] == "exchanging"
+
         # Start replacement job B while job A is mid-exchange.
         st_b, _, body_b = _http_req(
             srv.port, "POST", "/api/auth/openrouter/start", headers=auth_hdrs, body=b'{"set_default":true}'
@@ -867,7 +1023,7 @@ def test_config_web_superseded_openrouter_job_cannot_commit_after_replacement(tm
         )
         assert _http_req(cb_b.port or 80, "GET", f"{cb_b.path}?code=code_b")[0] == 200
 
-        # Wait for job B to finish committing, then release superseded job A.
+        # Wait for job B to finish committing, then release superseded job A and wait deterministically for its worker.
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             _, _, st_raw = _http_req(
@@ -878,8 +1034,10 @@ def test_config_web_superseded_openrouter_job_cannot_commit_after_replacement(tm
             time.sleep(0.05)
         assert stored == {"openrouter": "or-fresh-key-from-job-b"}
 
+        worker_a = srv._or_jobs[job_a["job_id"]]["thread"]
         release_a.set()
-        time.sleep(0.15)
+        worker_a.join(timeout=5.0)
+        assert not worker_a.is_alive(), "superseded job A worker must finish promptly"
         # Superseded job A must NOT have persisted its key or overwritten its replaced status.
         assert stored == {"openrouter": "or-fresh-key-from-job-b"}
         _, _, st_a_raw = _http_req(
@@ -887,6 +1045,90 @@ def test_config_web_superseded_openrouter_job_cannot_commit_after_replacement(tm
         )
         st_a_json = json.loads(st_a_raw)
         assert st_a_json["status"] == "error" and "取代" in st_a_json["error"]
+
+
+def test_config_web_copilot_poll_rejects_duplicate_concurrent_poll_without_dropping_job(tmp_path):
+    stored: dict[str, str] = {}
+    exchange_entered = threading.Event()
+    release_exchange = threading.Event()
+    token_poll_calls = 0
+
+    class MemoryVault:
+        def problem(self):
+            return None
+
+        def exists(self, name: str) -> bool:
+            return name in stored
+
+        def store(self, name: str, secret: str) -> None:
+            stored[name] = secret
+
+        def delete(self, name: str) -> None:
+            stored.pop(name, None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal token_poll_calls
+        url = str(request.url)
+        if url == "https://github.com/login/device/code":
+            return httpx.Response(
+                200,
+                json={
+                    "device_code": "dup_dev_code",
+                    "user_code": "DUP1-2345",
+                    "verification_uri": "https://github.com/login/device",
+                    "expires_in": 300,
+                    "interval": 5,
+                },
+            )
+        if url == "https://github.com/login/oauth/access_token":
+            token_poll_calls += 1
+            if token_poll_calls > 1:
+                return httpx.Response(200, json={"error": "expired_token"})
+            return httpx.Response(200, json={"access_token": "ghu_single_flight_secret"})
+        if url == "https://api.github.com/copilot_internal/v2/token":
+            exchange_entered.set()
+            assert release_exchange.wait(timeout=5.0)
+            return httpx.Response(200, json={"token": "tid=single_flight_sess", "expires_at": int(time.time()) + 1800})
+        return httpx.Response(404)
+
+    with ConfigWebServer(home=tmp_path, vault=MemoryVault(), transport=httpx.MockTransport(handler)) as srv:
+        auth_hdrs = {"Authorization": f"Bearer {srv.boot_token}", "Origin": f"http://127.0.0.1:{srv.port}"}
+        st_start, _, body_start = _http_req(srv.port, "POST", "/api/auth/copilot/start", headers=auth_hdrs, body=b"{}")
+        assert st_start == 200
+        job_id = json.loads(body_start)["job_id"]
+
+        poll_a_res: list[tuple[int, dict]] = []
+
+        def run_poll_a() -> None:
+            st, _, body = _http_req(
+                srv.port,
+                "POST",
+                "/api/auth/copilot/poll",
+                headers=auth_hdrs,
+                body=json.dumps({"job_id": job_id, "set_default": True}).encode("utf-8"),
+            )
+            poll_a_res.append((st, json.loads(body)))
+
+        t_a = threading.Thread(target=run_poll_a, daemon=True)
+        t_a.start()
+        try:
+            assert exchange_entered.wait(timeout=5.0)
+            # Duplicate poll while poll A is exchanging must return pending without calling GitHub or dropping the job.
+            st_dup, _, body_dup = _http_req(
+                srv.port,
+                "POST",
+                "/api/auth/copilot/poll",
+                headers=auth_hdrs,
+                body=json.dumps({"job_id": job_id, "set_default": True}).encode("utf-8"),
+            )
+            assert st_dup == 200 and json.loads(body_dup) == {"status": "pending"}
+            assert token_poll_calls == 1
+        finally:
+            release_exchange.set()
+            t_a.join(timeout=5.0)
+        assert not t_a.is_alive()
+        assert poll_a_res == [(200, {"status": "ok", "name": "copilot"})]
+        assert stored == {"copilot": "ghu_single_flight_secret"}
 
 
 # ---------------------------------------------------------------------------
@@ -978,10 +1220,12 @@ async def test_tui_connect_oauth_openrouter_blocking_browser_cancel_and_oserror(
 
     release_browser = threading.Event()
     browser_called = threading.Event()
+    browser_exited = threading.Event()
 
     def blocking_browser(_url: str) -> None:
         browser_called.set()
         release_browser.wait(timeout=5.0)
+        browser_exited.set()
 
     try:
         async with app.run_test(size=(100, 32)) as pilot:
@@ -995,17 +1239,18 @@ async def test_tui_connect_oauth_openrouter_blocking_browser_cancel_and_oserror(
             assert app._connect_step == "source"
             assert "拒绝明文保存" in str(app._connect_status_text)
 
-            # 2. Blocking browser opener runs off-loop so Esc cancellation still responds immediately.
+            # 2. Blocking browser opener runs off-loop so Esc cancellation returns while the opener is still blocked.
             app._connect_vault = WorkingVault()
             app._oauth_provider_factory = lambda _key: BlockingCancelOAuthProvider()
             app._oauth_browser_opener = blocking_browser
             await app._handle_connect_option(or_idx)
             await pilot.pause()
-            assert browser_called.wait(timeout=2.0)
+            assert await asyncio.to_thread(browser_called.wait, 2.0)
             assert app._connect_step == "oauth_waiting"
             await pilot.press("escape")
             await pilot.pause()
             assert app._connect_step == "source"
+            assert not browser_exited.is_set(), "Esc must cancel OAuth before the blocking browser opener exits"
 
             # 3. Loopback listener OSError shows login-failure screen rather than crashing Textual.
             app._oauth_provider_factory = lambda _key: BindFailOAuthProvider()

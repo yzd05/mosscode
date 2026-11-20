@@ -26,7 +26,9 @@ from .redaction import (
 
 
 class ConfigError(ValueError):
-    pass
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 ALIASES = {
@@ -128,7 +130,7 @@ class ProviderConfig:
             try:
                 return copilot_token_manager.get_session_token(github_token)
             except AuthError as exc:
-                raise ConfigError(f"{self.name}：{exc}") from None
+                raise ConfigError(f"{self.name}：{exc}", transient=exc.transient) from None
         _validate_env_name(self.api_key_env)
         value = _stored(self.api_key_env, self.api_key_keyring, self.api_key, self.name)
         if not value:
