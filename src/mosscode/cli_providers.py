@@ -4,14 +4,17 @@ Invokes allow-listed vendor CLIs via their documented headless JSON-streaming su
 so users can reuse existing official CLI subscriptions without reading or copying private OAuth tokens.
 
 Security and isolation guarantees:
-- Executables are resolved exclusively from explicit absolute directories on `PATH` (never CWD).
-- Vendor-side tool/MCP/write restrictions are enforced via CLI flags (`--tools ""` + `--strict-mcp-config`
-  for Claude, `--sandbox read-only` for Codex, `--approval-mode plan` + a deny-all `--policy` TOML for
-  Gemini), backed by a cached capability preflight that fails closed on unsupported CLI versions.
-- Inherited vendor API-key / cloud-routing environment variables are scrubbed per backend so billing
-  cannot silently switch from the user's CLI subscription to pay-as-you-go API keys.
-- Subprocess trees are tracked independently of leader exit and torn down on completion, timeout, or
-  cancellation (Windows kill-on-close Job Object with descendant capture; POSIX process groups).
+- Executables are resolved exclusively from explicit absolute directories on `PATH` (never CWD), and on
+  Windows only directly launchable executable/batch extensions (`.com`, `.exe`, `.bat`, `.cmd`) are accepted.
+- Vendor-side tool/MCP/hook/write restrictions are enforced via CLI flags (`--tools ""`, `--strict-mcp-config`,
+  and `--setting-sources user` for Claude; `--sandbox read-only` for Codex; `--approval-mode plan` + a
+  deny-all `--policy` TOML for Gemini), backed by a bounded capability preflight that fails closed on
+  unsupported CLI versions.
+- Inherited vendor API-key / cloud-routing environment variables are scrubbed per backend, and loaded Claude
+  settings files are checked before launch so API keys or cloud selectors cannot silently override the
+  user's CLI subscription billing route.
+- Subprocess trees are tracked independently of leader exit and only marked clean once termination is
+  confirmed (Windows kill-on-close Job Object with descendant capture; POSIX process groups).
 """
 
 from __future__ import annotations
@@ -23,8 +26,9 @@ import re
 import secrets
 import signal
 import subprocess
+import sys
 import tempfile
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -90,9 +94,14 @@ _CLAUDE_SCRUB_EXACT = frozenset(
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_CUSTOM_HEADERS",
         "ANTHROPIC_FOUNDRY_API_KEY",
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "ANTHROPIC_FOUNDRY_RESOURCE",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "ANTHROPIC_VERTEX_PROJECT_ID",
     }
 )
 _CLAUDE_SCRUB_PREFIXES = ("CLAUDE_CODE_USE_",)
+_CLAUDE_SETTINGS_BLOCKED_KEYS = ("apiKeyHelper", "awsAuthRefresh", "awsCredentialExport")
 _CODEX_SCRUB_EXACT = frozenset(
     {
         "OPENAI_API_KEY",
@@ -110,9 +119,13 @@ _GEMINI_SCRUB_EXACT = frozenset(
     }
 )
 
-# Required CLI flags verified by capability preflight so older CLIs that lack tool/MCP/write restrictions fail closed.
+# Windows launcher extensions that `CreateProcessW` / `subprocess` can run directly without an external interpreter.
+_WINDOWS_DIRECT_LAUNCH_EXTS: tuple[str, ...] = (".com", ".exe", ".bat", ".cmd")
+_WINDOWS_DIRECT_LAUNCH_SET: frozenset[str] = frozenset(_WINDOWS_DIRECT_LAUNCH_EXTS)
+
+# Required CLI flags verified by capability preflight so older CLIs lacking tool/MCP/hook/write isolation fail closed.
 _REQUIRED_HELP_ARGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "cli-claude": (("--help",), ("--tools", "--strict-mcp-config")),
+    "cli-claude": (("--help",), ("--tools", "--strict-mcp-config", "--setting-sources")),
     "cli-codex": (("exec", "--help"), ("--json", "--sandbox")),
     "cli-gemini": (("--help",), ("--approval-mode", "--policy")),
 }
@@ -120,6 +133,8 @@ _REQUIRED_HELP_ARGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 MAX_LINE_BYTES = 16 * 1024 * 1024
 MAX_TOOL_ENVELOPE_CHARS = 512 * 1024
 MAX_STDERR_BYTES = 16 * 1024
+MAX_HELP_BYTES = 256 * 1024
+MAX_CLEANUP_ATTEMPTS = 3
 READ_CHUNK_BYTES = 64 * 1024
 UNSUPPORTED_IMAGE = "当前模型不支持图片，已省略"
 _CAPABILITY_CACHE: dict[tuple[str, str, int, int], str | None] = {}
@@ -142,6 +157,22 @@ def is_valid_cli_model(model: str) -> bool:
     return isinstance(model, str) and bool(CLI_MODEL_RE.fullmatch(model))
 
 
+def _windows_candidate_names(binary: str, pathext_env: str | None = None) -> list[str]:
+    """Return directly launchable Windows executable candidates, skipping interpreter-only scripts (e.g. `.ps1`)."""
+    suffix = Path(binary).suffix.lower()
+    if suffix:
+        return [binary] if suffix in _WINDOWS_DIRECT_LAUNCH_SET else []
+    raw_ext = os.environ.get("PATHEXT", ";".join(_WINDOWS_DIRECT_LAUNCH_EXTS)) if pathext_env is None else pathext_env
+    exts: list[str] = []
+    for item in raw_ext.split(";"):
+        ext = item.strip().lower()
+        if ext in _WINDOWS_DIRECT_LAUNCH_SET and ext not in exts:
+            exts.append(ext)
+    if not exts:
+        exts = list(_WINDOWS_DIRECT_LAUNCH_EXTS)
+    return [f"{binary}{ext}" for ext in exts]
+
+
 def resolve_cli_executable(
     binary: str,
     *,
@@ -154,25 +185,22 @@ def resolve_cli_executable(
     raw_path = os.environ.get("PATH", "") if path_env is None else path_env
     if not raw_path:
         return None
-    if os.name == "nt":
-        raw_ext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD") if pathext_env is None else pathext_env
-        exts = [ext.lower() for ext in raw_ext.split(os.pathsep) if ext.strip()]
-        if not exts:
-            exts = [".com", ".exe", ".bat", ".cmd"]
-        lower_bin = binary.lower()
-        candidates = [binary] if any(lower_bin.endswith(ext) for ext in exts) else [binary + ext for ext in exts]
-    else:
-        candidates = [binary]
+    candidates = _windows_candidate_names(binary, pathext_env) if os.name == "nt" else [binary]
+    if not candidates:
+        return None
 
     for entry in raw_path.split(os.pathsep):
         cleaned = entry.strip().strip('"')
-        if not cleaned or not Path(cleaned).is_absolute():
+        if not cleaned:
+            continue
+        dir_path = Path(cleaned)
+        if not dir_path.is_absolute():
             continue
         for name in candidates:
-            full = os.path.join(cleaned, name)
+            candidate = dir_path / name
             try:
-                if os.path.isfile(full) and (os.name == "nt" or os.access(full, os.X_OK)):
-                    return os.path.abspath(full)
+                if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+                    return str(Path(os.path.abspath(candidate)))
             except OSError:
                 continue
     return None
@@ -224,6 +252,8 @@ def build_cli_argv(
             "--tools",
             "",
             "--strict-mcp-config",
+            "--setting-sources",
+            "user",
             "--model",
             model,
         ]
@@ -274,6 +304,95 @@ def _cli_env(protocol: str) -> dict[str, str]:
         env[key] = value
     env.setdefault("NO_COLOR", "1")
     return env
+
+
+def _claude_settings_paths(env: Mapping[str, str]) -> list[Path]:
+    """Return user and managed Claude settings files read when `--setting-sources user` is active."""
+    raw_dir = env.get("CLAUDE_CONFIG_DIR", "").strip()
+    user_root = Path(raw_dir).expanduser() if raw_dir else Path.home() / ".claude"
+    paths = [user_root / "settings.json"]
+    if sys.platform == "darwin":
+        paths.append(Path("/Library/Application Support/ClaudeCode/managed-settings.json"))
+    elif os.name == "nt":
+        for root_var, default_root in (("ProgramFiles", r"C:\Program Files"), ("ProgramData", r"C:\ProgramData")):
+            root = env.get(root_var) or os.environ.get(root_var) or default_root
+            candidate = Path(root) / "ClaudeCode" / "managed-settings.json"
+            if candidate not in paths:
+                paths.append(candidate)
+    else:
+        paths.append(Path("/etc/claude-code/managed-settings.json"))
+    return paths
+
+
+def _is_truthy_selector(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _check_claude_settings_billing(
+    env: Mapping[str, str],
+    *,
+    settings_paths: Sequence[Path] | None = None,
+) -> None:
+    """Fail closed if loaded Claude settings files configure API-key or cloud billing overrides."""
+    paths = _claude_settings_paths(env) if settings_paths is None else settings_paths
+    for path in paths:
+        try:
+            raw_text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError) as exc:
+            raise ProviderError(
+                f"无法读取 Claude Code 配置文件 {path} 以校验计费路由（{redact(str(exc))}），已拒绝启动 cli-claude。"
+            ) from None
+        try:
+            data = json.loads(raw_text)
+        except ValueError:
+            raise ProviderError(
+                f"Claude Code 配置文件 {path} 不是合法的 JSON，无法确认是否覆盖订阅计费路由，已拒绝启动 cli-claude。"
+            ) from None
+        if not isinstance(data, dict):
+            raise ProviderError(
+                f"Claude Code 配置文件 {path} 根节点必须是 JSON 对象，无法确认计费路由安全，已拒绝启动 cli-claude。"
+            )
+
+        blocked: list[str] = []
+        for key in _CLAUDE_SETTINGS_BLOCKED_KEYS:
+            val = data.get(key)
+            if val is not None and (not isinstance(val, str) or val.strip() != ""):
+                blocked.append(key)
+        login_method = data.get("forceLoginMethod")
+        if isinstance(login_method, str) and login_method.strip() and login_method.strip().lower() != "claudeai":
+            blocked.append("forceLoginMethod")
+        elif login_method is not None and not isinstance(login_method, str):
+            blocked.append("forceLoginMethod")
+
+        raw_env = data.get("env")
+        if raw_env is not None:
+            if not isinstance(raw_env, dict):
+                raise ProviderError(
+                    f"Claude Code 配置文件 {path} 的 env 字段格式无效，无法确认计费路由安全，已拒绝启动 cli-claude。"
+                )
+            for key, val in raw_env.items():
+                if not isinstance(key, str):
+                    continue
+                upper = key.upper()
+                if upper in _CLAUDE_SCRUB_EXACT:
+                    if val is not None and str(val).strip() != "":
+                        blocked.append(f"env.{key}")
+                elif any(upper.startswith(prefix) for prefix in _CLAUDE_SCRUB_PREFIXES):
+                    if _is_truthy_selector(val):
+                        blocked.append(f"env.{key}")
+
+        if blocked:
+            keys_text = "、".join(sorted(set(blocked)))
+            raise ProviderError(
+                f"检测到 Claude Code 配置文件 {path} 设置了会覆盖订阅计费路由的项（{keys_text}），"
+                "已拒绝启动 cli-claude；如需使用该 API 配置请改用 follow: claude-code，或先清理这些配置项。"
+            )
 
 
 def _strip_images(messages: Sequence[Message]) -> list[Message]:
@@ -684,7 +803,7 @@ class _CLIStreamParser:
             subtype = raw_subtype if isinstance(raw_subtype, str) else ""
             if frame.get("is_error") is True or subtype.startswith("error"):
                 self.error_message = _extract_error_text(frame) or "Claude Code CLI 执行失败。"
-            else:
+            elif subtype == "success" and frame.get("is_error") in (None, False):
                 self.saw_terminal_success = True
                 if not self.saw_any_text and isinstance(frame.get("result"), str) and frame["result"]:
                     self.saw_any_text = True
@@ -832,7 +951,7 @@ class _CLIStreamParser:
             status = raw_status.lower() if isinstance(raw_status, str) else ""
             if status == "error" or frame.get("error"):
                 self.error_message = _extract_error_text(frame) or "Google Gemini CLI 执行失败。"
-            else:
+            elif status == "success":
                 self.saw_terminal_success = True
                 if not self.saw_any_text and isinstance(frame.get("response"), str) and frame["response"]:
                     self.saw_any_text = True
@@ -991,11 +1110,31 @@ class _WinProcessJob:
                 ("PeakJobMemory", ctypes.c_size_t),
             ]
 
+        class _BasicAccounting(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_int64),
+                ("TotalKernelTime", ctypes.c_int64),
+                ("ThisPeriodTotalUserTime", ctypes.c_int64),
+                ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
         api = ctypes.WinDLL("kernel32", use_last_error=True)
         api.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
         api.CreateJobObjectW.restype = wintypes.HANDLE
         api.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
         api.SetInformationJobObject.restype = wintypes.BOOL
+        api.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        api.QueryInformationJobObject.restype = wintypes.BOOL
         api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         api.OpenProcess.restype = wintypes.HANDLE
         api.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
@@ -1006,6 +1145,7 @@ class _WinProcessJob:
         api.CloseHandle.restype = wintypes.BOOL
 
         self._api = api
+        self._accounting_cls = _BasicAccounting
         self._handle = api.CreateJobObjectW(None, None)
         if not self._handle:
             raise ctypes.WinError(ctypes.get_last_error())
@@ -1042,6 +1182,16 @@ class _WinProcessJob:
         finally:
             self._api.CloseHandle(proc_handle)
 
+    def active_processes(self) -> int | None:
+        import ctypes
+
+        if not self._handle:
+            return 0
+        info = self._accounting_cls()
+        if not self._api.QueryInformationJobObject(self._handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+            return None
+        return int(info.ActiveProcesses)
+
     def terminate(self) -> None:
         if self._handle:
             with suppress(OSError):
@@ -1073,6 +1223,8 @@ class _ManagedProcess:
     job: _WinProcessJob | None = None
     pgid: int | None = None
     cleaned: bool = False
+    cleanup_attempts: int = 0
+    teardown_task: asyncio.Task[bool] | None = None
 
 
 def _pgid_alive(pgid: int) -> bool:
@@ -1087,6 +1239,19 @@ def _pgid_alive(pgid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def _managed_alive(managed: _ManagedProcess) -> bool:
+    """True when the leader or any tracked descendant is still alive."""
+    if managed.proc.returncode is None:
+        return True
+    if os.name == "nt":
+        if managed.job is not None:
+            active = managed.job.active_processes()
+            if active is not None:
+                return active > 0
+        return _windows_pid_alive(managed.pid) or bool(_windows_descendant_pids(managed.pid))
+    return managed.pgid is not None and _pgid_alive(managed.pgid)
 
 
 def _signal_tree_sync(managed: _ManagedProcess) -> None:
@@ -1106,33 +1271,68 @@ def _signal_tree_sync(managed: _ManagedProcess) -> None:
             managed.proc.terminate()
 
 
-async def _terminate_managed(managed: _ManagedProcess) -> None:
-    """Tear down leader and all descendants cleanly, even after the leader has already exited."""
-    if managed.cleaned:
+def _kill_tree_sync(managed: _ManagedProcess) -> None:
+    """Synchronously escalate process-tree termination on cancellation before re-raising."""
+    if os.name == "nt":
+        if managed.job is not None:
+            managed.job.terminate()
+        if managed.proc.returncode is None:
+            with suppress(ProcessLookupError, OSError):
+                managed.proc.kill()
         return
+    if managed.pgid is not None and _pgid_alive(managed.pgid):
+        with suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(managed.pgid, signal.SIGKILL)
+    if managed.proc.returncode is None:
+        with suppress(ProcessLookupError, OSError):
+            managed.proc.kill()
+
+
+async def _terminate_managed(
+    managed: _ManagedProcess,
+    *,
+    grace: float = 0.5,
+    kill_wait: float = 2.0,
+) -> bool:
+    """Tear down leader and descendants cleanly; mark `cleaned=True` only once exit is confirmed."""
+    if managed.cleaned:
+        return True
     proc = managed.proc
     try:
         if os.name == "nt":
             if managed.job is not None:
                 managed.job.terminate()
-            else:
-                if proc.returncode is None or _windows_descendant_pids(managed.pid):
-                    await asyncio.to_thread(_taskkill_tree_windows, managed.pid)
+            elif _managed_alive(managed):
+                await asyncio.to_thread(_taskkill_tree_windows, managed.pid)
             if proc.returncode is None:
                 with suppress(ProcessLookupError, OSError):
                     proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=0.5)
-                except TimeoutError:
+            loop = asyncio.get_running_loop()
+            grace_deadline = loop.time() + grace
+            while loop.time() < grace_deadline and _managed_alive(managed):
+                if proc.returncode is None:
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(proc.wait(), timeout=0.05)
+                else:
+                    await asyncio.sleep(0.02)
+            if _managed_alive(managed):
+                if managed.job is not None:
+                    managed.job.terminate()
+                else:
+                    await asyncio.to_thread(_taskkill_tree_windows, managed.pid)
+                if proc.returncode is None:
                     with suppress(ProcessLookupError, OSError):
                         proc.kill()
-                    with suppress(TimeoutError, OSError):
-                        await asyncio.wait_for(proc.wait(), timeout=2.0)
-            if managed.job is not None:
-                managed.job.close()
+                kill_deadline = loop.time() + kill_wait
+                while loop.time() < kill_deadline and _managed_alive(managed):
+                    if proc.returncode is None:
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(proc.wait(), timeout=0.1)
+                    else:
+                        await asyncio.sleep(0.02)
         else:
             pgid = managed.pgid
-            if proc.returncode is None or (pgid is not None and _pgid_alive(pgid)):
+            if _managed_alive(managed):
                 if pgid is not None:
                     with suppress(ProcessLookupError, PermissionError, OSError):
                         os.killpg(pgid, signal.SIGTERM)
@@ -1140,18 +1340,15 @@ async def _terminate_managed(managed: _ManagedProcess) -> None:
                     with suppress(ProcessLookupError, OSError):
                         proc.terminate()
                 loop = asyncio.get_running_loop()
-                grace_deadline = loop.time() + 0.5
-                while loop.time() < grace_deadline:
+                grace_deadline = loop.time() + grace
+                while loop.time() < grace_deadline and _managed_alive(managed):
                     if proc.returncode is None:
                         with suppress(TimeoutError):
                             await asyncio.wait_for(proc.wait(), timeout=0.05)
-                    group_live = pgid is not None and _pgid_alive(pgid)
-                    if proc.returncode is not None and not group_live:
-                        break
-                    if proc.returncode is not None:
+                    else:
                         await asyncio.sleep(0.02)
             # Escalate to SIGKILL if leader or any descendant in the POSIX process group survived SIGTERM.
-            if proc.returncode is None or (pgid is not None and _pgid_alive(pgid)):
+            if _managed_alive(managed):
                 if pgid is not None:
                     with suppress(ProcessLookupError, PermissionError, OSError):
                         os.killpg(pgid, signal.SIGKILL)
@@ -1159,20 +1356,42 @@ async def _terminate_managed(managed: _ManagedProcess) -> None:
                     with suppress(ProcessLookupError, OSError):
                         proc.kill()
                 loop = asyncio.get_running_loop()
-                kill_deadline = loop.time() + 2.0
-                while loop.time() < kill_deadline:
+                kill_deadline = loop.time() + kill_wait
+                while loop.time() < kill_deadline and _managed_alive(managed):
                     if proc.returncode is None:
                         with suppress(TimeoutError):
                             await asyncio.wait_for(proc.wait(), timeout=0.1)
-                    group_live = pgid is not None and _pgid_alive(pgid)
-                    if proc.returncode is not None and not group_live:
-                        break
-                    if proc.returncode is not None:
+                    else:
                         await asyncio.sleep(0.02)
-    finally:
+    except asyncio.CancelledError:
+        _kill_tree_sync(managed)
+        raise
+
+    confirmed = not _managed_alive(managed)
+    if confirmed:
         if managed.job is not None:
             managed.job.close()
         managed.cleaned = True
+    return confirmed
+
+
+async def _run_teardown(managed: _ManagedProcess) -> bool:
+    """Run or join one shared, cancellation-safe teardown task for `managed`."""
+    if managed.cleaned:
+        return True
+    task = managed.teardown_task
+    if task is None or task.done():
+        task = asyncio.create_task(_terminate_managed(managed))
+        managed.teardown_task = task
+
+        def _clear(done_task: asyncio.Task[bool]) -> None:
+            if managed.teardown_task is done_task:
+                managed.teardown_task = None
+            with suppress(BaseException):
+                done_task.exception()
+
+        task.add_done_callback(_clear)
+    return await asyncio.shield(task)
 
 
 async def _write_stdin(stream: asyncio.StreamWriter | None, payload: bytes) -> None:
@@ -1245,11 +1464,60 @@ def _safe_detail(text: str) -> str:
     return cleaned
 
 
+async def _read_help_bounded(
+    proc: asyncio.subprocess.Process,
+    *,
+    max_bytes: int,
+    label: str,
+) -> tuple[bytes, bytes]:
+    """Read stdout and stderr concurrently under a single shared byte budget."""
+    budget = [max_bytes]
+    out_buf = bytearray()
+    err_buf = bytearray()
+
+    async def _pump(stream: asyncio.StreamReader | None, target: bytearray) -> None:
+        if stream is None:
+            return
+        while True:
+            limit = max(budget[0], 0)
+            chunk = await stream.read(min(READ_CHUNK_BYTES, limit + 1))
+            if not chunk:
+                break
+            budget[0] -= len(chunk)
+            if budget[0] < 0:
+                raise ProviderError(f"{label} 帮助输出超过大小上限，已拒绝启用。")
+            target.extend(chunk)
+
+    stdout_task = asyncio.create_task(_pump(proc.stdout, out_buf))
+    stderr_task = asyncio.create_task(_pump(proc.stderr, err_buf))
+    wait_task = asyncio.create_task(proc.wait())
+    tasks = (stdout_task, stderr_task, wait_task)
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                for other in pending:
+                    other.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                raise exc
+        if pending:
+            await asyncio.gather(*pending)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    return bytes(out_buf), bytes(err_buf)
+
+
 async def verify_cli_capabilities(
     protocol: str,
     executable: str,
     *,
     timeout: float = 10.0,
+    max_help_bytes: int = MAX_HELP_BYTES,
 ) -> None:
     """Verify the installed official CLI advertises required vendor-side safety flags; fail closed otherwise."""
     if protocol not in _REQUIRED_HELP_ARGS:
@@ -1288,24 +1556,27 @@ async def verify_cli_capabilities(
     managed = _ManagedProcess(proc=proc, pid=proc.pid, job=job, pgid=None if os.name == "nt" else proc.pid)
     try:
         async with asyncio.timeout(min(timeout, 10.0)):
-            stdout_b, stderr_b = await proc.communicate()
+            stdout_b, stderr_b = await _read_help_bounded(proc, max_bytes=max_help_bytes, label=label)
     except TimeoutError:
         raise ProviderError(f"检测 {label} 安全参数能力超时，已拒绝启用。") from None
     finally:
         _signal_tree_sync(managed)
-        with suppress(BaseException):
-            await asyncio.shield(_terminate_managed(managed))
+        await _run_teardown(managed)
+
+    if not managed.cleaned:
+        raise ProviderError(f"检测 {label} 安全参数能力后子进程树未能确认完全退出，已拒绝启用。")
+
+    # Do not permanently cache nonzero help exits so transient startup failures recover on retry.
+    if proc.returncode != 0:
+        raise ProviderError(f"无法验证 {label} 安全参数能力（退出码 {proc.returncode}），已拒绝启用。")
 
     combined = (stdout_b + b"\n" + stderr_b).decode("utf-8", errors="replace")
     missing = [flag for flag in required_flags if flag not in combined]
-    if proc.returncode != 0 or missing:
-        if missing:
-            err = (
-                f"当前安装的 {label} 不支持必需的安全隔离参数（缺少 {'、'.join(missing)}），"
-                f"为防止绕过 MossCode 权限与审批，已拒绝启用 {protocol}；请升级官方 CLI 后重试。"
-            )
-        else:
-            err = f"无法验证 {label} 安全参数能力（退出码 {proc.returncode}），已拒绝启用。"
+    if missing:
+        err = (
+            f"当前安装的 {label} 不支持必需的安全隔离参数（缺少 {'、'.join(missing)}），"
+            f"为防止绕过 MossCode 权限与审批，已拒绝启用 {protocol}；请升级官方 CLI 后重试。"
+        )
         if cache_key is not None:
             _CAPABILITY_CACHE[cache_key] = err
         raise ProviderError(err)
@@ -1316,18 +1587,34 @@ async def verify_cli_capabilities(
 
 def _write_temp_policy() -> Path:
     """Create a private temporary TOML policy file denying all native/MCP Gemini CLI tools."""
+    # `tempfile.mkstemp` atomically creates the file with owner-only permissions (0o600 on POSIX).
     fd, raw_path = tempfile.mkstemp(prefix="mosscode-gemini-policy-", suffix=".toml")
     path = Path(raw_path)
+    fd_owned = True
     try:
-        if os.name != "nt":
-            os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+        stream = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        fd_owned = False
+        with stream:
             stream.write(GEMINI_DENY_ALL_POLICY)
     except BaseException:
+        if fd_owned:
+            with suppress(OSError):
+                os.close(fd)
         with suppress(OSError):
             path.unlink(missing_ok=True)
         raise
     return path
+
+
+class _Deadline:
+    """Monotonic deadline tracker used outside caller yields to enforce wall-clock stream timeouts."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, timeout: float) -> None:
+        self._loop = loop
+        self.at = loop.time() + timeout
+
+    def expired(self) -> bool:
+        return self._loop.time() >= self.at
 
 
 class CLIProxyProvider:
@@ -1340,6 +1627,7 @@ class CLIProxyProvider:
         which: Callable[[str], str | None] = resolve_cli_executable,
         argv_builder: Callable[..., list[str]] = build_cli_argv,
         capability_checker: Callable[[str, str], Any] | None = None,
+        claude_settings_paths: Callable[[Mapping[str, str]], Sequence[Path]] | None = None,
     ) -> None:
         if config.protocol not in CLI_PROTOCOLS:
             raise ProviderError(f"不支持的 CLI 代理协议：{config.protocol}。")
@@ -1350,13 +1638,34 @@ class CLIProxyProvider:
         self._which = which
         self._argv_builder = argv_builder
         self._capability_checker = capability_checker
+        self._claude_settings_paths = claude_settings_paths
         self._active: set[_ManagedProcess] = set()
 
     async def close(self) -> None:
-        active = list(self._active)
-        for managed in active:
-            await _terminate_managed(managed)
-            self._active.discard(managed)
+        failed: list[int] = []
+        for managed in list(self._active):
+            if managed.cleaned:
+                self._active.discard(managed)
+                continue
+            if managed.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS:
+                if managed.job is not None:
+                    managed.job.close()
+                self._active.discard(managed)
+                failed.append(managed.pid)
+                continue
+            managed.cleanup_attempts += 1
+            confirmed = await _run_teardown(managed)
+            if confirmed and managed.cleaned:
+                self._active.discard(managed)
+            else:
+                failed.append(managed.pid)
+                if managed.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS:
+                    if managed.job is not None:
+                        managed.job.close()
+                    self._active.discard(managed)
+        if failed:
+            pids = ", ".join(str(pid) for pid in failed)
+            raise ProviderError(f"{CLI_LABELS[self.config.protocol]} 子进程树（PID {pids}）未能确认完全退出。")
 
     async def stream(
         self,
@@ -1372,6 +1681,11 @@ class CLIProxyProvider:
         executable = self._which(binary)
         if not executable or not Path(executable).is_absolute():
             raise ProviderError(f"PATH 绝对目录中未找到官方命令 {binary}；{CLI_INSTALL_HINTS[protocol]}。")
+
+        env = _cli_env(protocol)
+        if protocol == "cli-claude":
+            settings_paths = self._claude_settings_paths(env) if self._claude_settings_paths is not None else None
+            _check_claude_settings_billing(env, settings_paths=settings_paths)
 
         if self._capability_checker is not None:
             await self._capability_checker(protocol, executable)
@@ -1400,7 +1714,7 @@ class CLIProxyProvider:
                 "stdin": asyncio.subprocess.PIPE,
                 "stdout": asyncio.subprocess.PIPE,
                 "stderr": asyncio.subprocess.PIPE,
-                "env": _cli_env(protocol),
+                "env": env,
             }
             if os.name == "nt":
                 spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1424,7 +1738,13 @@ class CLIProxyProvider:
             if os.name == "nt" and job is None and job_err is not None:
                 # Fail closed if Windows process-tree containment cannot be established while the process is alive.
                 if _windows_pid_alive(proc.pid) or _windows_descendant_pids(proc.pid):
-                    await _terminate_managed(managed)
+                    self._active.add(managed)
+                    managed.cleanup_attempts += 1
+                    try:
+                        await _run_teardown(managed)
+                    finally:
+                        if managed.cleaned:
+                            self._active.discard(managed)
                     raise ProviderError(f"无法为 {label} 建立 Windows 进程树隔离，已中止执行。") from None
 
             self._active.add(managed)
@@ -1432,46 +1752,69 @@ class CLIProxyProvider:
             stderr_task = asyncio.create_task(_drain_stderr(proc.stderr))
             parser = _CLIStreamParser(protocol)
             tag_filter = _ToolTagFilter(nonce, allowed_names)
-            deadline = asyncio.get_running_loop().time() + self.config.timeout
+            deadline = _Deadline(asyncio.get_running_loop(), self.config.timeout)
+            stream_error: ProviderError | None = None
+            stderr_bytes = b""
+            returncode: int | None = None
 
             try:
                 assert proc.stdout is not None
-                # Never yield while an asyncio.timeout scope is active (PEP 789): scope only subprocess awaits.
+                # Never yield while an asyncio.timeout scope is active (PEP 789): scope only subprocess awaits,
+                # and explicitly check `deadline.expired()` so buffered/ready I/O cannot bypass expiry.
                 async with aclosing(_iter_lines_bounded(proc.stdout)) as line_iter:
                     while True:
+                        if deadline.expired():
+                            raise TimeoutError
                         try:
-                            async with asyncio.timeout_at(deadline):
+                            async with asyncio.timeout_at(deadline.at):
                                 line = await anext(line_iter)
                         except StopAsyncIteration:
                             break
+                        if deadline.expired():
+                            raise TimeoutError
                         texts, thinkings = parser.feed_line(line)
                         for thought in thinkings:
                             yield Delta("thinking", thought)
                         for text in texts:
                             for event in tag_filter.feed(text):
                                 yield event
+                if deadline.expired():
+                    raise TimeoutError
                 for event in tag_filter.finish():
                     yield event
-                async with asyncio.timeout_at(deadline):
+                if deadline.expired():
+                    raise TimeoutError
+                async with asyncio.timeout_at(deadline.at):
                     await stdin_task
                     stderr_bytes = await stderr_task
                     returncode = await proc.wait()
+                if deadline.expired():
+                    raise TimeoutError
             except TimeoutError:
-                raise ProviderError(
+                stream_error = ProviderError(
                     f"{label} 执行超时（>{self.config.timeout:g} 秒），请检查网络、登录状态或增大 timeout。"
-                ) from None
+                )
             finally:
                 _signal_tree_sync(managed)
                 for task in (stdin_task, stderr_task):
                     if not task.done():
                         task.cancel()
-                with suppress(BaseException):
-                    await asyncio.shield(asyncio.gather(stdin_task, stderr_task, return_exceptions=True))
                 try:
-                    await asyncio.shield(_terminate_managed(managed))
+                    await asyncio.gather(stdin_task, stderr_task, return_exceptions=True)
                 finally:
-                    if managed.cleaned:
-                        self._active.discard(managed)
+                    managed.cleanup_attempts += 1
+                    try:
+                        await _run_teardown(managed)
+                    finally:
+                        if managed.cleaned:
+                            self._active.discard(managed)
+
+            if not managed.cleaned:
+                if stream_error is not None:
+                    raise ProviderError(f"{stream_error}（且子进程树未能确认完全退出，已保留待关闭重试。）")
+                raise ProviderError(f"{label} 子进程树未能确认完全退出，已保留待关闭重试。")
+            if stream_error is not None:
+                raise stream_error
         finally:
             if policy_file is not None:
                 with suppress(OSError):

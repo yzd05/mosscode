@@ -101,13 +101,13 @@ Anthropic 端点需要 bearer 认证时设 `auth_type: bearer`（默认 `api_key
 | anthropic-messages | Messages | Anthropic SDK 默认值 |
 | openai-responses | Responses | OpenAI SDK 默认值 |
 | openai-chat-completions | Chat Completions | OpenAI SDK 默认值 |
-| cli-claude | Claude Code CLI 无头流（`claude -p --output-format stream-json --tools "" --strict-mcp-config`） | 本机 PATH 绝对目录中的 `claude` |
+| cli-claude | Claude Code CLI 无头流（`claude -p --output-format stream-json --tools "" --strict-mcp-config --setting-sources user`） | 本机 PATH 绝对目录中的 `claude` |
 | cli-codex | OpenAI Codex CLI 无头流（`codex exec --json --sandbox read-only -`） | 本机 PATH 绝对目录中的 `codex` |
 | cli-gemini | Google Gemini CLI 无头流（`gemini -p "" --output-format stream-json --approval-mode plan --policy …`） | 本机 PATH 绝对目录中的 `gemini` |
 
 兼容服务使用对应协议适配器。`base_url` 填 SDK 请求前缀，不填写完整的 `/messages`、`/responses` 或 `/chat/completions` 地址。OpenAI 兼容服务通常需包含 `/v1`，具体以服务文档为准。可选 `headers` 支持额外认证头，勿把含凭据的配置提交到仓库。
 
-支持简写：`anthropic` → Messages，`openai` → Responses，`openai-compat` → Chat Completions，`claude-cli` → `cli-claude`，`codex-cli` → `cli-codex`，`gemini-cli` → `cli-gemini`。Messages 的 thinking 支持 `false`、`true`（adaptive）或显式对象；手动 enabled 模式需配置预算。模型名不用于能力推断，服务拒绝的参数会显示错误。Chat Completions 的 `stream_usage` 和 `max_tokens_field` 可配置，以适应端点差异；发送前自动将非前缀尾部补充（如空回复重发提示）折叠为 `user` 消息，并按顺序合并相邻的 `user` 消息（含文本与多模态图片块），保证严格要求首条之后不再出现 `system` 且角色严格交替的 vLLM、SGLang 及 HuggingFace Jinja `chat_template` 服务端正常接受请求。
+支持简写：`anthropic` → Messages，`openai` → Responses，`openai-compat` → Chat Completions，`claude-cli` → `cli-claude`，`codex-cli` → `cli-codex`，`gemini-cli` → `cli-gemini`。Messages 的 thinking 支持 `false`、`true`（adaptive）或显式对象；手动 enabled 模式需配置预算。模型名不用于能力推断，服务拒绝的参数会显示错误。Chat Completions 的 `stream_usage` 和 `max_tokens_field` 可配置，以适应端点差异；发送前自动将非前缀尾部补充（如空回复重发提示）折叠为 `user` 消息，并按顺序合并相邻的 `user` 消息（含文本与多模态图片块），避免在首条之后重复出现 `system` 或连续 `user` 消息（连续的 `assistant` 消息保持原样，服务端是否接受以实际模板规则为准），以提升 vLLM、SGLang 及 HuggingFace Jinja `chat_template` 等端点的兼容性。
 
 Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，多轮原样回传服务返回的不透明推理数据。兼容服务不支持该选项时可设 `include_encrypted_reasoning: false`；缺少加密数据的推理条目不回传，仍保留正文历史，无法保留隐式推理连续性。
 
@@ -120,10 +120,10 @@ Responses 使用 `store=false` 并默认请求 `reasoning.encrypted_content`，�
     preset: claude-cli
 ```
 
-- **合规与安全边界**：仅调用硬编码白名单内的官方可执行程序（只从 `PATH` 中的显式绝对目录查找，绝不解析当前工作目录或相对路径，`shell=False`，不允许项目配置指定任意可执行路径），通过标准输入传入提示词，从不读取或复制外部 CLI 的私有 OAuth 令牌文件。
-- **计费路由隔离**：子进程环境会剥离 `MOSSCODE_*` 内部变量以及对应厂商的 API 密钥/云端路由变量（`cli-claude` 剥离 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_CUSTOM_HEADERS`、`ANTHROPIC_FOUNDRY_API_KEY` 与 `CLAUDE_CODE_USE_*`；`cli-codex` 剥离 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等；`cli-gemini` 剥离 `GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_GENAI_USE_VERTEXAI`），防止继承的环境变量静默把订阅登录切换为按量 API 计费。
-- **工具调用与只读策略控制**：启动前校验官方 CLI 是否支持必需的厂商侧隔离参数（不支持时 fail-closed 拒绝启用）：`cli-claude` 同时禁用内置工具（`--tools ""`）与外部 MCP 服务器（`--strict-mcp-config`）；`cli-codex` 强制只读沙箱（`--sandbox read-only`）；`cli-gemini` 同时强制 `--approval-mode plan` 与拒绝全部工具的临时 `--policy` 规则文件（覆盖继承的自动编辑设置）。MossCode 通过每轮随机 64 位 Nonce 封装协议桥接自身工具调用，因此所有文件修改、命令执行、权限审批、命令沙箱、检查点与 `/swarm` 黑板协作仍完全由 MossCode 统一管控。
-- **限制**：`cli-*` 协议暂不支持图片输入（自动以占位符替代）、显式 `thinking` 配置与 `/thinking` 档位覆盖（由外部官方 CLI 自行管理）；超时、取消或父进程先行退出时均按进程树完整清理（Windows 使用 Job Object 并捕获早期子进程，POSIX 使用进程组）。
+- **合规与安全边界**：仅调用硬编码白名单内的官方可执行程序（只从 `PATH` 中的显式绝对目录查找，绝不解析当前工作目录或相对路径，Windows 上自动跳过 `.ps1` 等需外部解释器的脚本扩展名，`shell=False`，不允许项目配置指定任意可执行路径），通过标准输入传入提示词，从不读取或复制外部 CLI 的私有 OAuth 令牌文件。
+- **计费路由隔离**：子进程环境会剥离 `MOSSCODE_*` 内部变量以及对应厂商的 API 密钥/云端路由变量（`cli-claude` 剥离 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_CUSTOM_HEADERS`、`ANTHROPIC_FOUNDRY_*`、`ANTHROPIC_BEDROCK_BASE_URL`、`ANTHROPIC_VERTEX_PROJECT_ID` 与 `CLAUDE_CODE_USE_*`；`cli-codex` 剥离 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等；`cli-gemini` 剥离 `GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_GENAI_USE_VERTEXAI`）；启动 `cli-claude` 前还会校验其会加载的用户级与受管 `settings.json` 中是否存在 `apiKeyHelper`、非订阅 `forceLoginMethod` 或覆盖计费/路由的 `env` 项（存在或配置文件无法解析时 fail-closed 拒绝启动），防止静默把订阅登录切换为按量 API 计费。
+- **工具调用与只读策略控制**：启动前校验官方 CLI 是否支持必需的厂商侧隔离参数（不支持时 fail-closed 拒绝启用）：`cli-claude` 同时禁用内置工具（`--tools ""`）、外部 MCP 服务器（`--strict-mcp-config`）与项目/本地设置及工作区 Hook（`--setting-sources user`，同时保留用户订阅登录）；`cli-codex` 强制只读沙箱（`--sandbox read-only`）；`cli-gemini` 同时强制 `--approval-mode plan` 与拒绝全部工具的临时 `--policy` 规则文件（覆盖继承的自动编辑设置）。MossCode 通过每轮随机 64 位 Nonce 封装协议桥接自身工具调用，因此所有文件修改、命令执行、权限审批、命令沙箱、检查点与 `/swarm` 黑板协作仍完全由 MossCode 统一管控。
+- **限制**：`cli-*` 协议暂不支持图片输入（自动以占位符替代）、显式 `thinking` 配置与 `/thinking` 档位覆盖（由外部官方 CLI 自行管理）；超时、取消或父进程先行退出时均按进程树完整清理并在确认退出后才释放句柄（Windows 使用 Job Object 并捕获早期子进程，POSIX 使用进程组）。
 
 ## 思考强度
 

@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import select
 import stat
 import subprocess
 import sys
 import textwrap
 import time
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -27,10 +28,15 @@ from mosscode.cli_providers import (
     CLI_PROTOCOLS,
     CLIProxyProvider,
     DetectedCLIBackend,
+    _check_claude_settings_billing,
     _cli_env,
+    _Deadline,
     _iter_lines_bounded,
+    _ManagedProcess,
     _ToolTagFilter,
+    _windows_candidate_names,
     _windows_pid_alive,
+    _write_temp_policy,
     build_cli_argv,
     detect_installed_clis,
     is_valid_cli_model,
@@ -61,25 +67,86 @@ from test_conversation import FakeProvider
 from waiting import until
 
 
-def _pid_alive(pid: int) -> bool:
-    if os.name == "nt":
-        return _windows_pid_alive(pid)
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+class _DescendantProbe:
+    """Cross-platform readiness + exit probe immune to unreaped POSIX zombies.
 
+    On POSIX, only the descendant opens a dedicated FIFO for writing and emits `R`; once the
+    descendant exits (even if unreaped as a zombie), the kernel closes the write end and EOF
+    arrives immediately on `read_fd`. On Windows, `_windows_pid_alive` checks `STILL_ACTIVE`.
+    """
 
-def _wait_pids_dead(pids: list[int], timeout: float = 4.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if all(not _pid_alive(pid) for pid in pids):
-            return True
-        time.sleep(0.05)
-    return all(not _pid_alive(pid) for pid in pids)
+    def __init__(self, tmp_path: Path, tag: str) -> None:
+        self.pid_file = tmp_path / f"pids_{tag}.json"
+        self.fifo_path: Path | None = None
+        self._read_fd: int | None = None
+        if os.name != "nt":
+            self.fifo_path = tmp_path / f"desc_{tag}.fifo"
+            os.mkfifo(self.fifo_path)
+            self._read_fd = os.open(self.fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    def descendant_snippet(self) -> str:
+        if self.fifo_path is not None:
+            return (
+                "import os, time; "
+                f"fd = os.open({str(self.fifo_path)!r}, os.O_WRONLY); "
+                "os.write(fd, b'R'); "
+                "time.sleep(30)"
+            )
+        return (
+            "import json, os, time; "
+            "from pathlib import Path; "
+            f"Path({str(self.pid_file)!r}).write_text(json.dumps(os.getpid()), encoding='utf-8'); "
+            "time.sleep(30)"
+        )
+
+    def wait_ready(self, timeout: float = 10.0) -> int | None:
+        deadline = time.monotonic() + timeout
+        if self._read_fd is not None:
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([self._read_fd], [], [], 0.05)
+                if readable:
+                    try:
+                        data = os.read(self._read_fd, 16)
+                    except BlockingIOError:
+                        continue
+                    if b"R" in data:
+                        return None
+                time.sleep(0.01)
+            raise AssertionError("descendant did not signal readiness via FIFO")
+        while time.monotonic() < deadline:
+            if self.pid_file.is_file():
+                text = self.pid_file.read_text(encoding="utf-8").strip()
+                if text:
+                    return int(json.loads(text))
+            time.sleep(0.02)
+        raise AssertionError("descendant did not write readiness PID file")
+
+    def wait_exited(self, desc_pid: int | None, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        if self._read_fd is not None:
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([self._read_fd], [], [], 0.05)
+                if readable:
+                    try:
+                        chunk = os.read(self._read_fd, 16)
+                    except BlockingIOError:
+                        continue
+                    if chunk == b"":
+                        return True
+            return False
+        assert desc_pid is not None
+        while time.monotonic() < deadline:
+            if not _windows_pid_alive(desc_pid):
+                return True
+            time.sleep(0.03)
+        return not _windows_pid_alive(desc_pid)
+
+    def close(self) -> None:
+        if self._read_fd is not None:
+            fd = self._read_fd
+            self._read_fd = None
+            with suppress(OSError):
+                os.close(fd)
 
 
 def _make_exec_wrapper(directory: Path, stem: str, script_body: str) -> Path:
@@ -105,6 +172,7 @@ def _script_provider(
     model: str = "test-model",
     timeout: float = 15.0,
     suffix: str = "",
+    claude_settings_paths=None,
 ) -> CLIProxyProvider:
     """Build a CLIProxyProvider backed by a tiny cross-platform Python subprocess script."""
     script_path = tmp_path / f"mock_{protocol}{suffix}.py"
@@ -120,6 +188,7 @@ def _script_provider(
         config,
         which=lambda _bin: os.path.abspath(sys.executable),
         argv_builder=lambda _proto, exe, _mdl: [exe, str(script_path)],
+        claude_settings_paths=(lambda _env: ()) if claude_settings_paths is None else claude_settings_paths,
     )
 
 
@@ -305,6 +374,17 @@ def test_resolve_cli_executable_ignores_cwd_and_relative_path_entries(tmp_path, 
     assert resolved == str(real_exe.resolve())
     assert Path(resolved).is_absolute()
 
+    # Windows candidate builder skips interpreter-only script types (e.g. `.ps1`, `.vbs`) case-insensitively.
+    assert _windows_candidate_names("claude", ".PS1;.VBS;.EXE;.CMD") == ["claude.exe", "claude.cmd"]
+    assert _windows_candidate_names("claude", ".PS1;.PY") == ["claude.com", "claude.exe", "claude.bat", "claude.cmd"]
+    assert _windows_candidate_names("claude.ps1", ".PS1;.EXE") == []
+    assert _windows_candidate_names("claude.CMD", ".PS1;.CMD") == ["claude.CMD"]
+
+    if os.name == "nt":
+        (real_bin / "claude.ps1").write_text("Write-Output 'ps1'\n", encoding="utf-8")
+        picked = resolve_cli_executable("claude", path_env=str(real_bin), pathext_env=".PS1;.CMD;.EXE")
+        assert picked == str(real_exe.resolve())
+
 
 def test_build_cli_argv_enforces_vendor_restrictions_and_model_safety(tmp_path):
     exe = str((tmp_path / "bin").resolve())
@@ -315,6 +395,9 @@ def test_build_cli_argv_enforces_vendor_restrictions_and_model_safety(tmp_path):
     tools_idx = claude_argv.index("--tools")
     assert claude_argv[tools_idx + 1] == ""
     assert "--strict-mcp-config" in claude_argv
+    sources_idx = claude_argv.index("--setting-sources")
+    assert claude_argv[sources_idx + 1] == "user"
+    assert "--bare" not in claude_argv
 
     codex_argv = build_cli_argv("cli-codex", exe, "gpt-5.6")
     assert codex_argv[:3] == [exe, "exec", "--json"]
@@ -339,22 +422,128 @@ def test_build_cli_argv_enforces_vendor_restrictions_and_model_safety(tmp_path):
         build_cli_argv("cli-claude", exe, "--bad")
 
 
-async def test_verify_cli_capabilities_fails_closed_on_unsupported_versions(tmp_path):
+async def test_verify_cli_capabilities_fails_closed_bounds_help_and_retries_nonzero(tmp_path):
     bin_dir = tmp_path / "cap_bin"
-    old_claude = _make_exec_wrapper(bin_dir, "old-claude", 'print("Usage: claude -p --tools")')
-    new_claude = _make_exec_wrapper(bin_dir, "new-claude", 'print("Usage: claude -p --tools --strict-mcp-config")')
+    old_claude = _make_exec_wrapper(bin_dir, "old-claude", 'print("Usage: claude -p --tools --strict-mcp-config")')
+    new_claude = _make_exec_wrapper(
+        bin_dir, "new-claude", 'print("Usage: claude -p --tools --strict-mcp-config --setting-sources")'
+    )
     old_gemini = _make_exec_wrapper(bin_dir, "old-gemini", 'print("Usage: gemini -p --output-format")')
     new_gemini = _make_exec_wrapper(
         bin_dir, "new-gemini", 'print("Usage: gemini -p --approval-mode plan --policy file.toml")'
     )
 
-    with pytest.raises(ProviderError, match="--strict-mcp-config"):
+    with pytest.raises(ProviderError, match="--setting-sources"):
         await verify_cli_capabilities("cli-claude", str(old_claude))
     await verify_cli_capabilities("cli-claude", str(new_claude))
 
     with pytest.raises(ProviderError, match="--approval-mode.*--policy"):
         await verify_cli_capabilities("cli-gemini", str(old_gemini))
     await verify_cli_capabilities("cli-gemini", str(new_gemini))
+
+    # Over-budget `--help` output must fail closed rather than buffering unbounded memory.
+    noisy_claude = _make_exec_wrapper(bin_dir, "noisy-claude", 'print("X" * 8192)')
+    with pytest.raises(ProviderError, match="超过大小上限"):
+        await verify_cli_capabilities("cli-claude", str(noisy_claude), max_help_bytes=1024)
+
+    # Nonzero `--help` exit must NOT be permanently cached so transient failures recover on retry.
+    marker = tmp_path / "flaky_once.flag"
+    flaky_claude = _make_exec_wrapper(
+        bin_dir,
+        "flaky-claude",
+        f"""
+        import sys
+        from pathlib import Path
+        flag = Path({str(marker)!r})
+        if not flag.exists():
+            flag.write_text("failed-once", encoding="utf-8")
+            sys.exit(1)
+        print("Usage: claude -p --tools --strict-mcp-config --setting-sources")
+        """,
+    )
+    with pytest.raises(ProviderError, match="退出码 1"):
+        await verify_cli_capabilities("cli-claude", str(flaky_claude))
+    await verify_cli_capabilities("cli-claude", str(flaky_claude))
+
+
+async def test_claude_settings_billing_guard_rejects_overrides_and_allows_clean_settings(tmp_path, monkeypatch):
+    cfg_dir = tmp_path / "claude_cfg"
+    cfg_dir.mkdir()
+    settings_file = cfg_dir / "settings.json"
+
+    # Clean user settings preserving subscription login pass.
+    settings_file.write_text(
+        json.dumps({"theme": "dark", "forceLoginMethod": "claudeai", "env": {"CLAUDE_CODE_USE_BEDROCK": "0"}}),
+        encoding="utf-8",
+    )
+    _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)}, settings_paths=[settings_file])
+
+    # API key in settings.json env must fail closed without echoing the key value.
+    secret_val = "anthropic-billing-key-do-not-echo"
+    settings_file.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": secret_val}}), encoding="utf-8")
+    with pytest.raises(ProviderError) as exc_info:
+        _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)}, settings_paths=[settings_file])
+    assert "env.ANTHROPIC_API_KEY" in str(exc_info.value)
+    assert secret_val not in str(exc_info.value)
+
+    # apiKeyHelper, cloud selector, console forceLoginMethod, and malformed JSON must all fail closed.
+    for payload, expected in [
+        (json.dumps({"apiKeyHelper": "/usr/local/bin/helper"}), "apiKeyHelper"),
+        (json.dumps({"env": {"CLAUDE_CODE_USE_VERTEX": "1"}}), "env.CLAUDE_CODE_USE_VERTEX"),
+        (json.dumps({"forceLoginMethod": "console"}), "forceLoginMethod"),
+        ("{not valid json", "不是合法的 JSON"),
+    ]:
+        settings_file.write_text(payload, encoding="utf-8")
+        with pytest.raises(ProviderError, match=expected):
+            _check_claude_settings_billing({"CLAUDE_CONFIG_DIR": str(cfg_dir)}, settings_paths=[settings_file])
+
+    # End-to-end: CLIProxyProvider.stream rejects before spawning the subprocess.
+    spawned = False
+
+    async def fail_if_spawned(*_a, **_kw):
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("subprocess must not be spawned when settings override billing")
+
+    settings_file.write_text(json.dumps({"env": {"ANTHROPIC_AUTH_TOKEN": "tok-override"}}), encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail_if_spawned)
+    provider = CLIProxyProvider(
+        ProviderConfig("c", "cli-claude", "claude-sonnet-5-5", auth_type="cli"),
+        which=lambda _b: os.path.abspath(sys.executable),
+        argv_builder=lambda _p, exe, _m: [exe, "-c", "pass"],
+        claude_settings_paths=lambda _env: [settings_file],
+    )
+    with pytest.raises(ProviderError, match="env.ANTHROPIC_AUTH_TOKEN"):
+        await _collect_events(provider, [Message("user", (ContentBlock("text", "hi"),))], allow_tools=False)
+    assert spawned is False
+
+
+def test_write_temp_policy_closes_fd_and_unlinks_on_fdopen_failure(monkeypatch):
+    closed_fds: list[int] = []
+    created_paths: list[Path] = []
+    real_mkstemp = cli_providers.tempfile.mkstemp
+    real_close = os.close
+
+    def tracked_mkstemp(*args, **kwargs):
+        fd, raw_path = real_mkstemp(*args, **kwargs)
+        created_paths.append(Path(raw_path))
+        return fd, raw_path
+
+    def tracked_close(fd: int) -> None:
+        closed_fds.append(fd)
+        real_close(fd)
+
+    def failing_fdopen(*_args, **_kwargs):
+        raise OSError("simulated fdopen failure")
+
+    monkeypatch.setattr(cli_providers.tempfile, "mkstemp", tracked_mkstemp)
+    monkeypatch.setattr(cli_providers.os, "fdopen", failing_fdopen)
+    monkeypatch.setattr(cli_providers.os, "close", tracked_close)
+    with pytest.raises(OSError, match="simulated fdopen failure"):
+        _write_temp_policy()
+    assert len(closed_fds) == 1
+    assert len(created_paths) == 1 and not created_paths[0].exists()
 
 
 def test_cli_env_scrubs_vendor_billing_overrides_and_mosscode_flags(monkeypatch):
@@ -567,7 +756,7 @@ async def test_cli_rejects_non_string_frame_type_and_incomplete_stream_without_t
         await _collect_events(bad_type, [Message("user", (ContentBlock("text", "hi"),))], allow_tools=False)
 
     # Stream ending cleanly (exit 0) WITHOUT vendor terminal completion event must fail closed
-    # and MUST NOT yield Completed or release any tool calls.
+    # and MUST NOT yield Completed before raising.
     truncated = _script_provider(
         tmp_path,
         "cli-codex",
@@ -582,14 +771,55 @@ async def test_cli_rejects_non_string_frame_type_and_incomplete_stream_without_t
         suffix="_trunc",
     )
     echo = _EchoTool(tmp_path)
+    seen_events: list[Any] = []
     with pytest.raises(ProviderError, match="完成信号前中断"):
-        await _collect_events(
-            truncated,
-            [Message("user", (ContentBlock("text", "hi"),))],
-            tools=[echo.definition()],
-            allow_tools=True,
+        async with aclosing(
+            truncated.stream(
+                [Message("user", (ContentBlock("text", "hi"),))],
+                "",
+                tools=[echo.definition()],
+                allow_tools=True,
+            )
+        ) as stream:
+            async for event in stream:
+                seen_events.append(event)
+    assert not any(isinstance(e, Completed) for e in seen_events)
+
+    # Claude and Gemini `result` frames MUST require explicit `subtype: "success"` / `status: "success"`.
+    for proto, frame, should_succeed, tag in [
+        ("cli-claude", {"type": "result"}, False, "c_missing"),
+        ("cli-claude", {"type": "result", "subtype": "interrupted"}, False, "c_other"),
+        ("cli-claude", {"type": "result", "subtype": "success"}, True, "c_ok_empty"),
+        ("cli-gemini", {"type": "result"}, False, "g_missing"),
+        ("cli-gemini", {"type": "result", "status": "cancelled"}, False, "g_other"),
+        ("cli-gemini", {"type": "result", "status": "success"}, True, "g_ok_empty"),
+    ]:
+        prov = _script_provider(
+            tmp_path,
+            proto,
+            f"""
+            import json, sys
+            sys.stdin.read()
+            print(json.dumps({frame!r}), flush=True)
+            """,
+            suffix=f"_{tag}",
         )
-    assert echo.seen == []
+        observed: list[Any] = []
+        if should_succeed:
+            async with aclosing(
+                prov.stream([Message("user", (ContentBlock("text", "hi"),))], "", allow_tools=False)
+            ) as stream:
+                async for event in stream:
+                    observed.append(event)
+            assert isinstance(observed[-1], Completed)
+        else:
+            with pytest.raises(ProviderError, match="完成信号前中断"):
+                async with aclosing(
+                    prov.stream([Message("user", (ContentBlock("text", "hi"),))], "", allow_tools=False)
+                ) as stream:
+                    async for event in stream:
+                        observed.append(event)
+            assert not any(isinstance(e, Completed) for e in observed)
 
 
 async def test_cli_redacts_stderr_and_scrubs_mosscode_env_vars(tmp_path, monkeypatch):
@@ -639,93 +869,233 @@ async def test_cli_missing_binary_fails_closed():
 # ---------------------------------------------------------------------------
 
 
-async def test_cli_timeout_cancellation_and_leader_exit_terminate_descendants(tmp_path):
-    # 1. Timeout with a real spawned descendant process.
-    pids_timeout = tmp_path / "pids_timeout.json"
-    script_timeout = f"""
-    import json, os, subprocess, sys, time
-    from pathlib import Path
-    sys.stdin.read()
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    Path({str(pids_timeout)!r}).write_text(json.dumps([os.getpid(), child.pid]), encoding="utf-8")
-    time.sleep(30)
-    """
-    provider = _script_provider(tmp_path, "cli-claude", script_timeout, timeout=0.8, suffix="_to")
-    with pytest.raises(ProviderError, match="执行超时"):
-        await _collect_events(provider, [Message("user", (ContentBlock("text", "hang"),))], allow_tools=False)
-    assert provider._active == set()
-    recorded_to = json.loads(pids_timeout.read_text(encoding="utf-8"))
-    assert _wait_pids_dead(recorded_to), f"process tree leaked on timeout: {recorded_to}"
+async def test_cli_timeout_cancellation_and_leader_exit_terminate_descendants(tmp_path, monkeypatch):
+    captured: list[_Deadline] = []
+    real_deadline = cli_providers._Deadline
 
-    # 2. Leader exits 0 immediately while descendant keeps stdout open -> timeout must kill descendant too!
-    pids_orphan = tmp_path / "pids_orphan.json"
-    script_orphan = f"""
-    import json, os, subprocess, sys
-    from pathlib import Path
-    sys.stdin.read()
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    Path({str(pids_orphan)!r}).write_text(json.dumps([os.getpid(), child.pid]), encoding="utf-8")
-    sys.exit(0)
-    """
-    provider_orphan = _script_provider(tmp_path, "cli-claude", script_orphan, timeout=0.8, suffix="_orphan")
-    with pytest.raises(ProviderError, match="执行超时"):
-        await _collect_events(provider_orphan, [Message("user", (ContentBlock("text", "orphan"),))], allow_tools=False)
-    assert provider_orphan._active == set()
-    recorded_orphan = json.loads(pids_orphan.read_text(encoding="utf-8"))
-    assert _wait_pids_dead(recorded_orphan), f"descendant leaked after leader exit: {recorded_orphan}"
+    def track_deadline(loop: asyncio.AbstractEventLoop, timeout: float) -> _Deadline:
+        dl = real_deadline(loop, timeout)
+        captured.append(dl)
+        return dl
 
-    # 3. Cancellation during live streaming must propagate CancelledError and kill both leader and descendant.
-    pids_cancel = tmp_path / "pids_cancel.json"
-    script_cancel = f"""
-    import json, os, subprocess, sys, time
-    from pathlib import Path
-    sys.stdin.read()
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    Path({str(pids_cancel)!r}).write_text(json.dumps([os.getpid(), child.pid]), encoding="utf-8")
-    print(json.dumps({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "text_delta", "text": "start"}}}}}}), flush=True)
-    time.sleep(30)
-    """
-    provider_cancel = _script_provider(tmp_path, "cli-claude", script_cancel, timeout=15.0, suffix="_cancel")
-    got_first = asyncio.Event()
+    monkeypatch.setattr(cli_providers, "_Deadline", track_deadline)
 
-    async def runner():
-        async with aclosing(
-            provider_cancel.stream([Message("user", (ContentBlock("text", "stream"),))], "", allow_tools=False)
-        ) as stream:
-            async for event in stream:
-                if isinstance(event, Delta):
-                    got_first.set()
+    # 1. Timeout with a real spawned descendant process; deadline expires only AFTER readiness.
+    probe_to = _DescendantProbe(tmp_path, "to")
+    try:
+        script_timeout = f"""
+        import json, subprocess, sys, time
+        sys.stdin.read()
+        subprocess.Popen([sys.executable, "-c", {probe_to.descendant_snippet()!r}])
+        print(json.dumps({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "text_delta", "text": "READY"}}}}}}), flush=True)
+        time.sleep(30)
+        """
+        provider = _script_provider(tmp_path, "cli-claude", script_timeout, timeout=15.0, suffix="_to")
+        desc_pid_to: int | None = None
+        with pytest.raises(ProviderError, match="执行超时"):
+            async with aclosing(
+                provider.stream([Message("user", (ContentBlock("text", "hang"),))], "", allow_tools=False)
+            ) as stream:
+                async for event in stream:
+                    if isinstance(event, Delta) and event.text == "READY":
+                        desc_pid_to = await asyncio.to_thread(probe_to.wait_ready)
+                        captured[-1].at = asyncio.get_running_loop().time() + 0.05
+        assert provider._active == set()
+        assert await asyncio.to_thread(probe_to.wait_exited, desc_pid_to), "descendant leaked on timeout"
+    finally:
+        probe_to.close()
 
-    task = asyncio.create_task(runner())
-    await asyncio.wait_for(got_first.wait(), timeout=5.0)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert provider_cancel._active == set()
-    recorded_cancel = json.loads(pids_cancel.read_text(encoding="utf-8"))
-    assert _wait_pids_dead(recorded_cancel), f"process tree leaked on cancel: {recorded_cancel}"
+    # 2. Leader exits 0 immediately while descendant keeps stdout open -> timeout must kill descendant too.
+    probe_orphan = _DescendantProbe(tmp_path, "orphan")
+    try:
+        script_orphan = f"""
+        import json, subprocess, sys
+        sys.stdin.read()
+        subprocess.Popen([sys.executable, "-c", {probe_orphan.descendant_snippet()!r}])
+        print(json.dumps({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "text_delta", "text": "READY"}}}}}}), flush=True)
+        sys.exit(0)
+        """
+        provider_orphan = _script_provider(tmp_path, "cli-claude", script_orphan, timeout=15.0, suffix="_orphan")
+        desc_pid_orphan: int | None = None
+        with pytest.raises(ProviderError, match="执行超时"):
+            async with aclosing(
+                provider_orphan.stream([Message("user", (ContentBlock("text", "orphan"),))], "", allow_tools=False)
+            ) as stream:
+                async for event in stream:
+                    if isinstance(event, Delta) and event.text == "READY":
+                        desc_pid_orphan = await asyncio.to_thread(probe_orphan.wait_ready)
+                        managed = next(iter(provider_orphan._active))
+                        await asyncio.wait_for(managed.proc.wait(), timeout=5.0)
+                        assert managed.proc.returncode == 0
+                        captured[-1].at = asyncio.get_running_loop().time() + 0.05
+        assert provider_orphan._active == set()
+        assert await asyncio.to_thread(probe_orphan.wait_exited, desc_pid_orphan), "descendant leaked after leader exit"
+    finally:
+        probe_orphan.close()
+
+    # 3. Cancellation during live streaming must propagate CancelledError and stop the descendant.
+    probe_cancel = _DescendantProbe(tmp_path, "cancel")
+    try:
+        script_cancel = f"""
+        import json, subprocess, sys, time
+        sys.stdin.read()
+        subprocess.Popen([sys.executable, "-c", {probe_cancel.descendant_snippet()!r}])
+        print(json.dumps({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "text_delta", "text": "start"}}}}}}), flush=True)
+        time.sleep(30)
+        """
+        provider_cancel = _script_provider(tmp_path, "cli-claude", script_cancel, timeout=15.0, suffix="_cancel")
+        got_first = asyncio.Event()
+
+        async def runner():
+            async with aclosing(
+                provider_cancel.stream([Message("user", (ContentBlock("text", "stream"),))], "", allow_tools=False)
+            ) as stream:
+                async for event in stream:
+                    if isinstance(event, Delta):
+                        got_first.set()
+
+        task = asyncio.create_task(runner())
+        await asyncio.wait_for(got_first.wait(), timeout=10.0)
+        desc_pid_cancel = await asyncio.to_thread(probe_cancel.wait_ready)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert provider_cancel._active == set()
+        assert await asyncio.to_thread(probe_cancel.wait_exited, desc_pid_cancel), "descendant leaked on cancel"
+    finally:
+        probe_cancel.close()
 
 
-async def test_cli_timeout_does_not_cancel_caller_await_between_yields(tmp_path):
-    """PEP 789: deadline expiring while caller handles a yielded Delta must NOT cancel the caller."""
-    script = """
+async def test_cli_timeout_does_not_cancel_caller_and_enforces_deadline_on_ready_io(tmp_path, monkeypatch):
+    """PEP 789: caller awaits outside timeout scope, and expired deadline still fires when I/O is ready."""
+    captured: list[_Deadline] = []
+    real_deadline = cli_providers._Deadline
+
+    def track_deadline(loop: asyncio.AbstractEventLoop, timeout: float) -> _Deadline:
+        dl = real_deadline(loop, timeout)
+        captured.append(dl)
+        return dl
+
+    monkeypatch.setattr(cli_providers, "_Deadline", track_deadline)
+
+    # Case A: Child still blocks after first Delta; caller sleeps past deadline without being cancelled.
+    script_slow = """
     import json, sys, time
     sys.stdin.read()
     print(json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hello"}}}), flush=True)
     time.sleep(5)
     """
-    provider = _script_provider(tmp_path, "cli-claude", script, timeout=0.35, suffix="_pep789")
+    provider_slow = _script_provider(tmp_path, "cli-claude", script_slow, timeout=15.0, suffix="_pep789_slow")
     caller_finished_sleep = False
     with pytest.raises(ProviderError, match="执行超时"):
+        async with aclosing(
+            provider_slow.stream([Message("user", (ContentBlock("text", "hi"),))], "", allow_tools=False)
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, Delta):
+                    captured[-1].at = asyncio.get_running_loop().time() - 0.01
+                    await asyncio.sleep(0.05)
+                    caller_finished_sleep = True
+    assert caller_finished_sleep is True
+
+    # Case B: Child emits result + exits 0 so stdout and returncode are ALREADY ready when caller resumes past deadline.
+    script_ready = """
+    import json, sys
+    sys.stdin.read()
+    print(json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "fast"}}}), flush=True)
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False}), flush=True)
+    """
+    provider_ready = _script_provider(tmp_path, "cli-claude", script_ready, timeout=15.0, suffix="_pep789_ready")
+    seen_ready: list[Any] = []
+    with pytest.raises(ProviderError, match="执行超时"):
+        async with aclosing(
+            provider_ready.stream([Message("user", (ContentBlock("text", "hi"),))], "", allow_tools=False)
+        ) as stream:
+            async for event in stream:
+                seen_ready.append(event)
+                if isinstance(event, Delta):
+                    managed = next(iter(provider_ready._active))
+                    await asyncio.wait_for(managed.proc.wait(), timeout=5.0)
+                    await asyncio.sleep(0.05)
+                    captured[-1].at = asyncio.get_running_loop().time() - 0.01
+    assert not any(isinstance(e, Completed) for e in seen_ready)
+
+
+async def test_unconfirmed_teardown_retains_ownership_surfaces_failure_and_handles_cancel(tmp_path, monkeypatch):
+    # 1. Unconfirmed teardown must NOT mark `cleaned=True`, must retain `_active` ownership,
+    #    surface failure from `stream()`, and allow a follow-up `close()` retry to succeed.
+    still_alive = True
+    real_alive = cli_providers._managed_alive
+    real_terminate = cli_providers._terminate_managed
+
+    def fake_alive(managed: _ManagedProcess) -> bool:
+        return True if still_alive else real_alive(managed)
+
+    async def fast_terminate(managed: _ManagedProcess, *, grace: float = 0.01, kill_wait: float = 0.01) -> bool:
+        return await real_terminate(managed, grace=grace, kill_wait=kill_wait)
+
+    monkeypatch.setattr(cli_providers, "_managed_alive", fake_alive)
+    monkeypatch.setattr(cli_providers, "_terminate_managed", fast_terminate)
+
+    script_ok = """
+    import json, sys
+    sys.stdin.read()
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok"}), flush=True)
+    """
+    provider = _script_provider(tmp_path, "cli-claude", script_ok, suffix="_unconfirmed")
+    seen: list[Any] = []
+    with pytest.raises(ProviderError, match="未能确认完全退出"):
         async with aclosing(
             provider.stream([Message("user", (ContentBlock("text", "hi"),))], "", allow_tools=False)
         ) as stream:
             async for event in stream:
-                if isinstance(event, Delta):
-                    # Sleep past the provider deadline while outside `stream()`'s timeout scope.
-                    await asyncio.sleep(0.55)
-                    caller_finished_sleep = True
-    assert caller_finished_sleep is True
+                seen.append(event)
+    assert not any(isinstance(e, Completed) for e in seen)
+    assert len(provider._active) == 1
+    tracked = next(iter(provider._active))
+    assert tracked.cleaned is False
+
+    # Follow-up `close()` still fails while process remains alive, then succeeds once confirmed exited.
+    with pytest.raises(ProviderError, match="未能确认完全退出"):
+        await provider.close()
+    assert tracked in provider._active and tracked.cleaned is False
+
+    still_alive = False
+    await provider.close()
+    assert provider._active == set()
+    assert tracked.cleaned is True
+
+    # 2. Direct cancellation during `_terminate_managed` grace period must escalate via `_kill_tree_sync`
+    #    and MUST NOT mark `managed.cleaned = True`.
+    still_alive = True
+    kill_called = False
+
+    def spy_kill(managed: _ManagedProcess) -> None:
+        nonlocal kill_called
+        kill_called = True
+
+    class _FakeProc:
+        returncode = None
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        async def wait(self) -> int:
+            await asyncio.sleep(10)
+            return 0
+
+    monkeypatch.setattr(cli_providers, "_kill_tree_sync", spy_kill)
+    managed_cancel = _ManagedProcess(proc=_FakeProc(), pid=999999)  # type: ignore[arg-type]
+    task = asyncio.create_task(real_terminate(managed_cancel, grace=5.0, kill_wait=5.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert kill_called is True
+    assert managed_cancel.cleaned is False
 
 
 def test_render_cli_prompt_replaces_images_with_placeholders(tmp_path):
@@ -1081,7 +1451,7 @@ async def test_connect_wizard_detects_installed_cli_and_saves_hot_reload(isolate
         assert saved.protocol == "cli-claude" and saved.auth_type == "cli"
 
 
-def test_config_web_exposes_cli_backends_probes_and_saves_in_process(tmp_path):
+def test_config_web_exposes_cli_backends_probes_and_saves_in_process(tmp_path, monkeypatch):
     """Exercise ConfigWebServer CLI state, probe, and save paths strictly in-process (zero network sockets)."""
     fake_gemini = str((tmp_path / "gemini").resolve())
 
@@ -1091,6 +1461,19 @@ def test_config_web_exposes_cli_backends_probes_and_saves_in_process(tmp_path):
     def no_local_transport(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("no local servers")
 
+    class _NoSocketServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self, poll_interval: float = 0.1) -> None:
+            pass
+
+        def shutdown(self) -> None:
+            pass
+
+        def server_close(self) -> None:
+            pass
+
+    monkeypatch.setattr(ConfigWebServer, "_build_server", lambda _self, _port: _NoSocketServer())
     server = ConfigWebServer(
         home=tmp_path,
         transport=httpx.MockTransport(no_local_transport),
