@@ -26,9 +26,49 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
       - uses: astral-sh/setup-uv@v10.3.3  # Publishes no major-version tag.
       - run: uvx ruff@0.17.3 check --output-format=github .
       - run: uvx ruff@0.17.3 format --check .
+      - name: Enforce shrink-only layer allowlist
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 - <<'PY'
+          import ast
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          def extract(source: str) -> frozenset[tuple[str, str]]:
+              tree = ast.parse(source)
+              for node in tree.body:
+                  target = None
+                  value = None
+                  if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                      target, value = node.target.id, node.value
+                  elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                      target, value = node.targets[0].id, node.value
+                  if target == "ALLOWLIST" and value is not None:
+                      inner = value.args[0] if isinstance(value, ast.Call) and len(value.args) == 1 else value
+                      return frozenset((str(s), str(d)) for s, d in ast.literal_eval(inner))
+              raise SystemExit("ALLOWLIST definition not found in tests/test_layers.py")
+
+          base_sha = os.environ["BASE_SHA"]
+          probe = subprocess.run(["git", "cat-file", "-e", f"{base_sha}:tests/test_layers.py"])
+          if probe.returncode != 0:
+              print("No baseline tests/test_layers.py on base commit; skipping shrink-only diff.")
+              raise SystemExit(0)
+          base_src = subprocess.check_output(["git", "show", f"{base_sha}:tests/test_layers.py"], text=True, encoding="utf-8")
+          head_src = Path("tests/test_layers.py").read_text(encoding="utf-8")
+          added = sorted(extract(head_src) - extract(base_src))
+          if added:
+              print(f"Layer ALLOWLIST is shrink-only; new or swapped entries are forbidden: {added}", file=sys.stderr)
+              raise SystemExit(1)
+          print("Layer ALLOWLIST shrink-only check passed.")
+          PY
 
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python }})
