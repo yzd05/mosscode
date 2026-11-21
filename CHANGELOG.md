@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-20
+
 ### 新增
 
 - **合规官方 CLI 代理后端（`cli-claude` / `cli-codex` / `cli-gemini`）**：新增 `preset: claude-cli`、`codex-cli`、`gemini-cli` 与 `auth_type: cli`，通过官方无头 JSON 流式子进程复用用户已登录的 Claude Code、Codex 与 Gemini CLI 订阅（从不读取第三方私有 OAuth 令牌，限制白名单可执行程序与严格模型 ID 校验，禁用外部 CLI 自带写工具并通过每轮随机 Nonce 桥接 MossCode 工具循环、权限、沙箱与 `/swarm` 团队成员），并在 `/connect`、`moss config --web`、`moss setup`、`moss doctor` 与 `follow` 提示中提供自动检测与引导。
@@ -14,6 +16,12 @@
 ### 变更
 
 - **冷启动按需导入优化**：将 Textual TUI、`mcp` SDK 与 `httpx` 从 CLI 启动热路径延迟加载，无界面 `-p` 与轻量命令冷启动显著提速且不拖入界面或网络重依赖。
+- **四层架构解耦**：按 `L0`–`L3` 层次拆分核心、运行时与界面模块，实现零上行依赖边并由静态 AST 门禁持续守卫。
+
+### 修复
+
+- 修复会话级 `/loop` 多个待触发任务并存时可能出现的调度饥饿问题，改为严格 FIFO 派发。
+- 修复 Agent 团队 `read_board` 游标推进与整合者空闲竞态问题。
 
 ## [0.3.1] - 2026-11-18
 
@@ -27,7 +35,7 @@
 
 ## [0.3.0] - 2026-11-17
 
-首个 GitHub 与 PyPI 公开发布版本。
+首个 GitHub 与 PyPI 公开发布版本（`0.1.x`–`0.2.x` 为私有孵化阶段，未公开发包）。
 
 ### 新增
 
@@ -70,6 +78,7 @@
 - Git 工作树隔离：创建、初始化（链接与复制）、改动检查、安全删除和过期清理。
 - Agent 团队：共享任务、成员邮箱、各自的工作树、Windows Terminal 分屏或进程内运行、确认后逐个合并。
 
-[Unreleased]: https://github.com/yzd05/mosscode/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/yzd05/mosscode/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/yzd05/mosscode/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/yzd05/mosscode/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yzd05/mosscode/releases/tag/v0.3.0
